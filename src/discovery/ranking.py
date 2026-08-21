@@ -6,6 +6,7 @@ from src.discovery.models import (
     CandidateInput,
     CandidateResult,
     LeaderboardWallet,
+    TraderSnapshot,
     WalletPeriodMetrics,
 )
 
@@ -18,6 +19,8 @@ class CandidatePolicy:
     min_realized_outcomes: int = 5
     min_unique_tokens: int = 3
     min_trades_7d: int = 1
+    min_trading_days_30d: int = 3
+    max_inactive_days: float = 7.0
 
 
 REJECTION_LABELS = {
@@ -32,6 +35,10 @@ REJECTION_LABELS = {
     "too_few_realized_outcomes": "menos de 5 resultados realizados",
     "too_few_tokens": "menos de 3 tokens no período",
     "inactive_7d": "nenhum trade nos últimos 7 dias",
+    "too_few_trading_days": "menos de 3 dias ativos em 30d",
+    "last_trade_unavailable": "data do último trade indisponível",
+    "last_trade_too_old": "último trade há mais de 7 dias",
+    "pnl_mode_not_strict": "PnL da fonte não está em modo estrito",
 }
 
 
@@ -75,6 +82,39 @@ def filter_recent(
     return ("inactive_7d",) if metrics.total_trade < policy.min_trades_7d else ()
 
 
+def filter_tracker_snapshot(
+    snapshot: TraderSnapshot,
+    policy: CandidatePolicy,
+    *,
+    now_ms: int,
+) -> tuple[str, ...]:
+    """Recheck server-side filters locally and add max-frequency/recency rules."""
+    reasons = []
+    if snapshot.realized_pnl_usd <= 0:
+        reasons.append("pnl_non_positive")
+    if snapshot.roi_pct <= 0:
+        reasons.append("roi_non_positive")
+    if snapshot.trades < policy.min_trades_30d:
+        reasons.append("too_few_trades")
+    if snapshot.trades > policy.max_trades_30d:
+        reasons.append("too_many_trades")
+    if snapshot.win_rate_pct < policy.min_win_rate_pct:
+        reasons.append("win_rate_below_minimum")
+    if snapshot.closed_tokens < policy.min_realized_outcomes:
+        reasons.append("too_few_realized_outcomes")
+    if snapshot.tokens_traded < policy.min_unique_tokens:
+        reasons.append("too_few_tokens")
+    if snapshot.trading_days < policy.min_trading_days_30d:
+        reasons.append("too_few_trading_days")
+    if snapshot.last_trade_ms is None:
+        reasons.append("last_trade_unavailable")
+    elif max(0, now_ms - snapshot.last_trade_ms) / 86_400_000 > policy.max_inactive_days:
+        reasons.append("last_trade_too_old")
+    if snapshot.pnl_mode != "strict":
+        reasons.append("pnl_mode_not_strict")
+    return tuple(reasons)
+
+
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
     return max(minimum, min(maximum, value))
 
@@ -116,27 +156,48 @@ def _score_one(candidate: CandidateInput, pnl_percentile: float) -> CandidateRes
         metrics is not None and metrics.realized_pnl_usd > 0
         for metrics in (m7, m30, m90)
     )
-    consistency = 25 * positive_periods / 3
-    profitability = 20 * _clamp(math.log1p(max(m30.roi_pct, 0)) / math.log1p(100))
-    sample = 15 * _sample_quality(m30.total_trade)
-    win_rate = 15 * (
-        0.5 + 0.5 * _clamp((m30.win_rate_pct - 45) / 20)
-    )
-    activity = 10 * (
-        0.3 + 0.7 * _clamp(math.log1p(m7.total_trade) / math.log1p(35))
-    )
-    diversity = 10 * _clamp(math.log1p(m30.unique_tokens) / math.log1p(15))
-    pnl_rank = 5 * pnl_percentile
-
-    components = {
-        "consistency": consistency,
-        "profitability": profitability,
-        "sample": sample,
-        "win_rate": win_rate,
-        "recent_activity": activity,
-        "token_diversity": diversity,
-        "pnl_relative_rank": pnl_rank,
-    }
+    signals = candidate.signals
+    if signals is None:
+        components = {
+            "consistency": 25 * positive_periods / 3,
+            "profitability": 20 * _clamp(
+                math.log1p(max(m30.roi_pct, 0)) / math.log1p(100)
+            ),
+            "sample": 15 * _sample_quality(m30.total_trade),
+            "win_rate": 15 * (
+                0.5 + 0.5 * _clamp((m30.win_rate_pct - 45) / 20)
+            ),
+            "recent_activity": 10 * (
+                0.3 + 0.7 * _clamp(math.log1p(m7.total_trade) / math.log1p(35))
+            ),
+            "token_diversity": 10 * _clamp(
+                math.log1p(m30.unique_tokens) / math.log1p(15)
+            ),
+            "pnl_relative_rank": 5 * pnl_percentile,
+        }
+    else:
+        decided_days = signals.profitable_days_30d + signals.losing_days_30d
+        profitable_day_ratio = (
+            signals.profitable_days_30d / decided_days if decided_days else 0
+        )
+        components = {
+            "consistency": 15 * positive_periods / 3 + 10 * profitable_day_ratio,
+            "profitability": 15 * _clamp(
+                math.log1p(max(m30.roi_pct, 0)) / math.log1p(100)
+            ),
+            "drawdown": 15 * (1 - _clamp(signals.realized_drawdown_pct / 50)),
+            "sample": 15 * _sample_quality(m30.total_trade),
+            "win_rate": 10 * (
+                0.5 + 0.5 * _clamp((m30.win_rate_pct - 45) / 20)
+            ),
+            "recent_activity": 10 * (
+                1 - 0.4 * _clamp(signals.last_trade_age_days / 7)
+            ),
+            "token_diversity": 5 * _clamp(
+                math.log1p(m30.unique_tokens) / math.log1p(15)
+            ),
+            "pnl_relative_rank": 5 * pnl_percentile,
+        }
     penalty_points = 0.0
     penalties = []
     if m30.total_trade > 300:
@@ -152,6 +213,22 @@ def _score_one(candidate: CandidateInput, pnl_percentile: float) -> CandidateRes
         points = 5 * (10 - m30.realized_outcomes) / 10
         penalty_points += points
         penalties.append(f"poucos resultados realizados (-{points:.1f})")
+    if signals is not None and signals.top_positive_day_share_pct > 40:
+        points = 8 * _clamp((signals.top_positive_day_share_pct - 40) / 60)
+        penalty_points += points
+        penalties.append(f"lucro diário concentrado (-{points:.1f})")
+    if signals is not None and signals.avg_hold_seconds is not None:
+        if signals.avg_hold_seconds < 60:
+            points = 5.0
+        elif signals.avg_hold_seconds < 300:
+            points = 3.0
+        elif signals.avg_hold_seconds < 900:
+            points = 1.0
+        else:
+            points = 0.0
+        if points:
+            penalty_points += points
+            penalties.append(f"tempo médio de posição muito curto (-{points:.1f})")
 
     score = round(_clamp(sum(components.values()) - penalty_points, 0, 100), 1)
     reasons = [
@@ -161,6 +238,14 @@ def _score_one(candidate: CandidateInput, pnl_percentile: float) -> CandidateRes
         f"ROI realizado 30d: {m30.roi_pct:+.1f}%",
         f"PnL positivo em {positive_periods}/3 períodos",
     ]
+    if signals is not None:
+        reasons.extend(
+            [
+                f"dias positivos: {signals.profitable_days_30d}/{signals.trading_days_30d}",
+                f"drawdown realizado estimado: {signals.realized_drawdown_pct:.1f}% do capital investido",
+                f"maior dia vencedor: {signals.top_positive_day_share_pct:.1f}% dos ganhos diários",
+            ]
+        )
     if m90 is None:
         reasons[-1] = f"PnL positivo em {positive_periods}/3 períodos (90d indisponível)"
     return CandidateResult(
@@ -172,6 +257,8 @@ def _score_one(candidate: CandidateInput, pnl_percentile: float) -> CandidateRes
         reasons=tuple(reasons),
         penalties=tuple(penalties),
         score_components={key: round(value, 2) for key, value in components.items()},
+        signals=signals,
+        source="solana_tracker" if signals is not None else "birdeye",
     )
 
 

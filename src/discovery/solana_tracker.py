@@ -197,6 +197,8 @@ class SolanaTrackerClient:
             roi_pct=_number(period.get("roi")),
             invested_usd=_number(item.get("invested")),
             proceeds_usd=_number(item.get("proceeds")),
+            buys=_integer(counts.get("buys")),
+            sells=_integer(counts.get("sells")),
             trades=_integer(counts.get("trades")),
             tokens_traded=_integer(counts.get("tokensTraded")),
             profitable_tokens=_integer(tokens.get("profitable")),

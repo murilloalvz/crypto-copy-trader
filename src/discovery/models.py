@@ -47,6 +47,7 @@ class CandidateInput:
     metrics_30d: WalletPeriodMetrics
     metrics_7d: WalletPeriodMetrics
     metrics_90d: WalletPeriodMetrics | None
+    signals: "CandidateSignals | None" = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class CandidateResult:
     reasons: tuple[str, ...]
     penalties: tuple[str, ...]
     score_components: dict[str, float]
+    signals: "CandidateSignals | None" = None
+    source: str = "birdeye"
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,8 @@ class TraderSnapshot:
     roi_pct: float
     invested_usd: float
     proceeds_usd: float
+    buys: int
+    sells: int
     trades: int
     tokens_traded: int
     profitable_tokens: int
@@ -126,3 +131,21 @@ class DailyWalletActivity:
 class WalletHistory:
     address: str
     days: tuple[DailyWalletActivity, ...]
+
+
+@dataclass(frozen=True)
+class CandidateSignals:
+    """Derived only from documented source fields and daily wallet history."""
+
+    trading_days_30d: int
+    profitable_days_30d: int
+    losing_days_30d: int
+    median_daily_pnl_usd: float
+    top_positive_day_share_pct: float
+    realized_drawdown_usd: float
+    realized_drawdown_pct: float
+    avg_hold_seconds: float | None
+    last_trade_age_days: float
+    single_token_profit_cap_pct: float
+    arbitrage_excluded: bool
+    strict_pnl_mode: bool

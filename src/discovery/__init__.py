@@ -9,6 +9,7 @@ from src.discovery.models import (
 )
 from src.discovery.service import WalletDiscoveryService
 from src.discovery.solana_tracker import SolanaTrackerClient
+from src.discovery.tracker_service import SolanaTrackerDiscoveryService
 
 __all__ = [
     "BirdeyeClient",
@@ -16,6 +17,7 @@ __all__ = [
     "DiscoveryReport",
     "LeaderboardWallet",
     "SolanaTrackerClient",
+    "SolanaTrackerDiscoveryService",
     "WalletDiscoveryService",
     "WalletPeriodMetrics",
 ]
