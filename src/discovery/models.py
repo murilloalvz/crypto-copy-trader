@@ -35,3 +35,48 @@ class WalletPeriodMetrics:
     @property
     def realized_outcomes(self) -> int:
         return self.total_win + self.total_loss
+
+
+@dataclass(frozen=True)
+class CandidateInput:
+    """Fully enriched wallet ready for deterministic filters and ranking."""
+
+    address: str
+    source_rank: int
+    leaderboard: LeaderboardWallet
+    metrics_30d: WalletPeriodMetrics
+    metrics_7d: WalletPeriodMetrics
+    metrics_90d: WalletPeriodMetrics | None
+
+
+@dataclass(frozen=True)
+class CandidateResult:
+    """A discovery result; this is not a recommendation to copy the wallet."""
+
+    address: str
+    candidate_score: float
+    metrics_30d: WalletPeriodMetrics
+    metrics_7d: WalletPeriodMetrics
+    metrics_90d: WalletPeriodMetrics | None
+    reasons: tuple[str, ...]
+    penalties: tuple[str, ...]
+    score_components: dict[str, float]
+
+
+@dataclass(frozen=True)
+class DiscoveryReport:
+    source_count: int
+    prefiltered_count: int
+    enriched_30d_count: int
+    fully_evaluated_count: int
+    candidates: tuple[CandidateResult, ...]
+    rejected_by_reason: dict[str, int]
+    data_errors: dict[str, str]
+
+    @property
+    def passed_count(self) -> int:
+        return len(self.candidates)
+
+    @property
+    def eliminated_count(self) -> int:
+        return self.source_count - self.passed_count

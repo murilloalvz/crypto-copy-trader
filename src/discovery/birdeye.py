@@ -256,15 +256,26 @@ class BirdeyeClient:
         cashflow = summary.get("cashflow_usd") or {}
         pnl = summary.get("pnl") or {}
         current_value = cashflow.get("current_value")
+        total_win = _integer(counts.get("total_win"))
+        total_loss = _integer(counts.get("total_loss"))
+        realized_outcomes = total_win + total_loss
+        reported_win_rate = _number(counts.get("win_rate"))
+        # The two documented counts let us avoid depending on whether an API
+        # version serializes win_rate as a ratio or as percentage points.
+        win_rate_pct = (
+            100 * total_win / realized_outcomes
+            if realized_outcomes
+            else reported_win_rate
+        )
         return WalletPeriodMetrics(
             period=period,
             unique_tokens=_integer(summary.get("unique_tokens")),
             total_buy=_integer(counts.get("total_buy")),
             total_sell=_integer(counts.get("total_sell")),
             total_trade=_integer(counts.get("total_trade")),
-            total_win=_integer(counts.get("total_win")),
-            total_loss=_integer(counts.get("total_loss")),
-            win_rate_pct=_number(counts.get("win_rate")),
+            total_win=total_win,
+            total_loss=total_loss,
+            win_rate_pct=win_rate_pct,
             total_invested_usd=_number(cashflow.get("total_invested")),
             total_sold_usd=_number(cashflow.get("total_sold")),
             current_value_usd=None if current_value is None else _number(current_value),
