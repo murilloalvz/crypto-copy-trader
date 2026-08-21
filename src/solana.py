@@ -9,6 +9,10 @@ from src.config import settings
 
 LAMPORTS_PER_SOL = 1_000_000_000
 SOL_CHANGE_EPSILON = 0.000005
+CURRENT_MAINNET_RPC_URL = "https://api.mainnet.solana.com"
+LEGACY_MAINNET_RPC_URLS = {
+    "https://api.mainnet-beta.solana.com",
+}
 
 # Program IDs are treated as evidence that a DEX/aggregator was actually invoked.
 # Balance deltas alone are not enough: exchange and custody wallets commonly move
@@ -47,9 +51,17 @@ class SolanaRPCError(RuntimeError):
     pass
 
 
+def normalize_rpc_url(rpc_url: str) -> str:
+    """Map retired public endpoints while preserving custom/private RPC URLs."""
+    normalized = rpc_url.strip().rstrip("/")
+    if normalized in LEGACY_MAINNET_RPC_URLS:
+        return CURRENT_MAINNET_RPC_URL
+    return normalized
+
+
 class SolanaClient:
     def __init__(self, rpc_url: str | None = None, timeout: int = 30):
-        self.rpc_url = rpc_url or settings.rpc_url
+        self.rpc_url = normalize_rpc_url(rpc_url or settings.rpc_url)
         self.timeout = timeout
         self._request_id = 0
 

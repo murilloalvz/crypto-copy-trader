@@ -12,7 +12,7 @@ except ImportError:
 
 @dataclass(frozen=True)
 class Settings:
-    rpc_url: str = getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+    rpc_url: str = getenv("SOLANA_RPC_URL", "https://api.mainnet.solana.com")
     database_path: Path = Path(getenv("DATABASE_PATH", "data/copytrader.db"))
     max_signatures: int = int(getenv("MAX_SIGNATURES_PER_SYNC", "30"))
     starting_balance_usd: float = float(getenv("STARTING_BALANCE_USD", "1000"))
