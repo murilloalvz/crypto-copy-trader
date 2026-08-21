@@ -162,16 +162,39 @@ class SolanaTrackerDiscoveryService:
         if self.progress:
             self.progress(stage, current, total, address)
 
+    def _source_wallets(self, source_limit: int) -> list[TraderSnapshot]:
+        """Round-robin three leaderboards so nominal PnL cannot define the whole sample."""
+        pools = [
+            self.client.top_traders(
+                source_limit,
+                sort_by=sort_by,
+                days=30,
+                min_trades=self.policy.min_trades_30d,
+                min_win_rate=self.policy.min_win_rate_pct,
+                min_roi=0,
+                min_closed_tokens=self.policy.min_realized_outcomes,
+                max_single_token_pct=50,
+            )
+            for sort_by in ("realized", "roi", "win_percentage")
+        ]
+        selected = []
+        seen = set()
+        index = 0
+        while len(selected) < source_limit and any(index < len(pool) for pool in pools):
+            for pool in pools:
+                if index >= len(pool):
+                    continue
+                snapshot = pool[index]
+                if snapshot.address not in seen:
+                    seen.add(snapshot.address)
+                    selected.append(snapshot)
+                    if len(selected) == source_limit:
+                        break
+            index += 1
+        return selected
+
     def discover(self, source_limit: int = 250) -> DiscoveryReport:
-        snapshots = self.client.top_traders(
-            source_limit,
-            days=30,
-            min_trades=self.policy.min_trades_30d,
-            min_win_rate=self.policy.min_win_rate_pct,
-            min_roi=0,
-            min_closed_tokens=self.policy.min_realized_outcomes,
-            max_single_token_pct=50,
-        )
+        snapshots = self._source_wallets(source_limit)
         now_ms = int(self.now.timestamp() * 1000)
         rejected = Counter()
         rejected_addresses: set[str] = set()

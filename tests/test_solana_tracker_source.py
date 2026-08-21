@@ -69,7 +69,7 @@ class SolanaTrackerSourceTests(unittest.TestCase):
             ),
         ]
 
-        wallets = self.client().top_traders(2)
+        wallets = self.client().top_traders(2, sort_by="roi")
 
         self.assertEqual([item.address for item in wallets], [WALLET_A, WALLET_B])
         self.assertEqual(wallets[0].profitable_days, 12)
@@ -77,6 +77,7 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertEqual(wallets[0].buys, 55)
         first_request = mocked_urlopen.call_args_list[0].args[0]
         self.assertIn("excludeArbitrage=true", first_request.full_url)
+        self.assertIn("sort=roi", first_request.full_url)
         self.assertIn("pnlMode=strict", first_request.full_url)
         self.assertIn("maxSingleTokenPct=50", first_request.full_url)
         self.assertNotIn("test-key", first_request.full_url)

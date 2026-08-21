@@ -59,7 +59,9 @@ app.py      -> monitoramento manual da wallet escolhida
 O Solana Tracker foi escolhido porque entrega endereço público real, janelas recentes,
 PnL/ROI, trades, tokens, dias positivos/negativos, último trade e histórico diário. A
 requisição ativa `excludeArbitrage=true`, `pnlMode=strict` e
-`maxSingleTokenPct=50`. Birdeye ficou preparado como fallback técnico. Dune permite
+`maxSingleTokenPct=50`. O lote combina leaderboards ordenados por PnL, ROI e win rate,
+removendo duplicatas, para não nascer dominado apenas por PnL nominal. Birdeye ficou
+preparado como fallback técnico. Dune permite
 consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
 tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.
 

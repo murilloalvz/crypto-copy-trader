@@ -70,7 +70,9 @@ class FakeTrackerClient:
 
     def top_traders(self, limit, **kwargs):
         self.calls.append(("top", limit, kwargs))
-        return [snapshot(WALLET_GOOD), snapshot(WALLET_HFT, trades=1_500)]
+        if kwargs["sort_by"] == "realized":
+            return [snapshot(WALLET_GOOD), snapshot(WALLET_HFT, trades=1_500)]
+        return [snapshot(WALLET_GOOD)]
 
     def wallet_history(self, address, period):
         self.calls.append(("history", address, period))
@@ -91,8 +93,13 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertGreater(report.candidates[0].signals.realized_drawdown_usd, 0)
         self.assertGreater(report.candidates[0].signals.top_positive_day_share_pct, 50)
         self.assertNotIn(("history", WALLET_HFT, "90d"), client.calls)
-        top_call = client.calls[0]
-        self.assertEqual(top_call[2]["max_single_token_pct"], 50)
+        top_calls = [item for item in client.calls if item[0] == "top"]
+        self.assertEqual(len(top_calls), 3)
+        self.assertEqual(
+            {item[2]["sort_by"] for item in top_calls},
+            {"realized", "roi", "win_percentage"},
+        )
+        self.assertEqual(top_calls[0][2]["max_single_token_pct"], 50)
 
     def test_score_includes_drawdown_and_concentration_penalty(self):
         result = SolanaTrackerDiscoveryService(

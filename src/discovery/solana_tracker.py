@@ -214,6 +214,7 @@ class SolanaTrackerClient:
         self,
         limit: int = 250,
         *,
+        sort_by: str = "realized",
         days: int = 30,
         min_trades: int = 20,
         min_win_rate: float = 45,
@@ -225,6 +226,10 @@ class SolanaTrackerClient:
             raise ValueError("limit precisa estar entre 1 e 10000")
         if days not in {1, 7, 30, 90}:
             raise ValueError("days precisa ser 1, 7, 30 ou 90")
+        if sort_by not in {
+            "realized", "volume", "days", "roi", "win_percentage", "trades", "tokens"
+        }:
+            raise ValueError("ordenação inválida para o leaderboard")
 
         results: list[TraderSnapshot] = []
         seen: set[str] = set()
@@ -234,7 +239,7 @@ class SolanaTrackerClient:
             payload = self._request(
                 "/v2/pnl/leaderboard/top",
                 {
-                    "sort": "realized",
+                    "sort": sort_by,
                     "direction": "desc",
                     "limit": page_size,
                     "cursor": cursor,
