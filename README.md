@@ -21,6 +21,70 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - win rate, retorno e drawdown realizado;
 - importação paginada de lotes anteriores do histórico;
 - dashboard Streamlit.
+- discovery automático de wallets candidatas, separado do tracker;
+- filtros contra arbitragem, HFT, inatividade, amostra pequena e one-hit winners;
+- Candidate Score explicável com consistência, ROI, drawdown e penalizações básicas.
+
+## Wallet discovery
+
+O comando abaixo consulta apenas dados públicos e não grava transações nem adiciona
+automaticamente nenhuma wallet ao tracker:
+
+```powershell
+python discover.py
+```
+
+A fonte principal é o [Solana Tracker PnL V2](https://docs.solanatracker.io/data-api/pnl-v2/leaderboard/solana-traders-leaderboard).
+O plano gratuito informa 10.000 requisições mensais. Crie uma API key no painel do
+Solana Tracker e adicione ao `.env`:
+
+```text
+SOLANA_TRACKER_API_KEY=cole_sua_chave_aqui
+```
+
+Não envie essa chave para o GitHub nem para outra pessoa. O `.env.example` contém apenas
+o nome da variável. Para um teste menor e mais rápido:
+
+```powershell
+python discover.py --wallets 50 --top 10
+```
+
+O funil é independente do dashboard:
+
+```text
+discover.py -> fonte -> filtros -> Candidate Score -> wallet candidata
+app.py      -> monitoramento manual da wallet escolhida
+```
+
+O Solana Tracker foi escolhido porque entrega endereço público real, janelas recentes,
+PnL/ROI, trades, tokens, dias positivos/negativos, último trade e histórico diário. A
+requisição ativa `excludeArbitrage=true`, `pnlMode=strict` e
+`maxSingleTokenPct=50`. Birdeye ficou preparado como fallback técnico. Dune permite
+consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
+tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.
+
+### Fórmula do Candidate Score
+
+O score de 0 a 100 serve somente para ordenar candidatas:
+
+- 25 pontos: consistência em 7/30/90 dias e proporção de dias positivos;
+- 15 pontos: ROI 30d com escala logarítmica e teto em 100%;
+- 15 pontos: drawdown realizado relativo ao valor investido;
+- 15 pontos: tamanho da amostra, favorecendo 50 a 300 trades;
+- 10 pontos: win rate, sem tratá-lo isoladamente;
+- 10 pontos: recência do último trade;
+- 5 pontos: diversidade de tokens;
+- 5 pontos: percentil de PnL dentro do lote, limitando o peso do valor nominal.
+
+Depois são descontadas penalizações por frequência difícil de copiar, concentração do
+lucro em um único dia, poucos resultados realizados e tempo médio de posição muito curto.
+O filtro da fonte também exclui wallets marcadas como arbitragem e aquelas em que um único
+token representa mais de 50% do PnL.
+
+Ainda não entram no score: liquidez por token, slippage real da wallet e distribuição por
+trade. A fonte não fornece esses três itens diretamente no leaderboard. O drawdown atual é
+calculado sobre o PnL realizado diário e dividido pelo capital investido no período; ele não
+é um drawdown patrimonial completo.
 
 ## Modo demonstração offline
 
@@ -95,14 +159,16 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Adicionar Orca e outros protocolos, marcar posições abertas a mercado e criar uma rotina
-para pesquisar e validar wallets de traders em vez de carteiras de corretoras.
+Validar a liquidez dos tokens operados pelas candidatas e criar um Copyability Score
+separado. Isso não deve ser confundido com o Candidate Score deste primeiro funil.
 
 ## Estrutura
 
 ```text
 app.py                 dashboard
+discover.py            CLI de discovery, filtros e Top 10
 src/demo.py            transações e preços sintéticos do modo offline
+src/discovery/          fontes, métricas, filtros e ranking de candidatas
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading

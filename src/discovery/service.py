@@ -36,11 +36,13 @@ class WalletDiscoveryService:
             source_limit, period="30d", sort_by="realized_pnl"
         )
         rejected = Counter()
+        rejected_addresses: set[str] = set()
         prefiltered = []
         for rank, wallet in enumerate(leaderboard, start=1):
             reasons = prefilter_leaderboard(wallet, self.policy)
             if reasons:
                 rejected.update(reasons)
+                rejected_addresses.add(wallet.address)
             else:
                 prefiltered.append((rank, wallet))
 
@@ -56,6 +58,7 @@ class WalletDiscoveryService:
             reasons = filter_30d(metrics_30d, self.policy)
             if reasons:
                 rejected.update(reasons)
+                rejected_addresses.add(wallet.address)
             else:
                 enriched_30d.append((rank, wallet, metrics_30d))
 
@@ -70,6 +73,7 @@ class WalletDiscoveryService:
             reasons = filter_recent(metrics_7d, self.policy)
             if reasons:
                 rejected.update(reasons)
+                rejected_addresses.add(wallet.address)
                 continue
             try:
                 metrics_90d = self.client.wallet_pnl(wallet.address, "90d")
@@ -96,4 +100,5 @@ class WalletDiscoveryService:
             candidates=tuple(ranked),
             rejected_by_reason=dict(sorted(rejected.items())),
             data_errors=data_errors,
+            rejected_count=len(rejected_addresses),
         )

@@ -174,6 +174,7 @@ class SolanaTrackerDiscoveryService:
         )
         now_ms = int(self.now.timestamp() * 1000)
         rejected = Counter()
+        rejected_addresses: set[str] = set()
         prefiltered = []
         for rank, snapshot in enumerate(snapshots, start=1):
             reasons = filter_tracker_snapshot(
@@ -181,6 +182,7 @@ class SolanaTrackerDiscoveryService:
             )
             if reasons:
                 rejected.update(reasons)
+                rejected_addresses.add(snapshot.address)
             else:
                 prefiltered.append((rank, snapshot))
 
@@ -197,6 +199,7 @@ class SolanaTrackerDiscoveryService:
             recent_reasons = filter_recent(metrics_7d, self.policy)
             if recent_reasons:
                 rejected.update(recent_reasons)
+                rejected_addresses.add(snapshot.address)
                 continue
             signals = _risk_signals(snapshot, history, self.now.date(), now_ms)
             inputs.append(
@@ -225,4 +228,5 @@ class SolanaTrackerDiscoveryService:
             candidates=tuple(ranked),
             rejected_by_reason=dict(sorted(rejected.items())),
             data_errors=data_errors,
+            rejected_count=len(rejected_addresses),
         )

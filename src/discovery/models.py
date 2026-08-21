@@ -75,6 +75,7 @@ class DiscoveryReport:
     candidates: tuple[CandidateResult, ...]
     rejected_by_reason: dict[str, int]
     data_errors: dict[str, str]
+    rejected_count: int = 0
 
     @property
     def passed_count(self) -> int:
@@ -82,7 +83,7 @@ class DiscoveryReport:
 
     @property
     def eliminated_count(self) -> int:
-        return self.source_count - self.passed_count
+        return self.rejected_count
 
 
 @dataclass(frozen=True)
