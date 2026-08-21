@@ -8,12 +8,14 @@ from src.discovery.models import (
     WalletPeriodMetrics,
 )
 from src.discovery.service import WalletDiscoveryService
+from src.discovery.solana_tracker import SolanaTrackerClient
 
 __all__ = [
     "BirdeyeClient",
     "CandidateResult",
     "DiscoveryReport",
     "LeaderboardWallet",
+    "SolanaTrackerClient",
     "WalletDiscoveryService",
     "WalletPeriodMetrics",
 ]
