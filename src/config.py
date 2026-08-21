@@ -10,9 +10,16 @@ except ImportError:
     pass
 
 
+def _csv_urls(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     rpc_url: str = getenv("SOLANA_RPC_URL", "https://api.mainnet.solana.com")
+    rpc_fallback_urls: tuple[str, ...] = _csv_urls(
+        getenv("SOLANA_RPC_FALLBACK_URLS", "https://solana-rpc.publicnode.com")
+    )
     database_path: Path = Path(getenv("DATABASE_PATH", "data/copytrader.db"))
     max_signatures: int = int(getenv("MAX_SIGNATURES_PER_SYNC", "30"))
     starting_balance_usd: float = float(getenv("STARTING_BALANCE_USD", "1000"))

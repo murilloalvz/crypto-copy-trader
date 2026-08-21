@@ -44,9 +44,10 @@ python -m unittest discover -s tests -v
 
 Edite `.env`. O endpoint público atual é `https://api.mainnet.solana.com`; a aplicação
 migra automaticamente a configuração antiga `api.mainnet-beta.solana.com`. O RPC público
-funciona para testes, mas pode limitar requisições. Para uso contínuo, troque
-`SOLANA_RPC_URL` por um endpoint próprio. Nunca coloque seed phrase ou chave privada neste
-projeto.
+funciona para testes, mas pode limitar requisições. Em falhas de rede ou TLS, o cliente
+tenta automaticamente o endpoint público alternativo definido em
+`SOLANA_RPC_FALLBACK_URLS`. Para uso contínuo, troque `SOLANA_RPC_URL` por um endpoint
+próprio. Nunca coloque seed phrase ou chave privada neste projeto.
 
 ## Como calcular a performance
 

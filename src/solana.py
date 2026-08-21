@@ -1,7 +1,9 @@
 import json
+import ssl
 import time
 from collections import defaultdict
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from src.assets import QUOTE_ASSET_MINTS, STABLECOIN_MINTS, WRAPPED_SOL_MINT
@@ -59,43 +61,108 @@ def normalize_rpc_url(rpc_url: str) -> str:
     return normalized
 
 
+def _tls12_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def _is_ssl_error(error: BaseException) -> bool:
+    reason = getattr(error, "reason", None)
+    return isinstance(error, ssl.SSLError) or isinstance(reason, ssl.SSLError)
+
+
 class SolanaClient:
-    def __init__(self, rpc_url: str | None = None, timeout: int = 30):
-        self.rpc_url = normalize_rpc_url(rpc_url or settings.rpc_url)
+    def __init__(
+        self,
+        rpc_url: str | None = None,
+        timeout: int = 30,
+        fallback_urls: tuple[str, ...] | list[str] | None = None,
+    ):
+        configured_urls = [rpc_url or settings.rpc_url]
+        configured_urls.extend(
+            settings.rpc_fallback_urls if fallback_urls is None else fallback_urls
+        )
+        self.rpc_urls = []
+        for item in configured_urls:
+            normalized = normalize_rpc_url(item)
+            if normalized and normalized not in self.rpc_urls:
+                self.rpc_urls.append(normalized)
+        self.rpc_url = self.rpc_urls[0]
         self.timeout = timeout
         self._request_id = 0
 
-    def call(self, method: str, params: list, max_attempts: int = 3):
-        last_error = None
-        for attempt in range(max_attempts):
-            self._request_id += 1
-            body = json.dumps(
-                {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
-            ).encode("utf-8")
-            request = Request(
-                self.rpc_url,
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "solana-copytrader-mvp/0.1",
-                },
-                method="POST",
-            )
-            try:
-                with urlopen(request, timeout=self.timeout) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                break
-            except (HTTPError, URLError, TimeoutError) as exc:
-                last_error = exc
-                if attempt + 1 < max_attempts:
-                    time.sleep(2 ** attempt)
-        else:
-            raise SolanaRPCError(
-                f"RPC indisponível após {max_attempts} tentativas: {last_error}"
-            ) from last_error
-        if payload.get("error"):
-            raise SolanaRPCError(payload["error"].get("message", str(payload["error"])))
-        return payload.get("result")
+    @property
+    def rpc_host(self) -> str:
+        return urlsplit(self.rpc_url).hostname or self.rpc_url
+
+    def _read_payload(
+        self, request: Request, context: ssl.SSLContext | None = None
+    ) -> dict:
+        options = {"timeout": self.timeout}
+        if context is not None:
+            options["context"] = context
+        with urlopen(request, **options) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def call(self, method: str, params: list, max_attempts: int = 2):
+        errors = []
+        candidates = [self.rpc_url] + [
+            item for item in self.rpc_urls if item != self.rpc_url
+        ]
+        for rpc_url in candidates:
+            last_error = None
+            for attempt in range(max_attempts):
+                self._request_id += 1
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": self._request_id,
+                        "method": method,
+                        "params": params,
+                    }
+                ).encode("utf-8")
+                request = Request(
+                    rpc_url,
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "solana-copytrader-mvp/0.1",
+                    },
+                    method="POST",
+                )
+                try:
+                    payload = self._read_payload(request)
+                except (HTTPError, URLError, TimeoutError, ssl.SSLError) as exc:
+                    last_error = exc
+                    if _is_ssl_error(exc):
+                        try:
+                            payload = self._read_payload(request, _tls12_context())
+                        except (HTTPError, URLError, TimeoutError, ssl.SSLError) as tls_exc:
+                            last_error = tls_exc
+                        else:
+                            self.rpc_url = rpc_url
+                            if payload.get("error"):
+                                raise SolanaRPCError(
+                                    payload["error"].get("message", str(payload["error"]))
+                                )
+                            return payload.get("result")
+                    if attempt + 1 < max_attempts:
+                        time.sleep(2 ** attempt)
+                    continue
+
+                self.rpc_url = rpc_url
+                if payload.get("error"):
+                    raise SolanaRPCError(
+                        payload["error"].get("message", str(payload["error"]))
+                    )
+                return payload.get("result")
+
+            host = urlsplit(rpc_url).hostname or rpc_url
+            errors.append(f"{host}: {last_error}")
+
+        raise SolanaRPCError("Todos os RPCs falharam: " + " | ".join(errors))
 
     def signatures(self, address: str, limit: int, before: str | None = None) -> list[dict]:
         options = {"limit": limit}

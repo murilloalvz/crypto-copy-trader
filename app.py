@@ -66,13 +66,15 @@ with sync_col:
                 st.session_state["flash"] = (
                     "warning",
                     f"Encontradas: {result['found']} · importadas: {result['inserted']} · "
-                    f"falhas do RPC: {result['failed']}. Primeira falha: {result['first_error']}",
+                    f"falhas do RPC: {result['failed']} · RPC: {result['rpc_endpoint']}. "
+                    f"Primeira falha: {result['first_error']}",
                 )
             else:
                 st.session_state["flash"] = (
                     "success",
                     f"Encontradas: {result['found']} · novas importadas: {result['inserted']} · "
-                    f"já existentes/ignoradas: {result['skipped']}.",
+                    f"já existentes/ignoradas: {result['skipped']} · "
+                    f"RPC: {result['rpc_endpoint']}.",
                 )
             st.rerun()
         except Exception as exc:
@@ -85,7 +87,7 @@ with history_col:
             st.session_state["flash"] = (
                 "success" if result["inserted"] else "info",
                 f"Histórico: {result['found']} encontradas · {result['inserted']} novas · "
-                f"{result['failed']} falhas.",
+                f"{result['failed']} falhas · RPC: {result['rpc_endpoint']}.",
             )
             st.rerun()
         except Exception as exc:

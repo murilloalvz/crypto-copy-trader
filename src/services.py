@@ -130,6 +130,7 @@ def sync_wallet(
         "skipped": skipped,
         "failed": failed,
         "first_error": first_error,
+        "rpc_endpoint": client.rpc_host,
     }
 
 
