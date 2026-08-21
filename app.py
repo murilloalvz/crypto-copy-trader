@@ -3,7 +3,12 @@ import streamlit as st
 
 from src.analytics import paper_performance, wallet_metrics
 from src.database import add_wallet, initialize_database, remove_wallet, rows
-from src.services import generate_paper_trades, price_paper_trades, sync_wallet
+from src.services import (
+    generate_paper_trades,
+    price_paper_trades,
+    reparse_wallet_transactions,
+    sync_wallet,
+)
 
 st.set_page_config(page_title="Solana CopyTrader", page_icon="◎", layout="wide")
 initialize_database()
@@ -33,10 +38,17 @@ if not wallets:
     st.info("Adicione uma wallet pública na barra lateral para começar.")
     st.stop()
 
-options = {f"{wallet['label']} · {wallet['address'][:6]}…{wallet['address'][-4:]}": wallet for wallet in wallets}
+options = {
+    f"{wallet['label']} · {wallet['address'][:6]}…{wallet['address'][-4:]}": wallet
+    for wallet in wallets
+}
 selected_label = st.selectbox("Wallet monitorada", options)
 wallet = options[selected_label]
 address = wallet["address"]
+
+# Reclassify legacy rows with the latest parser when the app is upgraded. This
+# keeps the user's local database and marks old false positives as ignored.
+reparse_wallet_transactions(address)
 
 sync_col, history_col, paper_col, remove_col = st.columns(4)
 with sync_col:
@@ -81,7 +93,14 @@ with history_col:
 with paper_col:
     if st.button("Simular novas cópias", use_container_width=True):
         created = generate_paper_trades(address)
-        st.session_state["flash"] = ("success", f"{created} operações simuladas criadas.")
+        st.session_state["flash"] = (
+            "success" if created else "info",
+            (
+                f"{created} operações simuladas criadas."
+                if created
+                else "Nenhum swap novo confirmado por uma DEX suportada."
+            ),
+        )
         st.rerun()
 with remove_col:
     if st.button("Remover da lista", use_container_width=True):
@@ -90,21 +109,27 @@ with remove_col:
 
 metrics = wallet_metrics(address)
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Wallet Score inicial", f"{metrics['score']}/100")
+score_display = (
+    f"{metrics['score']}/100" if metrics["score"] is not None else "Dados insuficientes"
+)
+c1.metric("Wallet Score", score_display)
+c1.caption(metrics["score_reason"])
 c2.metric("Transações", metrics["transactions"])
-c3.metric("Swaps detectados", metrics["swaps"])
+c3.metric("Swaps confirmados", metrics["swaps"])
 c4.metric("Swaps/dia ativo", f"{metrics['frequency']:.2f}")
 
 txs = rows(
-    """SELECT block_time, kind, status, sol_change, fee_sol, token_mint, token_change, signature
+    """SELECT block_time, kind, dex, status, sol_change, fee_sol, token_mint,
+    token_change, signature
     FROM transactions WHERE wallet_address=? ORDER BY block_time DESC""",
     (address,),
 )
 paper = rows(
-    """SELECT source_block_time, side, token_mint, simulated_usd, market_price_usd,
-    execution_price_usd, token_quantity, fees_usd, realized_pnl_usd, slippage_bps,
-    delay_seconds, status, price_error
-    FROM paper_trades WHERE wallet_address=? ORDER BY id DESC""",
+    """SELECT pt.source_block_time, tx.dex, pt.side, pt.token_mint, pt.simulated_usd,
+    pt.market_price_usd, pt.execution_price_usd, pt.token_quantity, pt.fees_usd,
+    pt.realized_pnl_usd, pt.slippage_bps, pt.delay_seconds, pt.status, pt.price_error
+    FROM paper_trades pt JOIN transactions tx ON tx.signature=pt.source_signature
+    WHERE pt.wallet_address=? AND pt.status!='filtered_non_swap' ORDER BY pt.id DESC""",
     (address,),
 )
 
@@ -141,6 +166,12 @@ with tab2:
     p4.metric("Drawdown realizado", f"{performance['max_drawdown_pct']:.2f}%")
     p5.metric("Trades fechados", performance["closed_trades"])
 
+    if performance["filtered_trades"]:
+        st.info(
+            f"{performance['filtered_trades']} operação(ões) antigas foram ignoradas porque "
+            "não eram swaps confirmados por Jupiter, Raydium ou Pump.fun."
+        )
+
     if performance["curve"]:
         curve = pd.DataFrame(performance["curve"])
         curve["data"] = pd.to_datetime(curve.pop("timestamp"), unit="s", utc=True)
@@ -154,7 +185,8 @@ with tab2:
         st.dataframe(paper_frame, use_container_width=True, hide_index=True)
         if performance["price_failures"]:
             st.warning(
-                f"{performance['price_failures']} operação(ões) ainda não possuem preço histórico. "
+                f"{performance['price_failures']} operação(ões) ainda não possuem "
+                "preço histórico. "
                 "Veja a coluna price_error."
             )
     else:
@@ -162,6 +194,17 @@ with tab2:
     st.caption("Preços on-chain fornecidos por GeckoTerminal. Powered by CoinGecko.")
 with tab3:
     st.write(
-        "O score atual mede atividade, diversidade de tokens e regularidade. Ele ainda não prova "
-        "rentabilidade. P&L, win rate e drawdown serão adicionados com preços históricos confiáveis."
+        "O Wallet Score só é liberado após pelo menos 5 trades completos de compra e venda. "
+        "Antes disso, o dashboard mostra “Dados insuficientes” para não transformar atividade "
+        "em uma falsa indicação de rentabilidade."
     )
+    st.write(
+        "Quando liberado, o score considera retorno realizado, win rate, drawdown, tamanho da "
+        "amostra, atividade e frequência. Ele é um filtro de pesquisa, não uma promessa "
+        "de lucro."
+    )
+    if metrics["score_components"]:
+        components = pd.DataFrame(
+            metrics["score_components"].items(), columns=["componente", "pontos"]
+        )
+        st.dataframe(components, use_container_width=True, hide_index=True)

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     block_time INTEGER,
     status TEXT NOT NULL,
     kind TEXT NOT NULL,
+    dex TEXT,
     sol_change REAL NOT NULL DEFAULT 0,
     fee_sol REAL NOT NULL DEFAULT 0,
     token_mint TEXT,
@@ -74,6 +75,9 @@ CREATE TABLE IF NOT EXISTS price_cache (
 
 
 MIGRATIONS = {
+    "transactions": {
+        "dex": "TEXT",
+    },
     "wallets": {
         "oldest_signature": "TEXT",
     },

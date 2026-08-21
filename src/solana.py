@@ -8,6 +8,39 @@ from src.assets import QUOTE_ASSET_MINTS, STABLECOIN_MINTS, WRAPPED_SOL_MINT
 from src.config import settings
 
 LAMPORTS_PER_SOL = 1_000_000_000
+SOL_CHANGE_EPSILON = 0.000005
+
+# Program IDs are treated as evidence that a DEX/aggregator was actually invoked.
+# Balance deltas alone are not enough: exchange and custody wallets commonly move
+# several assets in one transaction without executing a swap.
+DEX_PROGRAM_LABELS = {
+    # Jupiter v4, v5, v5.1 and v6.
+    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB": "Jupiter v4",
+    "JUP5pEAZeHdHrLxh5UCwAbpjGwYKKoquCpda2hfP4u8": "Jupiter v5",
+    "JUP5cHjnnCx2DppVsufsLrXs8EBZeEZzGtEK9Gdz6ow": "Jupiter v5.1",
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter v6",
+    # Pump bonding curve and PumpSwap AMM.
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": "PumpSwap",
+    # Raydium mainnet AMMs.
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium AMM v4",
+    "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C": "Raydium CPMM",
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": "Raydium CLMM",
+    "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h": "Raydium Stable AMM",
+}
+
+DEX_LABEL_PRIORITY = (
+    "Jupiter v6",
+    "Jupiter v5.1",
+    "Jupiter v5",
+    "Jupiter v4",
+    "PumpSwap",
+    "Pump.fun",
+    "Raydium CPMM",
+    "Raydium CLMM",
+    "Raydium AMM v4",
+    "Raydium Stable AMM",
+)
 
 
 class SolanaRPCError(RuntimeError):
@@ -30,7 +63,10 @@ class SolanaClient:
             request = Request(
                 self.rpc_url,
                 data=body,
-                headers={"Content-Type": "application/json", "User-Agent": "solana-copytrader-mvp/0.1"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "solana-copytrader-mvp/0.1",
+                },
                 method="POST",
             )
             try:
@@ -42,7 +78,9 @@ class SolanaClient:
                 if attempt + 1 < max_attempts:
                     time.sleep(2 ** attempt)
         else:
-            raise SolanaRPCError(f"RPC indisponível após {max_attempts} tentativas: {last_error}") from last_error
+            raise SolanaRPCError(
+                f"RPC indisponível após {max_attempts} tentativas: {last_error}"
+            ) from last_error
         if payload.get("error"):
             raise SolanaRPCError(payload["error"].get("message", str(payload["error"])))
         return payload.get("result")
@@ -60,56 +98,172 @@ class SolanaClient:
         )
 
 
-def _account_keys(message: dict) -> list[str]:
+def _account_keys(message: dict, meta: dict | None = None) -> list[str]:
     keys = []
     for item in message.get("accountKeys", []):
-        keys.append(item.get("pubkey") if isinstance(item, dict) else item)
+        key = item.get("pubkey") if isinstance(item, dict) else item
+        if key:
+            keys.append(key)
+
+    # Compiled v0 instructions can index addresses loaded from lookup tables.
+    loaded = (meta or {}).get("loadedAddresses") or {}
+    keys.extend(loaded.get("writable") or [])
+    keys.extend(loaded.get("readonly") or loaded.get("readOnly") or [])
     return keys
+
+
+def _instruction_program_id(instruction: dict, account_keys: list[str]) -> str | None:
+    program_id = instruction.get("programId")
+    if isinstance(program_id, dict):
+        program_id = program_id.get("pubkey")
+    if isinstance(program_id, str):
+        return program_id
+
+    index = instruction.get("programIdIndex")
+    if isinstance(index, int) and 0 <= index < len(account_keys):
+        return account_keys[index]
+    return None
+
+
+def _invoked_program_ids(tx: dict, account_keys: list[str]) -> set[str]:
+    meta = tx.get("meta") or {}
+    message = (tx.get("transaction") or {}).get("message") or {}
+    instructions = list(message.get("instructions") or [])
+    for group in meta.get("innerInstructions") or []:
+        instructions.extend(group.get("instructions") or [])
+
+    program_ids = {
+        program_id
+        for instruction in instructions
+        if isinstance(instruction, dict)
+        for program_id in [_instruction_program_id(instruction, account_keys)]
+        if program_id
+    }
+
+    # Logs provide a useful fallback when an RPC omits parsed inner instructions.
+    for log in meta.get("logMessages") or []:
+        if not isinstance(log, str) or not log.startswith("Program "):
+            continue
+        parts = log.split()
+        if len(parts) >= 3 and parts[2] == "invoke":
+            program_ids.add(parts[1])
+    return program_ids
+
+
+def _detected_dex(program_ids: set[str]) -> str | None:
+    labels = {DEX_PROGRAM_LABELS[item] for item in program_ids if item in DEX_PROGRAM_LABELS}
+    return next((label for label in DEX_LABEL_PRIORITY if label in labels), None)
+
+
+def _ui_token_amount(entry: dict) -> float:
+    amount = entry.get("uiTokenAmount") or {}
+    value = amount.get("uiAmountString")
+    if value is None:
+        value = amount.get("uiAmount")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _wallet_token_changes(meta: dict, wallet: str) -> dict[str, float]:
+    before = defaultdict(float)
+    after = defaultdict(float)
+    for entry in meta.get("preTokenBalances") or []:
+        if entry.get("owner") == wallet and entry.get("mint"):
+            before[entry["mint"]] += _ui_token_amount(entry)
+    for entry in meta.get("postTokenBalances") or []:
+        if entry.get("owner") == wallet and entry.get("mint"):
+            after[entry["mint"]] += _ui_token_amount(entry)
+
+    changes = {mint: after[mint] - before[mint] for mint in before.keys() | after.keys()}
+    return {mint: value for mint, value in changes.items() if abs(value) > 1e-12}
+
+
+def _opposite_directions(first: float, second: float) -> bool:
+    return (first > 0 > second) or (first < 0 < second)
+
+
+def _swap_asset(
+    changes: dict[str, float], economic_sol_change: float
+) -> tuple[str, float] | None:
+    """Return the asset copied by paper trading only for a trade-shaped balance flow."""
+    non_quote = [(mint, value) for mint, value in changes.items() if mint not in QUOTE_ASSET_MINTS]
+    quote_values = [value for mint, value in changes.items() if mint in QUOTE_ASSET_MINTS]
+    if abs(economic_sol_change) > SOL_CHANGE_EPSILON:
+        quote_values.append(economic_sol_change)
+
+    # Most swaps are one non-quote token against SOL, WSOL, USDC or USDT.
+    if len(non_quote) == 1:
+        mint, value = non_quote[0]
+        if any(_opposite_directions(value, quote) for quote in quote_values):
+            return mint, value
+
+    # For a token-to-token route without a quote asset, copy the received token.
+    if len(non_quote) == 2 and not quote_values:
+        first, second = non_quote
+        if _opposite_directions(first[1], second[1]):
+            received = [item for item in non_quote if item[1] > 0]
+            if len(received) == 1:
+                return received[0]
+
+    # SOL/USDC and SOL/USDT swaps have no non-quote SPL token. Represent native
+    # SOL using the canonical wrapped-SOL mint and preserve the true direction.
+    stable_values = [
+        value for mint, value in changes.items() if mint in STABLECOIN_MINTS
+    ]
+    wrapped_sol_change = changes.get(WRAPPED_SOL_MINT)
+    if wrapped_sol_change is not None and any(
+        _opposite_directions(wrapped_sol_change, value) for value in stable_values
+    ):
+        return WRAPPED_SOL_MINT, wrapped_sol_change
+    if abs(economic_sol_change) > SOL_CHANGE_EPSILON and any(
+        _opposite_directions(economic_sol_change, value) for value in stable_values
+    ):
+        return WRAPPED_SOL_MINT, economic_sol_change
+    return None
+
+
+def _display_token(changes: dict[str, float]) -> tuple[str | None, float | None]:
+    non_quote = {
+        mint: value for mint, value in changes.items() if mint not in QUOTE_ASSET_MINTS
+    }
+    selected = non_quote or changes
+    return max(selected.items(), key=lambda item: abs(item[1])) if selected else (None, None)
 
 
 def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
     meta = tx.get("meta") or {}
     message = (tx.get("transaction") or {}).get("message") or {}
-    keys = _account_keys(message)
+    keys = _account_keys(message, meta)
     wallet_index = keys.index(wallet) if wallet in keys else None
     pre_balances = meta.get("preBalances") or []
     post_balances = meta.get("postBalances") or []
     sol_change = 0.0
-    if wallet_index is not None and wallet_index < len(pre_balances) and wallet_index < len(post_balances):
+    if (
+        wallet_index is not None
+        and wallet_index < len(pre_balances)
+        and wallet_index < len(post_balances)
+    ):
         sol_change = (post_balances[wallet_index] - pre_balances[wallet_index]) / LAMPORTS_PER_SOL
 
-    before = defaultdict(float)
-    after = defaultdict(float)
-    for entry in meta.get("preTokenBalances") or []:
-        if entry.get("owner") == wallet:
-            before[entry.get("mint")] += float(entry.get("uiTokenAmount", {}).get("uiAmount") or 0)
-    for entry in meta.get("postTokenBalances") or []:
-        if entry.get("owner") == wallet:
-            after[entry.get("mint")] += float(entry.get("uiTokenAmount", {}).get("uiAmount") or 0)
+    fee_sol = float(meta.get("fee") or 0) / LAMPORTS_PER_SOL
+    wallet_is_fee_payer = wallet_index == 0
+    economic_sol_change = sol_change + fee_sol if wallet_is_fee_payer else sol_change
+    changes = _wallet_token_changes(meta, wallet)
+    token_mint, token_change = _display_token(changes)
 
-    changes = {mint: after[mint] - before[mint] for mint in before.keys() | after.keys()}
-    changes = {mint: value for mint, value in changes.items() if abs(value) > 1e-12}
-    non_quote_changes = {
-        mint: value for mint, value in changes.items() if mint not in QUOTE_ASSET_MINTS
-    }
-    selected_changes = non_quote_changes or changes
-    token_mint, token_change = (
-        max(selected_changes.items(), key=lambda item: abs(item[1]))
-        if selected_changes
-        else (None, None)
-    )
-
-    # In a native SOL/stablecoin swap, track SOL as the copied asset rather than
-    # treating the stablecoin leg as the investment target.
-    if token_mint in STABLECOIN_MINTS and abs(sol_change) > 0.000005:
-        token_mint = WRAPPED_SOL_MINT
-        token_change = -sol_change
-
-    if len(changes) >= 2 or (token_change is not None and abs(sol_change) > 0.000005):
+    program_ids = _invoked_program_ids(tx, keys)
+    dex = _detected_dex(program_ids)
+    swap_asset = _swap_asset(changes, economic_sol_change) if dex else None
+    if swap_asset:
         kind = "swap"
+        token_mint, token_change = swap_asset
+    elif dex:
+        kind = "dex_activity"
     elif token_change is not None:
         kind = "token_transfer"
-    elif abs(sol_change) > 0.000005:
+    elif abs(economic_sol_change) > SOL_CHANGE_EPSILON:
         kind = "sol_transfer"
     else:
         kind = "other"
@@ -119,8 +273,9 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
         "block_time": tx.get("blockTime"),
         "status": "failed" if meta.get("err") else "success",
         "kind": kind,
+        "dex": dex,
         "sol_change": sol_change,
-        "fee_sol": float(meta.get("fee") or 0) / LAMPORTS_PER_SOL,
+        "fee_sol": fee_sol,
         "token_mint": token_mint,
         "token_change": token_change,
         "raw_json": json.dumps(tx, separators=(",", ":")),

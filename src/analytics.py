@@ -5,29 +5,67 @@ import pandas as pd
 from src.config import settings
 from src.database import rows
 
+MIN_CLOSED_TRADES_FOR_SCORE = 5
+
+
+def _bounded(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    return max(minimum, min(value, maximum))
+
+
+def calculate_wallet_score(swaps: int, frequency: float, performance: dict) -> dict:
+    closed = int(performance["closed_trades"])
+    if closed < MIN_CLOSED_TRADES_FOR_SCORE:
+        return {
+            "score": None,
+            "score_status": "insufficient_data",
+            "score_reason": (
+                f"{closed}/{MIN_CLOSED_TRADES_FOR_SCORE} trades fechados para liberar o score"
+            ),
+            "score_components": {},
+        }
+
+    components = {
+        "retorno": _bounded(performance["return_pct"] / 20) * 30,
+        "win_rate": _bounded(performance["win_rate_pct"] / 70) * 25,
+        "risco": _bounded(1 - performance["max_drawdown_pct"] / 30) * 20,
+        "amostra": _bounded(closed / 30) * 15,
+        "atividade": _bounded(swaps / 30) * 5,
+        "frequencia": _bounded(math.log1p(frequency) / math.log(6)) * 5,
+    }
+    return {
+        "score": round(sum(components.values()), 1),
+        "score_status": "ready",
+        "score_reason": f"Calculado com {closed} trades fechados",
+        "score_components": {key: round(value, 1) for key, value in components.items()},
+    }
+
 
 def wallet_metrics(address: str) -> dict:
     data = rows(
-        "SELECT * FROM transactions WHERE wallet_address=? AND status='success' ORDER BY block_time",
+        """SELECT * FROM transactions WHERE wallet_address=? AND status='success'
+        ORDER BY block_time""",
         (address,),
     )
+    performance = paper_performance(address)
     if not data:
-        return {"transactions": 0, "swaps": 0, "active_days": 0, "frequency": 0.0, "score": 0.0}
+        return {
+            "transactions": 0,
+            "swaps": 0,
+            "active_days": 0,
+            "frequency": 0.0,
+            **calculate_wallet_score(0, 0.0, performance),
+        }
     df = pd.DataFrame(data)
     df["date"] = pd.to_datetime(df["block_time"], unit="s", utc=True).dt.date
-    swaps = df[df["kind"] == "swap"]
-    active_days = max(df["date"].nunique(), 1)
-    frequency = len(swaps) / active_days
-    activity_score = min(len(swaps) / 30, 1) * 35
-    diversity_score = min(swaps["token_mint"].nunique() / 10, 1) * 20 if not swaps.empty else 0
-    success_score = min(len(df) / 50, 1) * 25
-    regularity_score = min(math.log1p(frequency) / math.log(6), 1) * 20
+    swaps = df[(df["kind"] == "swap") & df["dex"].notna()]
+    active_days = swaps["date"].nunique() if not swaps.empty else 0
+    frequency = len(swaps) / active_days if active_days else 0.0
     return {
         "transactions": len(df),
         "swaps": len(swaps),
         "active_days": active_days,
         "frequency": frequency,
-        "score": round(activity_score + diversity_score + success_score + regularity_score, 1),
+        **calculate_wallet_score(len(swaps), frequency, performance),
     }
 
 
@@ -65,5 +103,6 @@ def paper_performance(address: str) -> dict:
         "closed_trades": len(closed),
         "open_trades": sum(trade["status"] == "open" for trade in trades),
         "price_failures": sum(trade["status"] == "price_unavailable" for trade in trades),
+        "filtered_trades": sum(trade["status"] == "filtered_non_swap" for trade in trades),
         "curve": curve,
     }
