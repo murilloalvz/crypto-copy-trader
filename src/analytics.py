@@ -2,6 +2,7 @@ import math
 
 import pandas as pd
 
+from src.config import settings
 from src.database import rows
 
 
@@ -29,3 +30,40 @@ def wallet_metrics(address: str) -> dict:
         "score": round(activity_score + diversity_score + success_score + regularity_score, 1),
     }
 
+
+def paper_performance(address: str) -> dict:
+    trades = rows(
+        """SELECT id, source_block_time, side, status, simulated_usd,
+        realized_pnl_usd FROM paper_trades WHERE wallet_address=?
+        ORDER BY COALESCE(source_block_time, 0), id""",
+        (address,),
+    )
+    closed = [trade for trade in trades if trade["status"] == "closed"]
+    wins = [trade for trade in closed if (trade["realized_pnl_usd"] or 0) > 0]
+    realized_pnl = sum((trade["realized_pnl_usd"] or 0) for trade in closed)
+    equity = settings.starting_balance_usd
+    peak = equity
+    max_drawdown = 0.0
+    curve = []
+    for trade in closed:
+        equity += trade["realized_pnl_usd"] or 0
+        peak = max(peak, equity)
+        drawdown = (equity - peak) / peak * 100 if peak else 0
+        max_drawdown = min(max_drawdown, drawdown)
+        curve.append(
+            {
+                "timestamp": trade["source_block_time"],
+                "equity_usd": equity,
+                "drawdown_pct": drawdown,
+            }
+        )
+    return {
+        "realized_pnl_usd": realized_pnl,
+        "return_pct": realized_pnl / settings.starting_balance_usd * 100,
+        "win_rate_pct": len(wins) / len(closed) * 100 if closed else 0.0,
+        "max_drawdown_pct": abs(max_drawdown),
+        "closed_trades": len(closed),
+        "open_trades": sum(trade["status"] == "open" for trade in trades),
+        "price_failures": sum(trade["status"] == "price_unavailable" for trade in trades),
+        "curve": curve,
+    }

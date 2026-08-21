@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS wallets (
     label TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_signature TEXT
+    last_signature TEXT,
+    oldest_signature TEXT
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -42,10 +43,53 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     simulated_usd REAL NOT NULL,
     slippage_bps INTEGER NOT NULL,
     delay_seconds INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'simulated',
+    source_block_time INTEGER,
+    market_price_usd REAL,
+    execution_price_usd REAL,
+    token_quantity REAL,
+    fees_usd REAL,
+    realized_pnl_usd REAL,
+    price_error TEXT,
+    status TEXT NOT NULL DEFAULT 'pending_price',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS token_pool_cache (
+    token_mint TEXT PRIMARY KEY,
+    pool_address TEXT NOT NULL,
+    token_side TEXT NOT NULL,
+    reserve_usd REAL NOT NULL DEFAULT 0,
+    volume_usd_24h REAL NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS price_cache (
+    token_mint TEXT NOT NULL,
+    minute_ts INTEGER NOT NULL,
+    price_usd REAL NOT NULL,
+    pool_address TEXT NOT NULL,
+    PRIMARY KEY (token_mint, minute_ts)
+);
 """
+
+
+MIGRATIONS = {
+    "wallets": {
+        "oldest_signature": "TEXT",
+    },
+    "paper_trades": {
+        "source_block_time": "INTEGER",
+        "market_price_usd": "REAL",
+        "execution_price_usd": "REAL",
+        "token_quantity": "REAL",
+        "fees_usd": "REAL",
+        "realized_pnl_usd": "REAL",
+        "price_error": "TEXT",
+    },
+    "token_pool_cache": {
+        "volume_usd_24h": "REAL NOT NULL DEFAULT 0",
+    },
+}
 
 
 def _path() -> Path:
@@ -69,6 +113,13 @@ def connection():
 def initialize_database() -> None:
     with connection() as conn:
         conn.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            existing = {
+                row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column, column_type in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
 def add_wallet(address: str, label: str) -> None:
@@ -88,4 +139,3 @@ def remove_wallet(address: str) -> None:
 def rows(query: str, params: tuple = ()) -> list[dict]:
     with connection() as conn:
         return [dict(row) for row in conn.execute(query, params).fetchall()]
-

@@ -4,6 +4,7 @@ from collections import defaultdict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from src.assets import QUOTE_ASSET_MINTS, STABLECOIN_MINTS, WRAPPED_SOL_MINT
 from src.config import settings
 
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -46,8 +47,11 @@ class SolanaClient:
             raise SolanaRPCError(payload["error"].get("message", str(payload["error"])))
         return payload.get("result")
 
-    def signatures(self, address: str, limit: int) -> list[dict]:
-        return self.call("getSignaturesForAddress", [address, {"limit": limit}]) or []
+    def signatures(self, address: str, limit: int, before: str | None = None) -> list[dict]:
+        options = {"limit": limit}
+        if before:
+            options["before"] = before
+        return self.call("getSignaturesForAddress", [address, options]) or []
 
     def transaction(self, signature: str) -> dict | None:
         return self.call(
@@ -85,9 +89,23 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
 
     changes = {mint: after[mint] - before[mint] for mint in before.keys() | after.keys()}
     changes = {mint: value for mint, value in changes.items() if abs(value) > 1e-12}
-    token_mint, token_change = (max(changes.items(), key=lambda item: abs(item[1])) if changes else (None, None))
+    non_quote_changes = {
+        mint: value for mint, value in changes.items() if mint not in QUOTE_ASSET_MINTS
+    }
+    selected_changes = non_quote_changes or changes
+    token_mint, token_change = (
+        max(selected_changes.items(), key=lambda item: abs(item[1]))
+        if selected_changes
+        else (None, None)
+    )
 
-    if token_change is not None and abs(sol_change) > 0.000005:
+    # In a native SOL/stablecoin swap, track SOL as the copied asset rather than
+    # treating the stablecoin leg as the investment target.
+    if token_mint in STABLECOIN_MINTS and abs(sol_change) > 0.000005:
+        token_mint = WRAPPED_SOL_MINT
+        token_change = -sol_change
+
+    if len(changes) >= 2 or (token_change is not None and abs(sol_change) > 0.000005):
         kind = "swap"
     elif token_change is not None:
         kind = "token_transfer"

@@ -1,9 +1,9 @@
 import pandas as pd
 import streamlit as st
 
-from src.analytics import wallet_metrics
+from src.analytics import paper_performance, wallet_metrics
 from src.database import add_wallet, initialize_database, remove_wallet, rows
-from src.services import generate_paper_trades, sync_wallet
+from src.services import generate_paper_trades, price_paper_trades, sync_wallet
 
 st.set_page_config(page_title="Solana CopyTrader", page_icon="◎", layout="wide")
 initialize_database()
@@ -38,7 +38,7 @@ selected_label = st.selectbox("Wallet monitorada", options)
 wallet = options[selected_label]
 address = wallet["address"]
 
-sync_col, paper_col, remove_col = st.columns([1, 1, 1])
+sync_col, history_col, paper_col, remove_col = st.columns(4)
 with sync_col:
     if st.button("Sincronizar blockchain", use_container_width=True):
         try:
@@ -65,6 +65,19 @@ with sync_col:
             st.rerun()
         except Exception as exc:
             st.error(f"Falha na sincronização: {exc}")
+with history_col:
+    if st.button("Importar histórico anterior", use_container_width=True):
+        try:
+            with st.spinner("Buscando o lote anterior de transações..."):
+                result = sync_wallet(address, backfill=True)
+            st.session_state["flash"] = (
+                "success" if result["inserted"] else "info",
+                f"Histórico: {result['found']} encontradas · {result['inserted']} novas · "
+                f"{result['failed']} falhas.",
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Falha ao importar histórico: {exc}")
 with paper_col:
     if st.button("Simular novas cópias", use_container_width=True):
         created = generate_paper_trades(address)
@@ -88,7 +101,9 @@ txs = rows(
     (address,),
 )
 paper = rows(
-    """SELECT side, token_mint, simulated_usd, slippage_bps, delay_seconds, status, created_at
+    """SELECT source_block_time, side, token_mint, simulated_usd, market_price_usd,
+    execution_price_usd, token_quantity, fees_usd, realized_pnl_usd, slippage_bps,
+    delay_seconds, status, price_error
     FROM paper_trades WHERE wallet_address=? ORDER BY id DESC""",
     (address,),
 )
@@ -104,11 +119,47 @@ with tab1:
     else:
         st.info("Clique em “Sincronizar blockchain” para importar o histórico recente.")
 with tab2:
+    if st.button("Buscar preços e calcular performance", type="primary"):
+        try:
+            with st.spinner("Consultando candles históricos e reconstruindo posições FIFO..."):
+                result = price_paper_trades(address)
+            level = "warning" if result["failed"] else "success"
+            st.session_state["flash"] = (
+                level,
+                f"Preços novos: {result['priced']} · em cache: {result['cached']} · "
+                f"sem preço: {result['failed']} · vendas fechadas: {result['closed']}.",
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Falha ao calcular performance: {exc}")
+
+    performance = paper_performance(address)
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("P&L realizado", f"US$ {performance['realized_pnl_usd']:.2f}")
+    p2.metric("Retorno", f"{performance['return_pct']:.2f}%")
+    p3.metric("Win rate", f"{performance['win_rate_pct']:.1f}%")
+    p4.metric("Drawdown realizado", f"{performance['max_drawdown_pct']:.2f}%")
+    p5.metric("Trades fechados", performance["closed_trades"])
+
+    if performance["curve"]:
+        curve = pd.DataFrame(performance["curve"])
+        curve["data"] = pd.to_datetime(curve.pop("timestamp"), unit="s", utc=True)
+        st.line_chart(curve.set_index("data")["equity_usd"])
+
     if paper:
-        st.dataframe(pd.DataFrame(paper), use_container_width=True, hide_index=True)
-        st.warning("Nesta fase, a simulação registra sinais e custos. P&L confiável entra após integrar preços históricos por timestamp.")
+        paper_frame = pd.DataFrame(paper)
+        paper_frame["data"] = pd.to_datetime(
+            paper_frame.pop("source_block_time"), unit="s", utc=True, errors="coerce"
+        )
+        st.dataframe(paper_frame, use_container_width=True, hide_index=True)
+        if performance["price_failures"]:
+            st.warning(
+                f"{performance['price_failures']} operação(ões) ainda não possuem preço histórico. "
+                "Veja a coluna price_error."
+            )
     else:
         st.info("Depois da sincronização, clique em “Simular novas cópias”.")
+    st.caption("Preços on-chain fornecidos por GeckoTerminal. Powered by CoinGecko.")
 with tab3:
     st.write(
         "O score atual mede atividade, diversidade de tokens e regularidade. Ele ainda não prova "
