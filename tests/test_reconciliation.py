@@ -8,10 +8,50 @@ from unittest.mock import patch
 
 from src import database
 from src.database import add_wallet, connection, initialize_database, rows
-from src.services import reparse_wallet_transactions
+from src.services import reparse_wallet_transactions, wallet_protocol_diagnostics
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_protocol_diagnostics_separates_supported_and_unknown_programs(self):
+        wallet = "Wallet1111111111111111111111111111111111"
+        known = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+        unknown = "UnknownProgram111111111111111111111111111"
+
+        def raw(program_id: str) -> str:
+            return json.dumps(
+                {
+                    "transaction": {
+                        "message": {
+                            "accountKeys": [{"pubkey": wallet}],
+                            "instructions": [{"programId": program_id}],
+                        }
+                    },
+                    "meta": {},
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            test_settings = SimpleNamespace(
+                database_path=Path(directory) / "diagnostics.db"
+            )
+            with patch.object(database, "settings", test_settings):
+                initialize_database()
+                add_wallet(wallet, "Teste")
+                with connection() as conn:
+                    for index, program_id in enumerate((known, unknown), start=1):
+                        conn.execute(
+                            """INSERT INTO transactions
+                            (signature, wallet_address, block_time, status, kind, dex,
+                             raw_json) VALUES (?, ?, ?, 'success', 'other', NULL, ?)""",
+                            (f"sig-{index}", wallet, index, raw(program_id)),
+                        )
+
+                result = wallet_protocol_diagnostics(wallet)
+
+        self.assertEqual(result["analyzed"], 2)
+        self.assertEqual(result["supported"][0]["protocolo"], "Meteora DLMM")
+        self.assertEqual(result["unknown"][0]["program_id"], unknown)
+
     def test_existing_database_receives_dex_column(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "legacy.db"

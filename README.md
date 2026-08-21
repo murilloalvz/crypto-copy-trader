@@ -10,8 +10,10 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - sincronização via JSON-RPC da Solana;
 - persistência idempotente em SQLite;
 - confirmação de swaps por program ID e fluxo de saldos;
-- suporte inicial a Jupiter v4-v6, Raydium AMM/CPMM/CLMM e Pump.fun/PumpSwap;
+- suporte inicial a Jupiter v4-v6, Raydium AMM/CPMM/CLMM/LaunchLab/Router,
+  Pump.fun/PumpSwap, Orca Whirlpool e Meteora DLMM/DAMM/DBC;
 - separação entre swaps, atividade em DEX e transferências comuns;
+- diagnóstico dos programas encontrados quando uma wallet fica sem swaps confirmados;
 - Wallet Score financeiro apenas quando existe amostra mínima;
 - paper trades com tamanho, slippage e atraso configuráveis;
 - preços históricos por minuto via GeckoTerminal, com cache local;

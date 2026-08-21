@@ -1,10 +1,54 @@
 import json
+from collections import Counter
 
 from src.assets import STABLECOIN_MINTS
 from src.config import settings
 from src.database import connection, rows
 from src.prices import GeckoTerminalPriceProvider
-from src.solana import SolanaClient, parse_wallet_transaction
+from src.solana import (
+    DEX_PROGRAM_LABELS,
+    INFRASTRUCTURE_PROGRAM_IDS,
+    SolanaClient,
+    parse_wallet_transaction,
+    transaction_program_ids,
+)
+
+
+def wallet_protocol_diagnostics(address: str, limit: int = 500) -> dict:
+    transactions = rows(
+        """SELECT kind, dex, raw_json FROM transactions WHERE wallet_address=?
+        ORDER BY block_time DESC LIMIT ?""",
+        (address, limit),
+    )
+    supported = Counter()
+    unknown = Counter()
+    unreadable = 0
+    for item in transactions:
+        try:
+            program_ids = transaction_program_ids(json.loads(item["raw_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            unreadable += 1
+            continue
+        for program_id in program_ids:
+            label = DEX_PROGRAM_LABELS.get(program_id)
+            if label:
+                supported[(label, program_id)] += 1
+            elif program_id not in INFRASTRUCTURE_PROGRAM_IDS:
+                unknown[program_id] += 1
+
+    return {
+        "analyzed": len(transactions),
+        "unreadable": unreadable,
+        "dex_activity": sum(item["kind"] == "dex_activity" for item in transactions),
+        "supported": [
+            {"protocolo": label, "program_id": program_id, "transações": count}
+            for (label, program_id), count in supported.most_common()
+        ],
+        "unknown": [
+            {"program_id": program_id, "transações": count}
+            for program_id, count in unknown.most_common(12)
+        ],
+    }
 
 
 def reparse_wallet_transactions(address: str) -> int:

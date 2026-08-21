@@ -33,6 +33,29 @@ DEX_PROGRAM_LABELS = {
     "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C": "Raydium CPMM",
     "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": "Raydium CLMM",
     "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h": "Raydium Stable AMM",
+    "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj": "Raydium LaunchLab",
+    "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS": "Raydium Router",
+    # Orca concentrated-liquidity pools.
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca Whirlpool",
+    # Meteora current and legacy swap surfaces.
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo": "Meteora DLMM",
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB": "Meteora DAMM v1",
+    "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG": "Meteora DAMM v2",
+    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN": "Meteora DBC",
+}
+
+INFRASTRUCTURE_PROGRAM_IDS = {
+    "11111111111111111111111111111111",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "AddressLookupTab1e1111111111111111111111111",
+    "BPFLoaderUpgradeab1e11111111111111111111111",
+    "ComputeBudget111111111111111111111111111111",
+    "Ed25519SigVerify111111111111111111111111111",
+    "KeccakSecp256k11111111111111111111111111111",
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV",
 }
 
 DEX_LABEL_PRIORITY = (
@@ -46,6 +69,13 @@ DEX_LABEL_PRIORITY = (
     "Raydium CLMM",
     "Raydium AMM v4",
     "Raydium Stable AMM",
+    "Raydium LaunchLab",
+    "Raydium Router",
+    "Orca Whirlpool",
+    "Meteora DLMM",
+    "Meteora DAMM v2",
+    "Meteora DAMM v1",
+    "Meteora DBC",
 )
 
 
@@ -234,6 +264,13 @@ def _detected_dex(program_ids: set[str]) -> str | None:
     return next((label for label in DEX_LABEL_PRIORITY if label in labels), None)
 
 
+def transaction_program_ids(tx: dict) -> set[str]:
+    """Return every program invoked by a parsed RPC transaction."""
+    meta = tx.get("meta") or {}
+    message = (tx.get("transaction") or {}).get("message") or {}
+    return _invoked_program_ids(tx, _account_keys(message, meta))
+
+
 def _ui_token_amount(entry: dict) -> float:
     amount = entry.get("uiTokenAmount") or {}
     value = amount.get("uiAmountString")
@@ -278,13 +315,23 @@ def _swap_asset(
         if any(_opposite_directions(value, quote) for quote in quote_values):
             return mint, value
 
+    # Routers can leave more than one non-quote balance delta. Accept the flow
+    # only when exactly one asset moves against the net quote direction.
+    if quote_values and len(non_quote) > 1:
+        directional = [
+            item
+            for item in non_quote
+            if any(_opposite_directions(item[1], quote) for quote in quote_values)
+        ]
+        if len(directional) == 1:
+            return directional[0]
+
     # For a token-to-token route without a quote asset, copy the received token.
-    if len(non_quote) == 2 and not quote_values:
-        first, second = non_quote
-        if _opposite_directions(first[1], second[1]):
-            received = [item for item in non_quote if item[1] > 0]
-            if len(received) == 1:
-                return received[0]
+    if len(non_quote) >= 2 and not quote_values:
+        received = [item for item in non_quote if item[1] > 0]
+        spent = [item for item in non_quote if item[1] < 0]
+        if len(received) == 1 and spent:
+            return received[0]
 
     # SOL/USDC and SOL/USDT swaps have no non-quote SPL token. Represent native
     # SOL using the canonical wrapped-SOL mint and preserve the true direction.
@@ -332,7 +379,7 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
     changes = _wallet_token_changes(meta, wallet)
     token_mint, token_change = _display_token(changes)
 
-    program_ids = _invoked_program_ids(tx, keys)
+    program_ids = transaction_program_ids(tx)
     dex = _detected_dex(program_ids)
     swap_asset = _swap_asset(changes, economic_sol_change) if dex else None
     if swap_asset:

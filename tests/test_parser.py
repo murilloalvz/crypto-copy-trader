@@ -9,6 +9,11 @@ RAYDIUM_CPMM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
 PUMP = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_SWAP = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 MEME = "MemeTokenMint"
+OTHER = "OtherTokenMint"
+METEORA_DLMM = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+METEORA_DAMM_V2 = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
+ORCA_WHIRLPOOL = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+RAYDIUM_LAUNCHLAB = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"
 
 
 def _token_balance(mint: str, amount: float | str) -> dict:
@@ -49,6 +54,51 @@ def _transaction(
 
 
 class ParserTests(unittest.TestCase):
+    def test_current_dex_programs_are_recognized(self):
+        programs = {
+            METEORA_DLMM: "Meteora DLMM",
+            METEORA_DAMM_V2: "Meteora DAMM v2",
+            ORCA_WHIRLPOOL: "Orca Whirlpool",
+            RAYDIUM_LAUNCHLAB: "Raydium LaunchLab",
+        }
+        for program_id, expected_label in programs.items():
+            with self.subTest(program_id=program_id):
+                tx = _transaction(
+                    program_id=program_id,
+                    pre_tokens=[_token_balance(USDC_MINT, 25)],
+                    post_tokens=[
+                        _token_balance(USDC_MINT, 0),
+                        _token_balance(MEME, 100),
+                    ],
+                    post_lamports=1_999_995_000,
+                )
+
+                result = parse_wallet_transaction(WALLET, "current-dex", tx)
+
+                self.assertEqual(result["kind"], "swap")
+                self.assertEqual(result["dex"], expected_label)
+
+    def test_router_accepts_one_asset_opposite_to_quote_with_extra_delta(self):
+        tx = _transaction(
+            program_id=METEORA_DLMM,
+            pre_tokens=[
+                _token_balance(USDC_MINT, 25),
+                _token_balance(OTHER, 2),
+            ],
+            post_tokens=[
+                _token_balance(USDC_MINT, 0),
+                _token_balance(MEME, 100),
+                _token_balance(OTHER, 1),
+            ],
+            post_lamports=1_999_995_000,
+        )
+
+        result = parse_wallet_transaction(WALLET, "complex-route", tx)
+
+        self.assertEqual(result["kind"], "swap")
+        self.assertEqual(result["token_mint"], MEME)
+        self.assertEqual(result["token_change"], 100)
+
     def test_jupiter_swap_requires_program_evidence_and_balance_flow(self):
         tx = _transaction(
             program_id=JUPITER_V6,

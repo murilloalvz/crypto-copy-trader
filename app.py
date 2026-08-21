@@ -14,6 +14,7 @@ from src.services import (
     price_paper_trades,
     reparse_wallet_transactions,
     sync_wallet,
+    wallet_protocol_diagnostics,
 )
 
 st.set_page_config(page_title="Solana CopyTrader", page_icon="◎", layout="wide")
@@ -176,6 +177,41 @@ c1.caption(metrics["score_reason"])
 c2.metric("Transações", metrics["transactions"])
 c3.metric("Swaps confirmados", metrics["swaps"])
 c4.metric("Swaps/dia ativo", f"{metrics['frequency']:.2f}")
+
+if metrics["transactions"] and not metrics["swaps"]:
+    diagnostics = wallet_protocol_diagnostics(address)
+    with st.expander("Por que nenhum swap foi detectado?", expanded=True):
+        st.write(
+            f"Foram analisadas {diagnostics['analyzed']} transações armazenadas. "
+            "O parser só confirma um swap quando encontra uma DEX conhecida e um fluxo "
+            "de saldos compatível com compra ou venda."
+        )
+        if diagnostics["supported"]:
+            st.write("**Protocolos suportados encontrados:**")
+            st.dataframe(
+                pd.DataFrame(diagnostics["supported"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.info(
+                "A DEX apareceu, mas o fluxo de saldos não parecia um swap simples. "
+                "Pode ser liquidez, roteamento complexo ou outra atividade do protocolo."
+            )
+        else:
+            st.warning(
+                "Nenhuma DEX suportada apareceu nessas transações. Isso não prova que a "
+                "wallet nunca fez swaps; ela pode usar outro protocolo ou um histórico mais antigo."
+            )
+        if diagnostics["unknown"]:
+            st.write("**Programas ainda não reconhecidos mais frequentes:**")
+            st.dataframe(
+                pd.DataFrame(diagnostics["unknown"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "Esses IDs ajudam a identificar qual integração precisa ser adicionada ao parser."
+            )
 
 txs = rows(
     """SELECT block_time, kind, dex, status, sol_change, fee_sol, token_mint,
