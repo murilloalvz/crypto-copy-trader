@@ -144,7 +144,11 @@ with tab1:
     else:
         st.info("Clique em “Sincronizar blockchain” para importar o histórico recente.")
 with tab2:
-    if st.button("Buscar preços e calcular performance", type="primary"):
+    if st.button(
+        "Buscar preços e calcular performance",
+        type="primary",
+        disabled=not bool(paper),
+    ):
         try:
             with st.spinner("Consultando candles históricos e reconstruindo posições FIFO..."):
                 result = price_paper_trades(address)
@@ -190,7 +194,20 @@ with tab2:
                 "Veja a coluna price_error."
             )
     else:
-        st.info("Depois da sincronização, clique em “Simular novas cópias”.")
+        if metrics["swaps"]:
+            st.info(
+                "Existem swaps confirmados nesta wallet. Clique em “Simular novas cópias” "
+                "para criar as operações de paper trading."
+            )
+        elif txs:
+            st.info(
+                "Esta wallet possui transações, mas nenhum swap confirmado por uma DEX "
+                "suportada. Não há operações para simular; teste uma wallet de trader."
+            )
+        else:
+            st.info(
+                "Clique em “Sincronizar blockchain” para buscar as transações da wallet."
+            )
     st.caption("Preços on-chain fornecidos por GeckoTerminal. Powered by CoinGecko.")
 with tab3:
     st.write(
