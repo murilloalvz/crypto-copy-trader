@@ -20,6 +20,21 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - importação paginada de lotes anteriores do histórico;
 - dashboard Streamlit.
 
+## Modo demonstração offline
+
+Se a rede bloquear os RPCs da Solana, ative `Modo demonstração offline` na barra
+lateral. O app cria automaticamente uma wallet de demonstração e não faz nenhuma
+requisição externa.
+
+1. Clique em `Carregar dados offline` para importar 10 transações sintéticas.
+2. Clique em `Simular novas cópias` para criar os paper trades.
+3. Abra `Paper trading` e clique em `Aplicar preços sintéticos e calcular`.
+
+Esse fluxo passa pelo mesmo parser, banco SQLite, posições FIFO, P&L e Wallet Score do
+modo normal. As cinco compras e cinco vendas, os tokens e os preços são inteiramente
+sintéticos e aparecem identificados no dashboard. Eles servem para validar o software,
+não para avaliar uma wallet ou estratégia real.
+
 ## Instalação no Windows
 
 Requer Python 3.11 ou 3.12.
@@ -85,6 +100,7 @@ para pesquisar e validar wallets de traders em vez de carteiras de corretoras.
 
 ```text
 app.py                 dashboard
+src/demo.py            transações e preços sintéticos do modo offline
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading

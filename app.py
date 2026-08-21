@@ -3,6 +3,12 @@ import streamlit as st
 
 from src.analytics import paper_performance, wallet_metrics
 from src.database import add_wallet, initialize_database, remove_wallet, rows
+from src.demo import (
+    DEMO_WALLET_ADDRESS,
+    DEMO_WALLET_LABEL,
+    DemoPriceProvider,
+    DemoSolanaClient,
+)
 from src.services import (
     generate_paper_trades,
     price_paper_trades,
@@ -22,18 +28,48 @@ if flash:
     getattr(st, level)(message)
 
 with st.sidebar:
-    st.header("Adicionar wallet")
-    label = st.text_input("Nome", placeholder="Ex.: Trader 01")
-    address = st.text_input("Endereço público Solana")
-    if st.button("Adicionar", use_container_width=True, type="primary"):
-        if 32 <= len(address.strip()) <= 44:
-            add_wallet(address, label)
-            st.session_state["flash"] = ("success", "Wallet adicionada.")
-            st.rerun()
-        else:
-            st.error("O endereço informado não parece ser uma wallet Solana válida.")
+    st.header("Modo de execução")
+    demo_mode = st.toggle(
+        "Modo demonstração offline",
+        help="Usa somente dados e preços sintéticos salvos no app.",
+    )
+    if demo_mode:
+        st.info(
+            "Não usa internet, RPC ou blockchain. Os resultados servem apenas "
+            "para testar o funcionamento do sistema."
+        )
+        st.markdown(
+            "**Ordem do teste**\n\n"
+            "1. Carregar dados offline\n"
+            "2. Simular novas cópias\n"
+            "3. Aplicar preços na aba Paper trading"
+        )
+    else:
+        st.header("Adicionar wallet")
+        label = st.text_input("Nome", placeholder="Ex.: Trader 01")
+        new_address = st.text_input("Endereço público Solana")
+        if st.button("Adicionar", use_container_width=True, type="primary"):
+            if 32 <= len(new_address.strip()) <= 44:
+                add_wallet(new_address, label)
+                st.session_state["flash"] = ("success", "Wallet adicionada.")
+                st.rerun()
+            else:
+                st.error("O endereço informado não parece ser uma wallet Solana válida.")
 
-wallets = rows("SELECT * FROM wallets WHERE enabled=1 ORDER BY created_at DESC")
+if demo_mode:
+    add_wallet(DEMO_WALLET_ADDRESS, DEMO_WALLET_LABEL)
+    st.warning(
+        "MODO DEMONSTRAÇÃO OFFLINE — todas as transações e todos os preços são "
+        "sintéticos. Nenhum dado abaixo veio da blockchain."
+    )
+
+if demo_mode:
+    wallets = rows("SELECT * FROM wallets WHERE address=?", (DEMO_WALLET_ADDRESS,))
+else:
+    wallets = rows(
+        "SELECT * FROM wallets WHERE enabled=1 AND address!=? ORDER BY created_at DESC",
+        (DEMO_WALLET_ADDRESS,),
+    )
 if not wallets:
     st.info("Adicione uma wallet pública na barra lateral para começar.")
     st.stop()
@@ -42,7 +78,7 @@ options = {
     f"{wallet['label']} · {wallet['address'][:6]}…{wallet['address'][-4:]}": wallet
     for wallet in wallets
 }
-selected_label = st.selectbox("Wallet monitorada", options)
+selected_label = st.selectbox("Wallet monitorada", options, disabled=demo_mode)
 wallet = options[selected_label]
 address = wallet["address"]
 
@@ -52,11 +88,25 @@ reparse_wallet_transactions(address)
 
 sync_col, history_col, paper_col, remove_col = st.columns(4)
 with sync_col:
-    if st.button("Sincronizar blockchain", use_container_width=True):
+    sync_label = "Carregar dados offline" if demo_mode else "Sincronizar blockchain"
+    if st.button(sync_label, use_container_width=True):
         try:
-            with st.spinner("Buscando transações no RPC Solana..."):
-                result = sync_wallet(address)
-            if result["found"] == 0:
+            spinner = (
+                "Carregando transações sintéticas locais..."
+                if demo_mode
+                else "Buscando transações no RPC Solana..."
+            )
+            with st.spinner(spinner):
+                client = DemoSolanaClient() if demo_mode else None
+                result = sync_wallet(address, client=client)
+            if demo_mode:
+                st.session_state["flash"] = (
+                    "success",
+                    f"Demonstração carregada: {result['found']} transações sintéticas · "
+                    f"{result['inserted']} novas · {result['skipped']} já existentes. "
+                    "Nenhuma conexão externa foi usada.",
+                )
+            elif result["found"] == 0:
                 st.session_state["flash"] = (
                     "warning",
                     "O RPC respondeu, mas não encontrou transações para este endereço. "
@@ -80,7 +130,8 @@ with sync_col:
         except Exception as exc:
             st.error(f"Falha na sincronização: {exc}")
 with history_col:
-    if st.button("Importar histórico anterior", use_container_width=True):
+    history_label = "Histórico já incluso" if demo_mode else "Importar histórico anterior"
+    if st.button(history_label, use_container_width=True, disabled=demo_mode):
         try:
             with st.spinner("Buscando o lote anterior de transações..."):
                 result = sync_wallet(address, backfill=True)
@@ -95,17 +146,23 @@ with history_col:
 with paper_col:
     if st.button("Simular novas cópias", use_container_width=True):
         created = generate_paper_trades(address)
+        if demo_mode and not created:
+            empty_message = (
+                "As operações da demonstração já existem; nenhuma duplicata foi criada."
+            )
+        else:
+            empty_message = "Nenhum swap novo confirmado por uma DEX suportada."
         st.session_state["flash"] = (
             "success" if created else "info",
             (
                 f"{created} operações simuladas criadas."
                 if created
-                else "Nenhum swap novo confirmado por uma DEX suportada."
+                else empty_message
             ),
         )
         st.rerun()
 with remove_col:
-    if st.button("Remover da lista", use_container_width=True):
+    if st.button("Remover da lista", use_container_width=True, disabled=demo_mode):
         remove_wallet(address)
         st.rerun()
 
@@ -144,16 +201,28 @@ with tab1:
         frame["assinatura"] = frame.pop("signature").str.slice(0, 12) + "…"
         st.dataframe(frame, use_container_width=True, hide_index=True)
     else:
-        st.info("Clique em “Sincronizar blockchain” para importar o histórico recente.")
+        action = "Carregar dados offline" if demo_mode else "Sincronizar blockchain"
+        st.info(f"Clique em “{action}” para importar o histórico recente.")
 with tab2:
+    price_button_label = (
+        "Aplicar preços sintéticos e calcular"
+        if demo_mode
+        else "Buscar preços e calcular performance"
+    )
     if st.button(
-        "Buscar preços e calcular performance",
+        price_button_label,
         type="primary",
         disabled=not bool(paper),
     ):
         try:
-            with st.spinner("Consultando candles históricos e reconstruindo posições FIFO..."):
-                result = price_paper_trades(address)
+            spinner = (
+                "Aplicando preços sintéticos e reconstruindo posições FIFO..."
+                if demo_mode
+                else "Consultando candles históricos e reconstruindo posições FIFO..."
+            )
+            with st.spinner(spinner):
+                provider = DemoPriceProvider() if demo_mode else None
+                result = price_paper_trades(address, provider=provider)
             level = "warning" if result["failed"] else "success"
             st.session_state["flash"] = (
                 level,
@@ -207,10 +276,16 @@ with tab2:
                 "suportada. Não há operações para simular; teste uma wallet de trader."
             )
         else:
+            action = "Carregar dados offline" if demo_mode else "Sincronizar blockchain"
             st.info(
-                "Clique em “Sincronizar blockchain” para buscar as transações da wallet."
+                f"Clique em “{action}” para buscar as transações da wallet."
             )
-    st.caption("Preços on-chain fornecidos por GeckoTerminal. Powered by CoinGecko.")
+    if demo_mode:
+        st.caption(
+            "Preços sintéticos locais — somente demonstração; não são cotações de mercado."
+        )
+    else:
+        st.caption("Preços on-chain fornecidos por GeckoTerminal. Powered by CoinGecko.")
 with tab3:
     st.write(
         "O Wallet Score só é liberado após pelo menos 5 trades completos de compra e venda. "
