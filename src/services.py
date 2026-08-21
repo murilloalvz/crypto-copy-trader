@@ -6,7 +6,8 @@ from src.solana import SolanaClient, parse_wallet_transaction
 def sync_wallet(address: str, client: SolanaClient | None = None) -> dict:
     client = client or SolanaClient()
     signatures = client.signatures(address, settings.max_signatures)
-    inserted = skipped = 0
+    inserted = skipped = failed = 0
+    first_error = None
     with connection() as conn:
         known = {
             row["signature"]
@@ -19,26 +20,36 @@ def sync_wallet(address: str, client: SolanaClient | None = None) -> dict:
         if signature in known:
             skipped += 1
             continue
-        tx = client.transaction(signature)
-        if not tx:
-            skipped += 1
-            continue
-        parsed = parse_wallet_transaction(address, signature, tx)
-        with connection() as conn:
-            conn.execute(
-                """INSERT OR IGNORE INTO transactions
-                (signature, wallet_address, block_time, status, kind, sol_change, fee_sol,
-                 token_mint, token_change, raw_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    parsed["signature"], address, parsed["block_time"], parsed["status"],
-                    parsed["kind"], parsed["sol_change"], parsed["fee_sol"],
-                    parsed["token_mint"], parsed["token_change"], parsed["raw_json"],
-                ),
-            )
-            conn.execute("UPDATE wallets SET last_signature=? WHERE address=?", (signature, address))
-        inserted += 1
-    return {"found": len(signatures), "inserted": inserted, "skipped": skipped}
+        try:
+            tx = client.transaction(signature)
+            if not tx:
+                skipped += 1
+                continue
+            parsed = parse_wallet_transaction(address, signature, tx)
+            with connection() as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO transactions
+                    (signature, wallet_address, block_time, status, kind, sol_change, fee_sol,
+                     token_mint, token_change, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        parsed["signature"], address, parsed["block_time"], parsed["status"],
+                        parsed["kind"], parsed["sol_change"], parsed["fee_sol"],
+                        parsed["token_mint"], parsed["token_change"], parsed["raw_json"],
+                    ),
+                )
+                conn.execute("UPDATE wallets SET last_signature=? WHERE address=?", (signature, address))
+            inserted += cursor.rowcount
+        except Exception as exc:
+            failed += 1
+            first_error = first_error or str(exc)
+    return {
+        "found": len(signatures),
+        "inserted": inserted,
+        "skipped": skipped,
+        "failed": failed,
+        "first_error": first_error,
+    }
 
 
 def generate_paper_trades(address: str) -> int:
@@ -64,4 +75,3 @@ def generate_paper_trades(address: str) -> int:
             )
             created += cursor.rowcount
     return created
-

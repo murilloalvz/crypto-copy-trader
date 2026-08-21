@@ -1,4 +1,5 @@
 import json
+import time
 from collections import defaultdict
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,22 +19,29 @@ class SolanaClient:
         self.timeout = timeout
         self._request_id = 0
 
-    def call(self, method: str, params: list):
-        self._request_id += 1
-        body = json.dumps(
-            {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
-        ).encode("utf-8")
-        request = Request(
-            self.rpc_url,
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "solana-copytrader-mvp/0.1"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError) as exc:
-            raise SolanaRPCError(f"RPC indisponível: {exc}") from exc
+    def call(self, method: str, params: list, max_attempts: int = 3):
+        last_error = None
+        for attempt in range(max_attempts):
+            self._request_id += 1
+            body = json.dumps(
+                {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
+            ).encode("utf-8")
+            request = Request(
+                self.rpc_url,
+                data=body,
+                headers={"Content-Type": "application/json", "User-Agent": "solana-copytrader-mvp/0.1"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except (HTTPError, URLError, TimeoutError) as exc:
+                last_error = exc
+                if attempt + 1 < max_attempts:
+                    time.sleep(2 ** attempt)
+        else:
+            raise SolanaRPCError(f"RPC indisponível após {max_attempts} tentativas: {last_error}") from last_error
         if payload.get("error"):
             raise SolanaRPCError(payload["error"].get("message", str(payload["error"])))
         return payload.get("result")

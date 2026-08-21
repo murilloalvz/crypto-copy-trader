@@ -11,6 +11,11 @@ initialize_database()
 st.title("Solana CopyTrader")
 st.caption("Monitoramento on-chain e paper trading — nenhuma ordem real é enviada.")
 
+flash = st.session_state.pop("flash", None)
+if flash:
+    level, message = flash
+    getattr(st, level)(message)
+
 with st.sidebar:
     st.header("Adicionar wallet")
     label = st.text_input("Nome", placeholder="Ex.: Trader 01")
@@ -18,7 +23,7 @@ with st.sidebar:
     if st.button("Adicionar", use_container_width=True, type="primary"):
         if 32 <= len(address.strip()) <= 44:
             add_wallet(address, label)
-            st.success("Wallet adicionada.")
+            st.session_state["flash"] = ("success", "Wallet adicionada.")
             st.rerun()
         else:
             st.error("O endereço informado não parece ser uma wallet Solana válida.")
@@ -39,14 +44,31 @@ with sync_col:
         try:
             with st.spinner("Buscando transações no RPC Solana..."):
                 result = sync_wallet(address)
-            st.success(f"{result['inserted']} novas de {result['found']} encontradas.")
+            if result["found"] == 0:
+                st.session_state["flash"] = (
+                    "warning",
+                    "O RPC respondeu, mas não encontrou transações para este endereço. "
+                    "Confira se a wallet selecionada é a correta.",
+                )
+            elif result["failed"]:
+                st.session_state["flash"] = (
+                    "warning",
+                    f"Encontradas: {result['found']} · importadas: {result['inserted']} · "
+                    f"falhas do RPC: {result['failed']}. Primeira falha: {result['first_error']}",
+                )
+            else:
+                st.session_state["flash"] = (
+                    "success",
+                    f"Encontradas: {result['found']} · novas importadas: {result['inserted']} · "
+                    f"já existentes/ignoradas: {result['skipped']}.",
+                )
             st.rerun()
         except Exception as exc:
             st.error(f"Falha na sincronização: {exc}")
 with paper_col:
     if st.button("Simular novas cópias", use_container_width=True):
         created = generate_paper_trades(address)
-        st.success(f"{created} operações simuladas criadas.")
+        st.session_state["flash"] = ("success", f"{created} operações simuladas criadas.")
         st.rerun()
 with remove_col:
     if st.button("Remover da lista", use_container_width=True):
@@ -92,4 +114,3 @@ with tab3:
         "O score atual mede atividade, diversidade de tokens e regularidade. Ele ainda não prova "
         "rentabilidade. P&L, win rate e drawdown serão adicionados com preços históricos confiáveis."
     )
-
