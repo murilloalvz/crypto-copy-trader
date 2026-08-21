@@ -26,6 +26,7 @@ class Settings:
     copy_size_usd: float = float(getenv("COPY_SIZE_USD", "25"))
     slippage_bps: int = int(getenv("SLIPPAGE_BPS", "100"))
     copy_delay_seconds: int = int(getenv("COPY_DELAY_SECONDS", "15"))
+    birdeye_api_key: str = getenv("BIRDEYE_API_KEY", "").strip()
 
 
 settings = Settings()
