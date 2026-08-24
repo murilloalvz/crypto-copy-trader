@@ -214,6 +214,7 @@ class SolanaTrackerDiscoveryService:
 
         inputs = []
         data_errors: dict[str, str] = {}
+        evaluated_histories = 0
         for current, (rank, snapshot) in enumerate(prefiltered, start=1):
             self._notify("history", current, len(prefiltered), snapshot.address)
             try:
@@ -221,6 +222,7 @@ class SolanaTrackerDiscoveryService:
             except SolanaTrackerError as exc:
                 data_errors[snapshot.address] = str(exc)
                 continue
+            evaluated_histories += 1
             metrics_7d = _history_metrics(history, self.now.date(), 7)
             recent_reasons = filter_recent(metrics_7d, self.policy)
             if recent_reasons:
@@ -257,7 +259,7 @@ class SolanaTrackerDiscoveryService:
             source_count=len(snapshots),
             prefiltered_count=len(prefiltered),
             enriched_30d_count=len(inputs),
-            fully_evaluated_count=len(inputs),
+            fully_evaluated_count=evaluated_histories,
             candidates=tuple(ranked),
             rejected_by_reason=dict(sorted(rejected.items())),
             data_errors=data_errors,

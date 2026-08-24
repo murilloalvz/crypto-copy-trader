@@ -140,6 +140,7 @@ class TrackerDiscoveryTests(unittest.TestCase):
         report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(50)
 
         self.assertEqual(report.passed_count, 0)
+        self.assertEqual(report.fully_evaluated_count, 1)
         self.assertEqual(report.rejected_by_reason["avg_hold_too_short"], 1)
 
     def test_score_includes_drawdown_and_concentration_penalty(self):
