@@ -150,3 +150,31 @@ class CandidateSignals:
     single_token_profit_cap_pct: float
     arbitrage_excluded: bool
     strict_pnl_mode: bool
+
+
+@dataclass(frozen=True)
+class TokenPosition:
+    """One documented Solana Tracker wallet position used for marketability checks."""
+
+    token: str
+    symbol: str | None
+    realized_pnl_usd: float
+    invested_usd: float
+    roi_pct: float
+    trades: int
+    average_buy_usd: float | None
+    hold_time_seconds: float | None
+    last_trade_ms: int | None
+    liquidity_usd: float | None
+    market_cap_usd: float | None
+    primary_market: str | None
+
+
+@dataclass(frozen=True)
+class WalletPositions:
+    """Recent token positions returned by the read-only PnL V2 endpoint."""
+
+    address: str
+    positions: tuple[TokenPosition, ...]
+    total_available: int
+    pnl_mode: str

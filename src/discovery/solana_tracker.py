@@ -8,7 +8,13 @@ from urllib.request import Request, urlopen
 
 from src.config import settings
 from src.discovery.birdeye import is_solana_address
-from src.discovery.models import DailyWalletActivity, TraderSnapshot, WalletHistory
+from src.discovery.models import (
+    DailyWalletActivity,
+    TokenPosition,
+    TraderSnapshot,
+    WalletHistory,
+    WalletPositions,
+)
 
 SOLANA_TRACKER_BASE_URL = "https://data.solanatracker.io"
 
@@ -45,6 +51,10 @@ def _integer(value, default: int = 0) -> int:
 
 def _optional_integer(value) -> int | None:
     return None if value is None else _integer(value)
+
+
+def _optional_number(value) -> float | None:
+    return None if value is None else _number(value)
 
 
 def _tls12_context() -> ssl.SSLContext:
@@ -308,3 +318,67 @@ class SolanaTrackerClient:
                 )
             )
         return WalletHistory(address=address, days=tuple(sorted(activities, key=lambda day: day.date)))
+
+    def wallet_positions(
+        self,
+        address: str,
+        *,
+        period: str = "30d",
+        limit: int = 50,
+    ) -> WalletPositions:
+        """Return recent positions and current token liquidity without writing locally."""
+        if not is_solana_address(address):
+            raise ValueError("endereço público Solana inválido")
+        if period not in {"1d", "7d", "14d", "30d", "90d", "all"}:
+            raise ValueError("período inválido para as posições da wallet")
+        if not 1 <= limit <= 200:
+            raise ValueError("limit precisa estar entre 1 e 200")
+        payload = self._request(
+            f"/v2/pnl/wallets/{address}/positions",
+            {
+                "pnlMode": "strict",
+                "sort": "last_trade",
+                "direction": "desc",
+                "period": period,
+                "filter": "all",
+                "limit": limit,
+            },
+        )
+        positions = []
+        for item in payload.get("positions") or []:
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("token") or "")
+            if not is_solana_address(token):
+                continue
+            meta = item.get("meta") or {}
+            counts = item.get("counts") or {}
+            timing = item.get("timing") or {}
+            averages = item.get("averages") or {}
+            positions.append(
+                TokenPosition(
+                    token=token,
+                    symbol=str(meta["symbol"]) if meta.get("symbol") else None,
+                    realized_pnl_usd=_number((item.get("pnl") or {}).get("realized")),
+                    invested_usd=_number(item.get("invested")),
+                    roi_pct=_number(item.get("roi")),
+                    trades=_integer(counts.get("total")),
+                    average_buy_usd=_optional_number(averages.get("buy")),
+                    hold_time_seconds=_optional_number(timing.get("holdTimeSecs")),
+                    last_trade_ms=_optional_integer(timing.get("lastTrade")),
+                    liquidity_usd=_optional_number(meta.get("liquidity")),
+                    market_cap_usd=_optional_number(meta.get("marketCap")),
+                    primary_market=(
+                        str(meta["primaryMarket"])
+                        if meta.get("primaryMarket")
+                        else None
+                    ),
+                )
+            )
+        pagination = payload.get("pagination") or {}
+        return WalletPositions(
+            address=address,
+            positions=tuple(positions),
+            total_available=_integer(pagination.get("total"), len(positions)),
+            pnl_mode=str(pagination.get("pnlMode") or "strict"),
+        )

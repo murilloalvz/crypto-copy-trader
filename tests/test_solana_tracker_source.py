@@ -120,6 +120,47 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertEqual(history.days[0].realized_pnl_usd, 750)
         self.assertEqual(history.days[0].avg_hold_seconds, 3600)
 
+    @patch("src.discovery.solana_tracker.urlopen")
+    def test_wallet_positions_maps_documented_liquidity_fields(self, mocked_urlopen):
+        token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
+        mocked_urlopen.return_value = FakeResponse(
+            {
+                "wallet": WALLET_A,
+                "positions": [
+                    {
+                        "token": token,
+                        "pnl": {"realized": 1_250},
+                        "invested": 2_500,
+                        "roi": 50,
+                        "averages": {"buy": 125},
+                        "counts": {"total": 20},
+                        "timing": {"lastTrade": 1_770_000_000_000, "holdTimeSecs": 3_600},
+                        "meta": {
+                            "symbol": "TEST",
+                            "liquidity": 175_000,
+                            "marketCap": 2_000_000,
+                            "primaryMarket": "pumpfun-amm",
+                        },
+                    }
+                ],
+                "pagination": {"total": 18, "pnlMode": "strict"},
+            }
+        )
+
+        result = self.client().wallet_positions(WALLET_A, period="30d", limit=25)
+
+        self.assertEqual(result.address, WALLET_A)
+        self.assertEqual(result.total_available, 18)
+        self.assertEqual(result.pnl_mode, "strict")
+        self.assertEqual(result.positions[0].token, token)
+        self.assertEqual(result.positions[0].liquidity_usd, 175_000)
+        self.assertEqual(result.positions[0].average_buy_usd, 125)
+        request_url = mocked_urlopen.call_args.args[0].full_url
+        self.assertIn("period=30d", request_url)
+        self.assertIn("sort=last_trade", request_url)
+        self.assertIn("pnlMode=strict", request_url)
+        self.assertIn("limit=25", request_url)
+
 
 if __name__ == "__main__":
     unittest.main()
