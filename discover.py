@@ -22,7 +22,7 @@ def _duration(seconds: float | None) -> str:
     if seconds is None:
         return "indisponível"
     if seconds < 60:
-        return f"{seconds:.0f}s"
+        return "<1s" if seconds < 1 else f"{seconds:.0f}s"
     if seconds < 3_600:
         return f"{seconds / 60:.1f}min"
     return f"{seconds / 3_600:.1f}h"
@@ -34,7 +34,7 @@ def format_report(report, top_n: int = 10) -> str:
         "",
         "Fonte: Solana Tracker PnL V2 | Rede: Solana | Janela principal: 30d",
         "Amostra: leaderboards de PnL, ROI e win rate combinados sem duplicatas.",
-        "Proteções da fonte: arbitragem excluída, PnL estrito e no máximo 50% do lucro por token.",
+        "Proteções da fonte: arbitragem excluída, PnL estrito e no máximo 30% do lucro por token.",
         "",
         f"Wallets analisadas: {report.source_count}",
         f"Passaram pelos filtros locais: {report.prefiltered_count}",
@@ -65,6 +65,7 @@ def format_report(report, top_n: int = 10) -> str:
                 f"Candidate Score: {candidate.candidate_score:.1f}/100",
                 f"PnL realizado 30d: US$ {_money(metrics.realized_pnl_usd)}",
                 f"ROI 30d: {metrics.roi_pct:+.1f}% | Win rate: {metrics.win_rate_pct:.1f}%",
+                f"Capital investido 30d: US$ {_money(metrics.total_invested_usd)}",
                 f"Trades: {metrics.total_trade} | Tokens: {metrics.unique_tokens}",
                 (
                     f"PnL 7d/90d: US$ {_money(candidate.metrics_7d.realized_pnl_usd)} / "

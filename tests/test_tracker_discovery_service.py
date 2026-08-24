@@ -1,7 +1,13 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from src.discovery.models import DailyWalletActivity, TraderSnapshot, WalletHistory
+from src.discovery.ranking import (
+    CandidatePolicy,
+    filter_candidate_signals,
+    filter_tracker_snapshot,
+)
 from src.discovery.tracker_service import SolanaTrackerDiscoveryService
 
 NOW = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
@@ -99,7 +105,42 @@ class TrackerDiscoveryTests(unittest.TestCase):
             {item[2]["sort_by"] for item in top_calls},
             {"realized", "roi", "win_percentage"},
         )
-        self.assertEqual(top_calls[0][2]["max_single_token_pct"], 50)
+        self.assertEqual(top_calls[0][2]["max_single_token_pct"], 30)
+        self.assertEqual(top_calls[0][2]["min_invested_usd"], 500)
+        self.assertEqual(top_calls[0][2]["min_trading_days"], 10)
+
+    def test_rejects_dust_capital_even_with_extreme_roi(self):
+        dust = replace(snapshot(WALLET_GOOD), invested_usd=10, roi_pct=100_000)
+
+        reasons = filter_tracker_snapshot(
+            dust, CandidatePolicy(), now_ms=NOW_MS
+        )
+
+        self.assertIn("invested_below_minimum", reasons)
+
+    def test_rejects_observed_instant_hold_but_not_missing_hold_data(self):
+        policy = CandidatePolicy()
+
+        self.assertEqual(
+            filter_candidate_signals(0.2, policy), ("avg_hold_too_short",)
+        )
+        self.assertEqual(filter_candidate_signals(None, policy), ())
+
+    def test_service_removes_instant_strategy_from_final_ranking(self):
+        client = FakeTrackerClient()
+        regular_history = history(WALLET_GOOD)
+        client.wallet_history = lambda address, period: WalletHistory(
+            address,
+            tuple(
+                replace(item, avg_hold_seconds=0.2)
+                for item in regular_history.days
+            ),
+        )
+
+        report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(50)
+
+        self.assertEqual(report.passed_count, 0)
+        self.assertEqual(report.rejected_by_reason["avg_hold_too_short"], 1)
 
     def test_score_includes_drawdown_and_concentration_penalty(self):
         result = SolanaTrackerDiscoveryService(

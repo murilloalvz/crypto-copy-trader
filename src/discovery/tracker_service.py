@@ -14,6 +14,7 @@ from src.discovery.models import (
 )
 from src.discovery.ranking import (
     CandidatePolicy,
+    filter_candidate_signals,
     filter_recent,
     filter_tracker_snapshot,
     rank_candidates,
@@ -173,7 +174,9 @@ class SolanaTrackerDiscoveryService:
                 min_win_rate=self.policy.min_win_rate_pct,
                 min_roi=0,
                 min_closed_tokens=self.policy.min_realized_outcomes,
-                max_single_token_pct=50,
+                max_single_token_pct=self.policy.max_single_token_profit_pct,
+                min_invested_usd=self.policy.min_invested_usd_30d,
+                min_trading_days=self.policy.min_trading_days_30d,
             )
             for sort_by in ("realized", "roi", "win_percentage")
         ]
@@ -225,6 +228,13 @@ class SolanaTrackerDiscoveryService:
                 rejected_addresses.add(snapshot.address)
                 continue
             signals = _risk_signals(snapshot, history, self.now.date(), now_ms)
+            signal_reasons = filter_candidate_signals(
+                signals.avg_hold_seconds, self.policy
+            )
+            if signal_reasons:
+                rejected.update(signal_reasons)
+                rejected_addresses.add(snapshot.address)
+                continue
             inputs.append(
                 CandidateInput(
                     address=snapshot.address,

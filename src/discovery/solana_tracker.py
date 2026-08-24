@@ -221,6 +221,8 @@ class SolanaTrackerClient:
         min_roi: float = 0,
         min_closed_tokens: int = 5,
         max_single_token_pct: float = 50,
+        min_invested_usd: float = 1,
+        min_trading_days: int = 3,
     ) -> list[TraderSnapshot]:
         if not 1 <= limit <= 10_000:
             raise ValueError("limit precisa estar entre 1 e 10000")
@@ -247,8 +249,8 @@ class SolanaTrackerClient:
                     "pnlMode": "strict",
                     "days": days,
                     "minTrades": min_trades,
-                    "minInvested": 1,
-                    "minDays": 3,
+                    "minInvested": min_invested_usd,
+                    "minDays": min_trading_days,
                     "minWinRate": min_win_rate,
                     "minRoi": min_roi,
                     "minClosedTokens": min_closed_tokens,

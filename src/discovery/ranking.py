@@ -13,23 +13,26 @@ from src.discovery.models import (
 
 @dataclass(frozen=True)
 class CandidatePolicy:
-    min_trades_30d: int = 20
+    min_trades_30d: int = 50
     max_trades_30d: int = 1_000
     min_win_rate_pct: float = 45.0
     min_realized_outcomes: int = 5
     min_unique_tokens: int = 3
     min_trades_7d: int = 1
-    min_trading_days_30d: int = 3
+    min_trading_days_30d: int = 10
     max_inactive_days: float = 7.0
+    min_invested_usd_30d: float = 500.0
+    min_avg_hold_seconds: float = 60.0
+    max_single_token_profit_pct: float = 30.0
 
 
 REJECTION_LABELS = {
     "source_pnl_non_positive": "PnL do leaderboard não positivo",
-    "source_too_few_trades": "menos de 20 trades no leaderboard",
+    "source_too_few_trades": "menos de 50 trades no leaderboard",
     "source_too_many_trades": "mais de 1000 trades no leaderboard",
     "pnl_non_positive": "PnL realizado 30d não positivo",
     "roi_non_positive": "ROI realizado 30d não positivo",
-    "too_few_trades": "menos de 20 trades em 30d",
+    "too_few_trades": "menos de 50 trades em 30d",
     "too_many_trades": "mais de 1000 trades em 30d",
     "win_rate_below_minimum": "win rate abaixo de 45%",
     "too_few_realized_outcomes": "menos de 5 resultados realizados",
@@ -39,6 +42,8 @@ REJECTION_LABELS = {
     "last_trade_unavailable": "data do último trade indisponível",
     "last_trade_too_old": "último trade há mais de 7 dias",
     "pnl_mode_not_strict": "PnL da fonte não está em modo estrito",
+    "invested_below_minimum": "menos de US$ 500 investidos em 30d",
+    "avg_hold_too_short": "posição média inferior a 60 segundos",
 }
 
 
@@ -94,6 +99,8 @@ def filter_tracker_snapshot(
         reasons.append("pnl_non_positive")
     if snapshot.roi_pct <= 0:
         reasons.append("roi_non_positive")
+    if snapshot.invested_usd < policy.min_invested_usd_30d:
+        reasons.append("invested_below_minimum")
     if snapshot.trades < policy.min_trades_30d:
         reasons.append("too_few_trades")
     if snapshot.trades > policy.max_trades_30d:
@@ -113,6 +120,18 @@ def filter_tracker_snapshot(
     if snapshot.pnl_mode != "strict":
         reasons.append("pnl_mode_not_strict")
     return tuple(reasons)
+
+
+def filter_candidate_signals(
+    avg_hold_seconds: float | None, policy: CandidatePolicy
+) -> tuple[str, ...]:
+    """Reject only an observed, clearly uncopyable hold time; missing data stays unknown."""
+    if (
+        avg_hold_seconds is not None
+        and avg_hold_seconds < policy.min_avg_hold_seconds
+    ):
+        return ("avg_hold_too_short",)
+    return ()
 
 
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
