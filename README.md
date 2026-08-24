@@ -58,8 +58,9 @@ app.py      -> monitoramento manual da wallet escolhida
 
 O Solana Tracker foi escolhido porque entrega endereço público real, janelas recentes,
 PnL/ROI, trades, tokens, dias positivos/negativos, último trade e histórico diário. A
-requisição ativa `excludeArbitrage=true`, `pnlMode=strict` e
-`maxSingleTokenPct=50`. O lote combina leaderboards ordenados por PnL, ROI e win rate,
+requisição ativa `excludeArbitrage=true`, `pnlMode=strict`,
+`maxSingleTokenPct=30`, no mínimo 50 trades, 10 dias ativos e US$ 500 investidos.
+O lote combina leaderboards ordenados por PnL, ROI e win rate,
 removendo duplicatas, para não nascer dominado apenas por PnL nominal. Birdeye ficou
 preparado como fallback técnico. Dune permite
 consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
@@ -81,12 +82,16 @@ O score de 0 a 100 serve somente para ordenar candidatas:
 Depois são descontadas penalizações por frequência difícil de copiar, concentração do
 lucro em um único dia, poucos resultados realizados e tempo médio de posição muito curto.
 O filtro da fonte também exclui wallets marcadas como arbitragem e aquelas em que um único
-token representa mais de 50% do PnL.
+token representa mais de 30% do PnL. Como a classificação de arbitragem da fonte não é
+infalível, o filtro local também elimina capital investido inferior a US$ 500 e posição
+média observada abaixo de 60 segundos. Hold time ausente continua como desconhecido, não
+como zero.
 
 Ainda não entram no score: liquidez por token, slippage real da wallet e distribuição por
 trade. A fonte não fornece esses três itens diretamente no leaderboard. O drawdown atual é
 calculado sobre o PnL realizado diário e dividido pelo capital investido no período; ele não
-é um drawdown patrimonial completo.
+é um drawdown patrimonial completo. As janelas 7/30/90 dias são sobrepostas e representam
+consistência em horizontes diferentes, não três períodos independentes.
 
 ## Modo demonstração offline
 
