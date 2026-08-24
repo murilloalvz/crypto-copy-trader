@@ -1,6 +1,8 @@
 import json
+import ssl
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 
 from src.discovery.solana_tracker import (
     SolanaTrackerClient,
@@ -160,6 +162,20 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertIn("sort=last_trade", request_url)
         self.assertIn("pnlMode=strict", request_url)
         self.assertIn("limit=25", request_url)
+
+    @patch("src.discovery.solana_tracker.urlopen")
+    def test_windows_connection_reset_retries_with_tls12(self, mocked_urlopen):
+        reset = ConnectionResetError(10054, "connection reset")
+        reset.winerror = 10054
+        mocked_urlopen.side_effect = [URLError(reset), FakeResponse({"traders": [], "pagination": {}})]
+
+        result = self.client().top_traders(1)
+
+        self.assertEqual(result, [])
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        context = mocked_urlopen.call_args_list[1].kwargs["context"]
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+        self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_2)
 
 
 if __name__ == "__main__":

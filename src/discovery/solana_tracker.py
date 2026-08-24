@@ -69,6 +69,11 @@ def _is_ssl_error(error: BaseException) -> bool:
     return isinstance(error, ssl.SSLError) or isinstance(reason, ssl.SSLError)
 
 
+def _is_connection_reset(error: BaseException) -> bool:
+    reason = getattr(error, "reason", error)
+    return isinstance(reason, ConnectionResetError) or getattr(reason, "winerror", None) == 10054
+
+
 class SolanaTrackerClient:
     """Read-only client for Solana Tracker's PnL V2 discovery endpoints."""
 
@@ -78,8 +83,8 @@ class SolanaTrackerClient:
         *,
         base_url: str = SOLANA_TRACKER_BASE_URL,
         timeout: int = 30,
-        max_attempts: int = 3,
-        request_interval_seconds: float = 0.36,
+        max_attempts: int = 5,
+        request_interval_seconds: float = 0.75,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -163,7 +168,7 @@ class SolanaTrackerClient:
                     ) from exc
             except (URLError, TimeoutError, ssl.SSLError, json.JSONDecodeError) as exc:
                 last_error = exc
-                if _is_ssl_error(exc):
+                if _is_ssl_error(exc) or _is_connection_reset(exc):
                     try:
                         payload = self._read_payload(request, _tls12_context())
                     except (URLError, TimeoutError, ssl.SSLError, json.JSONDecodeError) as tls_exc:
@@ -173,9 +178,16 @@ class SolanaTrackerClient:
             else:
                 return self._validate_payload(payload)
             if attempt + 1 < self.max_attempts:
-                self._sleeper(min(2**attempt, 4))
+                self._sleeper(min(2**attempt, 8))
+        network_hint = (
+            " A conexão foi redefinida pela rede/host; tente outra rede ou verifique "
+            "proxy, VPN e antivírus."
+            if last_error is not None and _is_connection_reset(last_error)
+            else ""
+        )
         raise SolanaTrackerError(
-            f"Solana Tracker indisponível após {self.max_attempts} tentativas: {last_error}"
+            f"Solana Tracker indisponível após {self.max_attempts} tentativas: "
+            f"{last_error}.{network_hint}"
         )
 
     @staticmethod
