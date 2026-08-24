@@ -19,7 +19,7 @@ class DiscoveryCLITests(unittest.TestCase):
         self.assertIn("Passaram para o ranking: 1", output)
         self.assertIn("Candidate Score:", output)
         self.assertIn("Capital investido 30d:", output)
-        self.assertIn("PnL, ROI e win rate", output)
+        self.assertIn("PnL, ROI, win rate, dias ativos e menor frequência", output)
         self.assertIn("Motivos:", output)
         self.assertIn("WALLET DE LABORATÓRIO SUGERIDA", output)
         self.assertIn(WALLET_GOOD, output)

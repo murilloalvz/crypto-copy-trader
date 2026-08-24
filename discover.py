@@ -33,7 +33,7 @@ def format_report(report, top_n: int = 10) -> str:
         "Crypto Copy Trader — Wallet Discovery",
         "",
         "Fonte: Solana Tracker PnL V2 | Rede: Solana | Janela principal: 30d",
-        "Amostra: leaderboards de PnL, ROI e win rate combinados sem duplicatas.",
+        "Amostra: PnL, ROI, win rate, dias ativos e menor frequência, sem duplicatas.",
         "Proteções da fonte: arbitragem excluída, PnL estrito e no máximo 30% do lucro por token.",
         "",
         f"Wallets analisadas: {report.source_count}",

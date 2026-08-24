@@ -72,6 +72,7 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         wallets = self.client().top_traders(
             2,
             sort_by="roi",
+            direction="asc",
             min_invested_usd=500,
             min_trading_days=10,
             max_single_token_pct=30,
@@ -84,6 +85,7 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         first_request = mocked_urlopen.call_args_list[0].args[0]
         self.assertIn("excludeArbitrage=true", first_request.full_url)
         self.assertIn("sort=roi", first_request.full_url)
+        self.assertIn("direction=asc", first_request.full_url)
         self.assertIn("pnlMode=strict", first_request.full_url)
         self.assertIn("maxSingleTokenPct=30", first_request.full_url)
         self.assertIn("minInvested=500", first_request.full_url)

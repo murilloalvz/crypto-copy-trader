@@ -60,8 +60,9 @@ O Solana Tracker foi escolhido porque entrega endereço público real, janelas r
 PnL/ROI, trades, tokens, dias positivos/negativos, último trade e histórico diário. A
 requisição ativa `excludeArbitrage=true`, `pnlMode=strict`,
 `maxSingleTokenPct=30`, no mínimo 50 trades, 10 dias ativos e US$ 500 investidos.
-O lote combina leaderboards ordenados por PnL, ROI e win rate,
-removendo duplicatas, para não nascer dominado apenas por PnL nominal. Birdeye ficou
+O lote combina leaderboards ordenados por PnL, ROI, win rate, dias ativos e também por
+menor quantidade de trades permitida, removendo duplicatas. Isso reduz o viés do topo
+dominado por bots sem relaxar os filtros locais. Birdeye ficou
 preparado como fallback técnico. Dune permite
 consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
 tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.

@@ -215,6 +215,7 @@ class SolanaTrackerClient:
         limit: int = 250,
         *,
         sort_by: str = "realized",
+        direction: str = "desc",
         days: int = 30,
         min_trades: int = 20,
         min_win_rate: float = 45,
@@ -232,6 +233,8 @@ class SolanaTrackerClient:
             "realized", "volume", "days", "roi", "win_percentage", "trades", "tokens"
         }:
             raise ValueError("ordenação inválida para o leaderboard")
+        if direction not in {"asc", "desc"}:
+            raise ValueError("direção inválida para o leaderboard")
 
         results: list[TraderSnapshot] = []
         seen: set[str] = set()
@@ -242,7 +245,7 @@ class SolanaTrackerClient:
                 "/v2/pnl/leaderboard/top",
                 {
                     "sort": sort_by,
-                    "direction": "desc",
+                    "direction": direction,
                     "limit": page_size,
                     "cursor": cursor,
                     "excludeArbitrage": "true",

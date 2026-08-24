@@ -164,11 +164,19 @@ class SolanaTrackerDiscoveryService:
             self.progress(stage, current, total, address)
 
     def _source_wallets(self, source_limit: int) -> list[TraderSnapshot]:
-        """Round-robin three leaderboards so nominal PnL cannot define the whole sample."""
+        """Mix performance, consistency and lower-frequency leaderboard views."""
+        views = (
+            ("realized", "desc"),
+            ("roi", "desc"),
+            ("win_percentage", "desc"),
+            ("days", "desc"),
+            ("trades", "asc"),
+        )
         pools = [
             self.client.top_traders(
                 source_limit,
                 sort_by=sort_by,
+                direction=direction,
                 days=30,
                 min_trades=self.policy.min_trades_30d,
                 min_win_rate=self.policy.min_win_rate_pct,
@@ -178,7 +186,7 @@ class SolanaTrackerDiscoveryService:
                 min_invested_usd=self.policy.min_invested_usd_30d,
                 min_trading_days=self.policy.min_trading_days_30d,
             )
-            for sort_by in ("realized", "roi", "win_percentage")
+            for sort_by, direction in views
         ]
         selected = []
         seen = set()

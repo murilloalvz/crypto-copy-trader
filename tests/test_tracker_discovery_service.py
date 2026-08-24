@@ -100,10 +100,14 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertGreater(report.candidates[0].signals.top_positive_day_share_pct, 50)
         self.assertNotIn(("history", WALLET_HFT, "90d"), client.calls)
         top_calls = [item for item in client.calls if item[0] == "top"]
-        self.assertEqual(len(top_calls), 3)
+        self.assertEqual(len(top_calls), 5)
         self.assertEqual(
             {item[2]["sort_by"] for item in top_calls},
-            {"realized", "roi", "win_percentage"},
+            {"realized", "roi", "win_percentage", "days", "trades"},
+        )
+        self.assertIn(
+            ("trades", "asc"),
+            {(item[2]["sort_by"], item[2]["direction"]) for item in top_calls},
         )
         self.assertEqual(top_calls[0][2]["max_single_token_pct"], 30)
         self.assertEqual(top_calls[0][2]["min_invested_usd"], 500)
