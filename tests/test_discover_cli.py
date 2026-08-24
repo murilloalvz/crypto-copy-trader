@@ -16,14 +16,17 @@ class DiscoveryCLITests(unittest.TestCase):
         output = format_report(report, top_n=10)
 
         self.assertIn("Wallets analisadas: 2", output)
-        self.assertIn("Passaram para o ranking: 1", output)
+        self.assertIn("Passaram para o Candidate Score: 1", output)
+        self.assertIn("Avaliadas por liquidez/copyability: 1", output)
+        self.assertIn("Copyability Score:", output)
+        self.assertIn("Capital em tokens líquidos:", output)
         self.assertIn("Candidate Score:", output)
         self.assertIn("Capital investido 30d:", output)
         self.assertIn("PnL, ROI, win rate, dias ativos e menor frequência", output)
         self.assertIn("Motivos:", output)
         self.assertIn("WALLET DE LABORATÓRIO SUGERIDA", output)
         self.assertIn(WALLET_GOOD, output)
-        self.assertIn("não mede copyability completa", output)
+        self.assertIn("Copyability Score mede viabilidade técnica estimada", output)
 
 
 if __name__ == "__main__":

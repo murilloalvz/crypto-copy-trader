@@ -2,6 +2,7 @@ import argparse
 import sys
 
 from src.discovery.ranking import REJECTION_LABELS
+from src.discovery.copyability import COPYABILITY_REJECTION_LABELS
 from src.discovery.solana_tracker import (
     SolanaTrackerAuthenticationError,
     SolanaTrackerConfigurationError,
@@ -16,6 +17,10 @@ def _short_address(address: str) -> str:
 
 def _money(value: float) -> str:
     return f"{value:+,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _money_unsigned(value: float) -> str:
+    return f"{value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
 def _duration(seconds: float | None) -> str:
@@ -39,7 +44,9 @@ def format_report(report, top_n: int = 10) -> str:
         f"Wallets analisadas: {report.source_count}",
         f"Passaram pelos filtros locais: {report.prefiltered_count}",
         f"Históricos avaliados: {report.fully_evaluated_count}",
-        f"Passaram para o ranking: {report.passed_count}",
+        f"Passaram para o Candidate Score: {report.passed_count}",
+        f"Avaliadas por liquidez/copyability: {report.copyability_evaluated_count}",
+        f"Aprovadas para laboratório de cópia: {report.copyable_count}",
         f"Eliminadas pelos filtros locais: {report.rejected_count}",
         f"Falhas de dados: {len(report.data_errors)}",
     ]
@@ -50,11 +57,20 @@ def format_report(report, top_n: int = 10) -> str:
         ):
             lines.append(f"- {REJECTION_LABELS.get(key, key)}: {count}")
 
-    top = list(report.candidates[:top_n])
-    lines.extend(["", f"TOP {len(top)} CANDIDATAS"])
+    if report.copyability_rejected_by_reason:
+        lines.extend(["", "PRINCIPAIS BARREIRAS DE COPYABILITY"])
+        for key, count in sorted(
+            report.copyability_rejected_by_reason.items(),
+            key=lambda item: (-item[1], item[0]),
+        ):
+            lines.append(f"- {COPYABILITY_REJECTION_LABELS.get(key, key)}: {count}")
+
+    top = list(report.copyability_results[:top_n])
+    lines.extend(["", f"TOP {len(top)} CANDIDATAS AVALIADAS"])
     if not top:
-        lines.append("Nenhuma wallet reuniu dados suficientes para o ranking.")
-    for position, candidate in enumerate(top, start=1):
+        lines.append("Nenhuma wallet reuniu dados suficientes para avaliar copyability.")
+    for position, copyability in enumerate(top, start=1):
+        candidate = copyability.candidate
         metrics = candidate.metrics_30d
         signals = candidate.signals
         lines.extend(
@@ -63,6 +79,10 @@ def format_report(report, top_n: int = 10) -> str:
                 f"{position}. {_short_address(candidate.address)}",
                 f"Endereço: {candidate.address}",
                 f"Candidate Score: {candidate.candidate_score:.1f}/100",
+                (
+                    f"Copyability Score: {copyability.copyability_score:.1f}/100 | "
+                    f"{'APROVADA' if copyability.passed else 'REPROVADA'}"
+                ),
                 f"PnL realizado 30d: US$ {_money(metrics.realized_pnl_usd)}",
                 f"ROI 30d: {metrics.roi_pct:+.1f}% | Win rate: {metrics.win_rate_pct:.1f}%",
                 f"Capital investido 30d: US$ {_money(metrics.total_invested_usd)}",
@@ -80,26 +100,60 @@ def format_report(report, top_n: int = 10) -> str:
                 f"Drawdown realizado: {signals.realized_drawdown_pct:.1f}% | "
                 f"Posição média: {_duration(signals.avg_hold_seconds)}"
             )
+        copy_metrics = copyability.metrics
+        lines.extend(
+            [
+                (
+                    f"Liquidez conhecida: {copy_metrics.known_liquidity_positions}/"
+                    f"{copy_metrics.sampled_positions} tokens | Acima de US$ 50 mil: "
+                    f"{copy_metrics.liquid_position_share_pct:.1f}%"
+                ),
+                (
+                    f"Capital em tokens líquidos: "
+                    f"{copy_metrics.liquid_capital_share_pct:.1f}% | "
+                    f"Liquidez mediana atual: US$ {_money_unsigned(copy_metrics.median_liquidity_usd)}"
+                ),
+                f"Ritmo observado: {copy_metrics.trades_per_day_30d:.1f} trades/dia",
+            ]
+        )
         lines.append("Motivos: " + "; ".join(candidate.reasons[:6]))
         if candidate.penalties:
             lines.append("Penalizações: " + "; ".join(candidate.penalties))
+        if copyability.rejection_reasons:
+            lines.append(
+                "Barreiras: "
+                + "; ".join(
+                    COPYABILITY_REJECTION_LABELS.get(item, item)
+                    for item in copyability.rejection_reasons
+                )
+            )
 
-    if top:
+    approved = list(report.copyable_candidates)
+    if approved:
         lines.extend(
             [
                 "",
                 "WALLET DE LABORATÓRIO SUGERIDA",
-                top[0].address,
+                approved[0].candidate.address,
                 "Use esse endereço público no tracker atual. Isso não é recomendação financeira.",
+            ]
+        )
+    elif report.copyability_evaluated_count:
+        lines.extend(
+            [
+                "",
+                "WALLET DE LABORATÓRIO SUGERIDA",
+                "Nenhuma nesta rodada: todas falharam em ao menos uma barreira de copyability.",
             ]
         )
     lines.extend(
         [
             "",
             "LIMITAÇÕES DESTA ETAPA",
-            "- O score serve apenas para ordenar candidatas; não mede copyability completa.",
+            "- Candidate Score mede qualidade; Copyability Score mede viabilidade técnica estimada.",
             "- A fonte filtra concentração por token, mas não retorna a distribuição de cada trade.",
-            "- Liquidez dos tokens operados ainda não entra no score.",
+            "- A liquidez é a fotografia atual do token, não a liquidez histórica no momento do trade.",
+            "- O impacto de entrada é apenas um proxy; ainda não simulamos a rota e o slippage por token.",
             "- Nenhuma chave privada, assinatura ou ordem é usada.",
         ]
     )
@@ -129,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--top", type=int, default=10, help="quantidade exibida no ranking (padrão: 10)"
     )
     parser.add_argument(
+        "--copyability-limit",
+        type=int,
+        default=25,
+        help="candidatas enriquecidas com posições/liquidez (padrão: 25)",
+    )
+    parser.add_argument(
         "--quiet", action="store_true", help="oculta o progresso durante a coleta"
     )
     return parser
@@ -142,11 +202,16 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.top <= 100:
         print("Erro: --top precisa estar entre 1 e 100.", file=sys.stderr)
         return 2
+    if not 1 <= args.copyability_limit <= 100:
+        print("Erro: --copyability-limit precisa estar entre 1 e 100.", file=sys.stderr)
+        return 2
     service = SolanaTrackerDiscoveryService(
         progress=None if args.quiet else _progress
     )
     try:
-        report = service.discover(args.wallets)
+        report = service.discover(
+            args.wallets, copyability_limit=args.copyability_limit
+        )
     except (SolanaTrackerConfigurationError, SolanaTrackerAuthenticationError) as exc:
         print(f"Configuração necessária: {exc}", file=sys.stderr)
         return 2

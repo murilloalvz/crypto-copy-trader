@@ -24,6 +24,8 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - discovery automático de wallets candidatas, separado do tracker;
 - filtros contra arbitragem, HFT, inatividade, amostra pequena e one-hit winners;
 - Candidate Score explicável com consistência, ROI, drawdown e penalizações básicas.
+- filtro de liquidez atual ponderado pelo capital da wallet;
+- Copyability Score separado, com liquidez, ritmo, posição média e proxy de impacto.
 
 ## Wallet discovery
 
@@ -52,7 +54,7 @@ python discover.py --wallets 50 --top 10
 O funil é independente do dashboard:
 
 ```text
-discover.py -> fonte -> filtros -> Candidate Score -> wallet candidata
+discover.py -> fonte -> filtros -> Candidate Score -> liquidez -> Copyability Score
 app.py      -> monitoramento manual da wallet escolhida
 ```
 
@@ -88,11 +90,56 @@ infalível, o filtro local também elimina capital investido inferior a US$ 500 
 média observada abaixo de 60 segundos. Hold time ausente continua como desconhecido, não
 como zero.
 
-Ainda não entram no score: liquidez por token, slippage real da wallet e distribuição por
-trade. A fonte não fornece esses três itens diretamente no leaderboard. O drawdown atual é
+Não entram no Candidate Score: liquidez por token, slippage real da wallet e distribuição
+por trade. A separação é intencional: qualidade financeira e viabilidade de execução são
+problemas diferentes. O drawdown atual é
 calculado sobre o PnL realizado diário e dividido pelo capital investido no período; ele não
 é um drawdown patrimonial completo. As janelas 7/30/90 dias são sobrepostas e representam
 consistência em horizontes diferentes, não três períodos independentes.
+
+### Filtro de liquidez e Copyability Score
+
+Somente as melhores candidatas do primeiro funil são enriquecidas pelo endpoint read-only
+de [posições da wallet](https://docs.solanatracker.io/data-api/pnl-v2/wallet/get-wallet-positions).
+Por padrão são consultadas até 50 posições recentes, com atividade em 30 dias e PnL
+`strict`. O endpoint informa a liquidez atual do mercado principal de cada token. Nada é
+gravado no banco do tracker.
+
+As barreiras conservadoras desta versão são:
+
+- pelo menos 5 posições na amostra;
+- liquidez conhecida em pelo menos 60% dos tokens amostrados;
+- pelo menos 50% dos tokens conhecidos com US$ 50 mil ou mais de liquidez;
+- pelo menos 60% do capital amostrado nesses tokens líquidos;
+- posição média de pelo menos 5 minutos;
+- no máximo 20 trades por dia em 30 dias;
+- Copyability Score mínimo de 60/100.
+
+O Copyability Score de 0 a 100 não usa PnL, ROI ou win rate:
+
+- 30 pontos: parcela do capital amostrado em tokens com ao menos US$ 50 mil de liquidez;
+- 15 pontos: liquidez mediana atual, normalizada em escala logarítmica entre US$ 10 mil e
+  US$ 500 mil;
+- 15 pontos: proxy de impacto, usando compra média da wallet / liquidez atual do token;
+- 20 pontos: tempo médio de posição, com pontuação máxima a partir de 30 minutos;
+- 15 pontos: frequência, com pontuação máxima até 5 trades por dia e queda progressiva;
+- 5 pontos: cobertura dos dados de liquidez na amostra.
+
+A ponderação por capital evita que uma wallet passe apenas por negociar muitos tokens
+líquidos com valores pequenos enquanto concentra o dinheiro em tokens rasos. Liquidez zero
+é tratada como ilíquida; campo ausente é tratado como desconhecido e reduz a cobertura.
+Uma wallet pode ter Candidate Score alto e ser reprovada para cópia.
+
+Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
+consulta adicional. O padrão é 25:
+
+```powershell
+python discover.py --wallets 250 --top 10 --copyability-limit 25
+```
+
+Limitações honestas: a liquidez é atual, não histórica; a compra média/liquidez é um proxy,
+não uma simulação de rota; volume 24h, profundidade por faixa de preço, slippage histórico e
+latência real ainda não entram no score.
 
 ## Modo demonstração offline
 
@@ -167,8 +214,8 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Validar a liquidez dos tokens operados pelas candidatas e criar um Copyability Score
-separado. Isso não deve ser confundido com o Candidate Score deste primeiro funil.
+Executar paper trading por vários dias nas wallets aprovadas, registrar latência real e
+comparar o preço detectado com uma cotação de rota para estimar slippage reproduzível.
 
 ## Estrutura
 
