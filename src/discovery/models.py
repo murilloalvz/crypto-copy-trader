@@ -178,3 +178,34 @@ class WalletPositions:
     positions: tuple[TokenPosition, ...]
     total_available: int
     pnl_mode: str
+
+
+@dataclass(frozen=True)
+class CopyabilityMetrics:
+    """Observed inputs for the separate, non-financial Copyability Score."""
+
+    sampled_positions: int
+    known_liquidity_positions: int
+    liquid_positions: int
+    sampled_invested_usd: float
+    liquid_invested_usd: float
+    liquidity_coverage_pct: float
+    liquid_position_share_pct: float
+    liquid_capital_share_pct: float
+    median_liquidity_usd: float
+    median_entry_liquidity_ratio_pct: float | None
+    trades_per_day_30d: float
+    average_hold_seconds: float | None
+
+
+@dataclass(frozen=True)
+class CopyabilityResult:
+    """Marketability assessment kept separate from wallet quality."""
+
+    candidate: CandidateResult
+    copyability_score: float
+    passed: bool
+    metrics: CopyabilityMetrics
+    reasons: tuple[str, ...]
+    rejection_reasons: tuple[str, ...]
+    score_components: dict[str, float]
