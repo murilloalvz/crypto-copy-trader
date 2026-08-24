@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,9 @@ class DiscoveryReport:
     rejected_by_reason: dict[str, int]
     data_errors: dict[str, str]
     rejected_count: int = 0
+    copyability_evaluated_count: int = 0
+    copyability_results: tuple["CopyabilityResult", ...] = ()
+    copyability_rejected_by_reason: dict[str, int] = field(default_factory=dict)
 
     @property
     def passed_count(self) -> int:
@@ -84,6 +87,14 @@ class DiscoveryReport:
     @property
     def eliminated_count(self) -> int:
         return self.rejected_count
+
+    @property
+    def copyable_candidates(self) -> tuple["CopyabilityResult", ...]:
+        return tuple(item for item in self.copyability_results if item.passed)
+
+    @property
+    def copyable_count(self) -> int:
+        return len(self.copyable_candidates)
 
 
 @dataclass(frozen=True)

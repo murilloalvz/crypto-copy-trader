@@ -2,7 +2,13 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from src.discovery.models import DailyWalletActivity, TraderSnapshot, WalletHistory
+from src.discovery.models import (
+    DailyWalletActivity,
+    TokenPosition,
+    TraderSnapshot,
+    WalletHistory,
+    WalletPositions,
+)
 from src.discovery.ranking import (
     CandidatePolicy,
     filter_candidate_signals,
@@ -84,6 +90,27 @@ class FakeTrackerClient:
         self.calls.append(("history", address, period))
         return history(address)
 
+    def wallet_positions(self, address, *, period, limit):
+        self.calls.append(("positions", address, period, limit))
+        positions = tuple(
+            TokenPosition(
+                token=str(index + 1) * 32,
+                symbol=f"T{index}",
+                realized_pnl_usd=100,
+                invested_usd=1_000,
+                roi_pct=10,
+                trades=10,
+                average_buy_usd=100,
+                hold_time_seconds=3_600,
+                last_trade_ms=NOW_MS,
+                liquidity_usd=200_000,
+                market_cap_usd=2_000_000,
+                primary_market="pumpfun-amm",
+            )
+            for index in range(10)
+        )
+        return WalletPositions(address, positions, len(positions), "strict")
+
 
 class TrackerDiscoveryTests(unittest.TestCase):
     def test_filters_hft_before_history_and_builds_risk_signals(self):
@@ -94,6 +121,8 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertEqual(report.source_count, 2)
         self.assertEqual(report.prefiltered_count, 1)
         self.assertEqual(report.passed_count, 1)
+        self.assertEqual(report.copyability_evaluated_count, 1)
+        self.assertEqual(report.copyable_count, 1)
         self.assertEqual(report.candidates[0].address, WALLET_GOOD)
         self.assertEqual(report.candidates[0].source, "solana_tracker")
         self.assertGreater(report.candidates[0].signals.realized_drawdown_usd, 0)
@@ -155,6 +184,26 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertIn("drawdown", result.score_components)
         self.assertTrue(any("concentrado" in item for item in result.penalties))
         self.assertTrue(any("drawdown" in item for item in result.reasons))
+
+    def test_candidate_can_pass_quality_and_fail_copyability(self):
+        client = FakeTrackerClient()
+        regular_history = history(WALLET_GOOD)
+        client.wallet_history = lambda address, period: WalletHistory(
+            address,
+            tuple(
+                replace(item, avg_hold_seconds=174)
+                for item in regular_history.days
+            ),
+        )
+
+        report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(50)
+
+        self.assertEqual(report.passed_count, 1)
+        self.assertEqual(report.copyable_count, 0)
+        self.assertIn(
+            "average_hold_too_short",
+            report.copyability_results[0].rejection_reasons,
+        )
 
 
 if __name__ == "__main__":

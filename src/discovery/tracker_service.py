@@ -12,6 +12,11 @@ from src.discovery.models import (
     WalletHistory,
     WalletPeriodMetrics,
 )
+from src.discovery.copyability import (
+    CopyabilityPolicy,
+    calculate_copyability,
+    rank_copyability,
+)
 from src.discovery.ranking import (
     CandidatePolicy,
     filter_candidate_signals,
@@ -153,11 +158,13 @@ class SolanaTrackerDiscoveryService:
         policy: CandidatePolicy | None = None,
         progress: ProgressCallback | None = None,
         now: datetime | None = None,
+        copyability_policy: CopyabilityPolicy | None = None,
     ):
         self.client = client or SolanaTrackerClient()
         self.policy = policy or CandidatePolicy()
         self.progress = progress
         self.now = now or datetime.now(timezone.utc)
+        self.copyability_policy = copyability_policy or CopyabilityPolicy()
 
     def _notify(self, stage: str, current: int, total: int, address: str) -> None:
         if self.progress:
@@ -204,7 +211,11 @@ class SolanaTrackerDiscoveryService:
             index += 1
         return selected
 
-    def discover(self, source_limit: int = 250) -> DiscoveryReport:
+    def discover(
+        self, source_limit: int = 250, *, copyability_limit: int = 25
+    ) -> DiscoveryReport:
+        if not 1 <= copyability_limit <= 100:
+            raise ValueError("copyability_limit precisa estar entre 1 e 100")
         snapshots = self._source_wallets(source_limit)
         now_ms = int(self.now.timestamp() * 1000)
         rejected = Counter()
@@ -263,6 +274,25 @@ class SolanaTrackerDiscoveryService:
             )
 
         ranked = rank_candidates(inputs)
+        copyability_results = []
+        copyability_rejected = Counter()
+        quality_shortlist = ranked[:copyability_limit]
+        for current, candidate in enumerate(quality_shortlist, start=1):
+            self._notify("liquidity", current, len(quality_shortlist), candidate.address)
+            try:
+                positions = self.client.wallet_positions(
+                    candidate.address,
+                    period="30d",
+                    limit=self.copyability_policy.position_sample_limit,
+                )
+            except SolanaTrackerError as exc:
+                data_errors[f"{candidate.address}:liquidity"] = str(exc)
+                continue
+            result = calculate_copyability(
+                candidate, positions, self.copyability_policy
+            )
+            copyability_results.append(result)
+            copyability_rejected.update(result.rejection_reasons)
         return DiscoveryReport(
             source_count=len(snapshots),
             prefiltered_count=len(prefiltered),
@@ -272,4 +302,7 @@ class SolanaTrackerDiscoveryService:
             rejected_by_reason=dict(sorted(rejected.items())),
             data_errors=data_errors,
             rejected_count=len(rejected_addresses),
+            copyability_evaluated_count=len(copyability_results),
+            copyability_results=tuple(rank_copyability(copyability_results)),
+            copyability_rejected_by_reason=dict(sorted(copyability_rejected.items())),
         )
