@@ -263,7 +263,7 @@ def rebuild_paper_ledger(address: str) -> dict:
         """SELECT pt.* FROM paper_trades pt
         JOIN transactions tx ON tx.signature=pt.source_signature
         WHERE pt.wallet_address=? AND tx.kind='swap' AND tx.dex IS NOT NULL
-        AND pt.status!='filtered_non_swap'
+        AND pt.status NOT IN ('filtered_non_swap', 'skipped_illiquid', 'skipped_low_volume')
         ORDER BY COALESCE(pt.source_block_time, 0), pt.id""",
         (address,),
     )
@@ -320,13 +320,50 @@ def price_paper_trades(
         AND pt.status!='filtered_non_swap' ORDER BY tx.block_time, pt.id""",
         (address,),
     )
-    priced = cached = failed = 0
+    priced = cached = failed = illiquid = low_volume = 0
     for trade in trades:
         if trade["market_price_usd"] is not None:
             cached += 1
             continue
         timestamp = int(trade["block_time"] or 0) + int(trade["delay_seconds"])
         try:
+            market_for = getattr(provider, "market_for", None)
+            if market_for is not None:
+                market = market_for(trade["token_mint"])
+                min_liquidity = getattr(settings, "min_signal_liquidity_usd", 50_000.0)
+                min_volume = getattr(settings, "min_signal_volume_24h_usd", 10_000.0)
+                if market.reserve_usd < min_liquidity:
+                    illiquid += 1
+                    with connection() as conn:
+                        conn.execute(
+                            """UPDATE paper_trades SET source_block_time=?,
+                            market_price_usd=NULL, execution_price_usd=NULL,
+                            token_quantity=NULL, fees_usd=NULL, realized_pnl_usd=NULL,
+                            price_error=?, status='skipped_illiquid' WHERE id=?""",
+                            (
+                                timestamp,
+                                f"Ignorada: liquidez atual US$ {market.reserve_usd:,.2f} "
+                                f"abaixo do mínimo US$ {min_liquidity:,.2f}.",
+                                trade["id"],
+                            ),
+                        )
+                    continue
+                if market.volume_usd_24h < min_volume:
+                    low_volume += 1
+                    with connection() as conn:
+                        conn.execute(
+                            """UPDATE paper_trades SET source_block_time=?,
+                            market_price_usd=NULL, execution_price_usd=NULL,
+                            token_quantity=NULL, fees_usd=NULL, realized_pnl_usd=NULL,
+                            price_error=?, status='skipped_low_volume' WHERE id=?""",
+                            (
+                                timestamp,
+                                f"Ignorada: volume 24h US$ {market.volume_usd_24h:,.2f} "
+                                f"abaixo do mínimo US$ {min_volume:,.2f}.",
+                                trade["id"],
+                            ),
+                        )
+                    continue
             market_price = provider.price_at(trade["token_mint"], timestamp)
             slippage = trade["slippage_bps"] / 10_000
             multiplier = 1 + slippage if trade["side"] == "buy" else 1 - slippage
@@ -349,4 +386,11 @@ def price_paper_trades(
                     (timestamp, str(exc), trade["id"]),
                 )
     ledger = rebuild_paper_ledger(address)
-    return {"priced": priced, "cached": cached, "failed": failed, **ledger}
+    return {
+        "priced": priced,
+        "cached": cached,
+        "failed": failed,
+        "skipped_illiquid": illiquid,
+        "skipped_low_volume": low_volume,
+        **ledger,
+    }

@@ -103,6 +103,10 @@ def paper_performance(address: str) -> dict:
         "closed_trades": len(closed),
         "open_trades": sum(trade["status"] == "open" for trade in trades),
         "price_failures": sum(trade["status"] == "price_unavailable" for trade in trades),
+        "liquidity_skips": sum(
+            trade["status"] in {"skipped_illiquid", "skipped_low_volume"}
+            for trade in trades
+        ),
         "filtered_trades": sum(trade["status"] == "filtered_non_swap" for trade in trades),
         "curve": curve,
     }

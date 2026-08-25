@@ -130,6 +130,10 @@ class GeckoTerminalPriceProvider:
             )
         return pool
 
+    def market_for(self, token_mint: str) -> Pool:
+        """Return the current chosen pool metrics used for signal eligibility."""
+        return self._resolve_pool(token_mint)
+
     def price_at(self, token_mint: str, timestamp: int) -> float:
         minute_ts = timestamp - timestamp % 60
         if token_mint in STABLECOIN_MINTS:

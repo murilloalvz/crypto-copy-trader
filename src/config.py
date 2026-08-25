@@ -26,6 +26,12 @@ class Settings:
     copy_size_usd: float = float(getenv("COPY_SIZE_USD", "25"))
     slippage_bps: int = int(getenv("SLIPPAGE_BPS", "100"))
     copy_delay_seconds: int = int(getenv("COPY_DELAY_SECONDS", "15"))
+    min_signal_liquidity_usd: float = float(
+        getenv("MIN_SIGNAL_LIQUIDITY_USD", "50000")
+    )
+    min_signal_volume_24h_usd: float = float(
+        getenv("MIN_SIGNAL_VOLUME_24H_USD", "10000")
+    )
     birdeye_api_key: str = getenv("BIRDEYE_API_KEY", "").strip()
     solana_tracker_api_key: str = getenv("SOLANA_TRACKER_API_KEY", "").strip()
 

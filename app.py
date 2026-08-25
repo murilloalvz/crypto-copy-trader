@@ -259,11 +259,13 @@ with tab2:
             with st.spinner(spinner):
                 provider = DemoPriceProvider() if demo_mode else None
                 result = price_paper_trades(address, provider=provider)
-            level = "warning" if result["failed"] else "success"
+            skipped_market = result["skipped_illiquid"] + result["skipped_low_volume"]
+            level = "warning" if result["failed"] or skipped_market else "success"
             st.session_state["flash"] = (
                 level,
                 f"Preços novos: {result['priced']} · em cache: {result['cached']} · "
-                f"sem preço: {result['failed']} · vendas fechadas: {result['closed']}.",
+                f"sem preço: {result['failed']} · sinais sem mercado copiável: "
+                f"{skipped_market} · vendas fechadas: {result['closed']}.",
             )
             st.rerun()
         except Exception as exc:
@@ -281,6 +283,13 @@ with tab2:
         st.info(
             f"{performance['filtered_trades']} operação(ões) antigas foram ignoradas porque "
             "não eram swaps confirmados por Jupiter, Raydium ou Pump.fun."
+        )
+
+    if performance["liquidity_skips"]:
+        st.warning(
+            f"{performance['liquidity_skips']} sinal(is) foram registrados, mas ignorados "
+            "do paper trading por liquidez ou volume atuais insuficientes. Veja a coluna "
+            "price_error."
         )
 
     if performance["curve"]:
