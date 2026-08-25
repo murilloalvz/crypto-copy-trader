@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     fees_usd REAL,
     realized_pnl_usd REAL,
     price_error TEXT,
+    price_error_code TEXT,
+    price_retry_count INTEGER NOT NULL DEFAULT 0,
+    last_price_attempt_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending_price',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -89,6 +92,9 @@ MIGRATIONS = {
         "fees_usd": "REAL",
         "realized_pnl_usd": "REAL",
         "price_error": "TEXT",
+        "price_error_code": "TEXT",
+        "price_retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "last_price_attempt_at": "TEXT",
     },
     "token_pool_cache": {
         "volume_usd_24h": "REAL NOT NULL DEFAULT 0",

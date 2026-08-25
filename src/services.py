@@ -4,7 +4,7 @@ from collections import Counter
 from src.assets import STABLECOIN_MINTS
 from src.config import settings
 from src.database import connection, rows
-from src.prices import GeckoTerminalPriceProvider
+from src.prices import GeckoTerminalPriceProvider, PriceProviderError
 from src.solana import (
     DEX_PROGRAM_LABELS,
     INFRASTRUCTURE_PROGRAM_IDS,
@@ -225,7 +225,9 @@ def generate_paper_trades(address: str) -> int:
                     """UPDATE paper_trades SET token_mint=?, side=?, source_amount=?,
                     source_block_time=?, market_price_usd=NULL, execution_price_usd=NULL,
                     token_quantity=NULL, fees_usd=NULL, realized_pnl_usd=NULL,
-                    price_error=NULL, status='pending_price' WHERE source_signature=?""",
+                    price_error=NULL, price_error_code=NULL, price_retry_count=0,
+                    last_price_attempt_at=NULL, status='pending_price'
+                    WHERE source_signature=?""",
                     (
                         tx["token_mint"], side, abs(tx["token_change"]), tx["block_time"],
                         tx["signature"],
@@ -317,10 +319,16 @@ def price_paper_trades(
         """SELECT pt.*, tx.block_time FROM paper_trades pt
         JOIN transactions tx ON tx.signature=pt.source_signature
         WHERE pt.wallet_address=? AND tx.kind='swap' AND tx.dex IS NOT NULL
-        AND pt.status!='filtered_non_swap' ORDER BY tx.block_time, pt.id""",
+        AND pt.status NOT IN (
+            'filtered_non_swap', 'skipped_illiquid', 'skipped_low_volume',
+            'price_no_pool', 'price_no_historical_candle',
+            'price_distant_historical_candle', 'price_permanent_error',
+            'price_retry_exhausted'
+        ) ORDER BY tx.block_time, pt.id""",
         (address,),
     )
     priced = cached = failed = illiquid = low_volume = 0
+    retryable_failures = permanent_failures = exhausted_failures = 0
     for trade in trades:
         if trade["market_price_usd"] is not None:
             cached += 1
@@ -339,7 +347,9 @@ def price_paper_trades(
                             """UPDATE paper_trades SET source_block_time=?,
                             market_price_usd=NULL, execution_price_usd=NULL,
                             token_quantity=NULL, fees_usd=NULL, realized_pnl_usd=NULL,
-                            price_error=?, status='skipped_illiquid' WHERE id=?""",
+                            price_error=?, price_error_code='market_liquidity_low',
+                            last_price_attempt_at=CURRENT_TIMESTAMP,
+                            status='skipped_illiquid' WHERE id=?""",
                             (
                                 timestamp,
                                 f"Ignorada: liquidez atual US$ {market.reserve_usd:,.2f} "
@@ -355,7 +365,9 @@ def price_paper_trades(
                             """UPDATE paper_trades SET source_block_time=?,
                             market_price_usd=NULL, execution_price_usd=NULL,
                             token_quantity=NULL, fees_usd=NULL, realized_pnl_usd=NULL,
-                            price_error=?, status='skipped_low_volume' WHERE id=?""",
+                            price_error=?, price_error_code='market_volume_low',
+                            last_price_attempt_at=CURRENT_TIMESTAMP,
+                            status='skipped_low_volume' WHERE id=?""",
                             (
                                 timestamp,
                                 f"Ignorada: volume 24h US$ {market.volume_usd_24h:,.2f} "
@@ -372,24 +384,52 @@ def price_paper_trades(
             with connection() as conn:
                 conn.execute(
                     """UPDATE paper_trades SET source_block_time=?, market_price_usd=?,
-                    execution_price_usd=?, fees_usd=?, price_error=NULL, status='priced'
+                    execution_price_usd=?, fees_usd=?, price_error=NULL,
+                    price_error_code=NULL, last_price_attempt_at=CURRENT_TIMESTAMP,
+                    status='priced'
                     WHERE id=?""",
                     (timestamp, market_price, execution_price, fees_usd, trade["id"]),
                 )
             priced += 1
         except Exception as exc:
             failed += 1
+            retry_count = int(trade.get("price_retry_count") or 0) + 1
+            max_retries = max(1, getattr(settings, "max_price_retry_attempts", 3))
+            retryable = isinstance(exc, PriceProviderError) and exc.retryable
+            error_code = getattr(exc, "code", "unexpected_provider_error")
+            if retryable and retry_count < max_retries:
+                failure_status = "price_retryable"
+                retryable_failures += 1
+            elif retryable:
+                failure_status = "price_retry_exhausted"
+                exhausted_failures += 1
+            else:
+                failure_status = f"price_{error_code}"
+                if failure_status not in {
+                    "price_no_pool",
+                    "price_no_historical_candle",
+                    "price_distant_historical_candle",
+                }:
+                    failure_status = "price_permanent_error"
+                permanent_failures += 1
             with connection() as conn:
                 conn.execute(
                     """UPDATE paper_trades SET source_block_time=?, price_error=?,
-                    status='price_unavailable' WHERE id=?""",
-                    (timestamp, str(exc), trade["id"]),
+                    price_error_code=?, price_retry_count=?,
+                    last_price_attempt_at=CURRENT_TIMESTAMP, status=? WHERE id=?""",
+                    (
+                        timestamp, str(exc), error_code, retry_count,
+                        failure_status, trade["id"],
+                    ),
                 )
     ledger = rebuild_paper_ledger(address)
     return {
         "priced": priced,
         "cached": cached,
         "failed": failed,
+        "retryable_failures": retryable_failures,
+        "permanent_failures": permanent_failures,
+        "exhausted_failures": exhausted_failures,
         "skipped_illiquid": illiquid,
         "skipped_low_volume": low_volume,
         **ledger,

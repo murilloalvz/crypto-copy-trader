@@ -223,6 +223,7 @@ paper = rows(
     """SELECT pt.source_block_time, tx.dex, pt.side, pt.token_mint, pt.simulated_usd,
     pt.market_price_usd, pt.execution_price_usd, pt.token_quantity, pt.fees_usd,
     pt.realized_pnl_usd, pt.slippage_bps, pt.delay_seconds, pt.status, pt.price_error
+    , pt.price_error_code, pt.price_retry_count
     FROM paper_trades pt JOIN transactions tx ON tx.signature=pt.source_signature
     WHERE pt.wallet_address=? AND pt.status!='filtered_non_swap' ORDER BY pt.id DESC""",
     (address,),
@@ -264,8 +265,11 @@ with tab2:
             st.session_state["flash"] = (
                 level,
                 f"Preços novos: {result['priced']} · em cache: {result['cached']} · "
-                f"sem preço: {result['failed']} · sinais sem mercado copiável: "
-                f"{skipped_market} · vendas fechadas: {result['closed']}.",
+                f"falhas temporárias: {result['retryable_failures']} · "
+                f"falhas permanentes: {result['permanent_failures']} · "
+                f"retentativas esgotadas: {result['exhausted_failures']} · "
+                f"sinais sem mercado copiável: {skipped_market} · "
+                f"vendas fechadas: {result['closed']}.",
             )
             st.rerun()
         except Exception as exc:
@@ -278,6 +282,21 @@ with tab2:
     p3.metric("Win rate", f"{performance['win_rate_pct']:.1f}%")
     p4.metric("Drawdown realizado", f"{performance['max_drawdown_pct']:.2f}%")
     p5.metric("Trades fechados", performance["closed_trades"])
+
+    coverage_label = (
+        f"{performance['priced_signals']} de {performance['total_signals']} swaps "
+        f"precificados ({performance['price_coverage_pct']:.1f}%)"
+    )
+    st.progress(
+        min(performance["price_coverage_pct"] / 100, 1.0),
+        text=f"Cobertura da amostra: {coverage_label}",
+    )
+    st.caption(
+        f"Entre os {performance['eligible_signals']} sinais não bloqueados pelo mercado, "
+        f"a cobertura de preço é {performance['eligible_price_coverage_pct']:.1f}%. "
+        "P&L, retorno, win rate e drawdown representam apenas operações elegíveis que "
+        "formaram compras e vendas precificadas; não representam todos os swaps da wallet."
+    )
 
     if performance["filtered_trades"]:
         st.info(
@@ -303,11 +322,19 @@ with tab2:
             paper_frame.pop("source_block_time"), unit="s", utc=True, errors="coerce"
         )
         st.dataframe(paper_frame, use_container_width=True, hide_index=True)
-        if performance["price_failures"]:
+        if performance["temporary_price_failures"]:
             st.warning(
-                f"{performance['price_failures']} operação(ões) ainda não possuem "
-                "preço histórico. "
-                "Veja a coluna price_error."
+                f"{performance['temporary_price_failures']} operação(ões) tiveram falha "
+                "temporária e poderão ser tentadas novamente automaticamente."
+            )
+        if performance["permanent_price_failures"]:
+            details = " · ".join(
+                f"{code}: {count}"
+                for code, count in sorted(performance["price_error_breakdown"].items())
+            )
+            st.info(
+                f"{performance['permanent_price_failures']} operação(ões) possuem falha "
+                f"permanente e não serão consultadas novamente. {details}"
             )
     else:
         if metrics["swaps"]:

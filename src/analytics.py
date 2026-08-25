@@ -72,11 +72,13 @@ def wallet_metrics(address: str) -> dict:
 def paper_performance(address: str) -> dict:
     trades = rows(
         """SELECT id, source_block_time, side, status, simulated_usd,
-        realized_pnl_usd FROM paper_trades WHERE wallet_address=?
+        market_price_usd, realized_pnl_usd, price_error_code
+        FROM paper_trades WHERE wallet_address=?
         ORDER BY COALESCE(source_block_time, 0), id""",
         (address,),
     )
-    closed = [trade for trade in trades if trade["status"] == "closed"]
+    active = [trade for trade in trades if trade["status"] != "filtered_non_swap"]
+    closed = [trade for trade in active if trade["status"] == "closed"]
     wins = [trade for trade in closed if (trade["realized_pnl_usd"] or 0) > 0]
     realized_pnl = sum((trade["realized_pnl_usd"] or 0) for trade in closed)
     equity = settings.starting_balance_usd
@@ -95,6 +97,25 @@ def paper_performance(address: str) -> dict:
                 "drawdown_pct": drawdown,
             }
         )
+    market_skip_statuses = {"skipped_illiquid", "skipped_low_volume"}
+    permanent_price_statuses = {
+        "price_no_pool",
+        "price_no_historical_candle",
+        "price_distant_historical_candle",
+        "price_permanent_error",
+        "price_retry_exhausted",
+    }
+    temporary_price_statuses = {"price_unavailable", "price_retryable"}
+    total_signals = len(active)
+    priced_signals = sum(trade["market_price_usd"] is not None for trade in active)
+    market_skips = sum(trade["status"] in market_skip_statuses for trade in active)
+    eligible_signals = total_signals - market_skips
+    error_breakdown = {}
+    for trade in active:
+        if trade["status"] not in permanent_price_statuses | temporary_price_statuses:
+            continue
+        code = trade.get("price_error_code") or "legacy_unclassified"
+        error_breakdown[code] = error_breakdown.get(code, 0) + 1
     return {
         "realized_pnl_usd": realized_pnl,
         "return_pct": realized_pnl / settings.starting_balance_usd * 100,
@@ -102,11 +123,27 @@ def paper_performance(address: str) -> dict:
         "max_drawdown_pct": abs(max_drawdown),
         "closed_trades": len(closed),
         "open_trades": sum(trade["status"] == "open" for trade in trades),
-        "price_failures": sum(trade["status"] == "price_unavailable" for trade in trades),
-        "liquidity_skips": sum(
-            trade["status"] in {"skipped_illiquid", "skipped_low_volume"}
-            for trade in trades
+        "total_signals": total_signals,
+        "priced_signals": priced_signals,
+        "eligible_signals": eligible_signals,
+        "price_coverage_pct": (
+            100 * priced_signals / total_signals if total_signals else 0.0
         ),
+        "eligible_price_coverage_pct": (
+            100 * priced_signals / eligible_signals if eligible_signals else 0.0
+        ),
+        "temporary_price_failures": sum(
+            trade["status"] in temporary_price_statuses for trade in active
+        ),
+        "permanent_price_failures": sum(
+            trade["status"] in permanent_price_statuses for trade in active
+        ),
+        "price_failures": sum(
+            trade["status"] in permanent_price_statuses | temporary_price_statuses
+            for trade in active
+        ),
+        "price_error_breakdown": error_breakdown,
+        "liquidity_skips": market_skips,
         "filtered_trades": sum(trade["status"] == "filtered_non_swap" for trade in trades),
         "curve": curve,
     }

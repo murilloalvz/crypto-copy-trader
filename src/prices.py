@@ -10,7 +10,19 @@ from src.database import connection
 
 
 class PriceProviderError(RuntimeError):
-    pass
+    code = "provider_error"
+    retryable = False
+
+
+class TemporaryPriceProviderError(PriceProviderError):
+    code = "temporary_provider_error"
+    retryable = True
+
+
+class PermanentPriceProviderError(PriceProviderError):
+    def __init__(self, message: str, *, code: str):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -50,12 +62,27 @@ class GeckoTerminalPriceProvider:
                     payload = json.loads(response.read().decode("utf-8"))
                 self._last_request_at = time.monotonic()
                 return payload
-            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except HTTPError as exc:
+                last_error = exc
+                self._last_request_at = time.monotonic()
+                retryable = exc.code == 429 or exc.code in {408, 425} or exc.code >= 500
+                if not retryable:
+                    raise PermanentPriceProviderError(
+                        f"GeckoTerminal recusou a consulta (HTTP {exc.code}).",
+                        code=f"http_{exc.code}",
+                    ) from exc
+                if attempt < 2:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+                    time.sleep(min(delay, 8))
+            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
                 self._last_request_at = time.monotonic()
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
-        raise PriceProviderError(f"GeckoTerminal indisponível: {last_error}") from last_error
+                    time.sleep(2**attempt)
+        raise TemporaryPriceProviderError(
+            f"GeckoTerminal temporariamente indisponível: {last_error}"
+        ) from last_error
 
     @staticmethod
     def _mint_from_relationship(pool: dict, side: str) -> str | None:
@@ -110,7 +137,9 @@ class GeckoTerminalPriceProvider:
                     )
                 )
         if not candidates:
-            raise PriceProviderError(f"Nenhum pool com preço encontrado para {token_mint}")
+            raise PermanentPriceProviderError(
+                f"Nenhum pool encontrado para {token_mint}.", code="no_pool"
+            )
         pool = max(candidates, key=lambda item: (item.volume_usd_24h, item.reserve_usd))
         with connection() as conn:
             conn.execute(
@@ -161,11 +190,17 @@ class GeckoTerminalPriceProvider:
             payload.get("data", {}).get("attributes", {}).get("ohlcv_list") or []
         )
         if not candles:
-            raise PriceProviderError(f"Sem candle histórico para {token_mint} em {minute_ts}")
+            raise PermanentPriceProviderError(
+                f"Sem candle histórico para {token_mint} em {minute_ts}.",
+                code="no_historical_candle",
+            )
         candle = candles[0]
         candle_ts, close_price = int(candle[0]), float(candle[4])
         if abs(candle_ts - minute_ts) > 3_600:
-            raise PriceProviderError(f"Preço histórico distante demais para {token_mint}")
+            raise PermanentPriceProviderError(
+                f"Candle disponível está distante demais do horário do sinal para {token_mint}.",
+                code="distant_historical_candle",
+            )
         with connection() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO price_cache

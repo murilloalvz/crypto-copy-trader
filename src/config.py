@@ -32,6 +32,7 @@ class Settings:
     min_signal_volume_24h_usd: float = float(
         getenv("MIN_SIGNAL_VOLUME_24H_USD", "10000")
     )
+    max_price_retry_attempts: int = int(getenv("MAX_PRICE_RETRY_ATTEMPTS", "3"))
     birdeye_api_key: str = getenv("BIRDEYE_API_KEY", "").strip()
     solana_tracker_api_key: str = getenv("SOLANA_TRACKER_API_KEY", "").strip()
 
