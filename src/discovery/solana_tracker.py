@@ -355,21 +355,31 @@ class SolanaTrackerClient:
         *,
         limit: int = 10,
         min_trades: int = 3,
+        sort_by: str = "realized",
+        direction: str = "desc",
+        active_only: bool = False,
     ) -> list[TokenTraderSeed]:
         """Return real wallet addresses seen trading one selected liquid token."""
         if not is_solana_address(token):
             raise ValueError("mint Solana inválido")
         if not 1 <= limit <= 200:
             raise ValueError("limit precisa estar entre 1 e 200")
+        if sort_by not in {
+            "holding", "value", "pnl", "realized", "unrealized", "invested",
+            "roi", "last_trade", "first_trade",
+        }:
+            raise ValueError("ordenação inválida para traders do token")
+        if direction not in {"asc", "desc"}:
+            raise ValueError("direção inválida para traders do token")
         payload = self._request(
             f"/v2/pnl/tokens/{token}/traders",
             {
-                "sort": "realized",
-                "direction": "desc",
+                "sort": sort_by,
+                "direction": direction,
                 "limit": limit,
                 "excludeArbitrage": "true",
                 "excludeZeroBuys": "true",
-                "activeOnly": "true",
+                "activeOnly": str(active_only).lower(),
                 "minTrades": min_trades,
             },
         )

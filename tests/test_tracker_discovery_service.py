@@ -97,8 +97,8 @@ class FakeTrackerClient:
         self.calls.append(("markets",))
         return [LiquidMarket("1" * 32, "LIQ", 500_000, 250_000, "2" * 32)]
 
-    def token_traders(self, token, *, limit):
-        self.calls.append(("token_traders", token, limit))
+    def token_traders(self, token, *, limit, **kwargs):
+        self.calls.append(("token_traders", token, limit, kwargs))
         return [TokenTraderSeed(WALLET_LIQUID, token)]
 
     def wallet_positions(self, address, *, period, limit):
@@ -232,6 +232,12 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertEqual(liquid_candidate.source, "solana_tracker_liquid_markets")
         self.assertIn(("markets",), client.calls)
         self.assertTrue(any(item[0] == "token_traders" for item in client.calls))
+        trader_calls = [item for item in client.calls if item[0] == "token_traders"]
+        self.assertEqual(
+            {item[3]["sort_by"] for item in trader_calls},
+            {"realized", "roi", "last_trade", "invested"},
+        )
+        self.assertTrue(all(item[3]["active_only"] is False for item in trader_calls))
 
 
 if __name__ == "__main__":

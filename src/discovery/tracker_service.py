@@ -272,6 +272,42 @@ class SolanaTrackerDiscoveryService:
             index += 1
         return selected
 
+    def _market_trader_seeds(self, token: str, limit: int = 10) -> list:
+        """Mix profit, ROI, recency and smaller-capital views for one liquid token."""
+        views = (
+            ("realized", "desc"),
+            ("roi", "desc"),
+            ("last_trade", "desc"),
+            ("invested", "asc"),
+        )
+        per_view = max(2, (limit + len(views) - 1) // len(views))
+        pools = [
+            self.client.token_traders(
+                token,
+                limit=per_view,
+                min_trades=3,
+                sort_by=sort_by,
+                direction=direction,
+                active_only=False,
+            )
+            for sort_by, direction in views
+        ]
+        selected = []
+        seen = set()
+        index = 0
+        while len(selected) < limit and any(index < len(pool) for pool in pools):
+            for pool in pools:
+                if index >= len(pool):
+                    continue
+                seed = pool[index]
+                if seed.address not in seen:
+                    seen.add(seed.address)
+                    selected.append(seed)
+                    if len(selected) == limit:
+                        break
+            index += 1
+        return selected
+
     def discover(
         self,
         source_limit: int = 250,
@@ -296,7 +332,7 @@ class SolanaTrackerDiscoveryService:
             seen_seed_addresses = set(source_by_address)
             for market in markets:
                 try:
-                    market_seeds = self.client.token_traders(market.token, limit=10)
+                    market_seeds = self._market_trader_seeds(market.token, limit=10)
                 except SolanaTrackerError as exc:
                     data_errors[f"market:{market.token}"] = str(exc)
                     continue
