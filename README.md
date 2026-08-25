@@ -70,7 +70,10 @@ com pelo menos US$ 250 mil de liquidez e US$ 100 mil de volume em 24 horas. O en
 oficial de [traders do token](https://docs.solanatracker.io/data-api/pnl-v2/token/get-token-traders)
 fornece as wallets públicas; carteiras marcadas como desenvolvedor são descartadas. Essas
 wallets não ganham pontos por essa origem: histórico, filtros, Candidate Score e
-Copyability Score continuam iguais. Birdeye ficou
+Copyability Score continuam iguais. Para reduzir o viés de selecionar apenas grandes
+vencedores, cada mercado intercala traders por PnL realizado, ROI, último trade e menor
+capital investido. Posições já encerradas também participam da descoberta; o funil de 30
+dias elimina depois amostras fracas, inativas ou excessivamente rápidas. Birdeye ficou
 preparado como fallback técnico. Dune permite
 consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
 tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.
@@ -214,7 +217,23 @@ entra no P&L. Os limites podem ser alterados no `.env` sem mudar o código:
 ```text
 MIN_SIGNAL_LIQUIDITY_USD=50000
 MIN_SIGNAL_VOLUME_24H_USD=10000
+MAX_PRICE_RETRY_ATTEMPTS=3
 ```
+
+Falhas de preço são classificadas para evitar consultas inúteis:
+
+- `price_retryable`: rede, limite temporário ou indisponibilidade;
+- `price_retry_exhausted`: atingiu o máximo configurado de tentativas;
+- `price_no_pool`: nenhum pool disponível para o token;
+- `price_no_historical_candle`: o pool não possui candle para aquele minuto;
+- `price_distant_historical_candle`: o candle está distante demais do sinal;
+- `price_permanent_error`: outra resposta definitiva que não deve ser repetida.
+
+O provedor faz backoff exponencial para erros temporários, incluindo HTTP 429. Falhas
+permanentes e sinais já bloqueados por mercado não são consultados novamente a cada clique.
+O dashboard mostra a cobertura total (`swaps precificados / swaps confirmados`) e a
+cobertura entre sinais não bloqueados. P&L, retorno, win rate e drawdown usam somente
+compras e vendas elegíveis e precificadas; essa limitação fica explícita na interface.
 
 Os candles são consultados por minuto no pool ativo selecionado por volume e liquidez e
 ficam em cache no SQLite. A API pública do GeckoTerminal possui limite de requisições,
