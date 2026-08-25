@@ -64,7 +64,13 @@ requisição ativa `excludeArbitrage=true`, `pnlMode=strict`,
 `maxSingleTokenPct=30`, no mínimo 50 trades, 10 dias ativos e US$ 500 investidos.
 O lote combina leaderboards ordenados por PnL, ROI, win rate, dias ativos e também por
 menor quantidade de trades permitida, removendo duplicatas. Isso reduz o viés do topo
-dominado por bots sem relaxar os filtros locais. Birdeye ficou
+dominado por bots sem relaxar os filtros locais. Além disso, 25 endereços da amostra são
+obtidos, por padrão, a partir da [busca de tokens](https://docs.solanatracker.io/data-api/search/token-search)
+com pelo menos US$ 250 mil de liquidez e US$ 100 mil de volume em 24 horas. O endpoint
+oficial de [traders do token](https://docs.solanatracker.io/data-api/pnl-v2/token/get-token-traders)
+fornece as wallets públicas; carteiras marcadas como desenvolvedor são descartadas. Essas
+wallets não ganham pontos por essa origem: histórico, filtros, Candidate Score e
+Copyability Score continuam iguais. Birdeye ficou
 preparado como fallback técnico. Dune permite
 consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
 tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.
@@ -137,6 +143,13 @@ consulta adicional. O padrão é 25:
 python discover.py --wallets 250 --top 10 --copyability-limit 25
 ```
 
+Use `--liquid-seeds` para controlar quantas das wallets analisadas partem desses mercados.
+O valor deve ser menor ou igual a `--wallets` e o máximo é 200:
+
+```powershell
+python discover.py --wallets 250 --top 10 --copyability-limit 25 --liquid-seeds 50
+```
+
 Limitações honestas: a liquidez é atual, não histórica; a compra média/liquidez é um proxy,
 não uma simulação de rota; volume 24h, profundidade por faixa de preço, slippage histórico e
 latência real ainda não entram no score.
@@ -192,9 +205,20 @@ próprio. Nunca coloque seed phrase ou chave privada neste projeto.
 3. Clique em `Simular novas cópias`.
 4. Na aba `Paper trading`, clique em `Buscar preços e calcular performance`.
 
-Os candles são consultados por minuto no pool de maior liquidez encontrado e ficam em
-cache no SQLite. A API pública do GeckoTerminal possui limite de requisições, então a
-primeira precificação pode levar alguns segundos.
+Antes de consultar o candle, cada sinal passa por uma barreira individual de mercado. O
+padrão exige ao menos US$ 50 mil de liquidez e US$ 10 mil de volume em 24 horas no pool
+selecionado. Um sinal reprovado continua registrado para auditoria como
+`skipped_illiquid` ou `skipped_low_volume`, com a explicação em `price_error`, mas não
+entra no P&L. Os limites podem ser alterados no `.env` sem mudar o código:
+
+```text
+MIN_SIGNAL_LIQUIDITY_USD=50000
+MIN_SIGNAL_VOLUME_24H_USD=10000
+```
+
+Os candles são consultados por minuto no pool ativo selecionado por volume e liquidez e
+ficam em cache no SQLite. A API pública do GeckoTerminal possui limite de requisições,
+então a primeira precificação pode levar alguns segundos.
 
 Ao abrir uma versão nova do app, as transações já armazenadas são reprocessadas. Paper
 trades originados de falsos positivos antigos são marcados como ignorados, sem apagar o
@@ -207,7 +231,9 @@ histórico bruto da blockchain.
   de forma conservadora em vez de virarem falsos swaps.
 - O Wallet Score fica como `Dados insuficientes` até existirem pelo menos 5 trades fechados.
   Depois considera retorno, win rate, drawdown, tamanho da amostra, atividade e frequência.
-- Os preços usam o fechamento do candle de um minuto e o pool de maior liquidez disponível.
+- Os preços usam o fechamento do candle de um minuto e o pool priorizado por volume 24h.
+- Liquidez e volume são fotografias atuais; a barreira evita sinais claramente rasos, mas
+  não substitui uma cotação de rota nem mede a liquidez histórica do instante do trade.
 - O P&L atual é realizado e usa FIFO. Posições ainda abertas não são marcadas a mercado.
 - Vendas sem uma compra anterior importada são ignoradas, pois o simulador não vende ativos
   que a carteira de paper trading não possui.
