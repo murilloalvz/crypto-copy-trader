@@ -48,6 +48,7 @@ class CandidateInput:
     metrics_7d: WalletPeriodMetrics
     metrics_90d: WalletPeriodMetrics | None
     signals: "CandidateSignals | None" = None
+    source: str = "birdeye"
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,25 @@ class TraderSnapshot:
     first_trade_ms: int | None
     last_trade_ms: int | None
     pnl_mode: str
+
+
+@dataclass(frozen=True)
+class LiquidMarket:
+    """A current Solana token market used only to seed wallet discovery."""
+
+    token: str
+    symbol: str | None
+    liquidity_usd: float
+    volume_usd_24h: float
+    pool_address: str | None
+
+
+@dataclass(frozen=True)
+class TokenTraderSeed:
+    """A public wallet observed trading one liquid-market token."""
+
+    address: str
+    token: str
 
 
 @dataclass(frozen=True)

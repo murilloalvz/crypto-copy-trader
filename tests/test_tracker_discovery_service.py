@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 
 from src.discovery.models import (
     DailyWalletActivity,
+    LiquidMarket,
     TokenPosition,
     TraderSnapshot,
+    TokenTraderSeed,
     WalletHistory,
     WalletPositions,
 )
@@ -20,6 +22,7 @@ NOW = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
 NOW_MS = int(NOW.timestamp() * 1000)
 WALLET_GOOD = "HkFGQsW8mr8DTC2AE2WcC7MzwSnynfEryGMQSht271nf"
 WALLET_HFT = "ApAKzJEqfnP7F74Za5xdTQxZMK4nD8dFTVBQ9bksTtGM"
+WALLET_LIQUID = "CxZjA9ZL2NpRJut5SHBxiqg75qmwM7dBNU2HJxH9z5wE"
 
 
 def snapshot(address, *, trades=120, last_trade_ms=NOW_MS, pnl=30_000):
@@ -90,6 +93,14 @@ class FakeTrackerClient:
         self.calls.append(("history", address, period))
         return history(address)
 
+    def liquid_markets(self):
+        self.calls.append(("markets",))
+        return [LiquidMarket("1" * 32, "LIQ", 500_000, 250_000, "2" * 32)]
+
+    def token_traders(self, token, *, limit):
+        self.calls.append(("token_traders", token, limit))
+        return [TokenTraderSeed(WALLET_LIQUID, token)]
+
     def wallet_positions(self, address, *, period, limit):
         self.calls.append(("positions", address, period, limit))
         positions = tuple(
@@ -124,7 +135,7 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertEqual(report.copyability_evaluated_count, 1)
         self.assertEqual(report.copyable_count, 1)
         self.assertEqual(report.candidates[0].address, WALLET_GOOD)
-        self.assertEqual(report.candidates[0].source, "solana_tracker")
+        self.assertEqual(report.candidates[0].source, "solana_tracker_leaderboard")
         self.assertGreater(report.candidates[0].signals.realized_drawdown_usd, 0)
         self.assertGreater(report.candidates[0].signals.top_positive_day_share_pct, 50)
         self.assertNotIn(("history", WALLET_HFT, "90d"), client.calls)
@@ -204,6 +215,23 @@ class TrackerDiscoveryTests(unittest.TestCase):
             "average_hold_too_short",
             report.copyability_results[0].rejection_reasons,
         )
+
+    def test_liquid_market_seed_is_enriched_and_uses_common_filters(self):
+        client = FakeTrackerClient()
+
+        report = SolanaTrackerDiscoveryService(
+            client=client,
+            now=NOW,
+            policy=CandidatePolicy(min_trades_30d=20, min_trading_days_30d=3),
+        ).discover(2, liquid_seed_limit=1)
+
+        self.assertEqual(report.source_count, 2)
+        liquid_candidate = next(
+            item for item in report.candidates if item.address == WALLET_LIQUID
+        )
+        self.assertEqual(liquid_candidate.source, "solana_tracker_liquid_markets")
+        self.assertIn(("markets",), client.calls)
+        self.assertTrue(any(item[0] == "token_traders" for item in client.calls))
 
 
 if __name__ == "__main__":

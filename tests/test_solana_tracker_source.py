@@ -164,6 +164,51 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertIn("limit=25", request_url)
 
     @patch("src.discovery.solana_tracker.urlopen")
+    def test_liquid_market_search_applies_minimums(self, mocked_urlopen):
+        token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
+        mocked_urlopen.return_value = FakeResponse(
+            {
+                "data": [
+                    {
+                        "mint": token,
+                        "symbol": "TEST",
+                        "liquidityUsd": 500_000,
+                        "volume_24h": 250_000,
+                        "poolAddress": "pool-address",
+                    }
+                ]
+            }
+        )
+
+        markets = self.client().liquid_markets(10)
+
+        self.assertEqual(markets[0].token, token)
+        self.assertEqual(markets[0].liquidity_usd, 500_000)
+        request_url = mocked_urlopen.call_args.args[0].full_url
+        self.assertIn("sortBy=volume_24h", request_url)
+        self.assertIn("minLiquidity=250000", request_url)
+        self.assertIn("minVolume=100000", request_url)
+
+    @patch("src.discovery.solana_tracker.urlopen")
+    def test_token_traders_excludes_developer_wallets(self, mocked_urlopen):
+        token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
+        mocked_urlopen.return_value = FakeResponse(
+            {
+                "traders": [
+                    {"wallet": WALLET_A, "identity": {"type": "trader"}},
+                    {"wallet": WALLET_B, "identity": {"type": "developer"}},
+                ]
+            }
+        )
+
+        seeds = self.client().token_traders(token, limit=10)
+
+        self.assertEqual([item.address for item in seeds], [WALLET_A])
+        request_url = mocked_urlopen.call_args.args[0].full_url
+        self.assertIn("excludeArbitrage=true", request_url)
+        self.assertIn("activeOnly=true", request_url)
+
+    @patch("src.discovery.solana_tracker.urlopen")
     def test_windows_connection_reset_retries_with_tls12(self, mocked_urlopen):
         reset = ConnectionResetError(10054, "connection reset")
         reset.winerror = 10054

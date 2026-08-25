@@ -96,6 +96,67 @@ def _snapshot_metrics(snapshot: TraderSnapshot) -> WalletPeriodMetrics:
     )
 
 
+def _market_seed_snapshot(
+    address: str,
+    history: WalletHistory,
+    positions,
+    end_date: date,
+) -> TraderSnapshot:
+    """Build the same 30d fields for a wallet discovered outside the leaderboard."""
+    activities = [item for item in _window(history, end_date, 30) if item.trades]
+    invested = sum(item.invested_usd for item in activities)
+    volume = sum(item.volume_usd for item in activities)
+    pnl = sum(item.realized_pnl_usd for item in activities)
+    token_positions = list(positions.positions)
+    profitable = sum(item.realized_pnl_usd > 0 for item in token_positions)
+    losing = sum(item.realized_pnl_usd < 0 for item in token_positions)
+    closed = profitable + losing
+    last_trade_values = [
+        item.last_trade_ms for item in token_positions if item.last_trade_ms is not None
+    ]
+    first_trade_ms = None
+    last_trade_ms = max(last_trade_values) if last_trade_values else None
+    if activities:
+        first_trade_ms = int(
+            datetime.combine(
+                date.fromisoformat(activities[0].date), datetime.min.time(), timezone.utc
+            ).timestamp()
+            * 1000
+        )
+        if last_trade_ms is None:
+            last_trade_ms = int(
+                datetime.combine(
+                    date.fromisoformat(activities[-1].date), datetime.max.time(), timezone.utc
+                ).timestamp()
+                * 1000
+            )
+    return TraderSnapshot(
+        address=address,
+        realized_pnl_usd=pnl,
+        volume_usd=volume,
+        trading_days=len(activities),
+        profitable_days=sum(item.realized_pnl_usd > 0 for item in activities),
+        losing_days=sum(item.realized_pnl_usd < 0 for item in activities),
+        max_single_day_pnl_usd=max(
+            (item.realized_pnl_usd for item in activities), default=0.0
+        ),
+        roi_pct=100 * pnl / invested if invested > 0 else 0.0,
+        invested_usd=invested,
+        proceeds_usd=volume - invested,
+        buys=sum(item.buys for item in activities),
+        sells=sum(item.sells for item in activities),
+        trades=sum(item.trades for item in activities),
+        tokens_traded=positions.total_available,
+        profitable_tokens=profitable,
+        losing_tokens=losing,
+        closed_tokens=closed,
+        win_rate_pct=100 * profitable / closed if closed else 0.0,
+        first_trade_ms=first_trade_ms,
+        last_trade_ms=last_trade_ms,
+        pnl_mode=positions.pnl_mode,
+    )
+
+
 def _risk_signals(
     snapshot: TraderSnapshot,
     history: WalletHistory,
@@ -212,11 +273,62 @@ class SolanaTrackerDiscoveryService:
         return selected
 
     def discover(
-        self, source_limit: int = 250, *, copyability_limit: int = 25
+        self,
+        source_limit: int = 250,
+        *,
+        copyability_limit: int = 25,
+        liquid_seed_limit: int = 0,
     ) -> DiscoveryReport:
         if not 1 <= copyability_limit <= 100:
             raise ValueError("copyability_limit precisa estar entre 1 e 100")
-        snapshots = self._source_wallets(source_limit)
+        if not 0 <= liquid_seed_limit <= min(source_limit, 200):
+            raise ValueError("liquid_seed_limit precisa estar entre 0 e 200")
+        leaderboard_limit = source_limit - liquid_seed_limit
+        snapshots = self._source_wallets(leaderboard_limit) if leaderboard_limit else []
+        source_by_address = {item.address: "solana_tracker_leaderboard" for item in snapshots}
+        history_cache = {}
+        positions_cache = {}
+        data_errors: dict[str, str] = {}
+
+        if liquid_seed_limit:
+            markets = self.client.liquid_markets()
+            seeds = []
+            seen_seed_addresses = set(source_by_address)
+            for market in markets:
+                try:
+                    market_seeds = self.client.token_traders(market.token, limit=10)
+                except SolanaTrackerError as exc:
+                    data_errors[f"market:{market.token}"] = str(exc)
+                    continue
+                for seed in market_seeds:
+                    if seed.address in seen_seed_addresses:
+                        continue
+                    seen_seed_addresses.add(seed.address)
+                    seeds.append(seed)
+                    if len(seeds) == liquid_seed_limit:
+                        break
+                if len(seeds) == liquid_seed_limit:
+                    break
+
+            for current, seed in enumerate(seeds, start=1):
+                self._notify("liquid-seed", current, len(seeds), seed.address)
+                try:
+                    history = self.client.wallet_history(seed.address, "90d")
+                    positions = self.client.wallet_positions(
+                        seed.address,
+                        period="30d",
+                        limit=min(200, self.copyability_policy.position_sample_limit * 4),
+                    )
+                except SolanaTrackerError as exc:
+                    data_errors[f"{seed.address}:market-seed"] = str(exc)
+                    continue
+                history_cache[seed.address] = history
+                positions_cache[seed.address] = positions
+                snapshots.append(
+                    _market_seed_snapshot(seed.address, history, positions, self.now.date())
+                )
+                source_by_address[seed.address] = "solana_tracker_liquid_markets"
+
         now_ms = int(self.now.timestamp() * 1000)
         rejected = Counter()
         rejected_addresses: set[str] = set()
@@ -232,12 +344,13 @@ class SolanaTrackerDiscoveryService:
                 prefiltered.append((rank, snapshot))
 
         inputs = []
-        data_errors: dict[str, str] = {}
         evaluated_histories = 0
         for current, (rank, snapshot) in enumerate(prefiltered, start=1):
             self._notify("history", current, len(prefiltered), snapshot.address)
             try:
-                history = self.client.wallet_history(snapshot.address, "90d")
+                history = history_cache.get(snapshot.address)
+                if history is None:
+                    history = self.client.wallet_history(snapshot.address, "90d")
             except SolanaTrackerError as exc:
                 data_errors[snapshot.address] = str(exc)
                 continue
@@ -270,6 +383,9 @@ class SolanaTrackerDiscoveryService:
                     metrics_7d=metrics_7d,
                     metrics_90d=_history_metrics(history, self.now.date(), 90),
                     signals=signals,
+                    source=source_by_address.get(
+                        snapshot.address, "solana_tracker_leaderboard"
+                    ),
                 )
             )
 
@@ -280,11 +396,13 @@ class SolanaTrackerDiscoveryService:
         for current, candidate in enumerate(quality_shortlist, start=1):
             self._notify("liquidity", current, len(quality_shortlist), candidate.address)
             try:
-                positions = self.client.wallet_positions(
-                    candidate.address,
-                    period="30d",
-                    limit=self.copyability_policy.position_sample_limit,
-                )
+                positions = positions_cache.get(candidate.address)
+                if positions is None:
+                    positions = self.client.wallet_positions(
+                        candidate.address,
+                        period="30d",
+                        limit=self.copyability_policy.position_sample_limit,
+                    )
             except SolanaTrackerError as exc:
                 data_errors[f"{candidate.address}:liquidity"] = str(exc)
                 continue

@@ -38,7 +38,8 @@ def format_report(report, top_n: int = 10) -> str:
         "Crypto Copy Trader — Wallet Discovery",
         "",
         "Fonte: Solana Tracker PnL V2 | Rede: Solana | Janela principal: 30d",
-        "Amostra: PnL, ROI, win rate, dias ativos e menor frequência, sem duplicatas.",
+        "Amostra: PnL, ROI, win rate, dias ativos e menor frequência; "
+        "leaderboards + traders de mercados líquidos, sem duplicatas.",
         "Proteções da fonte: arbitragem excluída, PnL estrito e no máximo 30% do lucro por token.",
         "",
         f"Wallets analisadas: {report.source_count}",
@@ -78,6 +79,7 @@ def format_report(report, top_n: int = 10) -> str:
                 "",
                 f"{position}. {_short_address(candidate.address)}",
                 f"Endereço: {candidate.address}",
+                f"Origem: {candidate.source}",
                 f"Candidate Score: {candidate.candidate_score:.1f}/100",
                 (
                     f"Copyability Score: {copyability.copyability_score:.1f}/100 | "
@@ -189,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="candidatas enriquecidas com posições/liquidez (padrão: 25)",
     )
     parser.add_argument(
+        "--liquid-seeds",
+        type=int,
+        default=25,
+        help="parte da amostra originada de mercados líquidos (padrão: 25)",
+    )
+    parser.add_argument(
         "--quiet", action="store_true", help="oculta o progresso durante a coleta"
     )
     return parser
@@ -205,12 +213,21 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.copyability_limit <= 100:
         print("Erro: --copyability-limit precisa estar entre 1 e 100.", file=sys.stderr)
         return 2
+    if not 0 <= args.liquid_seeds <= min(args.wallets, 200):
+        print(
+            "Erro: --liquid-seeds precisa estar entre 0 e o menor valor entre "
+            "--wallets e 200.",
+            file=sys.stderr,
+        )
+        return 2
     service = SolanaTrackerDiscoveryService(
         progress=None if args.quiet else _progress
     )
     try:
         report = service.discover(
-            args.wallets, copyability_limit=args.copyability_limit
+            args.wallets,
+            copyability_limit=args.copyability_limit,
+            liquid_seed_limit=args.liquid_seeds,
         )
     except (SolanaTrackerConfigurationError, SolanaTrackerAuthenticationError) as exc:
         print(f"Configuração necessária: {exc}", file=sys.stderr)

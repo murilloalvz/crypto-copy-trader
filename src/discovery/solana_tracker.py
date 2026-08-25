@@ -10,7 +10,9 @@ from src.config import settings
 from src.discovery.birdeye import is_solana_address
 from src.discovery.models import (
     DailyWalletActivity,
+    LiquidMarket,
     TokenPosition,
+    TokenTraderSeed,
     TraderSnapshot,
     WalletHistory,
     WalletPositions,
@@ -299,6 +301,96 @@ class SolanaTrackerClient:
                 break
             cursor = str(next_cursor)
         return results
+
+    def liquid_markets(
+        self,
+        limit: int = 12,
+        *,
+        min_liquidity_usd: float = 250_000,
+        min_volume_24h_usd: float = 100_000,
+    ) -> list[LiquidMarket]:
+        """Find active liquid tokens through the documented token search endpoint."""
+        if not 1 <= limit <= 500:
+            raise ValueError("limit precisa estar entre 1 e 500")
+        payload = self._request(
+            "/search",
+            {
+                "sortBy": "volume_24h",
+                "sortOrder": "desc",
+                "minLiquidity": min_liquidity_usd,
+                "minVolume": min_volume_24h_usd,
+                "volumeTimeframe": "24h",
+                "limit": limit,
+            },
+        )
+        markets = []
+        seen = set()
+        for item in payload.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("mint") or "")
+            if not is_solana_address(token) or token in seen:
+                continue
+            liquidity = _number(item.get("liquidityUsd"))
+            volume = _number(item.get("volume_24h"))
+            if liquidity < min_liquidity_usd or volume < min_volume_24h_usd:
+                continue
+            seen.add(token)
+            markets.append(
+                LiquidMarket(
+                    token=token,
+                    symbol=str(item["symbol"]) if item.get("symbol") else None,
+                    liquidity_usd=liquidity,
+                    volume_usd_24h=volume,
+                    pool_address=(
+                        str(item["poolAddress"]) if item.get("poolAddress") else None
+                    ),
+                )
+            )
+        return markets
+
+    def token_traders(
+        self,
+        token: str,
+        *,
+        limit: int = 10,
+        min_trades: int = 3,
+    ) -> list[TokenTraderSeed]:
+        """Return real wallet addresses seen trading one selected liquid token."""
+        if not is_solana_address(token):
+            raise ValueError("mint Solana inválido")
+        if not 1 <= limit <= 200:
+            raise ValueError("limit precisa estar entre 1 e 200")
+        payload = self._request(
+            f"/v2/pnl/tokens/{token}/traders",
+            {
+                "sort": "realized",
+                "direction": "desc",
+                "limit": limit,
+                "excludeArbitrage": "true",
+                "excludeZeroBuys": "true",
+                "activeOnly": "true",
+                "minTrades": min_trades,
+            },
+        )
+        seeds = []
+        seen = set()
+        for item in payload.get("traders") or []:
+            if not isinstance(item, dict):
+                continue
+            address = str(item.get("wallet") or "")
+            identity = item.get("identity") or {}
+            tags = {str(tag).lower() for tag in identity.get("tags") or []}
+            if (
+                not is_solana_address(address)
+                or address in seen
+                or str(identity.get("type") or "").lower() == "developer"
+                or "developer" in tags
+            ):
+                continue
+            seen.add(address)
+            seeds.append(TokenTraderSeed(address=address, token=token))
+        return seeds
 
     def wallet_history(self, address: str, period: str = "90d") -> WalletHistory:
         if not is_solana_address(address):

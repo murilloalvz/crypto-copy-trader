@@ -277,7 +277,7 @@ def _score_one(candidate: CandidateInput, pnl_percentile: float) -> CandidateRes
         penalties=tuple(penalties),
         score_components={key: round(value, 2) for key, value in components.items()},
         signals=signals,
-        source="solana_tracker" if signals is not None else "birdeye",
+        source=candidate.source,
     )
 
 
