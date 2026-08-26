@@ -8,7 +8,11 @@ from unittest.mock import patch
 
 from evaluate import format_evaluation_report, main
 from src import database
-from src.wave_metrics import WaveEvaluationReport
+from src.wave_metrics import (
+    SlippageStressMetrics,
+    WaveEvaluationReport,
+    WaveHorizonMetrics,
+)
 from src.wave_paper import WAVE_STRATEGY_VERSION
 
 
@@ -44,6 +48,51 @@ class WaveEvaluationCLITests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("PAPER/READ ONLY", output.getvalue())
         self.assertIn("menos de 30 observações", output.getvalue())
+
+    def test_report_displays_slippage_robustness(self):
+        report = WaveEvaluationReport(
+            strategy_version=WAVE_STRATEGY_VERSION,
+            signal_count=1,
+            completed_check_count=1,
+            pending_check_count=0,
+            failed_check_count=0,
+            horizons=(
+                WaveHorizonMetrics(
+                    strategy_version=WAVE_STRATEGY_VERSION,
+                    horizon_minutes=5,
+                    sample_size=1,
+                    wins=1,
+                    win_rate_pct=100,
+                    win_rate_low_pct=20.7,
+                    win_rate_high_pct=100,
+                    average_return_pct=5,
+                    median_return_pct=5,
+                    total_pnl_usd=1.25,
+                    average_pnl_usd=1.25,
+                    profit_factor=float("inf"),
+                    max_drawdown_usd=0,
+                    best_return_pct=5,
+                    worst_return_pct=5,
+                ),
+            ),
+            slippage_stress=(
+                SlippageStressMetrics(
+                    horizon_minutes=5,
+                    slippage_bps_per_side=200,
+                    sample_size=1,
+                    win_rate_pct=100,
+                    average_return_pct=5,
+                    median_return_pct=5,
+                    total_pnl_usd=1.25,
+                    profit_factor=float("inf"),
+                ),
+            ),
+        )
+
+        output = format_evaluation_report(report)
+
+        self.assertIn("Stress de slippage", output)
+        self.assertIn("2.00%", output)
 
 
 if __name__ == "__main__":

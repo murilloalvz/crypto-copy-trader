@@ -23,6 +23,9 @@ def _profit_factor(value: float | None) -> str:
 
 
 def format_evaluation_report(report) -> str:
+    stress_by_horizon = {}
+    for stress in report.slippage_stress:
+        stress_by_horizon.setdefault(stress.horizon_minutes, []).append(stress)
     lines = [
         f"ESTRATÉGIA: {report.strategy_version}",
         f"Sinais registrados: {report.signal_count}",
@@ -67,6 +70,18 @@ def format_evaluation_report(report) -> str:
                 ),
             ]
         )
+        stress_rows = stress_by_horizon.get(metrics.horizon_minutes, [])
+        if stress_rows:
+            lines.append("Stress de slippage por lado:")
+            for stress in stress_rows:
+                lines.append(
+                    f"- {stress.slippage_bps_per_side / 100:.2f}%: "
+                    f"n={stress.sample_size} | "
+                    f"média {stress.average_return_pct:+.2f}% | "
+                    f"mediana {stress.median_return_pct:+.2f}% | "
+                    f"win rate {stress.win_rate_pct:.1f}% | "
+                    f"PF {_profit_factor(stress.profit_factor)}"
+                )
     return "\n".join(lines)
 
 

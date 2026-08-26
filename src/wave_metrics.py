@@ -6,6 +6,9 @@ from src.database import rows
 from src.wave_paper import WAVE_STRATEGY_VERSION, backfill_wave_strategy_versions
 
 
+SLIPPAGE_STRESS_BPS = (50, 100, 200, 300)
+
+
 @dataclass(frozen=True)
 class WaveHorizonMetrics:
     strategy_version: str
@@ -34,6 +37,18 @@ class WaveHorizonMetrics:
 
 
 @dataclass(frozen=True)
+class SlippageStressMetrics:
+    horizon_minutes: int
+    slippage_bps_per_side: int
+    sample_size: int
+    win_rate_pct: float
+    average_return_pct: float
+    median_return_pct: float
+    total_pnl_usd: float
+    profit_factor: float
+
+
+@dataclass(frozen=True)
 class WaveEvaluationReport:
     strategy_version: str
     signal_count: int
@@ -41,6 +56,7 @@ class WaveEvaluationReport:
     pending_check_count: int
     failed_check_count: int
     horizons: tuple[WaveHorizonMetrics, ...]
+    slippage_stress: tuple[SlippageStressMetrics, ...] = ()
 
 
 def _wilson_interval(wins: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -69,13 +85,7 @@ def summarize_horizon(
     sample_size = len(returns)
     wins = sum(value > 0 for value in returns)
     low, high = _wilson_interval(wins, sample_size)
-    gross_profit = sum(value for value in pnl_values if value > 0)
-    gross_loss = abs(sum(value for value in pnl_values if value < 0))
-    profit_factor = (
-        gross_profit / gross_loss
-        if gross_loss > 0
-        else math.inf if gross_profit > 0 else 0.0
-    )
+    profit_factor = _profit_factor(pnl_values)
 
     equity = peak = max_drawdown = 0.0
     for pnl in pnl_values:
@@ -102,6 +112,48 @@ def summarize_horizon(
     )
 
 
+def _profit_factor(pnl_values: list[float]) -> float:
+    gross_profit = sum(value for value in pnl_values if value > 0)
+    gross_loss = abs(sum(value for value in pnl_values if value < 0))
+    return (
+        gross_profit / gross_loss
+        if gross_loss > 0
+        else math.inf if gross_profit > 0 else 0.0
+    )
+
+
+def summarize_slippage_stress(
+    horizon_minutes: int,
+    slippage_bps_per_side: int,
+    observations: list[dict],
+) -> SlippageStressMetrics:
+    slippage = slippage_bps_per_side / 10_000
+    returns = [
+        (
+            float(item["market_price_usd"])
+            * (1 - slippage)
+            / (float(item["entry_market_price_usd"]) * (1 + slippage))
+            - 1
+        )
+        * 100
+        for item in observations
+    ]
+    pnl_values = [
+        float(item["copy_size_usd"]) * return_pct / 100
+        for item, return_pct in zip(observations, returns, strict=True)
+    ]
+    return SlippageStressMetrics(
+        horizon_minutes=horizon_minutes,
+        slippage_bps_per_side=slippage_bps_per_side,
+        sample_size=len(returns),
+        win_rate_pct=sum(value > 0 for value in returns) / len(returns) * 100,
+        average_return_pct=statistics.fmean(returns),
+        median_return_pct=statistics.median(returns),
+        total_pnl_usd=sum(pnl_values),
+        profit_factor=_profit_factor(pnl_values),
+    )
+
+
 def build_wave_evaluation_report(
     strategy_version: str = WAVE_STRATEGY_VERSION,
 ) -> WaveEvaluationReport:
@@ -122,6 +174,7 @@ def build_wave_evaluation_report(
     }
     completed = rows(
         """SELECT c.horizon_minutes, c.return_pct, c.pnl_usd,
+        c.market_price_usd, s.entry_market_price_usd, s.copy_size_usd,
         COALESCE(c.observed_at, c.target_at) AS event_at, c.id
         FROM wave_signal_checks c
         JOIN wave_signals s ON s.id=c.signal_id
@@ -136,6 +189,23 @@ def build_wave_evaluation_report(
         summarize_horizon(strategy_version, horizon, observations)
         for horizon, observations in sorted(by_horizon.items())
     )
+    slippage_stress_items = []
+    for horizon, observations in sorted(by_horizon.items()):
+        valid_observations = [
+            item
+            for item in observations
+            if (item.get("market_price_usd") or 0) > 0
+            and (item.get("entry_market_price_usd") or 0) > 0
+            and (item.get("copy_size_usd") or 0) > 0
+        ]
+        for slippage_bps in SLIPPAGE_STRESS_BPS:
+            if valid_observations:
+                slippage_stress_items.append(
+                    summarize_slippage_stress(
+                        horizon, slippage_bps, valid_observations
+                    )
+                )
+    slippage_stress = tuple(slippage_stress_items)
     return WaveEvaluationReport(
         strategy_version=strategy_version,
         signal_count=signal_count,
@@ -143,4 +213,5 @@ def build_wave_evaluation_report(
         pending_check_count=status_counts.get("pending", 0),
         failed_check_count=status_counts.get("failed", 0),
         horizons=horizons,
+        slippage_stress=slippage_stress,
     )
