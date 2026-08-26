@@ -9,6 +9,7 @@ from src.database import initialize_database
 from src.wave_metrics import (
     build_wave_evaluation_report,
     summarize_horizon,
+    summarize_fixed_cohorts,
     summarize_slippage_stress,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -88,6 +89,7 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertEqual(len(report.horizons), 1)
         self.assertEqual(report.horizons[0].average_return_pct, 5)
         self.assertEqual(len(report.slippage_stress), 4)
+        self.assertEqual(len(report.cohorts), 2)
 
     def test_slippage_stress_recalculates_both_sides_from_market_prices(self):
         observations = [
@@ -105,6 +107,40 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(two_percent.average_return_pct, 5.68627, places=4)
         self.assertGreater(half_percent.total_pnl_usd, two_percent.total_pnl_usd)
         self.assertEqual(half_percent.win_rate_pct, 100)
+
+    def test_fixed_cohorts_use_declared_score_and_acceleration_bands(self):
+        observations = [
+            {
+                "wave_score": 61,
+                "snapshot_json": (
+                    '{"token":{"volume_5m_usd":17000,"volume_1h_usd":120000}}'
+                ),
+                "return_pct": 5,
+                "pnl_usd": 1.25,
+            },
+            {
+                "wave_score": 78,
+                "snapshot_json": (
+                    '{"token":{"volume_5m_usd":25000,"volume_1h_usd":120000}}'
+                ),
+                "return_pct": -2,
+                "pnl_usd": -0.5,
+            },
+        ]
+
+        cohorts = summarize_fixed_cohorts(15, observations)
+        buckets = {(item.dimension, item.bucket): item for item in cohorts}
+
+        self.assertEqual(buckets[("wave_score", "55–64.9")].sample_size, 1)
+        self.assertEqual(buckets[("wave_score", "75+")].average_return_pct, -2)
+        self.assertEqual(
+            buckets[("volume_acceleration", "1.50–1.99x")].win_rate_pct,
+            100,
+        )
+        self.assertEqual(
+            buckets[("volume_acceleration", "2.00x+")].win_rate_pct,
+            0,
+        )
 
 
 if __name__ == "__main__":

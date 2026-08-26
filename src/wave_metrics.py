@@ -1,3 +1,4 @@
+import json
 import math
 import statistics
 from dataclasses import dataclass
@@ -49,6 +50,18 @@ class SlippageStressMetrics:
 
 
 @dataclass(frozen=True)
+class WaveCohortMetrics:
+    horizon_minutes: int
+    dimension: str
+    bucket: str
+    sample_size: int
+    win_rate_pct: float
+    average_return_pct: float
+    median_return_pct: float
+    profit_factor: float
+
+
+@dataclass(frozen=True)
 class WaveEvaluationReport:
     strategy_version: str
     signal_count: int
@@ -57,6 +70,7 @@ class WaveEvaluationReport:
     failed_check_count: int
     horizons: tuple[WaveHorizonMetrics, ...]
     slippage_stress: tuple[SlippageStressMetrics, ...] = ()
+    cohorts: tuple[WaveCohortMetrics, ...] = ()
 
 
 def _wilson_interval(wins: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -154,6 +168,92 @@ def summarize_slippage_stress(
     )
 
 
+def _score_bucket(value: float) -> str:
+    if value < 55:
+        return "<55"
+    if value < 65:
+        return "55–64.9"
+    if value < 75:
+        return "65–74.9"
+    return "75+"
+
+
+def _volume_acceleration(snapshot_json: str) -> float | None:
+    try:
+        token = json.loads(snapshot_json)["token"]
+        volume_5m = float(token.get("volume_5m_usd") or 0)
+        volume_1h = float(token.get("volume_1h_usd") or 0)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    five_minute_average = volume_1h / 12
+    return volume_5m / five_minute_average if five_minute_average > 0 else None
+
+
+def _acceleration_bucket(value: float | None) -> str:
+    if value is None:
+        return "indisponível"
+    if value < 1.2:
+        return "<1.20x"
+    if value < 1.5:
+        return "1.20–1.49x"
+    if value < 2:
+        return "1.50–1.99x"
+    return "2.00x+"
+
+
+def summarize_fixed_cohorts(
+    horizon_minutes: int,
+    observations: list[dict],
+) -> tuple[WaveCohortMetrics, ...]:
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for item in observations:
+        buckets = (
+            ("wave_score", _score_bucket(float(item["wave_score"]))),
+            (
+                "volume_acceleration",
+                _acceleration_bucket(_volume_acceleration(item["snapshot_json"])),
+            ),
+        )
+        for key in buckets:
+            grouped.setdefault(key, []).append(item)
+
+    dimension_order = {"wave_score": 0, "volume_acceleration": 1}
+    bucket_order = {
+        "<55": 0,
+        "55–64.9": 1,
+        "65–74.9": 2,
+        "75+": 3,
+        "indisponível": 0,
+        "<1.20x": 1,
+        "1.20–1.49x": 2,
+        "1.50–1.99x": 3,
+        "2.00x+": 4,
+    }
+    results = []
+    for (dimension, bucket), items in sorted(
+        grouped.items(),
+        key=lambda pair: (
+            dimension_order[pair[0][0]],
+            bucket_order[pair[0][1]],
+        ),
+    ):
+        returns = [float(item["return_pct"]) for item in items]
+        pnl_values = [float(item["pnl_usd"]) for item in items]
+        results.append(
+            WaveCohortMetrics(
+                horizon_minutes=horizon_minutes,
+                dimension=dimension,
+                bucket=bucket,
+                sample_size=len(items),
+                win_rate_pct=sum(value > 0 for value in returns) / len(items) * 100,
+                average_return_pct=statistics.fmean(returns),
+                median_return_pct=statistics.median(returns),
+                profit_factor=_profit_factor(pnl_values),
+            )
+        )
+    return tuple(results)
+
+
 def build_wave_evaluation_report(
     strategy_version: str = WAVE_STRATEGY_VERSION,
 ) -> WaveEvaluationReport:
@@ -175,6 +275,7 @@ def build_wave_evaluation_report(
     completed = rows(
         """SELECT c.horizon_minutes, c.return_pct, c.pnl_usd,
         c.market_price_usd, s.entry_market_price_usd, s.copy_size_usd,
+        s.wave_score, s.snapshot_json,
         COALESCE(c.observed_at, c.target_at) AS event_at, c.id
         FROM wave_signal_checks c
         JOIN wave_signals s ON s.id=c.signal_id
@@ -206,6 +307,11 @@ def build_wave_evaluation_report(
                     )
                 )
     slippage_stress = tuple(slippage_stress_items)
+    cohorts = tuple(
+        cohort
+        for horizon, observations in sorted(by_horizon.items())
+        for cohort in summarize_fixed_cohorts(horizon, observations)
+    )
     return WaveEvaluationReport(
         strategy_version=strategy_version,
         signal_count=signal_count,
@@ -214,4 +320,5 @@ def build_wave_evaluation_report(
         failed_check_count=status_counts.get("failed", 0),
         horizons=horizons,
         slippage_stress=slippage_stress,
+        cohorts=cohorts,
     )

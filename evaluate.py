@@ -22,7 +22,7 @@ def _profit_factor(value: float | None) -> str:
     return f"{value:.2f}"
 
 
-def format_evaluation_report(report) -> str:
+def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
     stress_by_horizon = {}
     for stress in report.slippage_stress:
         stress_by_horizon.setdefault(stress.horizon_minutes, []).append(stress)
@@ -82,6 +82,33 @@ def format_evaluation_report(report) -> str:
                     f"win rate {stress.win_rate_pct:.1f}% | "
                     f"PF {_profit_factor(stress.profit_factor)}"
                 )
+    if show_cohorts and report.cohorts:
+        lines.extend(
+            [
+                "",
+                "COORTES EXPLORATÓRIAS — LIMITES FIXADOS ANTES DA AMOSTRA",
+                "Não altere os filtros usando coortes com menos de 30 observações.",
+            ]
+        )
+        last_group = None
+        dimension_names = {
+            "wave_score": "Wave Score",
+            "volume_acceleration": "aceleração de volume",
+        }
+        for cohort in report.cohorts:
+            group = (cohort.horizon_minutes, cohort.dimension)
+            if group != last_group:
+                lines.append(
+                    f"{cohort.horizon_minutes}m — {dimension_names[cohort.dimension]}"
+                )
+                last_group = group
+            lines.append(
+                f"- {cohort.bucket}: n={cohort.sample_size} | "
+                f"média {cohort.average_return_pct:+.2f}% | "
+                f"mediana {cohort.median_return_pct:+.2f}% | "
+                f"win rate {cohort.win_rate_pct:.1f}% | "
+                f"PF {_profit_factor(cohort.profit_factor)}"
+            )
     return "\n".join(lines)
 
 
@@ -94,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Inclui versões antigas; por padrão avalia somente a regra atual.",
     )
+    parser.add_argument(
+        "--cohorts",
+        action="store_true",
+        help="Mostra faixas exploratórias fixas de score e aceleração.",
+    )
     return parser
 
 
@@ -105,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     print("Modo: PAPER/READ ONLY — resultados observados não garantem lucro futuro.")
     for version in _strategy_versions(args.all_strategies):
         print()
-        print(format_evaluation_report(build_wave_evaluation_report(version)))
+        print(
+            format_evaluation_report(
+                build_wave_evaluation_report(version), show_cohorts=args.cohorts
+            )
+        )
     print()
     print("Critério: menos de 30 observações é sempre inconclusivo; 100 ainda não é garantia.")
     return 0
