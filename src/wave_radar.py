@@ -25,6 +25,7 @@ RADAR_BARRIER_LABELS = {
     "pool_unavailable": "pool principal indisponível",
     "liquidity_low": "liquidez abaixo do mínimo",
     "volume_5m_low": "volume de 5 minutos abaixo do mínimo",
+    "holders_unavailable": "quantidade de holders indisponível",
     "holders_low": "poucos holders",
     "transactions_low": "poucas transações",
     "risk_unavailable": "Risk Score indisponível",
@@ -33,9 +34,16 @@ RADAR_BARRIER_LABELS = {
     "developer_concentration_high": "concentração excessiva do desenvolvedor",
     "insider_concentration_high": "concentração excessiva de insiders",
     "sniper_concentration_high": "concentração excessiva de snipers",
-    "lp_burn_low": "LP burn abaixo do mínimo",
+    "trade_imbalance_extreme": "desequilíbrio extremo entre compras e vendas",
     "mint_authority_enabled": "mint authority ainda habilitada",
     "freeze_authority_enabled": "freeze authority ainda habilitada",
+}
+
+RADAR_CAUTION_LABELS = {
+    "lp_burn_unconfirmed": (
+        "LP burn abaixo de 90% ou não aplicável ao tipo de pool; "
+        "o Risk Score agregado permanece como barreira"
+    ),
 }
 
 
@@ -46,6 +54,7 @@ class WaveRadarResult:
     passed: bool
     reasons: tuple[str, ...]
     barriers: tuple[str, ...]
+    cautions: tuple[str, ...]
     score_components: dict[str, float]
     volume_acceleration: float | None
     buy_pressure_pct: float | None
@@ -92,8 +101,18 @@ def evaluate_wave_token(
         * _log_scale(token.volume_5m_usd, policy.min_volume_5m_usd, 250_000),
         "volume_acceleration": 20
         * (0.0 if acceleration is None else _clamp((acceleration - 1) / 4)),
+        # Momentum saudável não é o mesmo que 100% de compras. Uma razão
+        # extrema pode indicar volume manipulado, portanto a nota cai após 65%.
         "buy_pressure": 10
-        * (0.0 if buy_pressure is None else _clamp((buy_pressure - 50) / 25)),
+        * (
+            0.0
+            if buy_pressure is None
+            else (
+                _clamp((buy_pressure - 45) / 20)
+                if buy_pressure <= 65
+                else _clamp((85 - buy_pressure) / 20)
+            )
+        ),
         "risk": 15
         * (
             0.0
@@ -116,7 +135,9 @@ def evaluate_wave_token(
         barriers.append("liquidity_low")
     if token.volume_5m_usd < policy.min_volume_5m_usd:
         barriers.append("volume_5m_low")
-    if token.holders < policy.min_holders:
+    if token.holders is None:
+        barriers.append("holders_unavailable")
+    elif token.holders < policy.min_holders:
         barriers.append("holders_low")
     if token.total_transactions < policy.min_transactions:
         barriers.append("transactions_low")
@@ -132,20 +153,30 @@ def evaluate_wave_token(
         barriers.append("insider_concentration_high")
     if token.snipers_pct is not None and token.snipers_pct > policy.max_snipers_pct:
         barriers.append("sniper_concentration_high")
-    if token.lp_burn_pct is not None and token.lp_burn_pct < policy.min_lp_burn_pct:
-        barriers.append("lp_burn_low")
+    if buy_pressure is not None and (buy_pressure < 10 or buy_pressure > 90):
+        barriers.append("trade_imbalance_extreme")
     if token.mint_authority:
         barriers.append("mint_authority_enabled")
     if token.freeze_authority:
         barriers.append("freeze_authority_enabled")
 
+    cautions = []
+    # lpBurn=0 is normal for some concentrated-liquidity markets, including
+    # Meteora DLMM. The source Risk Score already incorporates removable LP,
+    # so treating this raw field as a universal hard gate creates false rejects.
+    if token.lp_burn_pct is not None and token.lp_burn_pct < policy.min_lp_burn_pct:
+        cautions.append("lp_burn_unconfirmed")
+
+    holder_text = "holders indisponíveis" if token.holders is None else f"{token.holders} holders"
     reasons = [
         f"US$ {token.volume_5m_usd:,.0f} de volume em 5 minutos",
         f"US$ {token.liquidity_usd:,.0f} de liquidez atual",
-        f"{token.holders} holders e {token.total_transactions} transações",
+        f"{holder_text} e {token.total_transactions} transações",
     ]
     if acceleration is not None:
-        reasons.append(f"ritmo de volume {acceleration:.1f}x versus a média de 5min da última hora")
+        reasons.append(
+            f"ritmo de volume {acceleration:.1f}x versus a média de 5min da última hora"
+        )
     if buy_pressure is not None:
         reasons.append(f"pressão compradora observada de {buy_pressure:.1f}%")
     if token.risk_score is not None:
@@ -157,6 +188,7 @@ def evaluate_wave_token(
         passed=not barriers,
         reasons=tuple(reasons),
         barriers=tuple(barriers),
+        cautions=tuple(cautions),
         score_components={key: round(value, 2) for key, value in components.items()},
         volume_acceleration=acceleration,
         buy_pressure_pct=buy_pressure,

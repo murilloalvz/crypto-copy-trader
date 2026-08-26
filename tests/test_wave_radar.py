@@ -54,6 +54,21 @@ class WaveRadarTests(unittest.TestCase):
         self.assertIn("mint_authority_enabled", result.barriers)
         self.assertIn("freeze_authority_enabled", result.barriers)
 
+    def test_lp_burn_zero_is_contextual_caution_when_risk_score_is_available(self):
+        result = evaluate_wave_token(token(lp_burn_pct=0, risk_score=3))
+
+        self.assertTrue(result.passed)
+        self.assertIn("lp_burn_unconfirmed", result.cautions)
+        self.assertNotIn("lp_burn_low", result.barriers)
+
+    def test_missing_holders_and_extreme_buy_pressure_are_rejected(self):
+        result = evaluate_wave_token(token(holders=None, buys=99, sells=1))
+
+        self.assertFalse(result.passed)
+        self.assertIn("holders_unavailable", result.barriers)
+        self.assertIn("trade_imbalance_extreme", result.barriers)
+        self.assertEqual(result.score_components["buy_pressure"], 0)
+
     def test_concentration_and_weak_market_are_rejected(self):
         result = evaluate_wave_token(
             token(

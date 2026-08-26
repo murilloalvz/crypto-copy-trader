@@ -240,6 +240,31 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertIn("minVolume=5000", request_url)
 
     @patch("src.discovery.solana_tracker.urlopen")
+    def test_wave_tokens_treats_zero_holders_as_unavailable(self, mocked_urlopen):
+        token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
+        mocked_urlopen.return_value = FakeResponse(
+            {
+                "data": [
+                    {
+                        "mint": token,
+                        "priceUsd": 0.001,
+                        "liquidityUsd": 150_000,
+                        "holders": 0,
+                        "totalTransactions": 500,
+                        "volume_5m": 25_000,
+                        "volume_1h": 100_000,
+                        "riskScore": 2,
+                        "poolAddress": "pool-address",
+                    }
+                ]
+            }
+        )
+
+        result = self.client().wave_tokens(25)
+
+        self.assertIsNone(result[0].holders)
+
+    @patch("src.discovery.solana_tracker.urlopen")
     def test_token_traders_excludes_developer_wallets(self, mocked_urlopen):
         token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
         mocked_urlopen.return_value = FakeResponse(

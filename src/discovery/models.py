@@ -159,7 +159,7 @@ class WaveTokenSnapshot:
     liquidity_usd: float
     market_cap_usd: float
     created_at_ms: int | None
-    holders: int
+    holders: int | None
     buys: int
     sells: int
     total_transactions: int

@@ -56,6 +56,11 @@ def _optional_integer(value) -> int | None:
     return None if value is None else _integer(value)
 
 
+def _optional_positive_integer(value) -> int | None:
+    parsed = _optional_integer(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
 def _optional_number(value) -> float | None:
     return None if value is None else _number(value)
 
@@ -408,7 +413,9 @@ class SolanaTrackerClient:
                     liquidity_usd=_number(item.get("liquidityUsd")),
                     market_cap_usd=_number(item.get("marketCapUsd")),
                     created_at_ms=_timestamp_ms(created_at),
-                    holders=_integer(item.get("holders")),
+                    # A zero holder count alongside active trades is an indexing gap,
+                    # not proof that the token truly has no holders.
+                    holders=_optional_positive_integer(item.get("holders")),
                     buys=_integer(item.get("buys")),
                     sells=_integer(item.get("sells")),
                     total_transactions=_integer(item.get("totalTransactions")),
