@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
 
-from monitor import main, run_hybrid_monitor
+from monitor import HybridMonitorSummary, main, run_hybrid_monitor
 
 
 class FakeClock:
@@ -115,6 +115,48 @@ class HybridMonitorTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("discovery não pode ser mais frequente", errors.getvalue())
+
+    def test_main_runs_final_evaluation_after_successful_monitor(self):
+        summary = HybridMonitorSummary(
+            discovery_runs=1,
+            successful_discoveries=1,
+            failed_discoveries=0,
+            settlement_runs=2,
+            completed_checks=3,
+            failed_checks=0,
+        )
+        evaluator = Mock(return_value=0)
+        with (
+            patch("monitor.initialize_database"),
+            patch("monitor.run_hybrid_monitor", return_value=summary),
+            patch("monitor.evaluate_main", evaluator),
+            redirect_stdout(io.StringIO()),
+        ):
+            exit_code = main(["--hours", "1"])
+
+        self.assertEqual(exit_code, 0)
+        evaluator.assert_called_once_with(["--update-prices", "--cohorts"])
+
+    def test_final_evaluation_can_be_skipped(self):
+        summary = HybridMonitorSummary(
+            discovery_runs=1,
+            successful_discoveries=1,
+            failed_discoveries=0,
+            settlement_runs=0,
+            completed_checks=0,
+            failed_checks=0,
+        )
+        evaluator = Mock(return_value=0)
+        with (
+            patch("monitor.initialize_database"),
+            patch("monitor.run_hybrid_monitor", return_value=summary),
+            patch("monitor.evaluate_main", evaluator),
+            redirect_stdout(io.StringIO()),
+        ):
+            exit_code = main(["--hours", "1", "--skip-final-evaluation"])
+
+        self.assertEqual(exit_code, 0)
+        evaluator.assert_not_called()
 
 
 if __name__ == "__main__":

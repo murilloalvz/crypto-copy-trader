@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from evaluate import main as evaluate_main
 from radar import main as radar_main
 from src.database import initialize_database
 from src.wave_paper import update_due_paper_checks
@@ -142,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-volume-5m", type=float, default=5_000)
     parser.add_argument("--min-acceleration", type=float, default=1.2)
     parser.add_argument("--min-wave-score", type=float, default=55)
+    parser.add_argument(
+        "--skip-final-evaluation",
+        action="store_true",
+        help="Não gera o relatório estatístico ao terminar o monitor.",
+    )
     return parser
 
 
@@ -220,8 +226,16 @@ def main(argv: list[str] | None = None) -> int:
         f"Checkpoints concluídos fora do discovery: {summary.completed_checks} | "
         f"falhos: {summary.failed_checks}"
     )
-    print("Execute: python evaluate.py --update-prices --cohorts")
-    return 2 if summary.configuration_error else 0
+    if summary.configuration_error:
+        print("Execute depois da correção: python evaluate.py --update-prices --cohorts")
+        return 2
+    if args.skip_final_evaluation:
+        print("Avaliação final ignorada por --skip-final-evaluation.")
+        return 0
+
+    print()
+    print("========== AVALIAÇÃO FINAL ==========")
+    return evaluate_main(["--update-prices", "--cohorts"])
 
 
 if __name__ == "__main__":
