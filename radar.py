@@ -180,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--min-liquidity", type=float, default=50_000)
     parser.add_argument("--min-volume-5m", type=float, default=5_000)
+    parser.add_argument("--min-acceleration", type=float, default=1.2)
+    parser.add_argument("--min-wave-score", type=float, default=55)
     parser.add_argument(
         "--no-paper",
         action="store_true",
@@ -193,12 +195,22 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.tokens <= 100 or not 1 <= args.top <= 100:
         print("Erro: --tokens e --top precisam estar entre 1 e 100.", file=sys.stderr)
         return 2
-    if args.min_liquidity <= 0 or args.min_volume_5m <= 0:
-        print("Erro: os mínimos de liquidez e volume precisam ser positivos.", file=sys.stderr)
+    if (
+        args.min_liquidity <= 0
+        or args.min_volume_5m <= 0
+        or args.min_acceleration <= 0
+        or not 0 <= args.min_wave_score <= 100
+    ):
+        print(
+            "Erro: os limites de liquidez, volume, aceleração e score são inválidos.",
+            file=sys.stderr,
+        )
         return 2
     policy = WaveRadarPolicy(
         min_liquidity_usd=args.min_liquidity,
         min_volume_5m_usd=args.min_volume_5m,
+        min_volume_acceleration=args.min_acceleration,
+        min_wave_score=args.min_wave_score,
     )
     client = SolanaTrackerClient()
     try:

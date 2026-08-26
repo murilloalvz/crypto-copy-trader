@@ -69,6 +69,30 @@ class WaveRadarTests(unittest.TestCase):
         self.assertIn("trade_imbalance_extreme", result.barriers)
         self.assertEqual(result.score_components["buy_pressure"], 0)
 
+    def test_safe_token_without_current_acceleration_is_not_a_wave(self):
+        result = evaluate_wave_token(
+            token(volume_5m_usd=7_000, volume_1h_usd=120_000)
+        )
+
+        self.assertFalse(result.passed)
+        self.assertIn("volume_not_accelerating", result.barriers)
+
+    def test_minimum_wave_score_is_a_hard_gate(self):
+        result = evaluate_wave_token(
+            token(
+                liquidity_usd=55_000,
+                volume_5m_usd=6_000,
+                volume_1h_usd=48_000,
+                buys=55,
+                sells=45,
+                risk_score=6,
+                top10_pct=39,
+            )
+        )
+
+        self.assertFalse(result.passed)
+        self.assertIn("wave_score_low", result.barriers)
+
     def test_concentration_and_weak_market_are_rejected(self):
         result = evaluate_wave_token(
             token(

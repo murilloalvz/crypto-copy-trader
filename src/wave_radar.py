@@ -10,6 +10,8 @@ class WaveRadarPolicy:
 
     min_liquidity_usd: float = 50_000.0
     min_volume_5m_usd: float = 5_000.0
+    min_volume_acceleration: float = 1.2
+    min_wave_score: float = 55.0
     min_holders: int = 50
     min_transactions: int = 50
     max_risk_score: float = 6.0
@@ -25,6 +27,8 @@ RADAR_BARRIER_LABELS = {
     "pool_unavailable": "pool principal indisponível",
     "liquidity_low": "liquidez abaixo do mínimo",
     "volume_5m_low": "volume de 5 minutos abaixo do mínimo",
+    "volume_not_accelerating": "volume de 5 minutos ainda não está acelerando",
+    "wave_score_low": "Wave Score abaixo do mínimo",
     "holders_unavailable": "quantidade de holders indisponível",
     "holders_low": "poucos holders",
     "transactions_low": "poucas transações",
@@ -126,6 +130,7 @@ def evaluate_wave_token(
             else _clamp((policy.max_top10_pct - token.top10_pct) / 30)
         ),
     }
+    wave_score = round(sum(components.values()), 1)
     barriers = []
     if token.price_usd <= 0:
         barriers.append("price_unavailable")
@@ -135,6 +140,10 @@ def evaluate_wave_token(
         barriers.append("liquidity_low")
     if token.volume_5m_usd < policy.min_volume_5m_usd:
         barriers.append("volume_5m_low")
+    if acceleration is None or acceleration < policy.min_volume_acceleration:
+        barriers.append("volume_not_accelerating")
+    if wave_score < policy.min_wave_score:
+        barriers.append("wave_score_low")
     if token.holders is None:
         barriers.append("holders_unavailable")
     elif token.holders < policy.min_holders:
@@ -184,7 +193,7 @@ def evaluate_wave_token(
 
     return WaveRadarResult(
         token=token,
-        wave_score=round(sum(components.values()), 1),
+        wave_score=wave_score,
         passed=not barriers,
         reasons=tuple(reasons),
         barriers=tuple(barriers),
