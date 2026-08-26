@@ -3,6 +3,7 @@ import math
 import statistics
 from dataclasses import dataclass
 
+from src.config import settings
 from src.database import rows
 from src.wave_paper import WAVE_STRATEGY_VERSION, backfill_wave_strategy_versions
 
@@ -62,6 +63,16 @@ class WaveCohortMetrics:
 
 
 @dataclass(frozen=True)
+class WaveExposureMetrics:
+    horizon_minutes: int
+    max_concurrent_positions: int
+    max_capital_deployed_usd: float
+    capital_budget_usd: float
+    capital_utilization_pct: float
+    budget_exceeded: bool
+
+
+@dataclass(frozen=True)
 class WaveEvaluationReport:
     strategy_version: str
     signal_count: int
@@ -71,6 +82,7 @@ class WaveEvaluationReport:
     horizons: tuple[WaveHorizonMetrics, ...]
     slippage_stress: tuple[SlippageStressMetrics, ...] = ()
     cohorts: tuple[WaveCohortMetrics, ...] = ()
+    exposures: tuple[WaveExposureMetrics, ...] = ()
 
 
 def _wilson_interval(wins: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -254,9 +266,48 @@ def summarize_fixed_cohorts(
     return tuple(results)
 
 
+def summarize_exposure(
+    horizon_minutes: int,
+    observations: list[dict],
+    capital_budget_usd: float,
+) -> WaveExposureMetrics:
+    events = []
+    for item in observations:
+        amount = float(item["copy_size_usd"])
+        events.append((int(item["detected_at"]), 1, amount, 1))
+        events.append((int(item["target_at"]), 0, -amount, -1))
+    capital = 0.0
+    positions = 0
+    max_capital = 0.0
+    max_positions = 0
+    for _timestamp, _event_order, capital_delta, position_delta in sorted(events):
+        capital += capital_delta
+        positions += position_delta
+        max_capital = max(max_capital, capital)
+        max_positions = max(max_positions, positions)
+    utilization = (
+        max_capital / capital_budget_usd * 100 if capital_budget_usd > 0 else math.inf
+    )
+    return WaveExposureMetrics(
+        horizon_minutes=horizon_minutes,
+        max_concurrent_positions=max_positions,
+        max_capital_deployed_usd=max_capital,
+        capital_budget_usd=capital_budget_usd,
+        capital_utilization_pct=utilization,
+        budget_exceeded=capital_budget_usd <= 0 or max_capital > capital_budget_usd,
+    )
+
+
 def build_wave_evaluation_report(
     strategy_version: str = WAVE_STRATEGY_VERSION,
+    *,
+    capital_budget_usd: float | None = None,
 ) -> WaveEvaluationReport:
+    capital_budget = (
+        settings.starting_balance_usd
+        if capital_budget_usd is None
+        else float(capital_budget_usd)
+    )
     backfill_wave_strategy_versions()
     signal_count = rows(
         "SELECT COUNT(*) AS total FROM wave_signals WHERE strategy_version=?",
@@ -275,7 +326,7 @@ def build_wave_evaluation_report(
     completed = rows(
         """SELECT c.horizon_minutes, c.return_pct, c.pnl_usd,
         c.market_price_usd, s.entry_market_price_usd, s.copy_size_usd,
-        s.wave_score, s.snapshot_json,
+        s.wave_score, s.snapshot_json, s.detected_at, c.target_at,
         COALESCE(c.observed_at, c.target_at) AS event_at, c.id
         FROM wave_signal_checks c
         JOIN wave_signals s ON s.id=c.signal_id
@@ -312,6 +363,10 @@ def build_wave_evaluation_report(
         for horizon, observations in sorted(by_horizon.items())
         for cohort in summarize_fixed_cohorts(horizon, observations)
     )
+    exposures = tuple(
+        summarize_exposure(horizon, observations, capital_budget)
+        for horizon, observations in sorted(by_horizon.items())
+    )
     return WaveEvaluationReport(
         strategy_version=strategy_version,
         signal_count=signal_count,
@@ -321,4 +376,5 @@ def build_wave_evaluation_report(
         horizons=horizons,
         slippage_stress=slippage_stress,
         cohorts=cohorts,
+        exposures=exposures,
     )

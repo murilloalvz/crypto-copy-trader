@@ -58,6 +58,10 @@ class WaveExperimentIntegrationTests(unittest.TestCase):
         self.assertEqual([item.sample_size for item in evaluation.horizons], [2, 2, 2])
         self.assertEqual(len(evaluation.slippage_stress), 12)
         self.assertEqual(len(evaluation.cohorts), 6)
+        self.assertEqual(len(evaluation.exposures), 3)
+        self.assertTrue(
+            all(item.max_concurrent_positions == 2 for item in evaluation.exposures)
+        )
         self.assertTrue(
             all(item.average_return_pct > 0 for item in evaluation.horizons)
         )

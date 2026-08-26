@@ -26,6 +26,9 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
     stress_by_horizon = {}
     for stress in report.slippage_stress:
         stress_by_horizon.setdefault(stress.horizon_minutes, []).append(stress)
+    exposure_by_horizon = {
+        exposure.horizon_minutes: exposure for exposure in report.exposures
+    }
     lines = [
         f"ESTRATÉGIA: {report.strategy_version}",
         f"Sinais registrados: {report.signal_count}",
@@ -70,6 +73,17 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
                 ),
             ]
         )
+        exposure = exposure_by_horizon.get(metrics.horizon_minutes)
+        if exposure:
+            budget_status = (
+                "EXCEDEU O SALDO" if exposure.budget_exceeded else "dentro do saldo"
+            )
+            lines.append(
+                f"Exposição máxima: {exposure.max_concurrent_positions} posições | "
+                f"US$ {exposure.max_capital_deployed_usd:.2f} de "
+                f"US$ {exposure.capital_budget_usd:.2f} "
+                f"({exposure.capital_utilization_pct:.1f}%) | {budget_status}"
+            )
         stress_rows = stress_by_horizon.get(metrics.horizon_minutes, [])
         if stress_rows:
             lines.append("Stress de slippage por lado:")

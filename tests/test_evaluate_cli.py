@@ -12,6 +12,7 @@ from src.wave_metrics import (
     SlippageStressMetrics,
     WaveCohortMetrics,
     WaveEvaluationReport,
+    WaveExposureMetrics,
     WaveHorizonMetrics,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -141,6 +142,49 @@ class WaveEvaluationCLITests(unittest.TestCase):
         self.assertNotIn("COORTES EXPLORATÓRIAS", hidden)
         self.assertIn("COORTES EXPLORATÓRIAS", visible)
         self.assertIn("55–64.9", visible)
+
+    def test_report_warns_when_simultaneous_signals_exceed_paper_balance(self):
+        report = WaveEvaluationReport(
+            strategy_version=WAVE_STRATEGY_VERSION,
+            signal_count=2,
+            completed_check_count=2,
+            pending_check_count=0,
+            failed_check_count=0,
+            horizons=(
+                WaveHorizonMetrics(
+                    strategy_version=WAVE_STRATEGY_VERSION,
+                    horizon_minutes=60,
+                    sample_size=2,
+                    wins=1,
+                    win_rate_pct=50,
+                    win_rate_low_pct=9.5,
+                    win_rate_high_pct=90.5,
+                    average_return_pct=1,
+                    median_return_pct=1,
+                    total_pnl_usd=0.5,
+                    average_pnl_usd=0.25,
+                    profit_factor=1.2,
+                    max_drawdown_usd=1,
+                    best_return_pct=6,
+                    worst_return_pct=-4,
+                ),
+            ),
+            exposures=(
+                WaveExposureMetrics(
+                    horizon_minutes=60,
+                    max_concurrent_positions=3,
+                    max_capital_deployed_usd=75,
+                    capital_budget_usd=50,
+                    capital_utilization_pct=150,
+                    budget_exceeded=True,
+                ),
+            ),
+        )
+
+        output = format_evaluation_report(report)
+
+        self.assertIn("Exposição máxima: 3 posições", output)
+        self.assertIn("EXCEDEU O SALDO", output)
 
 
 if __name__ == "__main__":

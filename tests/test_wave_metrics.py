@@ -10,6 +10,7 @@ from src.wave_metrics import (
     build_wave_evaluation_report,
     summarize_horizon,
     summarize_fixed_cohorts,
+    summarize_exposure,
     summarize_slippage_stress,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -90,6 +91,7 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertEqual(report.horizons[0].average_return_pct, 5)
         self.assertEqual(len(report.slippage_stress), 4)
         self.assertEqual(len(report.cohorts), 2)
+        self.assertEqual(len(report.exposures), 1)
 
     def test_slippage_stress_recalculates_both_sides_from_market_prices(self):
         observations = [
@@ -141,6 +143,20 @@ class WaveMetricsTests(unittest.TestCase):
             buckets[("volume_acceleration", "2.00x+")].win_rate_pct,
             0,
         )
+
+    def test_exposure_reuses_capital_when_exit_and_entry_share_timestamp(self):
+        observations = [
+            {"detected_at": 0, "target_at": 600, "copy_size_usd": 25},
+            {"detected_at": 300, "target_at": 900, "copy_size_usd": 25},
+            {"detected_at": 600, "target_at": 1_200, "copy_size_usd": 25},
+        ]
+
+        exposure = summarize_exposure(10, observations, capital_budget_usd=40)
+
+        self.assertEqual(exposure.max_concurrent_positions, 2)
+        self.assertEqual(exposure.max_capital_deployed_usd, 50)
+        self.assertEqual(exposure.capital_utilization_pct, 125)
+        self.assertTrue(exposure.budget_exceeded)
 
 
 if __name__ == "__main__":
