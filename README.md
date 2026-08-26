@@ -239,6 +239,27 @@ O intervalo mínimo é 30 segundos e o máximo são 288 ciclos. Uma falha tempor
 registrada e a próxima rodada continua; erro de configuração encerra imediatamente.
 `Ctrl+C` é seguro porque cada ciclo confirmado já foi persistido no SQLite.
 
+### Monitor híbrido econômico
+
+Para acompanhamento prolongado, prefira o monitor híbrido. Ele atualiza checkpoints pelo
+GeckoTerminal a cada cinco minutos, mas procura tokens novos no Solana Tracker somente a
+cada 30 minutos:
+
+```powershell
+python monitor.py --hours 12 --price-interval-minutes 5 --discovery-interval-minutes 30 --tokens 25 --top 3
+```
+
+O comando mostra antes de iniciar o número planejado de rodadas no Solana Tracker. Com os
+valores acima, são 24 rodadas em aproximadamente 12 horas; retentativas de rede ainda podem
+gerar requisições adicionais. As atualizações intermediárias de preço não usam essa fonte.
+Se um discovery falhar temporariamente, o monitor continua tentando concluir os
+checkpoints existentes.
+
+O processo fica no PowerShell e exige que o computador permaneça ligado e sem suspensão.
+Ele termina sozinho depois de `--hours` ou pode ser encerrado com `Ctrl+C`; os dados já
+salvos não são apagados. A duração aceita fica entre 30 minutos e 72 horas, evitando um
+processo acidentalmente ilimitado.
+
 Depois, avalie somente a estratégia atual:
 
 ```powershell
@@ -415,6 +436,7 @@ app.py                 dashboard
 discover.py            CLI de discovery, filtros e Top 10
 radar.py               CLI de tokens ativos e Wave Score inicial
 collect.py             polling limitado para formar amostra paper
+monitor.py             preços frequentes com discovery econômico e independente
 evaluate.py            estatísticas por versão e horizonte
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas

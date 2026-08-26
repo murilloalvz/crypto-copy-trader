@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         f"Duração: {args.hours:g}h | preços: {args.price_interval_minutes:g}min | "
         f"discovery: {args.discovery_interval_minutes:g}min"
     )
-    print(f"Máximo planejado de buscas no Solana Tracker: {planned_discoveries}")
+    print(f"Rodadas planejadas de discovery no Solana Tracker: {planned_discoveries}")
     try:
         summary = run_hybrid_monitor(
             duration_seconds=args.hours * 3_600,
