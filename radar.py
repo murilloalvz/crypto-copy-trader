@@ -139,6 +139,7 @@ def format_paper_report(update, signals: list[dict], *, now: int) -> str:
             [
                 "",
                 f"{label} | {signal['status'].upper()}",
+                f"Estratégia: {signal.get('strategy_version', 'não versionada')}",
                 f"Mint: {signal['token_mint']}",
                 (
                     f"Entrada observada: US$ {signal['entry_market_price_usd']:.10g} | "
