@@ -26,6 +26,8 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - Candidate Score explicável com consistência, ROI, drawdown e penalizações básicas.
 - filtro de liquidez atual ponderado pelo capital da wallet;
 - Copyability Score separado, com liquidez, ritmo, posição média e proxy de impacto.
+- watchlist em três níveis: aprovada, observação e reprovada;
+- detector inicial de convergência entre compras de wallets independentes.
 
 ## Wallet discovery
 
@@ -54,7 +56,7 @@ python discover.py --wallets 50 --top 10
 O funil é independente do dashboard:
 
 ```text
-discover.py -> fonte -> filtros -> Candidate Score -> liquidez -> Copyability Score
+discover.py -> fonte -> filtros -> Candidate Score -> liquidez -> Copyability Score -> watchlist
 app.py      -> monitoramento manual da wallet escolhida
 ```
 
@@ -138,6 +140,30 @@ A ponderação por capital evita que uma wallet passe apenas por negociar muitos
 líquidos com valores pequenos enquanto concentra o dinheiro em tokens rasos. Liquidez zero
 é tratada como ilíquida; campo ausente é tratado como desconhecido e reduz a cobertura.
 Uma wallet pode ter Candidate Score alto e ser reprovada para cópia.
+
+### Watchlist e convergência de wallets
+
+O resultado deixou de ser apenas binário, sem reduzir as barreiras de segurança:
+
+- `APROVADA`: passou por todas as barreiras e pode avançar ao laboratório de paper copy;
+- `OBSERVAÇÃO`: tem Candidate Score mínimo de 75 e Copyability Score mínimo de 55,
+  mas falhou somente por participação de tokens ou capital líquido. Pode contribuir com
+  sinais coletivos, porém nunca autoriza cópia individual;
+- `REPROVADA`: possui dados insuficientes, estratégia rápida/HFT, baixa qualidade ou outra
+  barreira operacional e não participa da watchlist.
+
+O módulo puro `src/waves.py` é a primeira fundação do futuro Wave Detector. Ele normaliza
+compras públicas e procura convergência no mesmo token dentro de cinco minutos. Uma única
+wallet nunca cria um candidato. Por padrão, uma wallet aprovada pesa 1,0 e uma wallet em
+observação pesa 0,5; são exigidas ao menos duas wallets independentes e peso total de 1,5.
+Eventos repetidos da mesma wallet, vendas, wallets reprovadas e sinais fora da janela são
+ignorados.
+
+O resultado ainda se chama `WaveCandidate`, não `Wave Score`: convergência sozinha não
+autoriza nem mesmo uma entrada fictícia. Antes do paper trading, a próxima etapa deverá
+consultar liquidez e impacto no momento do sinal, concentração de holders, autoridades de
+mint/freeze, idade do token e aceleração de preço/volume. O módulo atual não monitora a
+rede em tempo real e não executa transações.
 
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
