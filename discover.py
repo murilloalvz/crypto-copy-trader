@@ -3,6 +3,7 @@ import sys
 
 from src.discovery.ranking import REJECTION_LABELS
 from src.discovery.copyability import COPYABILITY_REJECTION_LABELS
+from src.discovery.models import WalletTier
 from src.discovery.solana_tracker import (
     SolanaTrackerAuthenticationError,
     SolanaTrackerConfigurationError,
@@ -48,6 +49,7 @@ def format_report(report, top_n: int = 10) -> str:
         f"Passaram para o Candidate Score: {report.passed_count}",
         f"Avaliadas por liquidez/copyability: {report.copyability_evaluated_count}",
         f"Aprovadas para laboratório de cópia: {report.copyable_count}",
+        f"Wallets somente para observação: {report.observed_count}",
         f"Eliminadas pelos filtros locais: {report.rejected_count}",
         f"Falhas de dados: {len(report.data_errors)}",
     ]
@@ -72,6 +74,12 @@ def format_report(report, top_n: int = 10) -> str:
         lines.append("Nenhuma wallet reuniu dados suficientes para avaliar copyability.")
     for position, copyability in enumerate(top, start=1):
         candidate = copyability.candidate
+        entry = next(item for item in report.watchlist if item.address == candidate.address)
+        tier_label = {
+            WalletTier.APPROVED: "APROVADA",
+            WalletTier.OBSERVE: "OBSERVAÇÃO",
+            WalletTier.REJECTED: "REPROVADA",
+        }[entry.tier]
         metrics = candidate.metrics_30d
         signals = candidate.signals
         lines.extend(
@@ -83,7 +91,7 @@ def format_report(report, top_n: int = 10) -> str:
                 f"Candidate Score: {candidate.candidate_score:.1f}/100",
                 (
                     f"Copyability Score: {copyability.copyability_score:.1f}/100 | "
-                    f"{'APROVADA' if copyability.passed else 'REPROVADA'}"
+                    f"{tier_label}"
                 ),
                 f"PnL realizado 30d: US$ {_money(metrics.realized_pnl_usd)}",
                 f"ROI 30d: {metrics.roi_pct:+.1f}% | Win rate: {metrics.win_rate_pct:.1f}%",
@@ -148,11 +156,24 @@ def format_report(report, top_n: int = 10) -> str:
                 "Nenhuma nesta rodada: todas falharam em ao menos uma barreira de copyability.",
             ]
         )
+    observed = list(report.observed_candidates)
+    if observed:
+        lines.extend(
+            [
+                "",
+                "WATCHLIST DE OBSERVAÇÃO",
+                *(
+                    f"- {item.address}: sinal coletivo apenas; nunca autoriza cópia sozinha"
+                    for item in observed
+                ),
+            ]
+        )
     lines.extend(
         [
             "",
             "LIMITAÇÕES DESTA ETAPA",
             "- Candidate Score mede qualidade; Copyability Score mede viabilidade técnica estimada.",
+            "- OBSERVAÇÃO alimentará convergência entre wallets, mas não autoriza paper copy individual.",
             "- A fonte filtra concentração por token, mas não retorna a distribuição de cada trade.",
             "- A liquidez é a fotografia atual do token, não a liquidez histórica no momento do trade.",
             "- O impacto de entrada é apenas um proxy; ainda não simulamos a rota e o slippage por token.",

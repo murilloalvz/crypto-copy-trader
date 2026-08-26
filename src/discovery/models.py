@@ -1,4 +1,13 @@
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class WalletTier(str, Enum):
+    """Operational discovery tier; only APPROVED can reach paper copy."""
+
+    APPROVED = "approved"
+    OBSERVE = "observe"
+    REJECTED = "rejected"
 
 
 @dataclass(frozen=True)
@@ -96,6 +105,20 @@ class DiscoveryReport:
     @property
     def copyable_count(self) -> int:
         return len(self.copyable_candidates)
+
+    @property
+    def watchlist(self) -> tuple["WatchlistEntry", ...]:
+        from src.discovery.watchlist import build_watchlist
+
+        return build_watchlist(self.copyability_results)
+
+    @property
+    def observed_candidates(self) -> tuple["WatchlistEntry", ...]:
+        return tuple(item for item in self.watchlist if item.tier == WalletTier.OBSERVE)
+
+    @property
+    def observed_count(self) -> int:
+        return len(self.observed_candidates)
 
 
 @dataclass(frozen=True)
@@ -240,3 +263,16 @@ class CopyabilityResult:
     reasons: tuple[str, ...]
     rejection_reasons: tuple[str, ...]
     score_components: dict[str, float]
+
+
+@dataclass(frozen=True)
+class WatchlistEntry:
+    """A classified wallet for monitoring, never an execution authorization."""
+
+    copyability: CopyabilityResult
+    tier: WalletTier
+    reasons: tuple[str, ...]
+
+    @property
+    def address(self) -> str:
+        return self.copyability.candidate.address

@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from discover import format_report
@@ -27,6 +28,38 @@ class DiscoveryCLITests(unittest.TestCase):
         self.assertIn("WALLET DE LABORATÓRIO SUGERIDA", output)
         self.assertIn(WALLET_GOOD, output)
         self.assertIn("Copyability Score mede viabilidade técnica estimada", output)
+
+    def test_report_keeps_liquidity_near_miss_in_observation_watchlist(self):
+        client = FakeTrackerClient()
+        original_positions = client.wallet_positions
+
+        def illiquid_capital(address, *, period, limit):
+            result = original_positions(address, period=period, limit=limit)
+            positions = tuple(
+                replace(
+                    item,
+                    liquidity_usd=100_000 if index < 6 else 10_000,
+                    invested_usd=100 if index < 6 else 250,
+                )
+                for index, item in enumerate(result.positions)
+            )
+            return replace(result, positions=positions)
+
+        client.wallet_positions = illiquid_capital
+        report = SolanaTrackerDiscoveryService(
+            client=client,
+            now=datetime(2026, 8, 21, 12, tzinfo=timezone.utc),
+        ).discover(250)
+
+        output = format_report(report, top_n=10)
+
+        self.assertEqual(report.copyable_count, 0)
+        self.assertEqual(report.observed_count, 1)
+        self.assertIn("Wallets somente para observação: 1", output)
+        self.assertIn("Copyability Score:", output)
+        self.assertIn("| OBSERVAÇÃO", output)
+        self.assertIn("WATCHLIST DE OBSERVAÇÃO", output)
+        self.assertIn(WALLET_GOOD, output)
 
 
 if __name__ == "__main__":

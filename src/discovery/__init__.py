@@ -8,10 +8,13 @@ from src.discovery.models import (
     DiscoveryReport,
     LeaderboardWallet,
     WalletPeriodMetrics,
+    WalletTier,
+    WatchlistEntry,
 )
 from src.discovery.service import WalletDiscoveryService
 from src.discovery.solana_tracker import SolanaTrackerClient
 from src.discovery.tracker_service import SolanaTrackerDiscoveryService
+from src.discovery.watchlist import WatchlistPolicy, build_watchlist, classify_wallet
 
 __all__ = [
     "BirdeyeClient",
@@ -24,4 +27,9 @@ __all__ = [
     "SolanaTrackerDiscoveryService",
     "WalletDiscoveryService",
     "WalletPeriodMetrics",
+    "WalletTier",
+    "WatchlistEntry",
+    "WatchlistPolicy",
+    "build_watchlist",
+    "classify_wallet",
 ]
