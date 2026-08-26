@@ -270,6 +270,15 @@ e aceleração de volume:
 python evaluate.py --cohorts
 ```
 
+Para atualizar somente checkpoints vencidos, sem gastar chamadas do Solana Tracker:
+
+```powershell
+python evaluate.py --update-prices --cohorts
+```
+
+Essa opção consulta apenas os candles históricos do GeckoTerminal e depois recalcula o
+relatório local. Ela não procura tokens novos; serve para concluir sinais já salvos.
+
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
 os filtros atuais.
