@@ -240,22 +240,24 @@ class SolanaTrackerDiscoveryService:
             ("days", "desc"),
             ("trades", "asc"),
         )
-        pools = [
-            self.client.top_traders(
-                source_limit,
-                sort_by=sort_by,
-                direction=direction,
-                days=30,
-                min_trades=self.policy.min_trades_30d,
-                min_win_rate=self.policy.min_win_rate_pct,
-                min_roi=0,
-                min_closed_tokens=self.policy.min_realized_outcomes,
-                max_single_token_pct=self.policy.max_single_token_profit_pct,
-                min_invested_usd=self.policy.min_invested_usd_30d,
-                min_trading_days=self.policy.min_trading_days_30d,
+        pools = []
+        for current, (sort_by, direction) in enumerate(views, start=1):
+            self._notify("source", current, len(views), f"{sort_by}:{direction}")
+            pools.append(
+                self.client.top_traders(
+                    source_limit,
+                    sort_by=sort_by,
+                    direction=direction,
+                    days=30,
+                    min_trades=self.policy.min_trades_30d,
+                    min_win_rate=self.policy.min_win_rate_pct,
+                    min_roi=0,
+                    min_closed_tokens=self.policy.min_realized_outcomes,
+                    max_single_token_pct=self.policy.max_single_token_profit_pct,
+                    min_invested_usd=self.policy.min_invested_usd_30d,
+                    min_trading_days=self.policy.min_trading_days_30d,
+                )
             )
-            for sort_by, direction in views
-        ]
         selected = []
         seen = set()
         index = 0

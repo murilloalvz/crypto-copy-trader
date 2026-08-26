@@ -186,7 +186,8 @@ def format_report(report, top_n: int = 10) -> str:
 def _progress(stage: str, current: int, total: int, address: str) -> None:
     if not total:
         return
-    message = f"[{stage}] {current}/{total} {_short_address(address)}"
+    label = address if stage == "source" else _short_address(address)
+    message = f"[{stage}] {current}/{total} {label}"
     if sys.stderr.isatty():
         print(f"\r{message:<70}", end="", file=sys.stderr, flush=True)
         if current == total:

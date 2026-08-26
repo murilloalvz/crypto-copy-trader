@@ -51,6 +51,8 @@ SOLANA_TRACKER_MAX_ATTEMPTS=3
 Não envie essa chave para o GitHub nem para outra pessoa. O `.env.example` contém apenas
 o nome da variável. Timeout e tentativas limitam quanto uma consulta instável pode
 segurar a rodada; falhas no histórico de uma wallet são registradas e as demais continuam.
+O terminal mostra `[source] 1/5` até `[source] 5/5` enquanto combina os cinco
+leaderboards, antes das etapas `liquid-seed`, `history` e `liquidity`.
 Para um teste menor e mais rápido:
 
 ```powershell

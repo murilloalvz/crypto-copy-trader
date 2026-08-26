@@ -126,8 +126,13 @@ class FakeTrackerClient:
 class TrackerDiscoveryTests(unittest.TestCase):
     def test_filters_hft_before_history_and_builds_risk_signals(self):
         client = FakeTrackerClient()
+        progress = []
 
-        report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(250)
+        report = SolanaTrackerDiscoveryService(
+            client=client,
+            now=NOW,
+            progress=lambda *args: progress.append(args),
+        ).discover(250)
 
         self.assertEqual(report.source_count, 2)
         self.assertEqual(report.prefiltered_count, 1)
@@ -152,6 +157,10 @@ class TrackerDiscoveryTests(unittest.TestCase):
         self.assertEqual(top_calls[0][2]["max_single_token_pct"], 30)
         self.assertEqual(top_calls[0][2]["min_invested_usd"], 500)
         self.assertEqual(top_calls[0][2]["min_trading_days"], 10)
+        source_progress = [item for item in progress if item[0] == "source"]
+        self.assertEqual(len(source_progress), 5)
+        self.assertEqual(source_progress[0], ("source", 1, 5, "realized:desc"))
+        self.assertEqual(source_progress[-1], ("source", 5, 5, "trades:asc"))
 
     def test_rejects_dust_capital_even_with_extreme_roi(self):
         dust = replace(snapshot(WALLET_GOOD), invested_usd=10, roi_pct=100_000)
