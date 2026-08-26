@@ -84,8 +84,8 @@ class SolanaTrackerClient:
         api_key: str | None = None,
         *,
         base_url: str = SOLANA_TRACKER_BASE_URL,
-        timeout: int = 30,
-        max_attempts: int = 5,
+        timeout: int | None = None,
+        max_attempts: int | None = None,
         request_interval_seconds: float = 0.75,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -93,8 +93,16 @@ class SolanaTrackerClient:
         configured = settings.solana_tracker_api_key if api_key is None else api_key
         self.api_key = configured.strip()
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.max_attempts = max(1, max_attempts)
+        configured_timeout = (
+            settings.solana_tracker_timeout_seconds if timeout is None else timeout
+        )
+        configured_attempts = (
+            settings.solana_tracker_max_attempts
+            if max_attempts is None
+            else max_attempts
+        )
+        self.timeout = max(1, int(configured_timeout))
+        self.max_attempts = max(1, int(configured_attempts))
         self.request_interval_seconds = max(0.0, request_interval_seconds)
         self._sleeper = sleeper
         self._clock = clock

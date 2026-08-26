@@ -7,6 +7,7 @@ from urllib.error import URLError
 from src.discovery.solana_tracker import (
     SolanaTrackerClient,
     SolanaTrackerConfigurationError,
+    SolanaTrackerError,
 )
 
 WALLET_A = "HkFGQsW8mr8DTC2AE2WcC7MzwSnynfEryGMQSht271nf"
@@ -239,6 +240,25 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         context = mocked_urlopen.call_args_list[1].kwargs["context"]
         self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
         self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_2)
+
+    @patch("src.discovery.solana_tracker.urlopen")
+    def test_timeout_has_bounded_attempts(self, mocked_urlopen):
+        mocked_urlopen.side_effect = TimeoutError("slow source")
+        client = SolanaTrackerClient(
+            api_key="test-key",
+            timeout=2,
+            max_attempts=2,
+            request_interval_seconds=0,
+            sleeper=lambda _seconds: None,
+        )
+
+        with self.assertRaisesRegex(SolanaTrackerError, "após 2 tentativas"):
+            client.top_traders(1)
+
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertTrue(
+            all(call.kwargs["timeout"] == 2 for call in mocked_urlopen.call_args_list)
+        )
 
 
 if __name__ == "__main__":

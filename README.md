@@ -44,10 +44,14 @@ Solana Tracker e adicione ao `.env`:
 
 ```text
 SOLANA_TRACKER_API_KEY=cole_sua_chave_aqui
+SOLANA_TRACKER_TIMEOUT_SECONDS=12
+SOLANA_TRACKER_MAX_ATTEMPTS=3
 ```
 
 Não envie essa chave para o GitHub nem para outra pessoa. O `.env.example` contém apenas
-o nome da variável. Para um teste menor e mais rápido:
+o nome da variável. Timeout e tentativas limitam quanto uma consulta instável pode
+segurar a rodada; falhas no histórico de uma wallet são registradas e as demais continuam.
+Para um teste menor e mais rápido:
 
 ```powershell
 python discover.py --wallets 50 --top 10
