@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -55,7 +56,7 @@ class ReconciliationTests(unittest.TestCase):
     def test_existing_database_receives_dex_column(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "legacy.db"
-            with sqlite3.connect(database_path) as conn:
+            with closing(sqlite3.connect(database_path)) as conn:
                 conn.execute(
                     """CREATE TABLE transactions (
                     signature TEXT PRIMARY KEY,
@@ -71,6 +72,7 @@ class ReconciliationTests(unittest.TestCase):
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )"""
                 )
+                conn.commit()
 
             test_settings = SimpleNamespace(database_path=database_path)
             with patch.object(database, "settings", test_settings):

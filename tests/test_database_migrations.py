@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -37,7 +38,7 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_price_diagnostic_columns_are_added_without_losing_existing_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old-copytrader.db"
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.executescript(OLD_PAPER_TRADES_SCHEMA)
                 conn.execute(
                     """INSERT INTO paper_trades
@@ -46,12 +47,13 @@ class DatabaseMigrationTests(unittest.TestCase):
                     VALUES ('sig-old', 'wallet-old', 'token-old', 'buy', 1, 25, 100,
                     15, 'price_unavailable', 'erro antigo')"""
                 )
+                conn.commit()
 
             test_settings = SimpleNamespace(database_path=path)
             with patch.object(database, "settings", test_settings):
                 initialize_database()
 
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 conn.row_factory = sqlite3.Row
                 columns = {
                     row["name"]
