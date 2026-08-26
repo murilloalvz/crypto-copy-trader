@@ -74,6 +74,47 @@ CREATE TABLE IF NOT EXISTS price_cache (
     pool_address TEXT NOT NULL,
     PRIMARY KEY (token_mint, minute_ts)
 );
+
+CREATE TABLE IF NOT EXISTS wave_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_mint TEXT NOT NULL,
+    symbol TEXT,
+    name TEXT,
+    detected_at INTEGER NOT NULL,
+    wave_score REAL NOT NULL,
+    entry_market_price_usd REAL NOT NULL,
+    entry_execution_price_usd REAL NOT NULL,
+    copy_size_usd REAL NOT NULL,
+    slippage_bps INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'tracking',
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(token_mint, detected_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wave_signals_token_time
+ON wave_signals(token_mint, detected_at DESC);
+
+CREATE TABLE IF NOT EXISTS wave_signal_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    horizon_minutes INTEGER NOT NULL,
+    target_at INTEGER NOT NULL,
+    observed_at INTEGER,
+    market_price_usd REAL,
+    execution_price_usd REAL,
+    return_pct REAL,
+    pnl_usd REAL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(signal_id, horizon_minutes),
+    FOREIGN KEY (signal_id) REFERENCES wave_signals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wave_signal_checks_due
+ON wave_signal_checks(status, target_at);
 """
 
 

@@ -163,7 +163,13 @@ class GeckoTerminalPriceProvider:
         """Return the current chosen pool metrics used for signal eligibility."""
         return self._resolve_pool(token_mint)
 
-    def price_at(self, token_mint: str, timestamp: int) -> float:
+    def price_at(
+        self,
+        token_mint: str,
+        timestamp: int,
+        *,
+        max_distance_seconds: int = 3_600,
+    ) -> float:
         minute_ts = timestamp - timestamp % 60
         if token_mint in STABLECOIN_MINTS:
             return 1.0
@@ -196,7 +202,7 @@ class GeckoTerminalPriceProvider:
             )
         candle = candles[0]
         candle_ts, close_price = int(candle[0]), float(candle[4])
-        if abs(candle_ts - minute_ts) > 3_600:
+        if abs(candle_ts - minute_ts) > max_distance_seconds:
             raise PermanentPriceProviderError(
                 f"Candle disponível está distante demais do horário do sinal para {token_mint}.",
                 code="distant_historical_candle",

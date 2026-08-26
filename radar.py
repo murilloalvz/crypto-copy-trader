@@ -8,11 +8,14 @@ from src.discovery.solana_tracker import (
     SolanaTrackerError,
     SolanaTrackerClient,
 )
+from src.database import initialize_database
 from src.wave_radar import (
     RADAR_BARRIER_LABELS,
+    RADAR_CAUTION_LABELS,
     WaveRadarPolicy,
     build_wave_radar_report,
 )
+from src.wave_paper import latest_paper_signals, run_wave_paper_cycle
 
 
 def _short_address(address: str) -> str:
@@ -40,7 +43,7 @@ def format_report(report, *, top_n: int = 10, now_ms: int | None = None) -> str:
         "Crypto Copy Trader — Wave Radar",
         "",
         "Fonte: Solana Tracker Token Search | Janela de atividade: 5 minutos",
-        "Modo: READ ONLY — nenhum token é comprado ou adicionado ao paper trading.",
+        "Modo: READ ONLY — nenhum token é comprado; sinais ficam somente no banco local.",
         "",
         f"Tokens analisados: {report.analyzed_count}",
         f"Aptos para paper signal: {report.passed_count}",
@@ -75,7 +78,8 @@ def format_report(report, *, top_n: int = 10, now_ms: int | None = None) -> str:
                     f"US$ {_money(token.volume_1h_usd)} / US$ {_money(token.volume_24h_usd)}"
                 ),
                 (
-                    f"Holders: {token.holders} | Transações: {token.total_transactions} | "
+                    f"Holders: {token.holders if token.holders is not None else 'indisponível'} | "
+                    f"Transações: {token.total_transactions} | "
                     f"Idade: {_age(token.created_at_ms, now_ms)}"
                 ),
                 (
@@ -97,14 +101,72 @@ def format_report(report, *, top_n: int = 10, now_ms: int | None = None) -> str:
                 "Barreiras: "
                 + "; ".join(RADAR_BARRIER_LABELS.get(item, item) for item in result.barriers)
             )
+        if result.cautions:
+            lines.append(
+                "Atenções: "
+                + "; ".join(RADAR_CAUTION_LABELS.get(item, item) for item in result.cautions)
+            )
     lines.extend(
         [
             "",
             "IMPORTANTE",
             "- Wave Score ordena atividade atual; não prevê valorização futura.",
-            "- APTA significa apenas que passou pelos filtros para futura simulação.",
-            "- Convergência de wallets e acompanhamento do preço entram no próximo marco.",
+            "- APTA significa apenas que passou pelos filtros para simulação local.",
+            "- Convergência de wallets ainda será uma confirmação adicional futura.",
             "- Nenhuma chave privada, assinatura, compra ou venda é utilizada.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_paper_report(update, signals: list[dict], *, now: int) -> str:
+    lines = [
+        "LABORATÓRIO PAPER DO RADAR",
+        "",
+        f"Novos sinais salvos: {update.created_signals}",
+        f"Horizontes atualizados nesta rodada: {update.completed_checks}",
+        f"Horizontes com falha definitiva: {update.failed_checks}",
+        f"Horizontes ainda pendentes: {update.pending_checks}",
+    ]
+    if not signals:
+        lines.extend(["", "Nenhum sinal apto foi salvo até agora."])
+        return "\n".join(lines)
+
+    lines.extend(["", "SINAIS MAIS RECENTES"])
+    for signal in signals:
+        label = signal["symbol"] or signal["name"] or _short_address(signal["token_mint"])
+        lines.extend(
+            [
+                "",
+                f"{label} | {signal['status'].upper()}",
+                f"Mint: {signal['token_mint']}",
+                (
+                    f"Entrada observada: US$ {signal['entry_market_price_usd']:.10g} | "
+                    f"execução paper: US$ {signal['entry_execution_price_usd']:.10g}"
+                ),
+                (
+                    f"Tamanho fictício: US$ {_money(signal['copy_size_usd'])} | "
+                    f"slippage por lado: {signal['slippage_bps'] / 100:.2f}%"
+                ),
+            ]
+        )
+        for check in signal["checks"]:
+            horizon = f"{check['horizon_minutes']}m"
+            if check["status"] == "completed":
+                lines.append(
+                    f"- {horizon}: retorno líquido {check['return_pct']:+.2f}% | "
+                    f"P&L paper US$ {check['pnl_usd']:+.2f}"
+                )
+            elif check["status"] == "failed":
+                lines.append(f"- {horizon}: falha de preço — {check['error']}")
+            else:
+                remaining = max(0, int((check["target_at"] - now + 59) / 60))
+                lines.append(f"- {horizon}: pendente (aprox. {remaining} min)")
+    lines.extend(
+        [
+            "",
+            "O retorno líquido aplica o slippage configurado na entrada e na saída.",
+            "Nenhuma ordem, assinatura ou movimentação de dinheiro é realizada.",
         ]
     )
     return "\n".join(lines)
@@ -118,6 +180,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--min-liquidity", type=float, default=50_000)
     parser.add_argument("--min-volume-5m", type=float, default=5_000)
+    parser.add_argument(
+        "--no-paper",
+        action="store_true",
+        help="Não salva nem atualiza o laboratório paper nesta execução.",
+    )
     return parser
 
 
@@ -146,7 +213,14 @@ def main(argv: list[str] | None = None) -> int:
     except SolanaTrackerError as exc:
         print(f"Falha no Wave Radar: {exc}", file=sys.stderr)
         return 1
-    print(format_report(build_wave_radar_report(tokens, policy), top_n=args.top))
+    report = build_wave_radar_report(tokens, policy)
+    print(format_report(report, top_n=args.top))
+    if not args.no_paper:
+        initialize_database()
+        now = int(datetime.now(timezone.utc).timestamp())
+        update = run_wave_paper_cycle(report.results, now=now)
+        print()
+        print(format_paper_report(update, latest_paper_signals(10), now=now))
     return 0
 
 
