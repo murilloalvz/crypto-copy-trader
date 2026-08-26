@@ -51,6 +51,28 @@ class WaveEvaluationCLITests(unittest.TestCase):
         self.assertIn("PAPER/READ ONLY", output.getvalue())
         self.assertIn("menos de 30 observações", output.getvalue())
 
+    def test_update_prices_does_not_call_solana_tracker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with (
+                patch.object(
+                    database,
+                    "settings",
+                    SimpleNamespace(database_path=Path(directory) / "prices.db"),
+                ),
+                patch(
+                    "evaluate.update_due_paper_checks",
+                    return_value={"completed": 2, "pending": 4, "failed": 0},
+                ) as update,
+                redirect_stdout(output),
+            ):
+                exit_code = main(["--update-prices"])
+
+        self.assertEqual(exit_code, 0)
+        update.assert_called_once_with()
+        self.assertIn("2 concluídos | 4 pendentes", output.getvalue())
+        self.assertIn("Solana Tracker não consultado", output.getvalue())
+
     def test_report_displays_slippage_robustness(self):
         report = WaveEvaluationReport(
             strategy_version=WAVE_STRATEGY_VERSION,

@@ -2,7 +2,11 @@ import argparse
 
 from src.database import initialize_database, rows
 from src.wave_metrics import build_wave_evaluation_report
-from src.wave_paper import WAVE_STRATEGY_VERSION, backfill_wave_strategy_versions
+from src.wave_paper import (
+    WAVE_STRATEGY_VERSION,
+    backfill_wave_strategy_versions,
+    update_due_paper_checks,
+)
 
 
 def _strategy_versions(include_all: bool) -> list[str]:
@@ -140,6 +144,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Mostra faixas exploratórias fixas de score e aceleração.",
     )
+    parser.add_argument(
+        "--update-prices",
+        action="store_true",
+        help=(
+            "Atualiza checkpoints vencidos via GeckoTerminal sem consultar o "
+            "Solana Tracker."
+        ),
+    )
     return parser
 
 
@@ -149,6 +161,15 @@ def main(argv: list[str] | None = None) -> int:
     backfill_wave_strategy_versions()
     print("Crypto Copy Trader — Wave Evaluation")
     print("Modo: PAPER/READ ONLY — resultados observados não garantem lucro futuro.")
+    if args.update_prices:
+        price_update = update_due_paper_checks()
+        print(
+            "Atualização de preços: "
+            f"{price_update['completed']} concluídos | "
+            f"{price_update['pending']} pendentes | "
+            f"{price_update['failed']} falhos"
+        )
+        print("Fonte desta atualização: GeckoTerminal; Solana Tracker não consultado.")
     for version in _strategy_versions(args.all_strategies):
         print()
         print(
