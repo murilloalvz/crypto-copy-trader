@@ -257,6 +257,10 @@ retorno. Cada horizonte também é recalculado com slippage de 0,5%, 1%, 2% e 3%
 Esse stress test usa os preços de mercado já armazenados e mostra quando uma aparente
 vantagem desaparece com custos mais conservadores.
 
+O relatório calcula ainda o pico de posições simultâneas e de capital fictício empregado
+em cada horizonte. Se os sinais exigirem mais que `STARTING_BALANCE_USD`, o resultado mostra
+`EXCEDEU O SALDO` em vez de pressupor capital infinito.
+
 Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é `PRELIMINAR`.
 Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para decidir se a
 regra merece nova validação. Para abrir as coortes exploratórias predefinidas de Wave Score
