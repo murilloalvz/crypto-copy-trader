@@ -245,6 +245,21 @@ Para acompanhamento prolongado, prefira o monitor híbrido. Ele atualiza checkpo
 GeckoTerminal a cada cinco minutos, mas procura tokens novos no Solana Tracker somente a
 cada 30 minutos:
 
+No Windows, a forma recomendada é o inicializador abaixo. Ele usa o Python da `.venv` sem
+exigir ativação manual, salva toda a sessão em `logs/` e gera a avaliação ao final:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1
+```
+
+Para mudar a duração, por exemplo para 24 horas:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1 -Hours 24
+```
+
+Alternativamente, execute o monitor diretamente:
+
 ```powershell
 python monitor.py --hours 12 --price-interval-minutes 5 --discovery-interval-minutes 30 --tokens 25 --top 3
 ```
@@ -258,7 +273,9 @@ checkpoints existentes.
 O processo fica no PowerShell e exige que o computador permaneça ligado e sem suspensão.
 Ele termina sozinho depois de `--hours` ou pode ser encerrado com `Ctrl+C`; os dados já
 salvos não são apagados. A duração aceita fica entre 30 minutos e 72 horas, evitando um
-processo acidentalmente ilimitado.
+processo acidentalmente ilimitado. Quando a duração termina normalmente, o monitor atualiza
+os checkpoints vencidos e imprime automaticamente a avaliação com coortes. Use
+`--skip-final-evaluation` somente se quiser omitir essa etapa.
 
 Depois, avalie somente a estratégia atual:
 
