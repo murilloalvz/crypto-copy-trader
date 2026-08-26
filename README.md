@@ -188,13 +188,15 @@ python radar.py --tokens 25 --top 10
 ```
 
 As barreiras padrão exigem pelo menos US$ 50 mil de liquidez, US$ 5 mil de volume em cinco
-minutos, 50 holders confirmados, 50 transações, Risk Score máximo 6/10, Top 10 abaixo de
-40%, dev abaixo de 10%, insiders e snipers abaixo de 20%, nenhuma mint/freeze authority
-ativa e ausência de desequilíbrio extremo entre compras e vendas. `lpBurn` abaixo de 90%
-vira atenção contextual em vez de reprovação universal: pools de liquidez concentrada
-podem retornar zero mesmo quando esse mecanismo não se aplica da mesma forma. O Risk Score
-da fonte continua sendo a barreira agregada de segurança. Um holder count zero junto de
-atividade real é tratado como dado indisponível, não como zero confiável.
+minutos, aceleração mínima de 1,2x contra a média de cinco minutos da última hora, Wave
+Score mínimo 55, 50 holders confirmados, 50 transações, Risk Score máximo 6/10, Top 10
+abaixo de 40%, dev abaixo de 10%, insiders e snipers abaixo de 20%, nenhuma mint/freeze
+authority ativa e ausência de desequilíbrio extremo entre compras e vendas. Isso separa
+um token apenas líquido/seguro de uma atividade que está realmente acelerando no momento.
+`lpBurn` abaixo de 90% vira atenção contextual em vez de reprovação universal: pools de
+liquidez concentrada podem retornar zero mesmo quando esse mecanismo não se aplica da mesma
+forma. O Risk Score da fonte continua sendo a barreira agregada de segurança. Um holder
+count zero junto de atividade real é tratado como dado indisponível, não como zero confiável.
 
 O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
 aceleração contra a média de cinco minutos da última hora (20), pressão compradora
