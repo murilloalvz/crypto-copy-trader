@@ -1,0 +1,253 @@
+import unittest
+from dataclasses import replace
+from datetime import datetime, timezone
+
+from src.discovery.models import (
+    DailyWalletActivity,
+    LiquidMarket,
+    TokenPosition,
+    TraderSnapshot,
+    TokenTraderSeed,
+    WalletHistory,
+    WalletPositions,
+)
+from src.discovery.ranking import (
+    CandidatePolicy,
+    filter_candidate_signals,
+    filter_tracker_snapshot,
+)
+from src.discovery.tracker_service import SolanaTrackerDiscoveryService
+
+NOW = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
+NOW_MS = int(NOW.timestamp() * 1000)
+WALLET_GOOD = "HkFGQsW8mr8DTC2AE2WcC7MzwSnynfEryGMQSht271nf"
+WALLET_HFT = "ApAKzJEqfnP7F74Za5xdTQxZMK4nD8dFTVBQ9bksTtGM"
+WALLET_LIQUID = "CxZjA9ZL2NpRJut5SHBxiqg75qmwM7dBNU2HJxH9z5wE"
+
+
+def snapshot(address, *, trades=120, last_trade_ms=NOW_MS, pnl=30_000):
+    return TraderSnapshot(
+        address=address,
+        realized_pnl_usd=pnl,
+        volume_usd=150_000,
+        trading_days=18,
+        profitable_days=12,
+        losing_days=6,
+        max_single_day_pnl_usd=8_000,
+        roi_pct=42,
+        invested_usd=60_000,
+        proceeds_usd=90_000,
+        buys=55,
+        sells=trades - 55,
+        trades=trades,
+        tokens_traded=18,
+        profitable_tokens=11,
+        losing_tokens=7,
+        closed_tokens=18,
+        win_rate_pct=61.1,
+        first_trade_ms=NOW_MS - 90 * 86_400_000,
+        last_trade_ms=last_trade_ms,
+        pnl_mode="strict",
+    )
+
+
+def history(address):
+    activities = []
+    for day, pnl in (("2026-08-18", 1_000), ("2026-08-19", -300), ("2026-08-20", 700)):
+        activities.append(
+            DailyWalletActivity(
+                date=day,
+                realized_pnl_usd=pnl,
+                buys=4,
+                sells=4,
+                invested_usd=2_000,
+                volume_usd=4_000,
+                avg_hold_seconds=3_600,
+            )
+        )
+    activities.append(
+        DailyWalletActivity(
+            date="2026-07-01",
+            realized_pnl_usd=4_000,
+            buys=10,
+            sells=10,
+            invested_usd=10_000,
+            volume_usd=20_000,
+            avg_hold_seconds=7_200,
+        )
+    )
+    return WalletHistory(address, tuple(activities))
+
+
+class FakeTrackerClient:
+    def __init__(self):
+        self.calls = []
+
+    def top_traders(self, limit, **kwargs):
+        self.calls.append(("top", limit, kwargs))
+        if kwargs["sort_by"] == "realized":
+            return [snapshot(WALLET_GOOD), snapshot(WALLET_HFT, trades=1_500)]
+        return [snapshot(WALLET_GOOD)]
+
+    def wallet_history(self, address, period):
+        self.calls.append(("history", address, period))
+        return history(address)
+
+    def liquid_markets(self):
+        self.calls.append(("markets",))
+        return [LiquidMarket("1" * 32, "LIQ", 500_000, 250_000, "2" * 32)]
+
+    def token_traders(self, token, *, limit, **kwargs):
+        self.calls.append(("token_traders", token, limit, kwargs))
+        return [TokenTraderSeed(WALLET_LIQUID, token)]
+
+    def wallet_positions(self, address, *, period, limit):
+        self.calls.append(("positions", address, period, limit))
+        positions = tuple(
+            TokenPosition(
+                token=str(index + 1) * 32,
+                symbol=f"T{index}",
+                realized_pnl_usd=100,
+                invested_usd=1_000,
+                roi_pct=10,
+                trades=10,
+                average_buy_usd=100,
+                hold_time_seconds=3_600,
+                last_trade_ms=NOW_MS,
+                liquidity_usd=200_000,
+                market_cap_usd=2_000_000,
+                primary_market="pumpfun-amm",
+            )
+            for index in range(10)
+        )
+        return WalletPositions(address, positions, len(positions), "strict")
+
+
+class TrackerDiscoveryTests(unittest.TestCase):
+    def test_filters_hft_before_history_and_builds_risk_signals(self):
+        client = FakeTrackerClient()
+        progress = []
+
+        report = SolanaTrackerDiscoveryService(
+            client=client,
+            now=NOW,
+            progress=lambda *args: progress.append(args),
+        ).discover(250)
+
+        self.assertEqual(report.source_count, 2)
+        self.assertEqual(report.prefiltered_count, 1)
+        self.assertEqual(report.passed_count, 1)
+        self.assertEqual(report.copyability_evaluated_count, 1)
+        self.assertEqual(report.copyable_count, 1)
+        self.assertEqual(report.candidates[0].address, WALLET_GOOD)
+        self.assertEqual(report.candidates[0].source, "solana_tracker_leaderboard")
+        self.assertGreater(report.candidates[0].signals.realized_drawdown_usd, 0)
+        self.assertGreater(report.candidates[0].signals.top_positive_day_share_pct, 50)
+        self.assertNotIn(("history", WALLET_HFT, "90d"), client.calls)
+        top_calls = [item for item in client.calls if item[0] == "top"]
+        self.assertEqual(len(top_calls), 5)
+        self.assertEqual(
+            {item[2]["sort_by"] for item in top_calls},
+            {"realized", "roi", "win_percentage", "days", "trades"},
+        )
+        self.assertIn(
+            ("trades", "asc"),
+            {(item[2]["sort_by"], item[2]["direction"]) for item in top_calls},
+        )
+        self.assertEqual(top_calls[0][2]["max_single_token_pct"], 30)
+        self.assertEqual(top_calls[0][2]["min_invested_usd"], 500)
+        self.assertEqual(top_calls[0][2]["min_trading_days"], 10)
+        source_progress = [item for item in progress if item[0] == "source"]
+        self.assertEqual(len(source_progress), 5)
+        self.assertEqual(source_progress[0], ("source", 1, 5, "realized:desc"))
+        self.assertEqual(source_progress[-1], ("source", 5, 5, "trades:asc"))
+
+    def test_rejects_dust_capital_even_with_extreme_roi(self):
+        dust = replace(snapshot(WALLET_GOOD), invested_usd=10, roi_pct=100_000)
+
+        reasons = filter_tracker_snapshot(
+            dust, CandidatePolicy(), now_ms=NOW_MS
+        )
+
+        self.assertIn("invested_below_minimum", reasons)
+
+    def test_rejects_observed_instant_hold_but_not_missing_hold_data(self):
+        policy = CandidatePolicy()
+
+        self.assertEqual(
+            filter_candidate_signals(0.2, policy), ("avg_hold_too_short",)
+        )
+        self.assertEqual(filter_candidate_signals(None, policy), ())
+
+    def test_service_removes_instant_strategy_from_final_ranking(self):
+        client = FakeTrackerClient()
+        regular_history = history(WALLET_GOOD)
+        client.wallet_history = lambda address, period: WalletHistory(
+            address,
+            tuple(
+                replace(item, avg_hold_seconds=0.2)
+                for item in regular_history.days
+            ),
+        )
+
+        report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(50)
+
+        self.assertEqual(report.passed_count, 0)
+        self.assertEqual(report.fully_evaluated_count, 1)
+        self.assertEqual(report.rejected_by_reason["avg_hold_too_short"], 1)
+
+    def test_score_includes_drawdown_and_concentration_penalty(self):
+        result = SolanaTrackerDiscoveryService(
+            client=FakeTrackerClient(), now=NOW
+        ).discover(250).candidates[0]
+
+        self.assertIn("drawdown", result.score_components)
+        self.assertTrue(any("concentrado" in item for item in result.penalties))
+        self.assertTrue(any("drawdown" in item for item in result.reasons))
+
+    def test_candidate_can_pass_quality_and_fail_copyability(self):
+        client = FakeTrackerClient()
+        regular_history = history(WALLET_GOOD)
+        client.wallet_history = lambda address, period: WalletHistory(
+            address,
+            tuple(
+                replace(item, avg_hold_seconds=174)
+                for item in regular_history.days
+            ),
+        )
+
+        report = SolanaTrackerDiscoveryService(client=client, now=NOW).discover(50)
+
+        self.assertEqual(report.passed_count, 1)
+        self.assertEqual(report.copyable_count, 0)
+        self.assertIn(
+            "average_hold_too_short",
+            report.copyability_results[0].rejection_reasons,
+        )
+
+    def test_liquid_market_seed_is_enriched_and_uses_common_filters(self):
+        client = FakeTrackerClient()
+
+        report = SolanaTrackerDiscoveryService(
+            client=client,
+            now=NOW,
+            policy=CandidatePolicy(min_trades_30d=20, min_trading_days_30d=3),
+        ).discover(2, liquid_seed_limit=1)
+
+        self.assertEqual(report.source_count, 2)
+        liquid_candidate = next(
+            item for item in report.candidates if item.address == WALLET_LIQUID
+        )
+        self.assertEqual(liquid_candidate.source, "solana_tracker_liquid_markets")
+        self.assertIn(("markets",), client.calls)
+        self.assertTrue(any(item[0] == "token_traders" for item in client.calls))
+        trader_calls = [item for item in client.calls if item[0] == "token_traders"]
+        self.assertEqual(
+            {item[3]["sort_by"] for item in trader_calls},
+            {"realized", "roi", "last_trade", "invested"},
+        )
+        self.assertTrue(all(item[3]["active_only"] is False for item in trader_calls))
+
+
+if __name__ == "__main__":
+    unittest.main()
