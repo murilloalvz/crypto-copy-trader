@@ -28,6 +28,7 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - Copyability Score separado, com liquidez, ritmo, posição média e proxy de impacto.
 - watchlist em três níveis: aprovada, observação e reprovada;
 - detector inicial de convergência entre compras de wallets independentes.
+- Wave Radar executável que encontra tokens com volume recente e aplica barreiras de risco.
 
 ## Wallet discovery
 
@@ -171,6 +172,34 @@ consultar liquidez e impacto no momento do sinal, concentração de holders, aut
 mint/freeze, idade do token e aceleração de preço/volume. O módulo atual não monitora a
 rede em tempo real e não executa transações.
 
+### Wave Radar funcional
+
+O radar não depende de encontrar primeiro uma wallet aprovada. Ele consulta os tokens com
+maior volume nos últimos cinco minutos e usa somente campos documentados da fonte:
+
+```powershell
+python radar.py
+```
+
+Para uma rodada menor:
+
+```powershell
+python radar.py --tokens 25 --top 10
+```
+
+As barreiras padrão exigem pelo menos US$ 50 mil de liquidez, US$ 5 mil de volume em cinco
+minutos, 50 holders, 50 transações, Risk Score máximo 6/10, Top 10 abaixo de 40%, dev abaixo
+de 10%, insiders e snipers abaixo de 20%, LP burn mínimo de 90% quando disponível e nenhuma
+mint/freeze authority ativa. O resultado `APTA PARA PAPER SIGNAL` significa apenas que o
+token pode avançar para a futura simulação; não é recomendação nem compra.
+
+O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
+aceleração contra a média de cinco minutos da última hora (20), pressão compradora (10),
+Risk Score da fonte (15) e distribuição do Top 10 (10). Ele não prevê preço futuro. Nesta
+versão gratuita, cada execução faz uma fotografia via REST. O streaming contínuo da fonte
+exige plano Premium; polling, persistência dos snapshots e paper tracking vêm no próximo
+marco.
+
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
 
@@ -291,16 +320,18 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Executar paper trading por vários dias nas wallets aprovadas, registrar latência real e
-comparar o preço detectado com uma cotação de rota para estimar slippage reproduzível.
+Persistir snapshots do Wave Radar, detectar aceleração entre rodadas e criar entradas
+fictícias somente para tokens aprovados, registrando latência e preço para medir o resultado.
 
 ## Estrutura
 
 ```text
 app.py                 dashboard
 discover.py            CLI de discovery, filtros e Top 10
+radar.py               CLI de tokens ativos e Wave Score inicial
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
+src/wave_radar.py      filtros e ranking de tokens ativos
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading
