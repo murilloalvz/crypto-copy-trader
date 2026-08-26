@@ -9,6 +9,8 @@ from src.wave_radar import WaveRadarResult
 
 
 PAPER_HORIZONS_MINUTES = (5, 15, 60)
+WAVE_STRATEGY_VERSION = "wave_v2_momentum"
+LEGACY_WAVE_STRATEGY_VERSION = "wave_v1_baseline"
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,47 @@ class WavePaperUpdate:
     completed_checks: int
     failed_checks: int
     pending_checks: int
+
+
+def _snapshot_matches_momentum_strategy(snapshot_json: str) -> bool:
+    """Identify historical entries that already satisfied the v2 momentum gate."""
+    try:
+        snapshot = json.loads(snapshot_json)
+        token = snapshot["token"]
+        volume_5m = float(token.get("volume_5m_usd") or 0)
+        volume_1h = float(token.get("volume_1h_usd") or 0)
+        wave_score = float(snapshot.get("wave_score") or 0)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    hourly_five_minute_average = volume_1h / 12
+    acceleration = (
+        volume_5m / hourly_five_minute_average
+        if hourly_five_minute_average > 0
+        else 0
+    )
+    return wave_score >= 55 and acceleration >= 1.2
+
+
+def backfill_wave_strategy_versions() -> int:
+    """Classify pre-versioning signals without deleting or rewriting outcomes."""
+    candidates = rows(
+        """SELECT id, snapshot_json FROM wave_signals
+        WHERE strategy_version=?""",
+        (LEGACY_WAVE_STRATEGY_VERSION,),
+    )
+    momentum_ids = [
+        item["id"]
+        for item in candidates
+        if _snapshot_matches_momentum_strategy(item["snapshot_json"])
+    ]
+    if not momentum_ids:
+        return 0
+    with connection() as conn:
+        conn.executemany(
+            "UPDATE wave_signals SET strategy_version=? WHERE id=?",
+            [(WAVE_STRATEGY_VERSION, signal_id) for signal_id in momentum_ids],
+        )
+    return len(momentum_ids)
 
 
 def record_paper_signals(
@@ -38,6 +81,8 @@ def record_paper_signals(
     cutoff = detected_at - max(1, cooldown_minutes) * 60
     created = 0
 
+    backfill_wave_strategy_versions()
+
     with connection() as conn:
         for result in results:
             token = result.token
@@ -53,6 +98,7 @@ def record_paper_signals(
 
             entry_execution_price = token.price_usd * (1 + slippage / 10_000)
             snapshot = {
+                "strategy_version": WAVE_STRATEGY_VERSION,
                 "token": asdict(token),
                 "wave_score": result.wave_score,
                 "score_components": result.score_components,
@@ -63,8 +109,8 @@ def record_paper_signals(
                 """INSERT INTO wave_signals
                 (token_mint, symbol, name, detected_at, wave_score,
                  entry_market_price_usd, entry_execution_price_usd,
-                 copy_size_usd, slippage_bps, status, snapshot_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'tracking', ?)""",
+                 copy_size_usd, slippage_bps, strategy_version, status, snapshot_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'tracking', ?)""",
                 (
                     token.token,
                     token.symbol,
@@ -75,6 +121,7 @@ def record_paper_signals(
                     entry_execution_price,
                     copy_size,
                     slippage,
+                    WAVE_STRATEGY_VERSION,
                     json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
                 ),
             )
@@ -181,10 +228,11 @@ def update_due_paper_checks(
 
 
 def latest_paper_signals(limit: int = 10) -> list[dict]:
+    backfill_wave_strategy_versions()
     signals = rows(
         """SELECT id, token_mint, symbol, name, detected_at, wave_score,
         entry_market_price_usd, entry_execution_price_usd, copy_size_usd,
-        slippage_bps, status
+        slippage_bps, strategy_version, status
         FROM wave_signals ORDER BY detected_at DESC, id DESC LIMIT ?""",
         (limit,),
     )

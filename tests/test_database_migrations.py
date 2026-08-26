@@ -33,6 +33,25 @@ CREATE TABLE paper_trades (
 );
 """
 
+OLD_WAVE_SIGNALS_SCHEMA = """
+CREATE TABLE wave_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_mint TEXT NOT NULL,
+    symbol TEXT,
+    name TEXT,
+    detected_at INTEGER NOT NULL,
+    wave_score REAL NOT NULL,
+    entry_market_price_usd REAL NOT NULL,
+    entry_execution_price_usd REAL NOT NULL,
+    copy_size_usd REAL NOT NULL,
+    slippage_bps INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'tracking',
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(token_mint, detected_at)
+);
+"""
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_price_diagnostic_columns_are_added_without_losing_existing_rows(self):
@@ -69,6 +88,34 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertEqual(row["source_signature"], "sig-old")
         self.assertEqual(row["status"], "price_unavailable")
         self.assertEqual(row["price_error"], "erro antigo")
+
+    def test_wave_strategy_version_is_added_without_losing_existing_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-wave.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript(OLD_WAVE_SIGNALS_SCHEMA)
+                conn.execute(
+                    """INSERT INTO wave_signals
+                    (token_mint, detected_at, wave_score, entry_market_price_usd,
+                    entry_execution_price_usd, copy_size_usd, slippage_bps,
+                    snapshot_json)
+                    VALUES ('old-token', 1000, 50, 1, 1.01, 25, 100, '{}')"""
+                )
+                conn.commit()
+
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT token_mint, strategy_version FROM wave_signals"
+                ).fetchone()
+
+        self.assertEqual(row["token_mint"], "old-token")
+        self.assertEqual(row["strategy_version"], "wave_v1_baseline")
 
 
 if __name__ == "__main__":

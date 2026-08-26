@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS wave_signals (
     entry_execution_price_usd REAL NOT NULL,
     copy_size_usd REAL NOT NULL,
     slippage_bps INTEGER NOT NULL,
+    strategy_version TEXT NOT NULL DEFAULT 'wave_v1_baseline',
     status TEXT NOT NULL DEFAULT 'tracking',
     snapshot_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -139,6 +140,9 @@ MIGRATIONS = {
     },
     "token_pool_cache": {
         "volume_usd_24h": "REAL NOT NULL DEFAULT 0",
+    },
+    "wave_signals": {
+        "strategy_version": "TEXT NOT NULL DEFAULT 'wave_v1_baseline'",
     },
 }
 
