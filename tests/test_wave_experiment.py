@@ -59,6 +59,7 @@ class WaveExperimentIntegrationTests(unittest.TestCase):
         self.assertEqual(len(evaluation.slippage_stress), 12)
         self.assertEqual(len(evaluation.cohorts), 6)
         self.assertEqual(len(evaluation.exposures), 3)
+        self.assertEqual(len(evaluation.outlier_diagnostics), 3)
         self.assertTrue(
             all(item.max_concurrent_positions == 2 for item in evaluation.exposures)
         )

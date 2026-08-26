@@ -11,6 +11,7 @@ from src.wave_metrics import (
     summarize_horizon,
     summarize_fixed_cohorts,
     summarize_exposure,
+    summarize_outlier_sensitivity,
     summarize_slippage_stress,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -92,6 +93,7 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertEqual(len(report.slippage_stress), 4)
         self.assertEqual(len(report.cohorts), 2)
         self.assertEqual(len(report.exposures), 1)
+        self.assertEqual(len(report.outlier_diagnostics), 1)
 
     def test_slippage_stress_recalculates_both_sides_from_market_prices(self):
         observations = [
@@ -157,6 +159,31 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertEqual(exposure.max_capital_deployed_usd, 50)
         self.assertEqual(exposure.capital_utilization_pct, 125)
         self.assertTrue(exposure.budget_exceeded)
+
+    def test_outlier_diagnostic_flags_mean_dependent_on_single_winner(self):
+        diagnostics = summarize_outlier_sensitivity(
+            5,
+            [
+                {"return_pct": 8.48, "pnl_usd": 2.12},
+                {"return_pct": -6.01, "pnl_usd": -1.5025},
+            ],
+        )
+
+        self.assertTrue(diagnostics.positive_mean_depends_on_best)
+        self.assertAlmostEqual(diagnostics.average_without_best_pct, -6.01)
+        self.assertEqual(diagnostics.top_winner_profit_share_pct, 100)
+        self.assertLess(diagnostics.mean_ci_low_pct, 0)
+        self.assertGreater(diagnostics.mean_ci_high_pct, 0)
+
+    def test_outlier_diagnostic_needs_two_observations_for_mean_interval(self):
+        diagnostics = summarize_outlier_sensitivity(
+            15,
+            [{"return_pct": -4, "pnl_usd": -1}],
+        )
+
+        self.assertIsNone(diagnostics.mean_ci_low_pct)
+        self.assertIsNone(diagnostics.average_without_best_pct)
+        self.assertFalse(diagnostics.positive_mean_depends_on_best)
 
 
 if __name__ == "__main__":

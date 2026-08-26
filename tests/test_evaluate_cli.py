@@ -13,6 +13,7 @@ from src.wave_metrics import (
     WaveCohortMetrics,
     WaveEvaluationReport,
     WaveExposureMetrics,
+    WaveOutlierMetrics,
     WaveHorizonMetrics,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -207,6 +208,52 @@ class WaveEvaluationCLITests(unittest.TestCase):
 
         self.assertIn("Exposição máxima: 3 posições", output)
         self.assertIn("EXCEDEU O SALDO", output)
+
+    def test_report_warns_when_positive_mean_depends_on_best_signal(self):
+        report = WaveEvaluationReport(
+            strategy_version=WAVE_STRATEGY_VERSION,
+            signal_count=2,
+            completed_check_count=2,
+            pending_check_count=0,
+            failed_check_count=0,
+            horizons=(
+                WaveHorizonMetrics(
+                    strategy_version=WAVE_STRATEGY_VERSION,
+                    horizon_minutes=5,
+                    sample_size=2,
+                    wins=1,
+                    win_rate_pct=50,
+                    win_rate_low_pct=9.5,
+                    win_rate_high_pct=90.5,
+                    average_return_pct=1.24,
+                    median_return_pct=1.24,
+                    total_pnl_usd=0.62,
+                    average_pnl_usd=0.31,
+                    profit_factor=1.41,
+                    max_drawdown_usd=1.5,
+                    best_return_pct=8.48,
+                    worst_return_pct=-6.01,
+                ),
+            ),
+            outlier_diagnostics=(
+                WaveOutlierMetrics(
+                    horizon_minutes=5,
+                    sample_size=2,
+                    return_stddev_pct=10.25,
+                    mean_ci_low_pct=-90.8,
+                    mean_ci_high_pct=93.3,
+                    average_without_best_pct=-6.01,
+                    top_winner_profit_share_pct=100,
+                    positive_mean_depends_on_best=True,
+                ),
+            ),
+        )
+
+        output = format_evaluation_report(report)
+
+        self.assertIn("IC 95% aproximado", output)
+        self.assertIn("Média sem o melhor sinal: -6.01%", output)
+        self.assertIn("ALERTA: a média positiva desaparece", output)
 
 
 if __name__ == "__main__":

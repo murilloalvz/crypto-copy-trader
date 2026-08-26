@@ -33,6 +33,9 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
     exposure_by_horizon = {
         exposure.horizon_minutes: exposure for exposure in report.exposures
     }
+    outliers_by_horizon = {
+        item.horizon_minutes: item for item in report.outlier_diagnostics
+    }
     lines = [
         f"ESTRATÉGIA: {report.strategy_version}",
         f"Sinais registrados: {report.signal_count}",
@@ -88,6 +91,32 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
                 f"US$ {exposure.capital_budget_usd:.2f} "
                 f"({exposure.capital_utilization_pct:.1f}%) | {budget_status}"
             )
+        outliers = outliers_by_horizon.get(metrics.horizon_minutes)
+        if outliers:
+            if outliers.mean_ci_low_pct is None:
+                lines.append(
+                    "Robustez contra outlier: indisponível com apenas uma observação."
+                )
+            else:
+                lines.append(
+                    "IC 95% aproximado da média: "
+                    f"{outliers.mean_ci_low_pct:+.2f}% a "
+                    f"{outliers.mean_ci_high_pct:+.2f}%"
+                )
+                lines.append(
+                    "Média sem o melhor sinal: "
+                    f"{outliers.average_without_best_pct:+.2f}% | "
+                    "maior vencedor / lucro bruto: "
+                    + (
+                        f"{outliers.top_winner_profit_share_pct:.1f}%"
+                        if outliers.top_winner_profit_share_pct is not None
+                        else "sem vencedores"
+                    )
+                )
+                if outliers.positive_mean_depends_on_best:
+                    lines.append(
+                        "ALERTA: a média positiva desaparece ao remover o melhor sinal."
+                    )
         stress_rows = stress_by_horizon.get(metrics.horizon_minutes, [])
         if stress_rows:
             lines.append("Stress de slippage por lado:")

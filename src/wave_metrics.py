@@ -9,6 +9,38 @@ from src.wave_paper import WAVE_STRATEGY_VERSION, backfill_wave_strategy_version
 
 
 SLIPPAGE_STRESS_BPS = (50, 100, 200, 300)
+T_CRITICAL_95 = (
+    12.706,
+    4.303,
+    3.182,
+    2.776,
+    2.571,
+    2.447,
+    2.365,
+    2.306,
+    2.262,
+    2.228,
+    2.201,
+    2.179,
+    2.160,
+    2.145,
+    2.131,
+    2.120,
+    2.110,
+    2.101,
+    2.093,
+    2.086,
+    2.080,
+    2.074,
+    2.069,
+    2.064,
+    2.060,
+    2.056,
+    2.052,
+    2.048,
+    2.045,
+    2.042,
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +105,18 @@ class WaveExposureMetrics:
 
 
 @dataclass(frozen=True)
+class WaveOutlierMetrics:
+    horizon_minutes: int
+    sample_size: int
+    return_stddev_pct: float | None
+    mean_ci_low_pct: float | None
+    mean_ci_high_pct: float | None
+    average_without_best_pct: float | None
+    top_winner_profit_share_pct: float | None
+    positive_mean_depends_on_best: bool
+
+
+@dataclass(frozen=True)
 class WaveEvaluationReport:
     strategy_version: str
     signal_count: int
@@ -83,6 +127,7 @@ class WaveEvaluationReport:
     slippage_stress: tuple[SlippageStressMetrics, ...] = ()
     cohorts: tuple[WaveCohortMetrics, ...] = ()
     exposures: tuple[WaveExposureMetrics, ...] = ()
+    outlier_diagnostics: tuple[WaveOutlierMetrics, ...] = ()
 
 
 def _wilson_interval(wins: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -298,6 +343,57 @@ def summarize_exposure(
     )
 
 
+def summarize_outlier_sensitivity(
+    horizon_minutes: int,
+    observations: list[dict],
+) -> WaveOutlierMetrics:
+    returns = [float(item["return_pct"]) for item in observations]
+    pnl_values = [float(item["pnl_usd"]) for item in observations]
+    sample_size = len(returns)
+    average = statistics.fmean(returns)
+    gross_profit = sum(value for value in pnl_values if value > 0)
+    largest_profit = max((value for value in pnl_values if value > 0), default=None)
+    top_share = (
+        largest_profit / gross_profit * 100
+        if largest_profit is not None and gross_profit > 0
+        else None
+    )
+
+    if sample_size < 2:
+        return WaveOutlierMetrics(
+            horizon_minutes=horizon_minutes,
+            sample_size=sample_size,
+            return_stddev_pct=None,
+            mean_ci_low_pct=None,
+            mean_ci_high_pct=None,
+            average_without_best_pct=None,
+            top_winner_profit_share_pct=top_share,
+            positive_mean_depends_on_best=False,
+        )
+
+    stddev = statistics.stdev(returns)
+    degrees_of_freedom = sample_size - 1
+    critical = (
+        T_CRITICAL_95[degrees_of_freedom - 1]
+        if degrees_of_freedom <= len(T_CRITICAL_95)
+        else 1.96
+    )
+    margin = critical * stddev / math.sqrt(sample_size)
+    best_index = max(range(sample_size), key=returns.__getitem__)
+    without_best = returns[:best_index] + returns[best_index + 1 :]
+    average_without_best = statistics.fmean(without_best)
+    return WaveOutlierMetrics(
+        horizon_minutes=horizon_minutes,
+        sample_size=sample_size,
+        return_stddev_pct=stddev,
+        mean_ci_low_pct=average - margin,
+        mean_ci_high_pct=average + margin,
+        average_without_best_pct=average_without_best,
+        top_winner_profit_share_pct=top_share,
+        positive_mean_depends_on_best=average > 0 and average_without_best <= 0,
+    )
+
+
 def build_wave_evaluation_report(
     strategy_version: str = WAVE_STRATEGY_VERSION,
     *,
@@ -367,6 +463,10 @@ def build_wave_evaluation_report(
         summarize_exposure(horizon, observations, capital_budget)
         for horizon, observations in sorted(by_horizon.items())
     )
+    outlier_diagnostics = tuple(
+        summarize_outlier_sensitivity(horizon, observations)
+        for horizon, observations in sorted(by_horizon.items())
+    )
     return WaveEvaluationReport(
         strategy_version=strategy_version,
         signal_count=signal_count,
@@ -377,4 +477,5 @@ def build_wave_evaluation_report(
         slippage_stress=slippage_stress,
         cohorts=cohorts,
         exposures=exposures,
+        outlier_diagnostics=outlier_diagnostics,
     )
