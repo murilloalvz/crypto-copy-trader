@@ -188,17 +188,39 @@ python radar.py --tokens 25 --top 10
 ```
 
 As barreiras padrão exigem pelo menos US$ 50 mil de liquidez, US$ 5 mil de volume em cinco
-minutos, 50 holders, 50 transações, Risk Score máximo 6/10, Top 10 abaixo de 40%, dev abaixo
-de 10%, insiders e snipers abaixo de 20%, LP burn mínimo de 90% quando disponível e nenhuma
-mint/freeze authority ativa. O resultado `APTA PARA PAPER SIGNAL` significa apenas que o
-token pode avançar para a futura simulação; não é recomendação nem compra.
+minutos, 50 holders confirmados, 50 transações, Risk Score máximo 6/10, Top 10 abaixo de
+40%, dev abaixo de 10%, insiders e snipers abaixo de 20%, nenhuma mint/freeze authority
+ativa e ausência de desequilíbrio extremo entre compras e vendas. `lpBurn` abaixo de 90%
+vira atenção contextual em vez de reprovação universal: pools de liquidez concentrada
+podem retornar zero mesmo quando esse mecanismo não se aplica da mesma forma. O Risk Score
+da fonte continua sendo a barreira agregada de segurança. Um holder count zero junto de
+atividade real é tratado como dado indisponível, não como zero confiável.
 
 O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
-aceleração contra a média de cinco minutos da última hora (20), pressão compradora (10),
-Risk Score da fonte (15) e distribuição do Top 10 (10). Ele não prevê preço futuro. Nesta
-versão gratuita, cada execução faz uma fotografia via REST. O streaming contínuo da fonte
-exige plano Premium; polling, persistência dos snapshots e paper tracking vêm no próximo
-marco.
+aceleração contra a média de cinco minutos da última hora (20), pressão compradora
+equilibrada (10), Risk Score da fonte (15) e distribuição do Top 10 (10). Pressão compradora
+extrema perde pontos e pode reprovar o sinal, pois também pode representar manipulação.
+O score não prevê preço futuro.
+
+### Laboratório paper do radar
+
+Cada execução do comando padrão salva os tokens `APTOS` em `wave_signals` no SQLite. O
+mesmo token não cria outro sinal por seis horas. Para cada sinal são criados checkpoints de
+5, 15 e 60 minutos; nas execuções seguintes, os checkpoints vencidos consultam o candle do
+minuto-alvo e calculam retorno e P&L fictícios. Por isso, mesmo que o comando seja executado
+depois de uma hora, ele ainda busca os três horários corretos em vez de usar um único preço
+atrasado.
+
+A entrada e cada saída aplicam o `SLIPPAGE_BPS` configurado e usam `COPY_SIZE_USD` como
+tamanho fictício. Ainda é um proxy: não existe cotação de rota, assinatura ou transação.
+Para apenas consultar o radar sem salvar/atualizar o laboratório:
+
+```powershell
+python radar.py --tokens 25 --top 10 --no-paper
+```
+
+Na versão gratuita, cada execução faz uma fotografia via REST. O streaming contínuo da
+fonte exige plano Premium; por enquanto, o polling é manual.
 
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
