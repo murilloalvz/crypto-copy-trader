@@ -282,6 +282,18 @@ O relatório calcula ainda o pico de posições simultâneas e de capital fictí
 em cada horizonte. Se os sinais exigirem mais que `STARTING_BALANCE_USD`, o resultado mostra
 `EXCEDEU O SALDO` em vez de pressupor capital infinito.
 
+Para reduzir falsos positivos causados por poucos outliers, cada horizonte também mostra:
+
+- um intervalo de confiança de 95% aproximado para o retorno médio, usando Student t nas
+  amostras pequenas;
+- a média depois de remover o melhor sinal;
+- a parcela do lucro bruto concentrada no maior vencedor;
+- um alerta quando a média positiva desaparece sem o melhor sinal.
+
+Esses diagnósticos não provam independência entre sinais e não transformam uma amostra
+pequena em evidência. Eles servem para impedir que um único acerto esconda uma regra sem
+vantagem consistente.
+
 Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é `PRELIMINAR`.
 Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para decidir se a
 regra merece nova validação. Para abrir as coortes exploratórias predefinidas de Wave Score
