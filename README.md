@@ -253,9 +253,22 @@ python evaluate.py --all-strategies
 
 O relatório separa 5, 15 e 60 minutos e mostra win rate com intervalo de confiança de
 95%, retorno líquido médio e mediano, P&L paper, profit factor, drawdown e melhor/pior
-retorno. Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é
-`PRELIMINAR`. Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para
-decidir se a regra merece nova validação.
+retorno. Cada horizonte também é recalculado com slippage de 0,5%, 1%, 2% e 3% por lado.
+Esse stress test usa os preços de mercado já armazenados e mostra quando uma aparente
+vantagem desaparece com custos mais conservadores.
+
+Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é `PRELIMINAR`.
+Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para decidir se a
+regra merece nova validação. Para abrir as coortes exploratórias predefinidas de Wave Score
+e aceleração de volume:
+
+```powershell
+python evaluate.py --cohorts
+```
+
+As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
+um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
+os filtros atuais.
 
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
