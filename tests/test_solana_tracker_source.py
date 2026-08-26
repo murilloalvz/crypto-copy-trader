@@ -191,6 +191,55 @@ class SolanaTrackerSourceTests(unittest.TestCase):
         self.assertIn("minVolume=100000", request_url)
 
     @patch("src.discovery.solana_tracker.urlopen")
+    def test_wave_tokens_maps_current_market_and_risk_fields(self, mocked_urlopen):
+        token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
+        mocked_urlopen.return_value = FakeResponse(
+            {
+                "data": [
+                    {
+                        "mint": token,
+                        "name": "Wave Test",
+                        "symbol": "WAVE",
+                        "priceUsd": 0.001,
+                        "liquidityUsd": 150_000,
+                        "marketCapUsd": 900_000,
+                        "createdAt": 1_800_000_000,
+                        "holders": 850,
+                        "buys": 420,
+                        "sells": 210,
+                        "totalTransactions": 630,
+                        "volume_5m": 25_000,
+                        "volume_1h": 100_000,
+                        "volume_24h": 800_000,
+                        "top10": 25,
+                        "dev": 3,
+                        "insiders": 4,
+                        "snipers": 5,
+                        "riskScore": 2,
+                        "lpBurn": 100,
+                        "mintAuthority": None,
+                        "freezeAuthority": None,
+                        "market": "pumpfun-amm",
+                        "poolAddress": "pool-address",
+                    }
+                ]
+            }
+        )
+
+        result = self.client().wave_tokens(25)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].token, token)
+        self.assertEqual(result[0].volume_5m_usd, 25_000)
+        self.assertEqual(result[0].risk_score, 2)
+        self.assertEqual(result[0].created_at_ms, 1_800_000_000_000)
+        request_url = mocked_urlopen.call_args.args[0].full_url
+        self.assertIn("sortBy=volume_5m", request_url)
+        self.assertIn("volumeTimeframe=5m", request_url)
+        self.assertIn("minLiquidity=50000", request_url)
+        self.assertIn("minVolume=5000", request_url)
+
+    @patch("src.discovery.solana_tracker.urlopen")
     def test_token_traders_excludes_developer_wallets(self, mocked_urlopen):
         token = "38PgzpJYu2HkiYvV8qePFakB8tuobPdGm2FFEn7Dpump"
         mocked_urlopen.return_value = FakeResponse(

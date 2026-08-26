@@ -14,6 +14,7 @@ from src.discovery.models import (
     TokenPosition,
     TokenTraderSeed,
     TraderSnapshot,
+    WaveTokenSnapshot,
     WalletHistory,
     WalletPositions,
 )
@@ -57,6 +58,13 @@ def _optional_integer(value) -> int | None:
 
 def _optional_number(value) -> float | None:
     return None if value is None else _number(value)
+
+
+def _timestamp_ms(value) -> int | None:
+    timestamp = _optional_integer(value)
+    if timestamp is None or timestamp <= 0:
+        return None
+    return timestamp * 1_000 if timestamp < 1_000_000_000_000 else timestamp
 
 
 def _tls12_context() -> ssl.SSLContext:
@@ -356,6 +364,82 @@ class SolanaTrackerClient:
                 )
             )
         return markets
+
+    def wave_tokens(
+        self,
+        limit: int = 100,
+        *,
+        min_liquidity_usd: float = 50_000,
+        min_volume_5m_usd: float = 5_000,
+    ) -> list[WaveTokenSnapshot]:
+        """Return active tokens with documented market and risk fields."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit precisa estar entre 1 e 100")
+        payload = self._request(
+            "/search",
+            {
+                "sortBy": "volume_5m",
+                "sortOrder": "desc",
+                "minLiquidity": min_liquidity_usd,
+                "minVolume": min_volume_5m_usd,
+                "volumeTimeframe": "5m",
+                "limit": limit,
+            },
+        )
+        snapshots = []
+        seen = set()
+        for item in payload.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("mint") or "")
+            if not is_solana_address(token) or token in seen:
+                continue
+            seen.add(token)
+            token_details = item.get("tokenDetails") or {}
+            created_at = item.get("createdAt")
+            if created_at is None:
+                created_at = token_details.get("time")
+            snapshots.append(
+                WaveTokenSnapshot(
+                    token=token,
+                    name=str(item["name"]) if item.get("name") else None,
+                    symbol=str(item["symbol"]) if item.get("symbol") else None,
+                    price_usd=_number(item.get("priceUsd")),
+                    liquidity_usd=_number(item.get("liquidityUsd")),
+                    market_cap_usd=_number(item.get("marketCapUsd")),
+                    created_at_ms=_timestamp_ms(created_at),
+                    holders=_integer(item.get("holders")),
+                    buys=_integer(item.get("buys")),
+                    sells=_integer(item.get("sells")),
+                    total_transactions=_integer(item.get("totalTransactions")),
+                    volume_5m_usd=_number(item.get("volume_5m")),
+                    volume_1h_usd=_number(item.get("volume_1h")),
+                    volume_24h_usd=_number(item.get("volume_24h")),
+                    top10_pct=_optional_number(item.get("top10")),
+                    dev_pct=_optional_number(item.get("dev")),
+                    insiders_pct=_optional_number(item.get("insiders")),
+                    snipers_pct=_optional_number(item.get("snipers")),
+                    risk_score=_optional_number(item.get("riskScore")),
+                    lp_burn_pct=_optional_number(item.get("lpBurn")),
+                    mint_authority=(
+                        str(item["mintAuthority"])
+                        if item.get("mintAuthority")
+                        else None
+                    ),
+                    freeze_authority=(
+                        str(item["freezeAuthority"])
+                        if item.get("freezeAuthority")
+                        else None
+                    ),
+                    market=str(item["market"]) if item.get("market") else None,
+                    pool_address=(
+                        str(item["poolAddress"])
+                        if item.get("poolAddress")
+                        else None
+                    ),
+                )
+            )
+        return snapshots
 
     def token_traders(
         self,

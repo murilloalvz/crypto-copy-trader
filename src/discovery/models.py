@@ -149,6 +149,36 @@ class TraderSnapshot:
 
 
 @dataclass(frozen=True)
+class WaveTokenSnapshot:
+    """Current public market/risk fields used by the read-only wave radar."""
+
+    token: str
+    name: str | None
+    symbol: str | None
+    price_usd: float
+    liquidity_usd: float
+    market_cap_usd: float
+    created_at_ms: int | None
+    holders: int
+    buys: int
+    sells: int
+    total_transactions: int
+    volume_5m_usd: float
+    volume_1h_usd: float
+    volume_24h_usd: float
+    top10_pct: float | None
+    dev_pct: float | None
+    insiders_pct: float | None
+    snipers_pct: float | None
+    risk_score: float | None
+    lp_burn_pct: float | None
+    mint_authority: str | None
+    freeze_authority: str | None
+    market: str | None
+    pool_address: str | None
+
+
+@dataclass(frozen=True)
 class LiquidMarket:
     """A current Solana token market used only to seed wallet discovery."""
 
