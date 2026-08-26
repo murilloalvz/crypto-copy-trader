@@ -29,6 +29,8 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - watchlist em três níveis: aprovada, observação e reprovada;
 - detector inicial de convergência entre compras de wallets independentes.
 - Wave Radar executável que encontra tokens com volume recente e aplica barreiras de risco.
+- laboratório versionado com checkpoints paper de 5, 15 e 60 minutos;
+- avaliação estatística por estratégia e coletor automático de duração limitada.
 
 ## Wallet discovery
 
@@ -221,8 +223,39 @@ Para apenas consultar o radar sem salvar/atualizar o laboratório:
 python radar.py --tokens 25 --top 10 --no-paper
 ```
 
-Na versão gratuita, cada execução faz uma fotografia via REST. O streaming contínuo da
-fonte exige plano Premium; por enquanto, o polling é manual.
+Os sinais novos recebem a versão `wave_v2_momentum`. O banco existente é migrado sem
+apagar resultados: sinais antigos que não atendiam à aceleração atual continuam isolados
+como `wave_v1_baseline`. Isso impede que resultados de regras diferentes sejam somados na
+mesma estatística.
+
+Para formar amostra sem executar o comando manualmente, use o coletor limitado. O exemplo
+abaixo roda 12 fotografias, uma a cada cinco minutos, e termina sozinho:
+
+```powershell
+python collect.py --cycles 12 --interval-minutes 5 --tokens 25 --top 3
+```
+
+O intervalo mínimo é 30 segundos e o máximo são 288 ciclos. Uma falha temporária fica
+registrada e a próxima rodada continua; erro de configuração encerra imediatamente.
+`Ctrl+C` é seguro porque cada ciclo confirmado já foi persistido no SQLite.
+
+Depois, avalie somente a estratégia atual:
+
+```powershell
+python evaluate.py
+```
+
+Para auditar também sinais da regra anterior:
+
+```powershell
+python evaluate.py --all-strategies
+```
+
+O relatório separa 5, 15 e 60 minutos e mostra win rate com intervalo de confiança de
+95%, retorno líquido médio e mediano, P&L paper, profit factor, drawdown e melhor/pior
+retorno. Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é
+`PRELIMINAR`. Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para
+decidir se a regra merece nova validação.
 
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
@@ -344,8 +377,10 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Persistir snapshots do Wave Radar, detectar aceleração entre rodadas e criar entradas
-fictícias somente para tokens aprovados, registrando latência e preço para medir o resultado.
+Coletar pelo menos 30 sinais concluídos da `wave_v2_momentum` e comparar os três horizontes.
+Somente se retorno mediano, profit factor e drawdown forem aceitáveis em uma amostra maior,
+testar regras de saída como stop, alvo parcial e trailing stop em dados paper. Execução com
+dinheiro real permanece fora do escopo.
 
 ## Estrutura
 
@@ -353,9 +388,13 @@ fictícias somente para tokens aprovados, registrando latência e preço para me
 app.py                 dashboard
 discover.py            CLI de discovery, filtros e Top 10
 radar.py               CLI de tokens ativos e Wave Score inicial
+collect.py             polling limitado para formar amostra paper
+evaluate.py            estatísticas por versão e horizonte
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
 src/wave_radar.py      filtros e ranking de tokens ativos
+src/wave_paper.py      sinais paper e checkpoints históricos
+src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading
