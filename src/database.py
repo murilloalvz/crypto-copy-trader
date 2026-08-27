@@ -142,6 +142,10 @@ CREATE TABLE IF NOT EXISTS social_events (
     text TEXT NOT NULL,
     url TEXT,
     event_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+    tickers_json TEXT NOT NULL DEFAULT '[]',
+    urls_json TEXT NOT NULL DEFAULT '[]',
+    mint_candidates_json TEXT NOT NULL DEFAULT '[]',
+    hashtags_json TEXT NOT NULL DEFAULT '[]',
     raw_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source, external_event_id),
@@ -180,6 +184,12 @@ MIGRATIONS = {
     },
     "wave_signals": {
         "strategy_version": "TEXT NOT NULL DEFAULT 'wave_v1_baseline'",
+    },
+    "social_events": {
+        "tickers_json": "TEXT NOT NULL DEFAULT '[]'",
+        "urls_json": "TEXT NOT NULL DEFAULT '[]'",
+        "mint_candidates_json": "TEXT NOT NULL DEFAULT '[]'",
+        "hashtags_json": "TEXT NOT NULL DEFAULT '[]'",
     },
 }
 

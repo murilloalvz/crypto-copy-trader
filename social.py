@@ -3,7 +3,11 @@ import sys
 
 from src.config import settings
 from src.database import initialize_database
-from src.social.service import collect_social_events, latest_social_events
+from src.social.service import (
+    backfill_social_event_parsing,
+    collect_social_events,
+    latest_social_events,
+)
 from src.social.x_api import (
     XApiAuthenticationError,
     XApiConfigurationError,
@@ -54,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     initialize_database()
+    backfilled = backfill_social_event_parsing()
     print("Crypto Copy Trader — Social/Event Monitor · EVENT-1")
     print("Modo: READ ONLY — nenhum sinal, compra, venda ou assinatura é gerado.")
     print("Fonte: API oficial do X · contas Tier A: " + ", ".join(f"@{x}" for x in accounts))
@@ -77,16 +82,19 @@ def main(argv: list[str] | None = None) -> int:
         f"Eventos recebidos: {result.fetched_events} | novos: {result.inserted_events} | "
         f"duplicados ignorados: {result.duplicate_events}"
     )
+    if backfilled:
+        print(f"Eventos antigos classificados deterministicamente: {backfilled}")
     recent = latest_social_events(args.top)
     if not recent:
         print("Nenhum evento encontrado na janela consultada.")
     for event in recent:
         text = " ".join(event["text"].split())
         print(
-            f"- @{event['author_username']} | latência {event['detection_latency_ms']}ms | "
+            f"- @{event['author_username']} | {event['event_type']} | "
+            f"latência {event['detection_latency_ms']}ms | "
             f"{text[:140]}"
         )
-    print("Eventos permanecem como UNKNOWN até os próximos marcos de classificação.")
+    print("Classificação é heurística e não autoriza sinal ou resolução de token.")
     return 0
 
 

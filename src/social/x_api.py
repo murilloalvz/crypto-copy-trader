@@ -12,7 +12,7 @@ from src.social.models import SocialEvent
 
 
 X_RECENT_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,30}$")
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 
 
 class XApiError(RuntimeError):
@@ -96,15 +96,15 @@ class XRecentSearchClient:
             if lookback_minutes is None
             else int(lookback_minutes),
         )
-        detected_at_ms = int(self._now() * 1_000)
+        requested_at_ms = int(self._now() * 1_000)
         start_time = datetime.fromtimestamp(
-            detected_at_ms / 1_000, timezone.utc
+            requested_at_ms / 1_000, timezone.utc
         ) - timedelta(minutes=lookback)
         params = {
             "query": build_accounts_query(accounts),
             "max_results": 100,
             "start_time": start_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "tweet.fields": "author_id,created_at",
+            "tweet.fields": "author_id,created_at,entities",
             "expansions": "author_id",
             "user.fields": "id,username",
         }
@@ -129,6 +129,12 @@ class XRecentSearchClient:
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise XApiError(f"API do X indisponível: {exc}") from exc
 
+        if not isinstance(payload, dict):
+            raise XApiError("API do X retornou payload inválido")
+        if payload.get("errors") and not payload.get("data"):
+            raise XApiError("API do X retornou erro sem eventos utilizáveis")
+        detected_at_ms = int(self._now() * 1_000)
+
         users = {
             str(item.get("id")): str(item.get("username") or "")
             for item in (payload.get("includes", {}).get("users") or [])
@@ -146,13 +152,17 @@ class XRecentSearchClient:
             username = users.get(author_id, "")
             if not username:
                 continue
+            try:
+                published_at_ms = _timestamp_ms(str(created_at))
+            except ValueError:
+                continue
             events.append(
                 SocialEvent(
                     source="x",
                     external_event_id=event_id,
                     author_source_id=author_id,
                     author_username=username,
-                    published_at_ms=_timestamp_ms(str(created_at)),
+                    published_at_ms=published_at_ms,
                     detected_at_ms=detected_at_ms,
                     text=str(item.get("text") or ""),
                     url=f"https://x.com/{username}/status/{event_id}",

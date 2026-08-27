@@ -31,8 +31,9 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - Wave Radar executável que encontra tokens com volume recente e aplica barreiras de risco.
 - laboratório versionado com checkpoints paper de 5, 15 e 60 minutos;
 - avaliação estatística por estratégia e coletor automático de duração limitada.
-- EVENT-1 de Social/Event Intelligence com contas Tier A configuráveis, coleta oficial do
-  X, timestamps, latência e deduplicação no mesmo SQLite.
+- EVENT-2 de Social/Event Intelligence com contas Tier A configuráveis, coleta oficial do
+  X, timestamps, latência, deduplicação, classificação determinística e extração de
+  entidades candidatas no mesmo SQLite.
 
 ## Wallet discovery
 
@@ -335,13 +336,13 @@ As faixas são fixas e não mudam a estratégia. Elas servem para formular uma h
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
 os filtros atuais.
 
-## Social/Event Intelligence — EVENT-1
+## Social/Event Intelligence — EVENT-2
 
-A primeira camada social foi adicionada sem alterar os filtros, o Wave Score ou o paper
-trading atual. Ela monitora uma pequena lista configurável de contas Tier A pela API
-oficial do X e salva eventos normalizados no mesmo SQLite do projeto.
+A camada social foi adicionada sem alterar os filtros, o Wave Score ou o paper trading
+atual. Ela monitora uma pequena lista configurável de contas Tier A pela API oficial do X
+e salva eventos normalizados no mesmo SQLite do projeto.
 
-O EVENT-1 armazena somente:
+O EVENT-2 armazena:
 
 - fonte e ID externo do post;
 - autor e conta Tier A relacionada;
@@ -349,10 +350,15 @@ O EVENT-1 armazena somente:
 - `published_at_ms` e `detected_at_ms`;
 - `detection_latency_ms`;
 - payload bruto para auditoria;
-- classificação inicial `UNKNOWN`.
+- classificação heurística: `GENERAL_POST`, `TOKEN_MENTION`,
+  `PROJECT_ANNOUNCEMENT`, `LAUNCH`, `LISTING`, `PARTNERSHIP` ou `UNKNOWN`;
+- tickers, URLs, hashtags e sequências que podem ser mints da Solana.
 
-Não há extração de ticker, resolução de mint, correlação on-chain, Opportunity Score ou
-sinal de entrada neste marco. Um post nunca autoriza compra, nem mesmo fictícia.
+As regras usam texto e entidades retornadas pela própria API; nenhum LLM é necessário.
+Ticker e mint extraídos são apenas candidatos: não há resolução de identidade, correlação
+on-chain, Opportunity Score ou sinal de entrada neste marco. Um post nunca autoriza
+compra, nem mesmo fictícia. Linhas coletadas no EVENT-1 são classificadas localmente sem
+apagar ou reescrever o payload original.
 
 Configure uma lista pequena no `.env`, sem espalhar nomes pelo código:
 
@@ -383,9 +389,8 @@ O mesmo post é ignorado pelo banco em coletas repetidas.
 
 O ponto de integração futuro é intencionalmente único: `monitor.py` poderá agendar a
 coleta social e `radar.py` poderá consultar eventos persistidos ao avaliar confluência.
-Antes disso, EVENT-2 deve classificar posts e extrair entidades; EVENT-3 deve resolver o
-mint com evidência suficiente. Eventos sem identidade confiável deverão permanecer
-`UNRESOLVED_TOKEN` e nunca gerar sinal.
+Antes disso, EVENT-3 deve resolver o mint com evidência suficiente. Eventos sem identidade
+confiável deverão permanecer `UNRESOLVED_TOKEN` e nunca gerar sinal.
 
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
@@ -510,9 +515,9 @@ histórico bruto da blockchain.
 Coletar pelo menos 30 sinais concluídos da `wave_v2_momentum` e comparar os três horizontes.
 Somente se retorno mediano, profit factor e drawdown forem aceitáveis em uma amostra maior,
 testar regras de saída como stop, alvo parcial e trailing stop em dados paper. Execução com
-dinheiro real permanece fora do escopo. Em paralelo, o próximo marco social é EVENT-2:
-classificação determinística de posts e extração de tickers, nomes, URLs e mints explícitos,
-sem gerar oportunidade e sem modificar a estratégia Wave em andamento.
+dinheiro real permanece fora do escopo. Em paralelo, o próximo marco social é EVENT-3:
+resolver a identidade do token com evidências explícitas e auditáveis, mantendo
+`UNRESOLVED_TOKEN` como resultado seguro e sem modificar a estratégia Wave em andamento.
 
 ## Estrutura
 
@@ -526,7 +531,7 @@ evaluate.py            estatísticas por versão e horizonte
 social.py              coleta READ ONLY de eventos Tier A pela API oficial do X
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
-src/social/             modelos, cliente oficial do X e persistência de eventos
+src/social/             cliente do X, parser determinístico e persistência de eventos
 src/wave_radar.py      filtros e ranking de tokens ativos
 src/wave_paper.py      sinais paper e checkpoints históricos
 src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
@@ -536,7 +541,7 @@ src/services.py        sincronização e paper trading
 src/analytics.py       métricas e score
 src/prices.py          preços históricos e cache
 tests/test_parser.py   teste do parser
-tests/test_social_event.py testes de timestamps, deduplicação e falhas da fonte social
+tests/test_social_event.py testes de timestamps, parsing, deduplicação e falhas sociais
 ```
 
 Dados de mercado on-chain: GeckoTerminal. Powered by CoinGecko.
