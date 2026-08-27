@@ -36,6 +36,18 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
     outliers_by_horizon = {
         item.horizon_minutes: item for item in report.outlier_diagnostics
     }
+    coverage_by_horizon = {
+        item.horizon_minutes: item for item in report.coverages
+    }
+    missing_stress_by_horizon = {}
+    for item in report.missing_outcome_stress:
+        missing_stress_by_horizon.setdefault(item.horizon_minutes, []).append(item)
+    failure_reasons_by_horizon = {}
+    for item in report.failure_reasons:
+        failure_reasons_by_horizon.setdefault(item.horizon_minutes, []).append(item)
+    price_trace_by_horizon = {
+        item.horizon_minutes: item for item in report.price_traces
+    }
     lines = [
         f"ESTRATÉGIA: {report.strategy_version}",
         f"Sinais registrados: {report.signal_count}",
@@ -44,6 +56,19 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
             f"{report.pending_check_count} pendentes | {report.failed_check_count} falhos"
         ),
     ]
+    if report.input_integrity:
+        integrity = report.input_integrity
+        lines.append(
+            "Integridade das entradas: "
+            f"{integrity.parsed_snapshot_count}/{integrity.signal_count} snapshots legíveis | "
+            f"{integrity.missing_source_pool_count} sem pool de origem | "
+            f"{integrity.inconsistent_volume_window_count} com janelas de volume inconsistentes"
+        )
+        if integrity.inconsistent_volume_window_count:
+            lines.append(
+                "ALERTA DE ENTRADA: volume 5m/1h/24h não foi monotônico em parte "
+                "da amostra; a aceleração dessas linhas precisa ser auditada na fonte."
+            )
     if not report.horizons:
         lines.extend(
             [
@@ -54,10 +79,26 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
         return "\n".join(lines)
 
     for metrics in report.horizons:
+        coverage = coverage_by_horizon.get(metrics.horizon_minutes)
         lines.extend(
             [
                 "",
                 f"HORIZONTE {metrics.horizon_minutes} MINUTOS",
+            ]
+        )
+        if coverage:
+            lines.append(
+                f"Cobertura: {coverage.completed_count}/{coverage.total_count} "
+                f"({coverage.coverage_pct:.1f}%) | falhos {coverage.failed_count} "
+                f"({coverage.failure_pct:.1f}%) | pendentes {coverage.pending_count} "
+                f"({coverage.pending_pct:.1f}%)"
+            )
+            if coverage.failed_count and coverage.coverage_pct < 90:
+                lines.append(
+                    "ALERTA DE SOBREVIVÊNCIA: o resultado observado exclui muitas falhas de preço."
+                )
+        lines.extend(
+            [
                 f"Amostra: {metrics.sample_size} | {metrics.evidence_label}",
                 (
                     f"Win rate: {metrics.win_rate_pct:.1f}% "
@@ -117,6 +158,50 @@ def format_evaluation_report(report, *, show_cohorts: bool = False) -> str:
                     lines.append(
                         "ALERTA: a média positiva desaparece ao remover o melhor sinal."
                     )
+        trace = price_trace_by_horizon.get(metrics.horizon_minutes)
+        if trace:
+            lines.append(
+                "Rastreio de pool entrada/saída: "
+                f"{trace.comparable_pool_count} comparáveis | "
+                f"{trace.matching_pool_count} iguais | "
+                f"{trace.mismatched_pool_count} diferentes | "
+                f"{trace.unavailable_pool_count} sem comparação"
+            )
+            if trace.mismatched_pool_count:
+                lines.append(
+                    "ATENÇÃO DE PREÇO: parte das saídas usou pool diferente do snapshot de entrada."
+                )
+        failure_rows = failure_reasons_by_horizon.get(metrics.horizon_minutes, [])
+        if failure_rows:
+            labels = {
+                "distant_historical_candle": "candle histórico distante",
+                "no_historical_candle": "sem candle histórico",
+                "no_pool": "pool indisponível",
+                "provider_http_error": "erro HTTP do provedor",
+                "temporary_provider_error": "falha temporária do provedor",
+                "legacy_unclassified": "falha antiga não classificada",
+                "unknown": "motivo desconhecido",
+            }
+            lines.append(
+                "Motivos das falhas: "
+                + "; ".join(
+                    f"{labels.get(item.error_code, item.error_code)}: {item.count}"
+                    for item in failure_rows
+                )
+            )
+        missing_rows = missing_stress_by_horizon.get(metrics.horizon_minutes, [])
+        if missing_rows and any(item.missing_count for item in missing_rows):
+            lines.append(
+                "Stress dos resultados sem preço (falhos + pendentes, mesma hipótese):"
+            )
+            for item in missing_rows:
+                lines.append(
+                    f"- assumindo {item.assumed_missing_return_pct:+.0f}%: "
+                    f"n total={item.total_count} | média {item.average_return_pct:+.2f}% | "
+                    f"P&L US$ {item.total_pnl_usd:+.2f} | "
+                    f"win rate {item.win_rate_pct:.1f}% | "
+                    f"PF {_profit_factor(item.profit_factor)}"
+                )
         stress_rows = stress_by_horizon.get(metrics.horizon_minutes, [])
         if stress_rows:
             lines.append("Stress de slippage por lado:")

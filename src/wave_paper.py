@@ -176,9 +176,15 @@ def update_due_paper_checks(
             status = "pending" if retryable and retry_count < retry_limit else "failed"
             with connection() as conn:
                 conn.execute(
-                    """UPDATE wave_signal_checks SET status=?, error=?, retry_count=?
-                    WHERE id=?""",
-                    (status, str(exc), retry_count, check["id"]),
+                    """UPDATE wave_signal_checks SET status=?, error=?, error_code=?,
+                    retry_count=? WHERE id=?""",
+                    (
+                        status,
+                        str(exc),
+                        str(getattr(exc, "code", "provider_error")),
+                        retry_count,
+                        check["id"],
+                    ),
                 )
             failed += status == "failed"
             continue
@@ -192,7 +198,8 @@ def update_due_paper_checks(
             conn.execute(
                 """UPDATE wave_signal_checks
                 SET observed_at=?, market_price_usd=?, execution_price_usd=?,
-                return_pct=?, pnl_usd=?, status='completed', error=NULL
+                return_pct=?, pnl_usd=?, status='completed', error=NULL,
+                error_code=NULL
                 WHERE id=?""",
                 (
                     now,
@@ -242,7 +249,7 @@ def latest_paper_signals(limit: int = 10) -> list[dict]:
     placeholders = ",".join("?" for _ in signal_ids)
     checks = rows(
         f"""SELECT signal_id, horizon_minutes, target_at, observed_at,
-        market_price_usd, return_pct, pnl_usd, status, error
+        market_price_usd, return_pct, pnl_usd, status, error, error_code
         FROM wave_signal_checks WHERE signal_id IN ({placeholders})
         ORDER BY horizon_minutes""",
         tuple(signal_ids),

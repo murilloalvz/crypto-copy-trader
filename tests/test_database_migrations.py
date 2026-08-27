@@ -52,6 +52,19 @@ CREATE TABLE wave_signals (
 );
 """
 
+OLD_WAVE_SIGNAL_CHECKS_SCHEMA = """
+CREATE TABLE wave_signal_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    horizon_minutes INTEGER NOT NULL,
+    target_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(signal_id, horizon_minutes)
+);
+"""
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_price_diagnostic_columns_are_added_without_losing_existing_rows(self):
@@ -116,6 +129,47 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         self.assertEqual(row["token_mint"], "old-token")
         self.assertEqual(row["strategy_version"], "wave_v1_baseline")
+
+    def test_wave_check_error_code_is_added_without_losing_failure_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-wave-check.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript(OLD_WAVE_SIGNALS_SCHEMA)
+                conn.executescript(OLD_WAVE_SIGNAL_CHECKS_SCHEMA)
+                conn.execute(
+                    """INSERT INTO wave_signals
+                    (token_mint, detected_at, wave_score, entry_market_price_usd,
+                    entry_execution_price_usd, copy_size_usd, slippage_bps,
+                    snapshot_json)
+                    VALUES ('old-token', 1000, 50, 1, 1.01, 25, 100, '{}')"""
+                )
+                conn.execute(
+                    """INSERT INTO wave_signal_checks
+                    (signal_id, horizon_minutes, target_at, status, error)
+                    VALUES (1, 60, 4600, 'failed', 'erro antigo')"""
+                )
+                conn.commit()
+
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                columns = {
+                    row["name"]
+                    for row in conn.execute(
+                        "PRAGMA table_info(wave_signal_checks)"
+                    ).fetchall()
+                }
+                row = conn.execute(
+                    "SELECT status, error FROM wave_signal_checks"
+                ).fetchone()
+
+        self.assertIn("error_code", columns)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["error"], "erro antigo")
 
 
 if __name__ == "__main__":
