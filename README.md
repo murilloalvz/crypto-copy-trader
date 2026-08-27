@@ -362,7 +362,7 @@ Para modelar capital bloqueado, sinais simultâneos e limites reais de exposiç�
 perfis predefinidos, execute:
 
 ```powershell
-python backtest_concurrent.py --expected-trades 64
+python backtest_concurrent.py --expected-trades 64 --output backtest-concurrent.txt
 ```
 
 O backtest prioriza sinais simultâneos por maior Wave Score e usa o ID apenas como desempate.
@@ -375,6 +375,12 @@ como diagnóstico, mas fees ou impacto histórico não são inventados quando au
 O drawdown desse backtest usa a equity contábil nos eventos de fechamento. Como não há
 snapshots contínuos de todas as posições entre a entrada e a saída, posições abertas não são
 marcadas a mercado; o drawdown intratrade pode ter sido maior que o reportado.
+
+O relatório também aplica um stress transparente de 0, 25, 50, 100 e 200 bps de custo
+adicional de ida e volta aos perfis moderado e muito agressivo. Esse desconto é uma análise
+de sensibilidade além do slippage já armazenado, não uma afirmação de que essas foram as
+fees reais. `--output` grava o texto diretamente em UTF-8 e evita caracteres quebrados no
+Windows PowerShell.
 
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar

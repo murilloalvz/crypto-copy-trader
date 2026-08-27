@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backtest_concurrent import format_report
+from backtest_concurrent import _apply_extra_cost, format_report
 from src import database
 from src.database import initialize_database
 from src.wave_bankroll import (
@@ -216,6 +216,33 @@ class ConcurrentWaveBankrollTests(unittest.TestCase):
         self.assertIn("Fees adicionais não são descontados", output)
         self.assertIn("capital fica bloqueado até target_at", output)
         self.assertIn("posições abertas não são marcadas a mercado", output)
+
+    def test_extra_cost_stress_preserves_source_and_reduces_returns(self):
+        source = (observation(1, 1000, 1300, 90, 5),)
+
+        stressed = _apply_extra_cost(source, 100)
+
+        self.assertEqual(source[0].return_pct, 5)
+        self.assertEqual(stressed[0].return_pct, 4)
+
+    def test_report_includes_additional_round_trip_cost_stress(self):
+        simulation = simulate_concurrent_bankroll(
+            [observation(1, 1000, 1300, 90, 5)],
+            scenario_name="MODERADO",
+            starting_balance_usd=100,
+            position_pct=20,
+            max_exposure_pct=60,
+        )
+
+        output = format_report(
+            (simulation,),
+            (simulation,),
+            ((100, simulation),),
+        )
+
+        self.assertIn("STRESS DE CUSTO ADICIONAL", output)
+        self.assertIn("custo extra 100 bps", output)
+        self.assertIn("além do slippage", output)
 
 
 if __name__ == "__main__":
