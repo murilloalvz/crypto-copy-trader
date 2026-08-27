@@ -358,6 +358,24 @@ perdas e a evolução trade a trade. Ele é totalmente offline. A hipótese é s
 posição é encerrada antes do reinvestimento; posições que se sobrepuseram no monitor exigem
 uma simulação de capital concorrente separada.
 
+Para modelar capital bloqueado, sinais simultâneos e limites reais de exposição nos quatro
+perfis predefinidos, execute:
+
+```powershell
+python backtest_concurrent.py --expected-trades 64
+```
+
+O backtest prioriza sinais simultâneos por maior Wave Score e usa o ID apenas como desempate.
+Ele fecha cada posição no `target_at` do checkpoint de cinco minutos, libera o principal e
+o P&L somente nesse instante e nunca usa capital inexistente. São comparadas posições de
+10%/20%/30% e exposição de 40%/60%/70%, além de bancas iniciais de US$ 100, US$ 500 e
+US$ 1.000. O retorno armazenado já contém o slippage configurado. Entrada/liquidez é exibida
+como diagnóstico, mas fees ou impacto histórico não são inventados quando ausentes.
+
+O drawdown desse backtest usa a equity contábil nos eventos de fechamento. Como não há
+snapshots contínuos de todas as posições entre a entrada e a saída, posições abertas não são
+marcadas a mercado; o drawdown intratrade pode ter sido maior que o reportado.
+
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
 os filtros atuais.
