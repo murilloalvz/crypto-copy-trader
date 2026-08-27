@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from src import database
 from src.database import initialize_database, rows
+from src.prices import PermanentPriceProviderError
 from src.wave_paper import (
     LEGACY_WAVE_STRATEGY_VERSION,
     WAVE_STRATEGY_VERSION,
@@ -28,6 +29,14 @@ class FakePriceProvider:
         self.timestamps.append(timestamp)
         self.max_distance_seconds = max_distance_seconds
         return self.price
+
+
+class FailingPriceProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise PermanentPriceProviderError(
+            "Candle histórico distante.",
+            code="distant_historical_candle",
+        )
 
 
 class WavePaperTests(unittest.TestCase):
@@ -132,6 +141,26 @@ class WavePaperTests(unittest.TestCase):
         self.assertEqual(signal["status"], "completed")
         self.assertAlmostEqual(signal["checks"][0]["return_pct"], 7.821782, places=5)
         self.assertAlmostEqual(signal["checks"][0]["pnl_usd"], 1.955445, places=5)
+
+    def test_records_structured_price_failure_code(self):
+        record_paper_signals(
+            self.approved_results(),
+            detected_at=1_000,
+            copy_size_usd=25,
+            slippage_bps=100,
+        )
+
+        result = update_due_paper_checks(FailingPriceProvider(), now=1_301)
+        check = rows(
+            """SELECT status, error, error_code, retry_count
+            FROM wave_signal_checks WHERE horizon_minutes=5"""
+        )[0]
+
+        self.assertEqual(result, {"completed": 0, "failed": 1, "pending": 2})
+        self.assertEqual(check["status"], "failed")
+        self.assertEqual(check["error_code"], "distant_historical_candle")
+        self.assertIn("Candle histórico distante", check["error"])
+        self.assertEqual(check["retry_count"], 1)
 
 
 if __name__ == "__main__":

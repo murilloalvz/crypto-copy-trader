@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS wave_signal_checks (
     pnl_usd REAL,
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT,
+    error_code TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(signal_id, horizon_minutes),
@@ -143,6 +144,9 @@ MIGRATIONS = {
     },
     "wave_signals": {
         "strategy_version": "TEXT NOT NULL DEFAULT 'wave_v1_baseline'",
+    },
+    "wave_signal_checks": {
+        "error_code": "TEXT",
     },
 }
 
