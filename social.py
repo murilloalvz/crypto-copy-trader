@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     initialize_database()
     backfilled = backfill_social_event_parsing()
-    print("Crypto Copy Trader — Social/Event Monitor · EVENT-1")
+    print("Crypto Copy Trader — Social/Event Monitor · EVENT-2")
     print("Modo: READ ONLY — nenhum sinal, compra, venda ou assinatura é gerado.")
     print("Fonte: API oficial do X · contas Tier A: " + ", ".join(f"@{x}" for x in accounts))
     try:
