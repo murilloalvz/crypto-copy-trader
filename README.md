@@ -346,6 +346,18 @@ relatório local. Ela não procura tokens novos; serve para concluir sinais já 
 Executar `python evaluate.py` sem `--update-prices` é totalmente local e não consome cota
 de nenhuma API.
 
+Para simular uma banca sequencial usando os retornos líquidos individuais já armazenados,
+sem substituir a série pela média, use:
+
+```powershell
+python simulate_bankroll.py --starting-balance 100 --allocation-pct 30 --horizon-minutes 5 --expected-trades 64
+```
+
+O comando mostra banca final, lucro, retorno acumulado, maior drawdown, maior sequência de
+perdas e a evolução trade a trade. Ele é totalmente offline. A hipótese é sequencial: cada
+posição é encerrada antes do reinvestimento; posições que se sobrepuseram no monitor exigem
+uma simulação de capital concorrente separada.
+
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
 os filtros atuais.
