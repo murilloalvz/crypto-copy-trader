@@ -295,6 +295,21 @@ retorno. Cada horizonte também é recalculado com slippage de 0,5%, 1%, 2% e 3%
 Esse stress test usa os preços de mercado já armazenados e mostra quando uma aparente
 vantagem desaparece com custos mais conservadores.
 
+Além do resultado observado, a avaliação audita a cobertura de cada horizonte. Ela mostra
+quantos checkpoints foram concluídos, falharam ou continuam pendentes, agrupa as falhas por
+causa e recalcula o experimento atribuindo aos resultados sem preço retornos hipotéticos de
+0%, -25%, -50% e -100%. Esse segundo stress inclui falhos e pendentes e existe para revelar
+viés de sobrevivência; não afirma que esses retornos realmente aconteceram.
+
+O relatório também compara, quando os dados permitem, o pool do snapshot de entrada com o
+pool usado pelo provedor no candle de saída. Divergências ficam explícitas e devem ser
+investigadas antes de interpretar o P&L como executável. Snapshots com pool ausente ou com
+janelas de volume não monotônicas (`5m > 1h` ou `1h > 24h`) recebem alerta de integridade.
+O sistema preserva os valores brutos e não corrige silenciosamente respostas da fonte.
+
+O stress de slippage continua usando apenas observações que possuem preço. Por isso ele
+deve ser lido junto do stress de resultados sem preço, nunca isoladamente.
+
 O relatório calcula ainda o pico de posições simultâneas e de capital fictício empregado
 em cada horizonte. Se os sinais exigirem mais que `STARTING_BALANCE_USD`, o resultado mostra
 `EXCEDEU O SALDO` em vez de pressupor capital infinito.
@@ -328,6 +343,8 @@ python evaluate.py --update-prices --cohorts
 
 Essa opção consulta apenas os candles históricos do GeckoTerminal e depois recalcula o
 relatório local. Ela não procura tokens novos; serve para concluir sinais já salvos.
+Executar `python evaluate.py` sem `--update-prices` é totalmente local e não consome cota
+de nenhuma API.
 
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
@@ -453,10 +470,12 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Coletar pelo menos 30 sinais concluídos da `wave_v2_momentum` e comparar os três horizontes.
-Somente se retorno mediano, profit factor e drawdown forem aceitáveis em uma amostra maior,
-testar regras de saída como stop, alvo parcial e trailing stop em dados paper. Execução com
-dinheiro real permanece fora do escopo.
+Antes de alterar a regra `wave_v2_momentum`, repetir a coleta em outras datas e condições de
+mercado e exigir cobertura suficiente em todos os horizontes. O resultado precisa continuar
+positivo sob custos conservadores, sem depender de falhas de preço, pools diferentes ou
+janelas de volume inconsistentes. Só depois dessa validação fora da primeira janela faz
+sentido testar stop, alvo parcial e trailing stop em uma nova versão paper da estratégia.
+Execução com dinheiro real permanece fora do escopo.
 
 ## Estrutura
 
