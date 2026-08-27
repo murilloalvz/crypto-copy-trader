@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from src.database import initialize_database
 from src.wave_bankroll import completed_wave_returns, simulate_bankroll
-from src.wave_paper import WAVE_STRATEGY_VERSION
+from src.wave_paper import WAVE_V2_STRATEGY_VERSION
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--starting-balance", type=float, default=100)
     parser.add_argument("--allocation-pct", type=float, default=30)
     parser.add_argument("--horizon-minutes", type=int, default=5)
-    parser.add_argument("--strategy", default=WAVE_STRATEGY_VERSION)
+    parser.add_argument("--strategy", default=WAVE_V2_STRATEGY_VERSION)
     parser.add_argument("--expected-trades", type=int)
     return parser
 

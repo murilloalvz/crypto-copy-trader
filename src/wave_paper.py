@@ -5,11 +5,12 @@ from dataclasses import asdict, dataclass
 from src.config import settings
 from src.database import connection, rows
 from src.prices import GeckoTerminalPriceProvider, PriceProviderError
-from src.wave_radar import WaveRadarResult
+from src.wave_radar import WaveRadarResult, volume_windows_are_consistent
 
 
 PAPER_HORIZONS_MINUTES = (5, 15, 60)
-WAVE_STRATEGY_VERSION = "wave_v2_momentum"
+WAVE_STRATEGY_VERSION = "wave_v3_volume_integrity"
+WAVE_V2_STRATEGY_VERSION = "wave_v2_momentum"
 LEGACY_WAVE_STRATEGY_VERSION = "wave_v1_baseline"
 
 
@@ -57,7 +58,7 @@ def backfill_wave_strategy_versions() -> int:
     with connection() as conn:
         conn.executemany(
             "UPDATE wave_signals SET strategy_version=? WHERE id=?",
-            [(WAVE_STRATEGY_VERSION, signal_id) for signal_id in momentum_ids],
+            [(WAVE_V2_STRATEGY_VERSION, signal_id) for signal_id in momentum_ids],
         )
     return len(momentum_ids)
 
@@ -86,7 +87,11 @@ def record_paper_signals(
     with connection() as conn:
         for result in results:
             token = result.token
-            if not result.passed or token.price_usd <= 0:
+            if (
+                not result.passed
+                or not volume_windows_are_consistent(token)
+                or token.price_usd <= 0
+            ):
                 continue
             duplicate = conn.execute(
                 """SELECT 1 FROM wave_signals

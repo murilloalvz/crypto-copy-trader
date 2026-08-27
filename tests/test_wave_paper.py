@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from src.prices import PermanentPriceProviderError
 from src.wave_paper import (
     LEGACY_WAVE_STRATEGY_VERSION,
     WAVE_STRATEGY_VERSION,
+    WAVE_V2_STRATEGY_VERSION,
     backfill_wave_strategy_versions,
     latest_paper_signals,
     record_paper_signals,
@@ -79,6 +81,20 @@ class WavePaperTests(unittest.TestCase):
         signal = rows("SELECT strategy_version FROM wave_signals")[0]
         self.assertEqual(signal["strategy_version"], WAVE_STRATEGY_VERSION)
 
+    def test_persistence_rejects_inconsistent_volume_even_if_marked_as_passed(self):
+        approved = self.approved_results()[0]
+        inconsistent = replace(
+            approved,
+            token=token(volume_5m_usd=150_000, volume_1h_usd=100_000),
+            passed=True,
+            barriers=(),
+        )
+
+        created = record_paper_signals([inconsistent], detected_at=1_000)
+
+        self.assertEqual(created, 0)
+        self.assertEqual(rows("SELECT COUNT(*) AS total FROM wave_signals")[0]["total"], 0)
+
     def test_backfills_only_historical_signals_that_match_momentum_gate(self):
         base_snapshot = {
             "wave_score": 61,
@@ -119,7 +135,7 @@ class WavePaperTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(versions["baseline-token"], LEGACY_WAVE_STRATEGY_VERSION)
-        self.assertEqual(versions["momentum-token"], WAVE_STRATEGY_VERSION)
+        self.assertEqual(versions["momentum-token"], WAVE_V2_STRATEGY_VERSION)
 
     def test_prices_exact_due_horizons_and_completes_signal(self):
         record_paper_signals(

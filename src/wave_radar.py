@@ -27,6 +27,7 @@ RADAR_BARRIER_LABELS = {
     "pool_unavailable": "pool principal indisponível",
     "liquidity_low": "liquidez abaixo do mínimo",
     "volume_5m_low": "volume de 5 minutos abaixo do mínimo",
+    "volume_windows_inconsistent": "janelas cumulativas de volume inconsistentes",
     "volume_not_accelerating": "volume de 5 minutos ainda não está acelerando",
     "wave_score_low": "Wave Score abaixo do mínimo",
     "holders_unavailable": "quantidade de holders indisponível",
@@ -84,15 +85,21 @@ def _log_scale(value: float, floor: float, ceiling: float) -> float:
     return math.log(value / floor) / math.log(ceiling / floor)
 
 
+def volume_windows_are_consistent(token: WaveTokenSnapshot) -> bool:
+    """Validate cumulative windows before using volume as momentum evidence."""
+    return 0 <= token.volume_5m_usd <= token.volume_1h_usd <= token.volume_24h_usd
+
+
 def evaluate_wave_token(
     token: WaveTokenSnapshot,
     policy: WaveRadarPolicy | None = None,
 ) -> WaveRadarResult:
     policy = policy or WaveRadarPolicy()
+    volume_windows_consistent = volume_windows_are_consistent(token)
     hourly_baseline_5m = token.volume_1h_usd / 12 if token.volume_1h_usd > 0 else 0
     acceleration = (
         token.volume_5m_usd / hourly_baseline_5m
-        if hourly_baseline_5m > 0
+        if volume_windows_consistent and hourly_baseline_5m > 0
         else None
     )
     trade_sides = token.buys + token.sells
@@ -140,6 +147,8 @@ def evaluate_wave_token(
         barriers.append("liquidity_low")
     if token.volume_5m_usd < policy.min_volume_5m_usd:
         barriers.append("volume_5m_low")
+    if not volume_windows_consistent:
+        barriers.append("volume_windows_inconsistent")
     if acceleration is None or acceleration < policy.min_volume_acceleration:
         barriers.append("volume_not_accelerating")
     if wave_score < policy.min_wave_score:
