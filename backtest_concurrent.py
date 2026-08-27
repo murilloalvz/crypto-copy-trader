@@ -1,6 +1,7 @@
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from src.database import initialize_database
 from src.wave_bankroll import (
@@ -24,6 +25,7 @@ SCENARIOS = (
     Scenario("MUITO AGRESSIVO", 30, 70),
 )
 SCALE_BALANCES = (100.0, 500.0, 1_000.0)
+EXTRA_ROUND_TRIP_COST_BPS = (0, 25, 50, 100, 200)
 
 
 def _money(value: float) -> str:
@@ -81,7 +83,14 @@ def _format_summary(simulation) -> list[str]:
     ]
 
 
-def format_report(simulations, scale_simulations) -> str:
+def _apply_extra_cost(observations, cost_bps):
+    return tuple(
+        replace(item, return_pct=item.return_pct - cost_bps / 100)
+        for item in observations
+    )
+
+
+def format_report(simulations, scale_simulations, cost_stress_simulations=()) -> str:
     lines = [
         "Crypto Copy Trader — Backtest Concorrente",
         "Modo: PAPER/READ ONLY — nenhuma ordem ou movimentação de dinheiro.",
@@ -120,6 +129,22 @@ def format_report(simulations, scale_simulations) -> str:
             f"{simulation.max_drawdown_pct:.2f}% | executados "
             f"{simulation.executed_trade_count}"
         )
+    if cost_stress_simulations:
+        lines.extend(
+            [
+                "",
+                "STRESS DE CUSTO ADICIONAL — IDA E VOLTA",
+                "Sensibilidade descontada além do slippage que já está nos retornos.",
+            ]
+        )
+        for cost_bps, simulation in cost_stress_simulations:
+            lines.append(
+                f"- {simulation.scenario_name} | custo extra {cost_bps} bps | "
+                f"final {_money(simulation.final_balance_usd)} | retorno "
+                f"{simulation.total_return_pct:+.2f}% | DD "
+                f"{simulation.max_drawdown_pct:.2f}% | win rate "
+                f"{simulation.win_rate_pct:.1f}%"
+            )
     lines.extend(
         [
             "",
@@ -141,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strategy", default=WAVE_STRATEGY_VERSION)
     parser.add_argument("--horizon-minutes", type=int, default=5)
     parser.add_argument("--expected-trades", type=int, default=64)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Salva o relatório em UTF-8 no caminho informado.",
+    )
     return parser
 
 
@@ -174,7 +204,29 @@ def main(argv: list[str] | None = None) -> int:
         for scenario in SCENARIOS
         for balance in SCALE_BALANCES
     )
-    print(format_report(simulations, scale_simulations))
+    stress_profiles = tuple(
+        scenario for scenario in SCENARIOS if scenario.name in {"MODERADO", "MUITO AGRESSIVO"}
+    )
+    cost_stress_simulations = tuple(
+        (
+            cost_bps,
+            simulate_concurrent_bankroll(
+                _apply_extra_cost(observations, cost_bps),
+                scenario_name=scenario.name,
+                starting_balance_usd=100,
+                position_pct=scenario.position_pct,
+                max_exposure_pct=scenario.max_exposure_pct,
+            ),
+        )
+        for scenario in stress_profiles
+        for cost_bps in EXTRA_ROUND_TRIP_COST_BPS
+    )
+    report = format_report(simulations, scale_simulations, cost_stress_simulations)
+    if args.output:
+        args.output.write_text(report + "\n", encoding="utf-8")
+        print(f"Relatório UTF-8 salvo em: {args.output.resolve()}")
+    else:
+        print(report)
     return 0
 
 
