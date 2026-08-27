@@ -1,18 +1,48 @@
 # Solana CopyTrader
 
-MVP local para monitorar wallets públicas na Solana, guardar transações em SQLite,
-identificar swaps por variação de saldos, calcular um score inicial e criar sinais de
-paper trading. **A aplicação não possui chave privada e não envia ordens reais.**
+Laboratório local de **dados on-chain e automação** para monitorar wallets públicas na Solana, persistir atividade em SQLite, identificar swaps e avaliar estratégias por meio de **paper trading**.
 
-## O que já funciona
+O projeto foi construído para explorar integração com blockchain, pipelines de dados e análise quantitativa sem assumir riscos de execução: **não possui chave privada e não envia ordens reais.**
+
+## O que este projeto demonstra
+
+- Integração com Solana via JSON-RPC
+- Coleta, transformação e persistência de dados
+- Modelagem de métricas e scoring
+- Automação de monitoramento
+- Simulação de estratégias com paper trading
+- Dashboard interativo com Streamlit
+- Testes automatizados e código modular
+
+## Funcionalidades atuais
 
 - cadastro e remoção lógica de wallets públicas;
-- sincronização via JSON-RPC da Solana;
+- sincronização de atividade via JSON-RPC da Solana;
 - persistência idempotente em SQLite;
-- detecção inicial de swap, transferência de SOL e transferência de token;
+- detecção inicial de swaps, transferências de SOL e transferências de tokens;
 - métricas de atividade e Wallet Score preliminar;
 - paper trades com tamanho, slippage e atraso configuráveis;
 - dashboard Streamlit.
+
+## Arquitetura
+
+```text
+Solana JSON-RPC
+      ↓
+Coleta e parsing
+      ↓
+SQLite
+      ↓
+Métricas / Wallet Score
+      ↓
+Paper Trading
+      ↓
+Dashboard Streamlit
+```
+
+## Stack
+
+**Python • SQLite • Solana JSON-RPC • APIs • Streamlit • Análise de Dados • Testes Automatizados**
 
 ## Instalação no Windows
 
@@ -26,28 +56,13 @@ copy .env.example .env
 streamlit run app.py
 ```
 
-Abra o endereço exibido no terminal, normalmente `http://localhost:8501`.
+Abra o endereço exibido pelo Streamlit no terminal.
 
 ## Configuração
 
-Edite `.env`. O RPC público funciona para testes, mas pode limitar requisições. Para uso
-contínuo, troque `SOLANA_RPC_URL` por um endpoint próprio. Nunca coloque seed phrase ou
-chave privada neste projeto.
+Edite `.env` para configurar o endpoint RPC. O RPC público pode ser utilizado em testes, mas pode limitar requisições em uso contínuo.
 
-## Limites honestos desta versão
-
-- O parser usa diferenças de saldo e seleciona o token com maior variação. Transações
-  complexas com vários tokens exigirão um parser específico de DEX/agregador.
-- O score atual mede comportamento, não lucro.
-- P&L, win rate, drawdown e retorno dependem de preços históricos no instante de cada
-  operação; não são inventados nesta versão.
-- A simulação registra o sinal e os custos configurados, mas ainda não marca posições a
-  mercado.
-
-## Próximo marco recomendado
-
-Integrar preços históricos por timestamp e construir o ledger de posições FIFO. Isso
-desbloqueia P&L realizado/não realizado, win rate, drawdown e um Wallet Score financeiro.
+Nunca adicione seed phrase ou chave privada ao projeto ou ao repositório.
 
 ## Estrutura
 
@@ -57,6 +72,27 @@ src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading
 src/analytics.py       métricas e score
-tests/test_parser.py   teste do parser
+tests/test_parser.py   testes do parser
 ```
 
+## Limitações atuais
+
+- O parser inicial usa diferenças de saldo e seleciona o token com maior variação; transações complexas com múltiplos tokens exigem parsing específico.
+- O Wallet Score atual mede comportamento e não deve ser interpretado como previsão de rentabilidade.
+- Métricas financeiras dependem de preços históricos confiáveis no instante de cada operação.
+- O paper trading é uma simulação e não representa execução real ou garantia de performance.
+
+## Próximos passos
+
+- Evoluir o parser de transações e swaps
+- Integrar preços históricos por timestamp
+- Reconstruir posições e P&L
+- Expandir métricas de risco e performance
+- Aumentar cobertura de testes
+
+## Autor
+
+**Murillo Lourenço**  
+Estudante de Análise e Desenvolvimento de Sistemas na FATEC Sorocaba.
+
+Interesses: Dados, Inteligência Artificial, Automação e aplicações quantitativas.
