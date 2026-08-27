@@ -199,6 +199,9 @@ um token apenas líquido/seguro de uma atividade que está realmente acelerando 
 liquidez concentrada podem retornar zero mesmo quando esse mecanismo não se aplica da mesma
 forma. O Risk Score da fonte continua sendo a barreira agregada de segurança. Um holder
 count zero junto de atividade real é tratado como dado indisponível, não como zero confiável.
+Como as três janelas são cumulativas, a versão ativa também exige
+`volume 5m <= volume 1h <= volume 24h`. Uma violação zera a aceleração e reprova o sinal
+como `volume_windows_inconsistent`, em vez de transformar um dado impossível em momentum.
 
 O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
 aceleração contra a média de cinco minutos da última hora (20), pressão compradora
@@ -223,10 +226,11 @@ Para apenas consultar o radar sem salvar/atualizar o laboratório:
 python radar.py --tokens 25 --top 10 --no-paper
 ```
 
-Os sinais novos recebem a versão `wave_v2_momentum`. O banco existente é migrado sem
-apagar resultados: sinais antigos que não atendiam à aceleração atual continuam isolados
-como `wave_v1_baseline`. Isso impede que resultados de regras diferentes sejam somados na
-mesma estatística.
+Os sinais novos recebem a versão `wave_v3_volume_integrity`. Os resultados anteriores
+continuam preservados como `wave_v2_momentum` ou `wave_v1_baseline`; nenhuma linha antiga é
+reescrita para a v3. Isso impede que a nova barreira seja avaliada usando resultados da
+regra anterior. Para consultar todas as versões históricas, use
+`python evaluate.py --all-strategies --cohorts`.
 
 Para formar amostra sem executar o comando manualmente, use o coletor limitado. O exemplo
 abaixo roda 12 fotografias, uma a cada cinco minutos, e termina sozinho:
@@ -506,8 +510,8 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Antes de alterar a regra `wave_v2_momentum`, repetir a coleta em outras datas e condições de
-mercado e exigir cobertura suficiente em todos os horizontes. O resultado precisa continuar
+Antes de alterar a regra `wave_v3_volume_integrity`, repetir a coleta em outras datas e
+condições de mercado e exigir cobertura suficiente em todos os horizontes. O resultado precisa continuar
 positivo sob custos conservadores, sem depender de falhas de preço, pools diferentes ou
 janelas de volume inconsistentes. Só depois dessa validação fora da primeira janela faz
 sentido testar stop, alvo parcial e trailing stop em uma nova versão paper da estratégia.
