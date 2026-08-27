@@ -116,6 +116,43 @@ CREATE TABLE IF NOT EXISTS wave_signal_checks (
 
 CREATE INDEX IF NOT EXISTS idx_wave_signal_checks_due
 ON wave_signal_checks(status, target_at);
+
+CREATE TABLE IF NOT EXISTS social_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    source_account_id TEXT,
+    username TEXT NOT NULL COLLATE NOCASE,
+    tier TEXT NOT NULL DEFAULT 'A',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, username)
+);
+
+CREATE TABLE IF NOT EXISTS social_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    external_event_id TEXT NOT NULL,
+    account_id INTEGER,
+    author_source_id TEXT,
+    author_username TEXT NOT NULL,
+    published_at_ms INTEGER NOT NULL,
+    detected_at_ms INTEGER NOT NULL,
+    detection_latency_ms INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    url TEXT,
+    event_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+    raw_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, external_event_id),
+    FOREIGN KEY (account_id) REFERENCES social_accounts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_events_published
+ON social_events(published_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_social_events_author_time
+ON social_events(author_username, published_at_ms DESC);
 """
 
 

@@ -78,6 +78,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(paper_trades)").fetchall()
                 }
+                tables = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
                 row = conn.execute(
                     "SELECT source_signature, status, price_error FROM paper_trades"
                 ).fetchone()
@@ -85,6 +91,8 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("price_error_code", columns)
         self.assertIn("price_retry_count", columns)
         self.assertIn("last_price_attempt_at", columns)
+        self.assertIn("social_accounts", tables)
+        self.assertIn("social_events", tables)
         self.assertEqual(row["source_signature"], "sig-old")
         self.assertEqual(row["status"], "price_unavailable")
         self.assertEqual(row["price_error"], "erro antigo")

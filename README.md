@@ -31,6 +31,8 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 - Wave Radar executável que encontra tokens com volume recente e aplica barreiras de risco.
 - laboratório versionado com checkpoints paper de 5, 15 e 60 minutos;
 - avaliação estatística por estratégia e coletor automático de duração limitada.
+- EVENT-1 de Social/Event Intelligence com contas Tier A configuráveis, coleta oficial do
+  X, timestamps, latência e deduplicação no mesmo SQLite.
 
 ## Wallet discovery
 
@@ -333,6 +335,58 @@ As faixas são fixas e não mudam a estratégia. Elas servem para formular uma h
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
 os filtros atuais.
 
+## Social/Event Intelligence — EVENT-1
+
+A primeira camada social foi adicionada sem alterar os filtros, o Wave Score ou o paper
+trading atual. Ela monitora uma pequena lista configurável de contas Tier A pela API
+oficial do X e salva eventos normalizados no mesmo SQLite do projeto.
+
+O EVENT-1 armazena somente:
+
+- fonte e ID externo do post;
+- autor e conta Tier A relacionada;
+- texto e URL pública;
+- `published_at_ms` e `detected_at_ms`;
+- `detection_latency_ms`;
+- payload bruto para auditoria;
+- classificação inicial `UNKNOWN`.
+
+Não há extração de ticker, resolução de mint, correlação on-chain, Opportunity Score ou
+sinal de entrada neste marco. Um post nunca autoriza compra, nem mesmo fictícia.
+
+Configure uma lista pequena no `.env`, sem espalhar nomes pelo código:
+
+```text
+X_BEARER_TOKEN=cole_seu_bearer_token_aqui
+SOCIAL_TIER_A_ACCOUNTS=conta1,conta2
+SOCIAL_LOOKBACK_MINUTES=15
+SOCIAL_TIMEOUT_SECONDS=10
+```
+
+Depois execute uma coleta única:
+
+```powershell
+python social.py
+```
+
+Também é possível testar outra lista sem mudar o `.env`:
+
+```powershell
+python social.py --accounts conta1,conta2 --lookback-minutes 15
+```
+
+A integração usa `recent search`, não scraping. Segundo a
+[documentação de preços do X](https://docs.x.com/x-api/getting-started/pricing), leituras
+de posts são cobradas por recurso retornado; configure créditos e limite de gastos no
+Developer Console antes de ativar. Testes automatizados usam mocks e não consomem a API.
+O mesmo post é ignorado pelo banco em coletas repetidas.
+
+O ponto de integração futuro é intencionalmente único: `monitor.py` poderá agendar a
+coleta social e `radar.py` poderá consultar eventos persistidos ao avaliar confluência.
+Antes disso, EVENT-2 deve classificar posts e extrair entidades; EVENT-3 deve resolver o
+mint com evidência suficiente. Eventos sem identidade confiável deverão permanecer
+`UNRESOLVED_TOKEN` e nunca gerar sinal.
+
 Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
 consulta adicional. O padrão é 25:
 
@@ -456,7 +510,9 @@ histórico bruto da blockchain.
 Coletar pelo menos 30 sinais concluídos da `wave_v2_momentum` e comparar os três horizontes.
 Somente se retorno mediano, profit factor e drawdown forem aceitáveis em uma amostra maior,
 testar regras de saída como stop, alvo parcial e trailing stop em dados paper. Execução com
-dinheiro real permanece fora do escopo.
+dinheiro real permanece fora do escopo. Em paralelo, o próximo marco social é EVENT-2:
+classificação determinística de posts e extração de tickers, nomes, URLs e mints explícitos,
+sem gerar oportunidade e sem modificar a estratégia Wave em andamento.
 
 ## Estrutura
 
@@ -467,8 +523,10 @@ radar.py               CLI de tokens ativos e Wave Score inicial
 collect.py             polling limitado para formar amostra paper
 monitor.py             preços frequentes com discovery econômico e independente
 evaluate.py            estatísticas por versão e horizonte
+social.py              coleta READ ONLY de eventos Tier A pela API oficial do X
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
+src/social/             modelos, cliente oficial do X e persistência de eventos
 src/wave_radar.py      filtros e ranking de tokens ativos
 src/wave_paper.py      sinais paper e checkpoints históricos
 src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
@@ -478,6 +536,7 @@ src/services.py        sincronização e paper trading
 src/analytics.py       métricas e score
 src/prices.py          preços históricos e cache
 tests/test_parser.py   teste do parser
+tests/test_social_event.py testes de timestamps, deduplicação e falhas da fonte social
 ```
 
 Dados de mercado on-chain: GeckoTerminal. Powered by CoinGecko.

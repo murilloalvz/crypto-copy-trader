@@ -14,6 +14,10 @@ def _csv_urls(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _csv_values(value: str) -> tuple[str, ...]:
+    return tuple(item.strip().lstrip("@") for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     rpc_url: str = getenv("SOLANA_RPC_URL", "https://api.mainnet.solana.com")
@@ -41,6 +45,12 @@ class Settings:
     solana_tracker_max_attempts: int = int(
         getenv("SOLANA_TRACKER_MAX_ATTEMPTS", "3")
     )
+    x_bearer_token: str = getenv("X_BEARER_TOKEN", "").strip()
+    social_tier_a_accounts: tuple[str, ...] = _csv_values(
+        getenv("SOCIAL_TIER_A_ACCOUNTS", "")
+    )
+    social_lookback_minutes: int = int(getenv("SOCIAL_LOOKBACK_MINUTES", "15"))
+    social_timeout_seconds: int = int(getenv("SOCIAL_TIMEOUT_SECONDS", "10"))
 
 
 settings = Settings()
