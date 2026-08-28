@@ -84,22 +84,22 @@ Tabelas relevantes:
 ### Formação da amostra v3
 
 - **EM TESTE**.
-- Backup reproduzido: `copytrader-backup-8h.db`, SQLite `integrity_check: ok`.
-- Estado reproduzido do backup: 12 sinais v3; 34 checkpoints concluídos; 0 pendentes; 2 falhos.
-- Integridade: 12/12 snapshots legíveis; 0 janelas de volume inconsistentes.
+- Banco mais recente reproduzido: `copytrader(1).db`, SQLite `integrity_check: ok`.
+- Estado reproduzido: 19 sinais v3; 54 checkpoints concluídos; 1 pendente; 2 falhos.
+- Integridade: 19/19 snapshots legíveis; 0 janelas de volume inconsistentes.
 
 Resultados v3 reproduzidos:
 
 | Horizonte | Cobertura | Win rate | Média | Mediana | PF | Observação |
 |---|---:|---:|---:|---:|---:|---|
-| 5m | 12/12 | 33,3% | +0,86% | -1,30% | 1,28 | Média vira -2,10% sem o melhor trade |
-| 15m | 12/12 | 50,0% | +11,98% | +2,30% | 7,67 | Maior vencedor responde por 71,6% do lucro bruto |
-| 60m | 10/12 | 70,0% | +15,52% | +4,34% | 3,19 | 2 falhas; melhor +113,34%, pior -66,93% |
+| 5m | 19/19 | 42,1% | +1,69% | -0,02% | 1,79 | Média vira -0,07% sem o melhor trade |
+| 15m | 19/19 | 63,2% | +9,31% | +4,13% | 8,64 | Média sem o melhor trade permanece +3,25% |
+| 60m | 16/19 | 75,0% | +23,03% | +10,08% | 5,52 | 2 falhas e 1 pendente; melhor +113,34%, pior -66,93% |
 
-- Conclusão: amostra ainda inconclusiva (<30). 5m está fraco e dependente de outlier; 15m e 60m
-  são hipóteses promissoras, ainda sem evidência suficiente para live.
-- Experimento atual no computador do usuário: monitor de 4 horas, discovery a cada 15 minutos,
-  atualização de preços a cada 5 minutos, até 50 tokens por busca. Os filtros v3 permanecem iguais.
+- Conclusão: amostra ainda inconclusiva (<30). 5m continua frágil e dependente de outlier; 15m e
+  60m ganharam suporte, mas ainda não constituem evidência suficiente para live.
+- O experimento acelerado de 4 horas acrescentou 7 sinais v3: discovery a cada 15 minutos,
+  atualização de preços a cada 5 minutos, até 50 tokens por busca. Os filtros v3 permaneceram iguais.
 
 Comando do experimento acelerado:
 
@@ -162,20 +162,21 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 
 ## Próxima prioridade
 
-1. Deixar o experimento v3 atual terminar e preservar o banco.
+1. Resolver o checkpoint 60m ainda pendente e preservar o banco mais recente.
 2. Implementar `exit-engine-v1` incrementalmente em branch própria, sem alterar a entrada v3.
-3. Continuar a coleta v3 até pelo menos 30 sinais e depois até 100, em horários/regimes diversos.
+3. Continuar a coleta v3: faltam 11 sinais para 30; depois avançar até 100, em horários/regimes diversos.
 4. Avaliar v3 por cobertura, mediana, PF, drawdown, custos e dependência de outliers.
 5. Rodar backtest concorrente v3 e só então decidir a política de saída candidata a shadow.
 
 ## Handoff para outros chats
 
-- **Estado atual:** v3 ativa em paper, 12 sinais reproduzidos no backup de 8h; novo teste acelerado de
-  4 horas em execução.
+- **Estado atual:** v3 ativa em paper, 19 sinais reproduzidos; o teste acelerado de 4 horas acrescentou
+  7 sinais com integridade completa.
 - **O que está implementado:** radar, integridade de volume, paper checkpoints, avaliação estatística,
   backtests de banca e monitor híbrido.
 - **O que está em teste:** estabilidade e expectativa da `wave_v3_volume_integrity`.
-- **O que continua incerto:** edge líquido da v3, melhor horizonte e efeito real de uma saída dinâmica.
+- **O que continua incerto:** edge líquido da v3, robustez com n>=30, melhor horizonte e efeito real
+  de uma saída dinâmica.
 - **Próxima prioridade:** Exit Engine v1 enquanto a amostra v3 cresce.
 - **Pergunta para o Copiloto:** quais políticas de saída pré-registradas oferecem maior informação com
   o menor número de parâmetros, evitando overfitting na amostra pequena?
