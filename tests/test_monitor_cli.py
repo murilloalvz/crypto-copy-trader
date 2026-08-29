@@ -91,6 +91,7 @@ class HybridMonitorTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch("monitor.initialize_database"),
+            patch("monitor.ensure_exit_experiment", return_value={"id": 1, "activated_at": 1, "start_after_signal_id": 0}),
             patch("monitor.run_hybrid_monitor", side_effect=KeyboardInterrupt),
             redirect_stdout(output),
         ):
@@ -128,6 +129,7 @@ class HybridMonitorTests(unittest.TestCase):
         evaluator = Mock(return_value=0)
         with (
             patch("monitor.initialize_database"),
+            patch("monitor.ensure_exit_experiment", return_value={"id": 1, "activated_at": 1, "start_after_signal_id": 0}),
             patch("monitor.run_hybrid_monitor", return_value=summary),
             patch("monitor.evaluate_main", evaluator),
             redirect_stdout(io.StringIO()),
@@ -149,6 +151,7 @@ class HybridMonitorTests(unittest.TestCase):
         evaluator = Mock(return_value=0)
         with (
             patch("monitor.initialize_database"),
+            patch("monitor.ensure_exit_experiment", return_value={"id": 1, "activated_at": 1, "start_after_signal_id": 0}),
             patch("monitor.run_hybrid_monitor", return_value=summary),
             patch("monitor.evaluate_main", evaluator),
             redirect_stdout(io.StringIO()),

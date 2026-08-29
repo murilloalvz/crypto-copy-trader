@@ -117,6 +117,137 @@ CREATE TABLE IF NOT EXISTS wave_signal_checks (
 
 CREATE INDEX IF NOT EXISTS idx_wave_signal_checks_due
 ON wave_signal_checks(status, target_at);
+
+CREATE TABLE IF NOT EXISTS exit_experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    engine_version TEXT NOT NULL,
+    entry_strategy_version TEXT NOT NULL,
+    activated_at INTEGER NOT NULL,
+    start_after_signal_id INTEGER NOT NULL,
+    expected_observation_interval_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(engine_version, activated_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exit_experiments_active
+ON exit_experiments(engine_version, status, activated_at DESC);
+
+CREATE TABLE IF NOT EXISTS exit_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL,
+    policy_version TEXT NOT NULL,
+    policy_type TEXT NOT NULL,
+    parameters_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(experiment_id, policy_version),
+    FOREIGN KEY (experiment_id) REFERENCES exit_experiments(id)
+);
+
+CREATE TABLE IF NOT EXISTS exit_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL,
+    policy_id INTEGER NOT NULL,
+    signal_id INTEGER NOT NULL,
+    entry_strategy_version TEXT NOT NULL,
+    entry_at INTEGER NOT NULL,
+    entry_market_price_usd REAL NOT NULL,
+    entry_execution_price_usd REAL NOT NULL,
+    copy_size_usd REAL NOT NULL,
+    slippage_bps INTEGER NOT NULL,
+    highest_market_price_usd REAL NOT NULL,
+    lowest_market_price_usd REAL NOT NULL,
+    mfe_pct REAL NOT NULL DEFAULT 0,
+    mae_pct REAL NOT NULL DEFAULT 0,
+    last_observed_at INTEGER,
+    observation_count INTEGER NOT NULL DEFAULT 0,
+    exit_at INTEGER,
+    exit_market_price_usd REAL,
+    exit_execution_price_usd REAL,
+    gross_return_pct REAL,
+    net_return_pct REAL,
+    pnl_usd REAL,
+    exit_reason TEXT,
+    duration_seconds INTEGER,
+    status TEXT NOT NULL DEFAULT 'open',
+    error TEXT,
+    error_code TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(experiment_id, policy_id, signal_id),
+    FOREIGN KEY (experiment_id) REFERENCES exit_experiments(id),
+    FOREIGN KEY (policy_id) REFERENCES exit_policies(id),
+    FOREIGN KEY (signal_id) REFERENCES wave_signals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exit_positions_status
+ON exit_positions(experiment_id, status, entry_at);
+
+CREATE TABLE IF NOT EXISTS exit_price_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL,
+    signal_id INTEGER NOT NULL,
+    observed_at INTEGER NOT NULL,
+    requested_at INTEGER NOT NULL,
+    market_price_usd REAL,
+    pool_address TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    error_code TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(experiment_id, signal_id, observed_at),
+    FOREIGN KEY (experiment_id) REFERENCES exit_experiments(id),
+    FOREIGN KEY (signal_id) REFERENCES wave_signals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exit_observations_signal_time
+ON exit_price_observations(experiment_id, signal_id, observed_at);
+
+CREATE TABLE IF NOT EXISTS wave_discovery_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL UNIQUE,
+    completed_at INTEGER,
+    source TEXT NOT NULL,
+    requested_token_limit INTEGER NOT NULL,
+    source_item_count INTEGER NOT NULL DEFAULT 0,
+    source_invalid_count INTEGER NOT NULL DEFAULT 0,
+    source_duplicate_count INTEGER NOT NULL DEFAULT 0,
+    returned_count INTEGER NOT NULL DEFAULT 0,
+    analyzed_count INTEGER NOT NULL DEFAULT 0,
+    data_valid_count INTEGER NOT NULL DEFAULT 0,
+    strategy_candidate_count INTEGER NOT NULL DEFAULT 0,
+    signals_created_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    persistence_rejected_count INTEGER NOT NULL DEFAULT 0,
+    policy_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'started',
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wave_discovery_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    token_mint TEXT NOT NULL,
+    symbol TEXT,
+    wave_score REAL NOT NULL,
+    data_valid INTEGER NOT NULL,
+    strategy_passed INTEGER NOT NULL,
+    barriers_json TEXT NOT NULL,
+    persistence_outcome TEXT,
+    signal_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(run_id, token_mint),
+    FOREIGN KEY (run_id) REFERENCES wave_discovery_runs(id),
+    FOREIGN KEY (signal_id) REFERENCES wave_signals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wave_discovery_candidates_run
+ON wave_discovery_candidates(run_id, strategy_passed, persistence_outcome);
 """
 
 
@@ -147,6 +278,11 @@ MIGRATIONS = {
     },
     "wave_signal_checks": {
         "error_code": "TEXT",
+    },
+    "wave_discovery_runs": {
+        "source_item_count": "INTEGER NOT NULL DEFAULT 0",
+        "source_invalid_count": "INTEGER NOT NULL DEFAULT 0",
+        "source_duplicate_count": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 

@@ -1,0 +1,147 @@
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from src import database
+from src.database import initialize_database, rows
+from src.exit_engine import (
+    EXIT_POLICIES,
+    ensure_exit_experiment,
+    enroll_forward_signals,
+    update_exit_positions,
+)
+from src.prices import PermanentPriceProviderError
+from src.strategy_versions import WAVE_STRATEGY_VERSION
+
+
+class SequenceProvider:
+    def __init__(self, prices):
+        self.prices = prices
+        self.timestamps = []
+
+    def price_at(self, _token, timestamp, *, max_distance_seconds=3_600):
+        self.timestamps.append(timestamp)
+        return self.prices[timestamp]
+
+
+class FailingProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise PermanentPriceProviderError("sem candle", code="no_historical_candle")
+
+
+class ExitEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "exit.db"
+        self.patch = patch.object(
+            database, "settings", SimpleNamespace(database_path=self.path)
+        )
+        self.patch.start()
+        initialize_database()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.directory.cleanup()
+
+    def insert_signal(self, detected_at, token_mint="token"):
+        with database.connection() as conn:
+            return conn.execute(
+                """INSERT INTO wave_signals
+                (token_mint, detected_at, wave_score, entry_market_price_usd,
+                 entry_execution_price_usd, copy_size_usd, slippage_bps,
+                 strategy_version, snapshot_json)
+                VALUES (?, ?, 70, 1, 1.01, 25, 100, ?, '{}')""",
+                (token_mint, detected_at, WAVE_STRATEGY_VERSION),
+            ).lastrowid
+
+    def test_forward_boundary_excludes_existing_signals_and_is_idempotent(self):
+        old_id = self.insert_signal(800, "old")
+        experiment = ensure_exit_experiment(activated_at=900)
+        new_id = self.insert_signal(1_000, "new")
+
+        first = enroll_forward_signals(experiment["id"])
+        second = enroll_forward_signals(experiment["id"])
+        signal_ids = {
+            item["signal_id"] for item in rows("SELECT signal_id FROM exit_positions")
+        }
+
+        self.assertEqual(experiment["start_after_signal_id"], old_id)
+        self.assertEqual(signal_ids, {new_id})
+        self.assertEqual(first.created_positions, len(EXIT_POLICIES))
+        self.assertEqual(second.created_positions, 0)
+
+    def test_policies_react_independently_to_only_observed_prices(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+        provider = SequenceProvider(
+            {1200: 1.25, 1500: 1.10, 1900: 0.90, 1920: 0.90, 4600: 1.0}
+        )
+
+        update_exit_positions(provider, now=1_301, experiment_id=experiment["id"])
+        update_exit_positions(provider, now=1_601, experiment_id=experiment["id"])
+        update_exit_positions(provider, now=1_981, experiment_id=experiment["id"])
+        update_exit_positions(provider, now=4_681, experiment_id=experiment["id"])
+        final = update_exit_positions(provider, now=4_681, experiment_id=experiment["id"])
+
+        positions = {
+            item["policy_version"]: item
+            for item in rows(
+                """SELECT ep.policy_version, p.* FROM exit_positions p
+                JOIN exit_policies ep ON ep.id=p.policy_id"""
+            )
+        }
+        self.assertEqual(provider.timestamps, [1200, 1500, 1900, 1920, 4600])
+        self.assertEqual(positions["take_profit_20_v1"]["exit_at"], 1200)
+        self.assertEqual(positions["trailing_stop_10_v1"]["exit_at"], 1500)
+        self.assertEqual(positions["stop_loss_10_v1"]["exit_at"], 1920)
+        self.assertEqual(positions["fixed_15m_v1"]["exit_at"], 1900)
+        self.assertEqual(positions["fixed_60m_v1"]["exit_at"], 4600)
+        self.assertAlmostEqual(positions["fixed_15m_v1"]["mfe_pct"], 23.762376, places=5)
+        self.assertAlmostEqual(positions["fixed_15m_v1"]["mae_pct"], -10.891089, places=5)
+        self.assertEqual(positions["fixed_15m_v1"]["observation_count"], 3)
+        self.assertEqual(final.closed_positions, 0)
+        self.assertEqual(len(rows("SELECT * FROM exit_positions")), len(EXIT_POLICIES))
+
+    def test_gap_uses_first_observed_price_not_the_threshold(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        update_exit_positions(
+            SequenceProvider({1200: 0.80}), now=1_301, experiment_id=experiment["id"]
+        )
+        stop = rows(
+            """SELECT p.* FROM exit_positions p JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE ep.policy_version='stop_loss_10_v1'"""
+        )[0]
+
+        self.assertEqual(stop["exit_market_price_usd"], 0.80)
+        self.assertLess(stop["net_return_pct"], -20)
+        self.assertEqual(stop["exit_reason"], "stop_loss")
+
+    def test_missing_price_is_audited_and_can_fail_due_positions(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        result = update_exit_positions(
+            FailingProvider(), now=1_981, experiment_id=experiment["id"], max_attempts=1
+        )
+
+        observation = rows("SELECT * FROM exit_price_observations")[0]
+        fixed_15 = rows(
+            """SELECT p.status, p.error_code FROM exit_positions p
+            JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE ep.policy_version='fixed_15m_v1'"""
+        )[0]
+        self.assertEqual(result.price_failures, 2)
+        self.assertEqual(observation["status"], "failed")
+        self.assertEqual(observation["error_code"], "no_historical_candle")
+        self.assertEqual(fixed_15["status"], "failed")
+
+
+if __name__ == "__main__":
+    unittest.main()

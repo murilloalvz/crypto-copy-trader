@@ -5,7 +5,7 @@ from src.wave_metrics import build_wave_evaluation_report
 from src.wave_paper import (
     WAVE_STRATEGY_VERSION,
     backfill_wave_strategy_versions,
-    update_due_paper_checks,
+    update_wave_paper_prices as update_due_paper_checks,
 )
 
 
@@ -284,6 +284,13 @@ def main(argv: list[str] | None = None) -> int:
             f"{price_update['failed']} falhos"
         )
         print("Fonte desta atualização: GeckoTerminal; Solana Tracker não consultado.")
+        if "exit_open_positions" in price_update:
+            print(
+                "Exit engine v1: "
+                f"{price_update['exit_closed_positions']} fechadas | "
+                f"{price_update['exit_open_positions']} abertas | "
+                f"{price_update['exit_price_failures']} falhas de observação"
+            )
     for version in _strategy_versions(args.all_strategies):
         print()
         print(

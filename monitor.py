@@ -9,7 +9,8 @@ from typing import Callable
 from evaluate import main as evaluate_main
 from radar import main as radar_main
 from src.database import initialize_database
-from src.wave_paper import update_due_paper_checks
+from src.exit_engine import ensure_exit_experiment
+from src.wave_paper import update_wave_paper_prices
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ def run_hybrid_monitor(
     discovery_interval_seconds: float,
     radar_args: list[str],
     radar_runner: Callable[[list[str]], int] = radar_main,
-    price_updater: Callable[[], dict[str, int]] = update_due_paper_checks,
+    price_updater: Callable[[], dict[str, int]] = update_wave_paper_prices,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> HybridMonitorSummary:
@@ -59,6 +60,13 @@ def run_hybrid_monitor(
             f"{result['completed']} concluídos | {result['pending']} pendentes | "
             f"{result['failed']} falhos"
         )
+        if "exit_open_positions" in result:
+            print(
+                "[exit-engine-v1] "
+                f"{result['exit_closed_positions']} fechadas | "
+                f"{result['exit_open_positions']} abertas | "
+                f"{result['exit_price_failures']} falhas de preço"
+            )
 
     while clock() < ends_at:
         now = clock()
@@ -196,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
         str(args.min_wave_score),
     ]
     initialize_database()
+    experiment = ensure_exit_experiment(
+        expected_observation_interval_seconds=int(args.price_interval_minutes * 60)
+    )
     print("Crypto Copy Trader — Monitor Híbrido")
     print("Modo: PAPER/READ ONLY — nenhuma compra, venda ou assinatura.")
     print(
@@ -203,6 +214,11 @@ def main(argv: list[str] | None = None) -> int:
         f"discovery: {args.discovery_interval_minutes:g}min"
     )
     print(f"Rodadas planejadas de discovery no Solana Tracker: {planned_discoveries}")
+    print(
+        "Exit engine v1 forward: "
+        f"experimento {experiment['id']} | ativado em {experiment['activated_at']} | "
+        f"somente sinais com ID > {experiment['start_after_signal_id']}"
+    )
     try:
         summary = run_hybrid_monitor(
             duration_seconds=args.hours * 3_600,

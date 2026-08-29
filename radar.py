@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 from datetime import datetime, timezone
 
 from src.discovery.solana_tracker import (
@@ -16,6 +17,7 @@ from src.wave_radar import (
     build_wave_radar_report,
 )
 from src.wave_paper import latest_paper_signals, run_wave_paper_cycle
+from src.wave_funnel import record_discovery_run, record_failed_discovery
 
 
 def _short_address(address: str) -> str:
@@ -127,6 +129,14 @@ def format_paper_report(update, signals: list[dict], *, now: int) -> str:
         f"Horizontes atualizados nesta rodada: {update.completed_checks}",
         f"Horizontes com falha definitiva: {update.failed_checks}",
         f"Horizontes ainda pendentes: {update.pending_checks}",
+        (
+            "Exit engine v1: "
+            f"{getattr(update, 'exit_enrolled_signals', 0)} sinais pareados | "
+            f"{getattr(update, 'exit_created_positions', 0)} posições abertas | "
+            f"{getattr(update, 'exit_closed_positions', 0)} fechadas nesta rodada | "
+            f"{getattr(update, 'exit_open_positions', 0)} ainda abertas | "
+            f"{getattr(update, 'exit_price_failures', 0)} falhas de observação"
+        ),
     ]
     if not signals:
         lines.extend(["", "Nenhum sinal apto foi salvo até agora."])
@@ -213,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         min_volume_acceleration=args.min_acceleration,
         min_wave_score=args.min_wave_score,
     )
+    discovery_started_at_ms = int(time.time() * 1_000)
     client = SolanaTrackerClient()
     try:
         tokens = client.wave_tokens(
@@ -221,9 +232,25 @@ def main(argv: list[str] | None = None) -> int:
             min_volume_5m_usd=policy.min_volume_5m_usd,
         )
     except (SolanaTrackerConfigurationError, SolanaTrackerAuthenticationError) as exc:
+        if not args.no_paper:
+            initialize_database()
+            record_failed_discovery(
+                requested_token_limit=args.tokens,
+                policy=policy,
+                error=str(exc),
+                started_at_ms=discovery_started_at_ms,
+            )
         print(f"Configuração necessária: {exc}", file=sys.stderr)
         return 2
     except SolanaTrackerError as exc:
+        if not args.no_paper:
+            initialize_database()
+            record_failed_discovery(
+                requested_token_limit=args.tokens,
+                policy=policy,
+                error=str(exc),
+                started_at_ms=discovery_started_at_ms,
+            )
         print(f"Falha no Wave Radar: {exc}", file=sys.stderr)
         return 1
     report = build_wave_radar_report(tokens, policy)
@@ -232,8 +259,39 @@ def main(argv: list[str] | None = None) -> int:
         initialize_database()
         now = int(datetime.now(timezone.utc).timestamp())
         update = run_wave_paper_cycle(report.results, now=now)
+        funnel = record_discovery_run(
+            report,
+            requested_token_limit=args.tokens,
+            returned_count=len(tokens),
+            source_item_count=getattr(client, "last_wave_diagnostics", {}).get(
+                "source_item_count", len(tokens)
+            ),
+            source_invalid_count=getattr(client, "last_wave_diagnostics", {}).get(
+                "source_invalid_count", 0
+            ),
+            source_duplicate_count=getattr(client, "last_wave_diagnostics", {}).get(
+                "source_duplicate_count", 0
+            ),
+            policy=policy,
+            outcomes=update.persistence_outcomes,
+            started_at_ms=discovery_started_at_ms,
+        )
         print()
         print(format_paper_report(update, latest_paper_signals(10), now=now))
+        print()
+        print("FUNIL AUDITÁVEL DESTA RODADA")
+        print(
+            f"Solicitados à fonte: até {funnel.requested_limit} | "
+            f"itens brutos: {funnel.source_items} | retornados únicos: {funnel.discovered} | "
+            f"dados válidos: {funnel.data_valid} | "
+            f"candidatos v3: {funnel.candidates} | sinais novos: {funnel.signals_created}"
+        )
+        print(
+            f"Fonte inválidos/duplicados: {funnel.source_invalid}/{funnel.source_duplicates} | "
+            f"Cooldown/duplicados de sinal: {funnel.duplicates} | "
+            f"rejeitados na persistência: {funnel.persistence_rejected} | "
+            f"run_id: {funnel.run_id}"
+        )
     return 0
 
 

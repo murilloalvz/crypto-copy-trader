@@ -67,6 +67,32 @@ CREATE TABLE wave_signal_checks (
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_exit_engine_and_funnel_tables_are_initialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new.db"
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+            with closing(sqlite3.connect(path)) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+
+        self.assertTrue(
+            {
+                "exit_experiments",
+                "exit_policies",
+                "exit_positions",
+                "exit_price_observations",
+                "wave_discovery_runs",
+                "wave_discovery_candidates",
+            }.issubset(tables)
+        )
+
     def test_price_diagnostic_columns_are_added_without_losing_existing_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old-copytrader.db"

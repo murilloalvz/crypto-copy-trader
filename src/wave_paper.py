@@ -5,21 +5,36 @@ from dataclasses import asdict, dataclass
 from src.config import settings
 from src.database import connection, rows
 from src.prices import GeckoTerminalPriceProvider, PriceProviderError
+from src.strategy_versions import (
+    LEGACY_WAVE_STRATEGY_VERSION,
+    WAVE_STRATEGY_VERSION,
+    WAVE_V2_STRATEGY_VERSION,
+)
 from src.wave_radar import WaveRadarResult, volume_windows_are_consistent
 
 
 PAPER_HORIZONS_MINUTES = (5, 15, 60)
-WAVE_STRATEGY_VERSION = "wave_v3_volume_integrity"
-WAVE_V2_STRATEGY_VERSION = "wave_v2_momentum"
-LEGACY_WAVE_STRATEGY_VERSION = "wave_v1_baseline"
-
-
 @dataclass(frozen=True)
 class WavePaperUpdate:
     created_signals: int
     completed_checks: int
     failed_checks: int
     pending_checks: int
+    exit_enrolled_signals: int = 0
+    exit_created_positions: int = 0
+    exit_observed_signals: int = 0
+    exit_closed_positions: int = 0
+    exit_failed_positions: int = 0
+    exit_open_positions: int = 0
+    exit_price_failures: int = 0
+    persistence_outcomes: tuple["SignalPersistenceOutcome", ...] = ()
+
+
+@dataclass(frozen=True)
+class SignalPersistenceOutcome:
+    token_mint: str
+    outcome: str
+    signal_id: int | None = None
 
 
 def _snapshot_matches_momentum_strategy(snapshot_json: str) -> bool:
@@ -63,14 +78,14 @@ def backfill_wave_strategy_versions() -> int:
     return len(momentum_ids)
 
 
-def record_paper_signals(
+def record_paper_signals_with_outcomes(
     results: tuple[WaveRadarResult, ...] | list[WaveRadarResult],
     *,
     detected_at: int | None = None,
     cooldown_minutes: int = 360,
     copy_size_usd: float | None = None,
     slippage_bps: int | None = None,
-) -> int:
+) -> tuple[int, tuple[SignalPersistenceOutcome, ...]]:
     """Persist approved radar results as local paper-only entries.
 
     A token cannot create another signal during the cooldown. This prevents a
@@ -81,17 +96,21 @@ def record_paper_signals(
     slippage = settings.slippage_bps if slippage_bps is None else slippage_bps
     cutoff = detected_at - max(1, cooldown_minutes) * 60
     created = 0
+    outcomes = []
 
     backfill_wave_strategy_versions()
 
     with connection() as conn:
         for result in results:
             token = result.token
-            if (
-                not result.passed
-                or not volume_windows_are_consistent(token)
-                or token.price_usd <= 0
-            ):
+            if not result.passed:
+                outcomes.append(SignalPersistenceOutcome(token.token, "strategy_rejected"))
+                continue
+            if not volume_windows_are_consistent(token):
+                outcomes.append(SignalPersistenceOutcome(token.token, "volume_inconsistent"))
+                continue
+            if token.price_usd <= 0:
+                outcomes.append(SignalPersistenceOutcome(token.token, "invalid_price"))
                 continue
             duplicate = conn.execute(
                 """SELECT 1 FROM wave_signals
@@ -99,6 +118,7 @@ def record_paper_signals(
                 (token.token, cutoff),
             ).fetchone()
             if duplicate:
+                outcomes.append(SignalPersistenceOutcome(token.token, "duplicate"))
                 continue
 
             entry_execution_price = token.price_usd * (1 + slippage / 10_000)
@@ -141,7 +161,48 @@ def record_paper_signals(
                 ],
             )
             created += 1
+            outcomes.append(SignalPersistenceOutcome(token.token, "created", signal_id))
+    return created, tuple(outcomes)
+
+
+def record_paper_signals(
+    results: tuple[WaveRadarResult, ...] | list[WaveRadarResult],
+    *,
+    detected_at: int | None = None,
+    cooldown_minutes: int = 360,
+    copy_size_usd: float | None = None,
+    slippage_bps: int | None = None,
+) -> int:
+    created, _ = record_paper_signals_with_outcomes(
+        results,
+        detected_at=detected_at,
+        cooldown_minutes=cooldown_minutes,
+        copy_size_usd=copy_size_usd,
+        slippage_bps=slippage_bps,
+    )
     return created
+
+
+def update_wave_paper_prices(
+    provider: GeckoTerminalPriceProvider | None = None,
+    *,
+    now: int | None = None,
+) -> dict[str, int]:
+    """Settle fixed checkpoints and the active forward exit cohort together."""
+    from src.exit_engine import update_exit_positions
+
+    now = int(time.time()) if now is None else int(now)
+    provider = provider or GeckoTerminalPriceProvider()
+    checks = update_due_paper_checks(provider, now=now)
+    exits = update_exit_positions(provider, now=now)
+    return {
+        **checks,
+        "exit_observed_signals": exits.observed_signals,
+        "exit_closed_positions": exits.closed_positions,
+        "exit_failed_positions": exits.failed_positions,
+        "exit_open_positions": exits.open_positions,
+        "exit_price_failures": exits.price_failures,
+    }
 
 
 def update_due_paper_checks(
@@ -273,12 +334,24 @@ def run_wave_paper_cycle(
     *,
     now: int | None = None,
 ) -> WavePaperUpdate:
+    from src.exit_engine import ensure_exit_experiment, enroll_forward_signals
+
     now = int(time.time()) if now is None else int(now)
-    created = record_paper_signals(results, detected_at=now)
-    check_result = update_due_paper_checks(provider, now=now)
+    experiment = ensure_exit_experiment(activated_at=now)
+    created, outcomes = record_paper_signals_with_outcomes(results, detected_at=now)
+    enrollment = enroll_forward_signals(experiment["id"])
+    check_result = update_wave_paper_prices(provider, now=now)
     return WavePaperUpdate(
         created_signals=created,
         completed_checks=check_result["completed"],
         failed_checks=check_result["failed"],
         pending_checks=check_result["pending"],
+        exit_enrolled_signals=enrollment.enrolled_signals,
+        exit_created_positions=enrollment.created_positions,
+        exit_observed_signals=check_result["exit_observed_signals"],
+        exit_closed_positions=check_result["exit_closed_positions"],
+        exit_failed_positions=check_result["exit_failed_positions"],
+        exit_open_positions=check_result["exit_open_positions"],
+        exit_price_failures=check_result["exit_price_failures"],
+        persistence_outcomes=outcomes,
     )
