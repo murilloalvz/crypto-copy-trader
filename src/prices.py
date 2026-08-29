@@ -10,6 +10,7 @@ from src.database import connection
 
 
 GECKOTERMINAL_MIN_INTERVAL_SECONDS = 2.1
+PRICE_RUNTIME_VERSION = "exit_runtime_v2_provider_stability"
 
 
 class PriceProviderError(RuntimeError):
@@ -52,6 +53,26 @@ class GeckoTerminalPriceProvider:
         # immediately hammer the provider twice after an exhausted logical call.
         self._failure_cache: dict[tuple[str, int, int], PriceProviderError] = {}
 
+    def _record_http_attempt(
+        self, *, path: str, attempt: int, status_code: int | None,
+        latency_ms: float, retry_after: str | None, outcome: str, error: str | None
+    ) -> None:
+        # Best-effort telemetry must never break price collection.
+        try:
+            with connection() as conn:
+                conn.execute(
+                    """INSERT INTO provider_http_attempts
+                    (runtime_version, requested_at, provider, path, attempt_number,
+                     status_code, latency_ms, retry_after, outcome, error)
+                    VALUES (?, ?, 'geckoterminal', ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        PRICE_RUNTIME_VERSION, int(time.time()), path, attempt,
+                        status_code, latency_ms, retry_after, outcome, error,
+                    ),
+                )
+        except Exception:
+            pass
+
     def _get(self, path: str, query: dict | None = None) -> dict:
         url = f"{self.base_url}{path}"
         if query:
@@ -71,14 +92,27 @@ class GeckoTerminalPriceProvider:
             elapsed = time.monotonic() - self._last_request_at
             if elapsed < self.min_interval_seconds:
                 time.sleep(self.min_interval_seconds - elapsed)
+            started = time.monotonic()
             try:
                 with urlopen(request, timeout=self.timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
+                    status_code = getattr(response, "status", 200)
                 self._last_request_at = time.monotonic()
+                self._record_http_attempt(
+                    path=path, attempt=attempt + 1, status_code=status_code,
+                    latency_ms=(self._last_request_at - started) * 1000,
+                    retry_after=None, outcome="completed", error=None,
+                )
                 return payload
             except HTTPError as exc:
                 last_error = exc
                 self._last_request_at = time.monotonic()
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                self._record_http_attempt(
+                    path=path, attempt=attempt + 1, status_code=exc.code,
+                    latency_ms=(self._last_request_at - started) * 1000,
+                    retry_after=retry_after, outcome="failed", error=str(exc),
+                )
                 retryable = exc.code == 429 or exc.code in {408, 425} or exc.code >= 500
                 if not retryable:
                     raise PermanentPriceProviderError(
@@ -86,7 +120,6 @@ class GeckoTerminalPriceProvider:
                         code=f"http_{exc.code}",
                     ) from exc
                 if attempt < 2:
-                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
                     try:
                         delay = float(retry_after) if retry_after is not None else 0.0
                     except (TypeError, ValueError):
@@ -97,6 +130,11 @@ class GeckoTerminalPriceProvider:
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
                 self._last_request_at = time.monotonic()
+                self._record_http_attempt(
+                    path=path, attempt=attempt + 1, status_code=None,
+                    latency_ms=(self._last_request_at - started) * 1000,
+                    retry_after=None, outcome="failed", error=str(exc),
+                )
                 if attempt < 2:
                     time.sleep(min(4.0 * (2**attempt), 8.0))
         raise TemporaryPriceProviderError(

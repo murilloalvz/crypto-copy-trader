@@ -233,3 +233,8 @@ Estado:
 - polling 1m pós-correção: EM TESTE;
 - resultados econômicos: NÃO usar ainda para escolher política;
 - próxima etapa planejada: adicionar/confirmar telemetria operacional mínima e executar validação curta de 60–90 min antes de qualquer nova coleta longa.
+
+### Telemetria pós-correção
+Foi adicionada telemetria persistente `provider_http_attempts` para cada tentativa HTTP real do GeckoTerminal, registrando runtime, timestamp, path lógico, número da tentativa, status HTTP, latência, `Retry-After`, outcome e erro. A escrita é best-effort e não pode interromper a coleta de preço. Não registra API keys/segredos.
+
+Limitação conhecida: a telemetria HTTP ainda não grava `signal_id` diretamente; a associação pode ser reconstruída pelo path/pool e cronologia. Telemetria detalhada de ciclos vazios do scheduler continua como melhoria opcional, não bloqueadora para a primeira validação curta porque a estabilidade do scheduler já foi aprovada na auditoria de 6h.

@@ -211,6 +211,24 @@ CREATE TABLE IF NOT EXISTS exit_price_observations (
 CREATE INDEX IF NOT EXISTS idx_exit_observations_signal_time
 ON exit_price_observations(experiment_id, signal_id, observed_at);
 
+CREATE TABLE IF NOT EXISTS provider_http_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_version TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    path TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms REAL NOT NULL,
+    retry_after TEXT,
+    outcome TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_http_attempts_time
+ON provider_http_attempts(provider, requested_at);
+
 CREATE TABLE IF NOT EXISTS wave_discovery_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at INTEGER NOT NULL UNIQUE,
