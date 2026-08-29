@@ -210,3 +210,26 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 - **Próxima prioridade:** coletar a nova coorte e conferir cobertura/qualidade do funil.
 - **Pergunta para o Copiloto:** qual regra de decisão prévia usar quando a coorte pareada atingir 30,
   sem reduzir a comparação a uma única métrica?
+
+## 2026-08-29 — provider-stability runtime v2 (IMPLEMENTADO, NÃO VALIDADO OPERACIONALMENTE)
+
+Após a auditoria da execução forward de ~6h, foi implementada a primeira correção operacional mínima sem alterar `wave_v3_volume_integrity`, o T0 ou qualquer uma das cinco políticas de saída.
+
+Mudanças implementadas:
+- `GeckoTerminalPriceProvider` agora aplica pacing antes de **cada tentativa HTTP real**, inclusive retries;
+- `Retry-After` válido é respeitado; sem header útil, o backoff passou a 4s/8s em vez de 1s/2s;
+- falhas esgotadas de um mesmo token/minuto são compartilhadas dentro da instância/ciclo para evitar consulta redundante imediata entre checkpoint e exit engine;
+- `exit_positions` separa `dynamic_retry_count` de `target_retry_count`, impedindo que falhas acumuladas na trajetória contaminem diretamente o retry do target fixo;
+- erro temporário na trajetória dinâmica não torna posição definitivamente `failed` apenas por estar vencida;
+- ordem dos sinais no polling dinâmico passou a rotacionar deterministicamente por minuto, reduzindo starvation dos IDs mais altos;
+- novos dados recebem marcador `exit_runtime_v2_provider_stability`; migração de bancos existentes marca dados anteriores como `exit_runtime_v1`.
+
+Baseline antes da mudança: 150 testes aprovados.
+Após a primeira correção: 156 testes aprovados, zero falhas.
+
+Estado:
+- correção: IMPLEMENTADA;
+- validação operacional pós-correção: PENDENTE;
+- polling 1m pós-correção: EM TESTE;
+- resultados econômicos: NÃO usar ainda para escolher política;
+- próxima etapa planejada: adicionar/confirmar telemetria operacional mínima e executar validação curta de 60–90 min antes de qualquer nova coleta longa.

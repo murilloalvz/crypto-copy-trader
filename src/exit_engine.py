@@ -10,6 +10,7 @@ from src.strategy_versions import WAVE_STRATEGY_VERSION
 
 EXIT_ENGINE_VERSION = "exit_engine_v1"
 DEFAULT_OBSERVATION_INTERVAL_SECONDS = 60
+EXIT_RUNTIME_VERSION = "exit_runtime_v2_provider_stability"
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,7 @@ def enroll_forward_signals(experiment_id: int) -> ExitEnrollment:
                     signal["slippage_bps"],
                     signal["entry_market_price_usd"],
                     signal["entry_market_price_usd"],
+                    EXIT_RUNTIME_VERSION,
                 )
             )
     with connection() as conn:
@@ -178,8 +180,8 @@ def enroll_forward_signals(experiment_id: int) -> ExitEnrollment:
             (experiment_id, policy_id, signal_id, entry_strategy_version,
              entry_at, entry_market_price_usd, entry_execution_price_usd,
              copy_size_usd, slippage_bps, highest_market_price_usd,
-             lowest_market_price_usd)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             lowest_market_price_usd, runtime_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             values,
         )
         created = conn.total_changes - before
@@ -256,8 +258,8 @@ def _record_price_failure(
         conn.execute(
             """INSERT INTO exit_price_observations
             (experiment_id, signal_id, observed_at, requested_at, status,
-             error, error_code, retry_count)
-            VALUES (?, ?, ?, ?, 'failed', ?, ?, ?)
+             error, error_code, retry_count, runtime_version)
+            VALUES (?, ?, ?, ?, 'failed', ?, ?, ?, ?)
             ON CONFLICT(experiment_id, signal_id, observed_at) DO UPDATE SET
                 requested_at=excluded.requested_at,
                 status='failed', error=excluded.error,
@@ -272,10 +274,11 @@ def _record_price_failure(
                 str(error),
                 code,
                 observation_retry,
+                EXIT_RUNTIME_VERSION,
             ),
         )
         positions = conn.execute(
-            """SELECT p.id, p.entry_at, p.retry_count, ep.parameters_json
+            """SELECT p.id, p.entry_at, p.retry_count, p.dynamic_retry_count, ep.parameters_json
             FROM exit_positions p
             JOIN exit_policies ep ON ep.id=p.policy_id
             WHERE p.experiment_id=? AND p.signal_id=? AND p.status='open'""",
@@ -283,14 +286,21 @@ def _record_price_failure(
         ).fetchall()
         failed = 0
         for position in positions:
+            dynamic_retry_count = int(position["dynamic_retry_count"] or 0) + 1
             retry_count = int(position["retry_count"] or 0) + 1
             max_duration = int(json.loads(position["parameters_json"])["max_duration_seconds"])
             is_due = observed_at - position["entry_at"] >= max_duration
-            status = "failed" if is_due and retry_count >= retry_limit else "open"
+            retryable = bool(getattr(error, "retryable", False))
+            status = (
+                "failed"
+                if is_due and not retryable and dynamic_retry_count >= retry_limit
+                else "open"
+            )
             conn.execute(
                 """UPDATE exit_positions SET status=?, error=?, error_code=?,
-                retry_count=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                (status, str(error), code, retry_count, position["id"]),
+                retry_count=?, dynamic_retry_count=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?""",
+                (status, str(error), code, retry_count, dynamic_retry_count, position["id"]),
             )
             failed += status == "failed"
     return failed
@@ -352,7 +362,7 @@ def _apply_observation(
                     """UPDATE exit_positions SET highest_market_price_usd=?,
                     lowest_market_price_usd=?, mfe_pct=?, mae_pct=?,
                     last_observed_at=?, observation_count=?, error=NULL,
-                    error_code=NULL, retry_count=0, updated_at=CURRENT_TIMESTAMP
+                    error_code=NULL, retry_count=0, dynamic_retry_count=0, target_retry_count=0, updated_at=CURRENT_TIMESTAMP
                     WHERE id=?""",
                     (
                         values["highest"], values["lowest"], values["mfe"],
@@ -379,7 +389,7 @@ def _apply_observation(
                 exit_market_price_usd=?, exit_execution_price_usd=?,
                 gross_return_pct=?, net_return_pct=?, pnl_usd=?, exit_reason=?,
                 duration_seconds=?, status='closed', error=NULL, error_code=NULL,
-                retry_count=0, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                retry_count=0, dynamic_retry_count=0, target_retry_count=0, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                 (
                     values["highest"], values["lowest"], values["mfe"],
                     values["mae"], values["observed_at"], values["count"],
@@ -438,14 +448,15 @@ def _update_due_fixed_positions(
             except PriceProviderError as exc:
                 price_failures += 1
                 retry_count = int(position["retry_count"] or 0) + 1
-                status = "failed" if retry_count >= retry_limit else "open"
+                target_retry_count = int(position["target_retry_count"] or 0) + 1
+                status = "failed" if target_retry_count >= retry_limit else "open"
                 failed_positions += status == "failed"
                 with connection() as conn:
                     conn.execute(
                         """INSERT INTO exit_price_observations
                         (experiment_id, signal_id, observed_at, requested_at,
-                         status, error, error_code, retry_count)
-                        VALUES (?, ?, ?, ?, 'failed', ?, ?, 1)
+                         status, error, error_code, retry_count, runtime_version)
+                        VALUES (?, ?, ?, ?, 'failed', ?, ?, 1, ?)
                         ON CONFLICT(experiment_id, signal_id, observed_at) DO UPDATE SET
                             requested_at=excluded.requested_at, status='failed',
                             error=excluded.error, error_code=excluded.error_code,
@@ -458,16 +469,19 @@ def _update_due_fixed_positions(
                             now,
                             str(exc),
                             str(getattr(exc, "code", "provider_error")),
+                            EXIT_RUNTIME_VERSION,
                         ),
                     )
                     conn.execute(
                         """UPDATE exit_positions SET status=?, error=?, error_code=?,
-                        retry_count=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                        retry_count=?, target_retry_count=?, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?""",
                         (
                             status,
                             str(exc),
                             str(getattr(exc, "code", "provider_error")),
                             retry_count,
+                            target_retry_count,
                             position["id"],
                         ),
                     )
@@ -476,8 +490,8 @@ def _update_due_fixed_positions(
                 conn.execute(
                     """INSERT INTO exit_price_observations
                     (experiment_id, signal_id, observed_at, requested_at,
-                     market_price_usd, pool_address, status)
-                    VALUES (?, ?, ?, ?, ?, ?, 'completed')
+                     market_price_usd, pool_address, status, runtime_version)
+                    VALUES (?, ?, ?, ?, ?, ?, 'completed', ?)
                     ON CONFLICT(experiment_id, signal_id, observed_at) DO UPDATE SET
                         requested_at=excluded.requested_at,
                         market_price_usd=excluded.market_price_usd,
@@ -490,6 +504,7 @@ def _update_due_fixed_positions(
                         now,
                         market_price,
                         _cached_pool_address(position["token_mint"], target_at),
+                        EXIT_RUNTIME_VERSION,
                     ),
                 )
         observed += 1
@@ -545,6 +560,12 @@ def update_exit_positions(
         ORDER BY p.signal_id""",
         (experiment_id,),
     )
+    # Rotate the first signal deterministically by minute so newer signal IDs are
+    # not permanently last in the provider budget.
+    if len(signals) > 1:
+        offset = (observed_at // 60) % len(signals)
+        signals = signals[offset:] + signals[:offset]
+
     observed_signals = fixed_observed
     closed_positions = fixed_closed
     failed_positions = fixed_failed
@@ -582,8 +603,8 @@ def update_exit_positions(
                 conn.execute(
                     """INSERT INTO exit_price_observations
                     (experiment_id, signal_id, observed_at, requested_at,
-                     market_price_usd, pool_address, status)
-                    VALUES (?, ?, ?, ?, ?, ?, 'completed')
+                     market_price_usd, pool_address, status, runtime_version)
+                    VALUES (?, ?, ?, ?, ?, ?, 'completed', ?)
                     ON CONFLICT(experiment_id, signal_id, observed_at) DO UPDATE SET
                         requested_at=excluded.requested_at,
                         market_price_usd=excluded.market_price_usd,
@@ -597,6 +618,7 @@ def update_exit_positions(
                         now,
                         market_price,
                         _cached_pool_address(signal["token_mint"], observed_at),
+                        EXIT_RUNTIME_VERSION,
                     ),
                 )
         observed_signals += 1

@@ -47,11 +47,12 @@ class GeckoTerminalPriceProvider:
         self.timeout = timeout
         self.min_interval_seconds = min_interval_seconds
         self._last_request_at = 0.0
+        # One provider instance is shared by checkpoints + exit engine in a cycle.
+        # Cache failures only for that cycle so the same token/target does not
+        # immediately hammer the provider twice after an exhausted logical call.
+        self._failure_cache: dict[tuple[str, int, int], PriceProviderError] = {}
 
     def _get(self, path: str, query: dict | None = None) -> dict:
-        elapsed = time.monotonic() - self._last_request_at
-        if elapsed < self.min_interval_seconds:
-            time.sleep(self.min_interval_seconds - elapsed)
         url = f"{self.base_url}{path}"
         if query:
             url = f"{url}?{urlencode(query)}"
@@ -64,6 +65,12 @@ class GeckoTerminalPriceProvider:
         )
         last_error = None
         for attempt in range(3):
+            # Pace every real HTTP attempt, including retries.  The previous
+            # implementation paced only the first logical request, allowing
+            # retry bursts to bypass the GeckoTerminal budget.
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < self.min_interval_seconds:
+                time.sleep(self.min_interval_seconds - elapsed)
             try:
                 with urlopen(request, timeout=self.timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
@@ -80,13 +87,18 @@ class GeckoTerminalPriceProvider:
                     ) from exc
                 if attempt < 2:
                     retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                    delay = float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
-                    time.sleep(min(delay, 8))
+                    try:
+                        delay = float(retry_after) if retry_after is not None else 0.0
+                    except (TypeError, ValueError):
+                        delay = 0.0
+                    if delay <= 0:
+                        delay = min(4.0 * (2**attempt), 8.0)
+                    time.sleep(min(delay, 30.0))
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
                 self._last_request_at = time.monotonic()
                 if attempt < 2:
-                    time.sleep(2**attempt)
+                    time.sleep(min(4.0 * (2**attempt), 8.0))
         raise TemporaryPriceProviderError(
             f"GeckoTerminal temporariamente indisponível: {last_error}"
         ) from last_error
@@ -178,6 +190,10 @@ class GeckoTerminalPriceProvider:
         max_distance_seconds: int = 3_600,
     ) -> float:
         minute_ts = timestamp - timestamp % 60
+        failure_key = (token_mint, minute_ts, int(max_distance_seconds))
+        cached_failure = self._failure_cache.get(failure_key)
+        if cached_failure is not None:
+            raise cached_failure
         if token_mint in STABLECOIN_MINTS:
             return 1.0
         with connection() as conn:
@@ -188,32 +204,40 @@ class GeckoTerminalPriceProvider:
         if row:
             return float(row["price_usd"])
 
-        pool = self._resolve_pool(token_mint)
-        payload = self._get(
-            f"/networks/solana/pools/{pool.address}/ohlcv/minute",
-            {
-                "aggregate": 1,
-                "before_timestamp": minute_ts + 60,
-                "limit": 1,
-                "currency": "usd",
-                "token": pool.token_side,
-            },
-        )
+        try:
+            pool = self._resolve_pool(token_mint)
+            payload = self._get(
+                f"/networks/solana/pools/{pool.address}/ohlcv/minute",
+                {
+                    "aggregate": 1,
+                    "before_timestamp": minute_ts + 60,
+                    "limit": 1,
+                    "currency": "usd",
+                    "token": pool.token_side,
+                },
+            )
+        except PriceProviderError as exc:
+            self._failure_cache[failure_key] = exc
+            raise
         candles = (
             payload.get("data", {}).get("attributes", {}).get("ohlcv_list") or []
         )
         if not candles:
-            raise PermanentPriceProviderError(
+            error = PermanentPriceProviderError(
                 f"Sem candle histórico para {token_mint} em {minute_ts}.",
                 code="no_historical_candle",
             )
+            self._failure_cache[failure_key] = error
+            raise error
         candle = candles[0]
         candle_ts, close_price = int(candle[0]), float(candle[4])
         if abs(candle_ts - minute_ts) > max_distance_seconds:
-            raise PermanentPriceProviderError(
+            error = PermanentPriceProviderError(
                 f"Candle disponível está distante demais do horário do sinal para {token_mint}.",
                 code="distant_historical_candle",
             )
+            self._failure_cache[failure_key] = error
+            raise error
         with connection() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO price_cache

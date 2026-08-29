@@ -12,7 +12,7 @@ from src.exit_engine import (
     enroll_forward_signals,
     update_exit_positions,
 )
-from src.prices import PermanentPriceProviderError
+from src.prices import PermanentPriceProviderError, TemporaryPriceProviderError
 from src.strategy_versions import WAVE_STRATEGY_VERSION
 
 
@@ -29,6 +29,20 @@ class SequenceProvider:
 class FailingProvider:
     def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
         raise PermanentPriceProviderError("sem candle", code="no_historical_candle")
+
+
+class TemporaryFailingProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise TemporaryPriceProviderError("rate limited")
+
+
+class OrderingProvider:
+    def __init__(self):
+        self.tokens = []
+
+    def price_at(self, token, _timestamp, *, max_distance_seconds=3_600):
+        self.tokens.append(token)
+        return 1.0
 
 
 class ExitEngineTests(unittest.TestCase):
@@ -159,6 +173,55 @@ class ExitEngineTests(unittest.TestCase):
         self.assertEqual(observation["status"], "failed")
         self.assertEqual(observation["error_code"], "no_historical_candle")
         self.assertEqual(fixed_15["status"], "failed")
+
+    def test_temporary_failure_at_due_time_uses_target_counter_not_old_dynamic_failures(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+        with database.connection() as conn:
+            conn.execute(
+                "UPDATE exit_positions SET retry_count=9, dynamic_retry_count=9"
+            )
+
+        update_exit_positions(
+            TemporaryFailingProvider(), now=1_981,
+            experiment_id=experiment["id"], max_attempts=3
+        )
+
+        fixed_15 = rows(
+            """SELECT p.* FROM exit_positions p JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE ep.policy_version='fixed_15m_v1'"""
+        )[0]
+        self.assertEqual(fixed_15["status"], "open")
+        self.assertEqual(fixed_15["target_retry_count"], 1)
+
+    def test_runtime_v2_marks_new_positions_and_observations(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+        update_exit_positions(
+            SequenceProvider({1200: 1.0}), now=1_301, experiment_id=experiment["id"]
+        )
+        self.assertEqual(
+            {r["runtime_version"] for r in rows("SELECT runtime_version FROM exit_positions")},
+            {"exit_runtime_v2_provider_stability"},
+        )
+        self.assertEqual(
+            rows("SELECT runtime_version FROM exit_price_observations")[0]["runtime_version"],
+            "exit_runtime_v2_provider_stability",
+        )
+
+    def test_signal_order_rotates_deterministically_by_observation_minute(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000, "one")
+        self.insert_signal(1_001, "two")
+        self.insert_signal(1_002, "three")
+        enroll_forward_signals(experiment["id"])
+        provider = OrderingProvider()
+
+        update_exit_positions(provider, now=1_301, experiment_id=experiment["id"])
+
+        self.assertEqual(provider.tokens, ["three", "one", "two"])
 
 
 if __name__ == "__main__":

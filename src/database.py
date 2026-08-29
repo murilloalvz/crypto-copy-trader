@@ -174,6 +174,9 @@ CREATE TABLE IF NOT EXISTS exit_positions (
     error TEXT,
     error_code TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
+    dynamic_retry_count INTEGER NOT NULL DEFAULT 0,
+    target_retry_count INTEGER NOT NULL DEFAULT 0,
+    runtime_version TEXT NOT NULL DEFAULT 'exit_runtime_v2_provider_stability',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(experiment_id, policy_id, signal_id),
@@ -197,6 +200,7 @@ CREATE TABLE IF NOT EXISTS exit_price_observations (
     error TEXT,
     error_code TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
+    runtime_version TEXT NOT NULL DEFAULT 'exit_runtime_v2_provider_stability',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(experiment_id, signal_id, observed_at),
@@ -278,6 +282,14 @@ MIGRATIONS = {
     },
     "wave_signal_checks": {
         "error_code": "TEXT",
+    },
+    "exit_positions": {
+        "dynamic_retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "target_retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "runtime_version": "TEXT NOT NULL DEFAULT 'exit_runtime_v1'",
+    },
+    "exit_price_observations": {
+        "runtime_version": "TEXT NOT NULL DEFAULT 'exit_runtime_v1'",
     },
     "wave_discovery_runs": {
         "source_item_count": "INTEGER NOT NULL DEFAULT 0",
