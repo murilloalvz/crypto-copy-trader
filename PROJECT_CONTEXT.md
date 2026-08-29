@@ -7,14 +7,12 @@ devem ser tratadas como hipóteses até serem confirmadas no repositório e por 
 
 - Modo operacional: **PAPER/READ ONLY**. Não existem ordens, assinaturas ou movimentações reais.
 - Branch de trabalho: `feat/exit-engine-v1`.
-- A árvore local é igual à árvore de `origin/feat/wave-integrity-audit`, embora o histórico local
-  esteja 6 commits à frente e 6 atrás por commits equivalentes com hashes diferentes.
 - Persistência local em SQLite, configurada por `DATABASE_PATH` (padrão `data/copytrader.db`).
 - Fonte do Wave Radar: Solana Tracker Token Search.
 - Fonte dos checkpoints históricos: GeckoTerminal, com rastreio do pool de entrada e saída.
 - A estratégia ativa para novos sinais é `wave_v3_volume_integrity`.
 - O monitor híbrido atualiza checkpoints fixos e posições do exit engine na mesma frequência.
-- Última suíte completa conhecida nesta branch: 146 testes aprovados.
+- Última suíte completa conhecida nesta branch: 150 testes aprovados.
 
 ## Arquitetura atual
 
@@ -104,7 +102,13 @@ Tabelas relevantes:
 - Cada novo sinal recebe todas as políticas; não há seleção por token nem política vencedora.
 - Benchmarks fixos usam o candle de seu target exato. Políticas dinâmicas usam apenas o último candle
   de minuto concluído observado durante cada ciclo, sem backfill do caminho perdido.
-- O intervalo esperado fica salvo. Padrão operacional: 300s; 60s já é suportado, com maior custo.
+- O intervalo esperado fica salvo. Padrão operacional pré-registrado para a primeira coorte:
+  60s. Cada preço por sinal é compartilhado pelas cinco políticas.
+- O cliente GeckoTerminal impõe 2,1s entre requisições. O monitor estima a carga dinâmica por
+  ciclo e alerta a partir de 80% da capacidade teórica.
+- No backup com 19 sinais v3, o pico reproduzido foi 7 sinais em uma janela de 60m: estimativa de
+  14,7s por ciclo, 420 consultas dinâmicas/h e 24,5% da capacidade teórica. Rate limit público,
+  benchmarks vencidos e resolução inicial de pool ainda precisam de validação operacional.
 
 ### Formação da amostra v3
 
@@ -152,7 +156,8 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 
 - Amostra v3 pequena e concentrada em poucos vencedores.
 - Checkpoints fixos não reconstruem o caminho intraperíodo necessário para TP, SL e trailing reais.
-- Atualização em 5 minutos pode perder gatilhos e gaps entre observações.
+- Atualização em 1 minuto ainda pode perder gatilhos e gaps intraminuto; os dados originais são
+  preservados para futura subamostragem comparativa em 5m.
 - Em gap, SL/TP/trailing usam o primeiro preço observado e podem executar melhor ou pior que o
   limiar; nenhum preenchimento artificial no threshold é criado.
 - Candles de um minuto não revelam a ordem intraminuto entre máximos, mínimos e cruzamentos.

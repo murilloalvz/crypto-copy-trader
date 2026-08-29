@@ -72,6 +72,11 @@ class ExitEngineTests(unittest.TestCase):
         self.assertEqual(first.created_positions, len(EXIT_POLICIES))
         self.assertEqual(second.created_positions, 0)
 
+    def test_default_forward_experiment_preregisters_one_minute_observations(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+
+        self.assertEqual(experiment["expected_observation_interval_seconds"], 60)
+
     def test_policies_react_independently_to_only_observed_prices(self):
         experiment = ensure_exit_experiment(activated_at=900)
         self.insert_signal(1_000)
@@ -103,7 +108,20 @@ class ExitEngineTests(unittest.TestCase):
         self.assertAlmostEqual(positions["fixed_15m_v1"]["mae_pct"], -10.891089, places=5)
         self.assertEqual(positions["fixed_15m_v1"]["observation_count"], 3)
         self.assertEqual(final.closed_positions, 0)
+        self.assertEqual(final.open_signals, 0)
         self.assertEqual(len(rows("SELECT * FROM exit_positions")), len(EXIT_POLICIES))
+
+    def test_open_signal_load_counts_entry_once_not_once_per_policy(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        result = update_exit_positions(
+            SequenceProvider({1200: 1.0}), now=1_301, experiment_id=experiment["id"]
+        )
+
+        self.assertEqual(result.open_positions, len(EXIT_POLICIES))
+        self.assertEqual(result.open_signals, 1)
 
     def test_gap_uses_first_observed_price_not_the_threshold(self):
         experiment = ensure_exit_experiment(activated_at=900)

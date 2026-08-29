@@ -10,6 +10,7 @@ from evaluate import main as evaluate_main
 from radar import main as radar_main
 from src.database import initialize_database
 from src.exit_engine import ensure_exit_experiment
+from src.prices import GECKOTERMINAL_MIN_INTERVAL_SECONDS
 from src.wave_paper import update_wave_paper_prices
 
 
@@ -61,12 +62,26 @@ def run_hybrid_monitor(
             f"{result['failed']} falhos"
         )
         if "exit_open_positions" in result:
+            open_signals = result.get("exit_open_signals", 0)
+            estimated_seconds = open_signals * GECKOTERMINAL_MIN_INTERVAL_SECONDS
+            load_pct = estimated_seconds / price_interval_seconds * 100
             print(
                 "[exit-engine-v1] "
                 f"{result['exit_closed_positions']} fechadas | "
                 f"{result['exit_open_positions']} abertas | "
+                f"{open_signals} sinais | "
                 f"{result['exit_price_failures']} falhas de preço"
             )
+            print(
+                "[exit-polling] "
+                f"carga dinâmica estimada {estimated_seconds:.1f}s/"
+                f"{price_interval_seconds:.0f}s ({load_pct:.1f}%)"
+            )
+            if load_pct >= 80:
+                print(
+                    "[exit-polling] ALERTA: carga próxima da capacidade; "
+                    "observe atrasos, HTTP 429 e falhas antes de manter 1m."
+                )
 
     while clock() < ends_at:
         now = clock()
@@ -143,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--hours", type=float, default=12)
-    parser.add_argument("--price-interval-minutes", type=float, default=5)
+    parser.add_argument("--price-interval-minutes", type=float, default=1)
     parser.add_argument("--discovery-interval-minutes", type=float, default=30)
     parser.add_argument("--tokens", type=int, default=25)
     parser.add_argument("--top", type=int, default=3)

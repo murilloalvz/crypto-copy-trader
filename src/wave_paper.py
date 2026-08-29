@@ -26,6 +26,7 @@ class WavePaperUpdate:
     exit_closed_positions: int = 0
     exit_failed_positions: int = 0
     exit_open_positions: int = 0
+    exit_open_signals: int = 0
     exit_price_failures: int = 0
     persistence_outcomes: tuple["SignalPersistenceOutcome", ...] = ()
 
@@ -201,6 +202,7 @@ def update_wave_paper_prices(
         "exit_closed_positions": exits.closed_positions,
         "exit_failed_positions": exits.failed_positions,
         "exit_open_positions": exits.open_positions,
+        "exit_open_signals": exits.open_signals,
         "exit_price_failures": exits.price_failures,
     }
 
@@ -352,6 +354,7 @@ def run_wave_paper_cycle(
         exit_closed_positions=check_result["exit_closed_positions"],
         exit_failed_positions=check_result["exit_failed_positions"],
         exit_open_positions=check_result["exit_open_positions"],
+        exit_open_signals=check_result["exit_open_signals"],
         exit_price_failures=check_result["exit_price_failures"],
         persistence_outcomes=outcomes,
     )

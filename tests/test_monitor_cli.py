@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
 
-from monitor import HybridMonitorSummary, main, run_hybrid_monitor
+from monitor import HybridMonitorSummary, build_parser, main, run_hybrid_monitor
 
 
 class FakeClock:
@@ -20,6 +20,11 @@ class FakeClock:
 
 
 class HybridMonitorTests(unittest.TestCase):
+    def test_default_price_polling_is_one_minute(self):
+        args = build_parser().parse_args([])
+
+        self.assertEqual(args.price_interval_minutes, 1)
+
     def test_prices_run_every_five_minutes_and_discovery_every_fifteen(self):
         clock = FakeClock()
         radar = Mock(return_value=0)
@@ -86,6 +91,36 @@ class HybridMonitorTests(unittest.TestCase):
 
         self.assertTrue(summary.configuration_error)
         self.assertEqual(clock.sleeps, [])
+
+    def test_polling_load_warning_is_visible_near_throttle_capacity(self):
+        clock = FakeClock()
+        output = io.StringIO()
+        prices = Mock(
+            return_value={
+                "completed": 0,
+                "pending": 0,
+                "failed": 0,
+                "exit_closed_positions": 0,
+                "exit_open_positions": 125,
+                "exit_open_signals": 25,
+                "exit_price_failures": 0,
+            }
+        )
+
+        with redirect_stdout(output):
+            run_hybrid_monitor(
+                duration_seconds=61,
+                price_interval_seconds=60,
+                discovery_interval_seconds=300,
+                radar_args=[],
+                radar_runner=Mock(return_value=1),
+                price_updater=prices,
+                clock=clock,
+                sleeper=clock.sleep,
+            )
+
+        self.assertIn("carga dinâmica estimada 52.5s/60s (87.5%)", output.getvalue())
+        self.assertIn("ALERTA: carga próxima da capacidade", output.getvalue())
 
     def test_main_handles_keyboard_interrupt_safely(self):
         output = io.StringIO()

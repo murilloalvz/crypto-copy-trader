@@ -265,7 +265,7 @@ powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1 -Hours 24
 Alternativamente, execute o monitor diretamente:
 
 ```powershell
-python monitor.py --hours 12 --price-interval-minutes 5 --discovery-interval-minutes 30 --tokens 25 --top 3
+python monitor.py --hours 12 --price-interval-minutes 1 --discovery-interval-minutes 30 --tokens 25 --top 3
 ```
 
 ### Exit Engine v1 (forward-only)
@@ -281,11 +281,18 @@ python evaluate_exits.py
 ```
 
 Os benchmarks fixos consultam o candle exato de 15m/60m. As políticas dinâmicas reagem
-somente às observações feitas pelo monitor. Com intervalo padrão de cinco minutos, um
-cruzamento intraperíodo pode ser perdido; se o preço saltar o threshold, a saída usa o
+somente às observações feitas pelo monitor. Desde a primeira coorte oficial, o intervalo
+padrão é de um minuto. Um cruzamento intraminuto ainda pode ser perdido; se o preço saltar o threshold, a saída usa o
 primeiro preço observado, com slippage, e não um preenchimento artificial no threshold.
-Para observação por minuto, já suportada pelo provedor, use
-`--price-interval-minutes 1`; isso aumenta requisições e não recupera caminho intraminuto.
+As observações originais por minuto são persistidas e podem ser subamostradas futuramente
+para comparação com 5m, sem reescrever a coorte.
+
+O provedor aplica um intervalo mínimo de 2,1 segundos entre requisições. Cada sinal aberto
+faz uma consulta dinâmica por ciclo, compartilhada pelas cinco políticas, e não cinco
+consultas. O monitor mostra a duração e a utilização teórica estimadas dessa carga; a partir
+de 80% imprime um alerta. Consultas de benchmarks vencidos e a primeira resolução de pool
+podem adicionar chamadas, e o limite público efetivo do provedor ainda pode ser menor que a
+capacidade teórica imposta pelo cliente.
 
 Cada discovery paper também grava um funil auditável: limite solicitado à fonte, tokens
 retornados, validade dos dados, rejeições por barreira, candidatos v3, cooldown/duplicados

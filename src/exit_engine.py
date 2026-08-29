@@ -9,7 +9,7 @@ from src.strategy_versions import WAVE_STRATEGY_VERSION
 
 
 EXIT_ENGINE_VERSION = "exit_engine_v1"
-DEFAULT_OBSERVATION_INTERVAL_SECONDS = 300
+DEFAULT_OBSERVATION_INTERVAL_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class ExitEngineUpdate:
     closed_positions: int
     failed_positions: int
     open_positions: int
+    open_signals: int
     price_failures: int
 
 
@@ -521,7 +522,7 @@ def update_exit_positions(
             (EXIT_ENGINE_VERSION,),
         )
         if not active:
-            return ExitEngineUpdate(0, 0, 0, 0, 0)
+            return ExitEngineUpdate(0, 0, 0, 0, 0, 0)
         experiment_id = active[0]["id"]
 
     observed_at = _last_completed_minute(now)
@@ -612,10 +613,16 @@ def update_exit_positions(
         WHERE experiment_id=? AND status='open'""",
         (experiment_id,),
     )[0]["total"]
+    open_signals = rows(
+        """SELECT COUNT(DISTINCT signal_id) AS total FROM exit_positions
+        WHERE experiment_id=? AND status='open'""",
+        (experiment_id,),
+    )[0]["total"]
     return ExitEngineUpdate(
         observed_signals,
         closed_positions,
         failed_positions,
         open_positions,
+        open_signals,
         price_failures,
     )

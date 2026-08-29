@@ -2,7 +2,7 @@ param(
     [ValidateRange(0.5, 72)]
     [double]$Hours = 12,
     [ValidateRange(1, 60)]
-    [double]$PriceIntervalMinutes = 5,
+    [double]$PriceIntervalMinutes = 1,
     [ValidateRange(5, 360)]
     [double]$DiscoveryIntervalMinutes = 30,
     [ValidateRange(1, 100)]

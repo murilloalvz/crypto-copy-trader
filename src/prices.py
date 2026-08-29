@@ -9,6 +9,9 @@ from src.assets import STABLECOIN_MINTS
 from src.database import connection
 
 
+GECKOTERMINAL_MIN_INTERVAL_SECONDS = 2.1
+
+
 class PriceProviderError(RuntimeError):
     code = "provider_error"
     retryable = False
@@ -36,7 +39,11 @@ class Pool:
 class GeckoTerminalPriceProvider:
     base_url = "https://api.geckoterminal.com/api/v2"
 
-    def __init__(self, timeout: int = 30, min_interval_seconds: float = 2.1):
+    def __init__(
+        self,
+        timeout: int = 30,
+        min_interval_seconds: float = GECKOTERMINAL_MIN_INTERVAL_SECONDS,
+    ):
         self.timeout = timeout
         self.min_interval_seconds = min_interval_seconds
         self._last_request_at = 0.0
