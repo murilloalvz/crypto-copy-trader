@@ -6,16 +6,15 @@ devem ser tratadas como hipóteses até serem confirmadas no repositório e por 
 ## Estado atual
 
 - Modo operacional: **PAPER/READ ONLY**. Não existem ordens, assinaturas ou movimentações reais.
-- Branch de trabalho: `feat/wave-integrity-audit`.
+- Branch de trabalho: `feat/exit-engine-v1`.
 - A árvore local é igual à árvore de `origin/feat/wave-integrity-audit`, embora o histórico local
   esteja 6 commits à frente e 6 atrás por commits equivalentes com hashes diferentes.
 - Persistência local em SQLite, configurada por `DATABASE_PATH` (padrão `data/copytrader.db`).
 - Fonte do Wave Radar: Solana Tracker Token Search.
 - Fonte dos checkpoints históricos: GeckoTerminal, com rastreio do pool de entrada e saída.
 - A estratégia ativa para novos sinais é `wave_v3_volume_integrity`.
-- O monitor híbrido permite discovery e atualização de checkpoints em frequências distintas.
-- Última suíte completa conhecida: 139 testes aprovados. Deve ser executada novamente após qualquer
-  alteração funcional.
+- O monitor híbrido atualiza checkpoints fixos e posições do exit engine na mesma frequência.
+- Última suíte completa conhecida nesta branch: 146 testes aprovados.
 
 ## Arquitetura atual
 
@@ -31,12 +30,17 @@ Fluxo principal:
 8. `backtest_concurrent.py` + `src/wave_bankroll.py`: capital limitado, posições concorrentes,
    reinvestimento, exposição e stress de custo.
 9. `app.py`: interface Streamlit.
+10. `src/exit_engine.py`: coorte forward, políticas pareadas e trajetória observada.
+11. `src/exit_metrics.py` + `evaluate_exits.py`: avaliação multi-métrica das saídas.
+12. `src/wave_funnel.py`: auditoria de cobertura e redução do universo por rodada.
 
 Tabelas relevantes:
 
 - `wallets`, `transactions`, `paper_trades`;
 - `token_pool_cache`, `price_cache`;
 - `wave_signals`, `wave_signal_checks`.
+- `exit_experiments`, `exit_policies`, `exit_positions`, `exit_price_observations`;
+- `wave_discovery_runs`, `wave_discovery_candidates`.
 
 ## Estratégias existentes
 
@@ -78,8 +82,29 @@ Tabelas relevantes:
 - Backtests sequencial e concorrente com reinvestimento e capital bloqueado.
 - Stress adicional de custos no backtest concorrente.
 - Monitor híbrido reiniciável; dados concluídos persistem mesmo após interrupção.
+- Exit Engine v1 forward-only com fronteira por timestamp e ID do último sinal existente.
+- Cinco políticas pareadas por nova entrada v3: 15m, 60m, SL -10%, TP +20% e trailing 10%.
+- Máximo, mínimo, MFE, MAE, trajetória observada, motivo e execução de saída persistidos.
+- Funil por discovery com limite solicitado, retorno da fonte, validade, barreiras,
+  candidatos, duplicados/cooldown, rejeições de persistência e sinais criados.
 
 ## Experimentos ativos
+
+### Exit Engine v1
+
+- **IMPLEMENTADO / EM TESTE FORWARD**.
+- Engine `exit_engine_v1`; políticas pré-registradas:
+  - `fixed_15m_v1`: 900 segundos;
+  - `fixed_60m_v1`: 3.600 segundos;
+  - `stop_loss_10_v1`: -10%, fallback em 60m;
+  - `take_profit_20_v1`: +20%, fallback em 60m;
+  - `trailing_stop_10_v1`: 10% abaixo do maior preço observado, fallback em 60m.
+- A fronteira real é criada na primeira execução desta versão no banco operacional. Ela registra
+  `activated_at` e `start_after_signal_id`; os 19 sinais anteriores não entram na coorte.
+- Cada novo sinal recebe todas as políticas; não há seleção por token nem política vencedora.
+- Benchmarks fixos usam o candle de seu target exato. Políticas dinâmicas usam apenas o último candle
+  de minuto concluído observado durante cada ciclo, sem backfill do caminho perdido.
+- O intervalo esperado fica salvo. Padrão operacional: 300s; 60s já é suportado, com maior custo.
 
 ### Formação da amostra v3
 
@@ -128,6 +153,9 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 - Amostra v3 pequena e concentrada em poucos vencedores.
 - Checkpoints fixos não reconstruem o caminho intraperíodo necessário para TP, SL e trailing reais.
 - Atualização em 5 minutos pode perder gatilhos e gaps entre observações.
+- Em gap, SL/TP/trailing usam o primeiro preço observado e podem executar melhor ou pior que o
+  limiar; nenhum preenchimento artificial no threshold é criado.
+- Candles de um minuto não revelam a ordem intraminuto entre máximos, mínimos e cruzamentos.
 - GeckoTerminal pode falhar ou não oferecer candle suficientemente próximo, especialmente em 60m.
 - Retornos paper não possuem quotes executáveis históricos completos, impacto de mercado observado,
   prioridade de transação ou todas as fees por sinal.
@@ -140,12 +168,9 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 
 ### Exit Engine v1
 
-- **PLANEJADO / PRÓXIMA IMPLEMENTAÇÃO**.
-- Posições paper persistentes e seguras a reinício.
-- Registro de máximo, mínimo, MFE, MAE e duração.
-- Políticas paralelas: saída fixa, stop, take-profit, trailing e time stop.
-- Motivo de saída, preço, slippage, fees disponíveis e versão da política.
-- Comparação contra checkpoints fixos sem otimizar parâmetros nos mesmos resultados usados para medir.
+- **IMPLEMENTADO / EM TESTE**.
+- Próximo passo é formar exclusivamente a coorte forward e avaliar cobertura pareada.
+- Parâmetros e entrada v3 permanecem congelados; não houve grid search nem escolha de vencedora.
 
 ### Execução e validação
 
@@ -162,21 +187,21 @@ python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minu
 
 ## Próxima prioridade
 
-1. Resolver o checkpoint 60m ainda pendente e preservar o banco mais recente.
-2. Implementar `exit-engine-v1` incrementalmente em branch própria, sem alterar a entrada v3.
-3. Continuar a coleta v3: faltam 11 sinais para 30; depois avançar até 100, em horários/regimes diversos.
-4. Avaliar v3 por cobertura, mediana, PF, drawdown, custos e dependência de outliers.
-5. Rodar backtest concorrente v3 e só então decidir a política de saída candidata a shadow.
+1. Ativar a nova branch no banco operacional e anotar a fronteira impressa pelo monitor.
+2. Continuar a coleta v3 e a coorte forward sem alterar entradas ou parâmetros de saída.
+3. Inspecionar o funil por várias rodadas antes de decidir qualquer ampliação do discovery.
+4. Aos 30 sinais forward, avaliar cobertura pareada, mediana, PF, MFE/MAE, duração, drawdown e outliers.
+5. Só depois escolher candidatas para shadow execution com quotes executáveis.
 
 ## Handoff para outros chats
 
 - **Estado atual:** v3 ativa em paper, 19 sinais reproduzidos; o teste acelerado de 4 horas acrescentou
   7 sinais com integridade completa.
-- **O que está implementado:** radar, integridade de volume, paper checkpoints, avaliação estatística,
-  backtests de banca e monitor híbrido.
-- **O que está em teste:** estabilidade e expectativa da `wave_v3_volume_integrity`.
+- **O que está implementado:** infraestrutura exit-engine-v1, cinco políticas pareadas, fronteira
+  forward, persistência de trajetória, relatório de saídas e funil auditável.
+- **O que está em teste:** estabilidade da v3 e efeito forward das políticas de saída.
 - **O que continua incerto:** edge líquido da v3, robustez com n>=30, melhor horizonte e efeito real
   de uma saída dinâmica.
-- **Próxima prioridade:** Exit Engine v1 enquanto a amostra v3 cresce.
-- **Pergunta para o Copiloto:** quais políticas de saída pré-registradas oferecem maior informação com
-  o menor número de parâmetros, evitando overfitting na amostra pequena?
+- **Próxima prioridade:** coletar a nova coorte e conferir cobertura/qualidade do funil.
+- **Pergunta para o Copiloto:** qual regra de decisão prévia usar quando a coorte pareada atingir 30,
+  sem reduzir a comparação a uma única métrica?

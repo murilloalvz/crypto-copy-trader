@@ -268,6 +268,29 @@ Alternativamente, execute o monitor diretamente:
 python monitor.py --hours 12 --price-interval-minutes 5 --discovery-interval-minutes 30 --tokens 25 --top 3
 ```
 
+### Exit Engine v1 (forward-only)
+
+Ao iniciar o monitor, o sistema registra uma fronteira de coorte antes de criar novos
+sinais. Somente sinais `wave_v3_volume_integrity` posteriores a essa fronteira recebem,
+em paralelo, as políticas pré-registradas `fixed_15m_v1`, `fixed_60m_v1`,
+`stop_loss_10_v1`, `take_profit_20_v1` e `trailing_stop_10_v1`. Os parâmetros são
+hipóteses forward e não foram escolhidos a partir dos sinais históricos.
+
+```powershell
+python evaluate_exits.py
+```
+
+Os benchmarks fixos consultam o candle exato de 15m/60m. As políticas dinâmicas reagem
+somente às observações feitas pelo monitor. Com intervalo padrão de cinco minutos, um
+cruzamento intraperíodo pode ser perdido; se o preço saltar o threshold, a saída usa o
+primeiro preço observado, com slippage, e não um preenchimento artificial no threshold.
+Para observação por minuto, já suportada pelo provedor, use
+`--price-interval-minutes 1`; isso aumenta requisições e não recupera caminho intraminuto.
+
+Cada discovery paper também grava um funil auditável: limite solicitado à fonte, tokens
+retornados, validade dos dados, rejeições por barreira, candidatos v3, cooldown/duplicados
+e sinais efetivamente persistidos. Essa instrumentação não altera filtros ou ranking.
+
 O comando mostra antes de iniciar o número planejado de rodadas no Solana Tracker. Com os
 valores acima, são 24 rodadas em aproximadamente 12 horas; retentativas de rede ainda podem
 gerar requisições adicionais. As atualizações intermediárias de preço não usam essa fonte.
@@ -526,11 +549,15 @@ radar.py               CLI de tokens ativos e Wave Score inicial
 collect.py             polling limitado para formar amostra paper
 monitor.py             preços frequentes com discovery econômico e independente
 evaluate.py            estatísticas por versão e horizonte
+evaluate_exits.py      comparação da coorte forward de políticas de saída
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
 src/wave_radar.py      filtros e ranking de tokens ativos
 src/wave_paper.py      sinais paper e checkpoints históricos
 src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
+src/exit_engine.py     políticas pareadas, trajetória observada e persistência
+src/exit_metrics.py    métricas comparativas do experimento de saída
+src/wave_funnel.py     observabilidade discovery → filtros → sinal
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading
