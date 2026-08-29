@@ -238,3 +238,87 @@ Estado:
 Foi adicionada telemetria persistente `provider_http_attempts` para cada tentativa HTTP real do GeckoTerminal, registrando runtime, timestamp, path lógico, número da tentativa, status HTTP, latência, `Retry-After`, outcome e erro. A escrita é best-effort e não pode interromper a coleta de preço. Não registra API keys/segredos.
 
 Limitação conhecida: a telemetria HTTP ainda não grava `signal_id` diretamente; a associação pode ser reconstruída pelo path/pool e cronologia. Telemetria detalhada de ciclos vazios do scheduler continua como melhoria opcional, não bloqueadora para a primeira validação curta porque a estabilidade do scheduler já foi aprovada na auditoria de 6h.
+
+## 2026-08-29 — validação operacional runtime v2 e correção adaptativa runtime v3
+
+### Resultado da validação curta v2 (90 min)
+
+Execução observada entre aproximadamente 17:26 e 18:56 BRT, mantendo PAPER/READ ONLY,
+`wave_v3_volume_integrity`, mesmo T0 e as cinco políticas congeladas.
+
+Banco auditado: `copytrader(8).db`.
+
+Resultados de infraestrutura:
+- 466 tentativas HTTP reais do GeckoTerminal;
+- 305 HTTP 200 e 161 HTTP 429;
+- 97 consultas receberam 429 na tentativa 1; 64 ainda receberam 429 na tentativa 2;
+- todas as consultas que chegaram à tentativa 3 recuperaram, portanto nenhum 429 terminou como
+  `temporary_provider_error` nesta execução;
+- nenhum `exit_position` foi definitivamente perdido por HTTP 429;
+- 300 observações de saída no runtime v2: 207 concluídas e 93 falhas;
+- cobertura bruta de observações: 69,0%, contra 67,2% na execução PRE-FIX;
+- as 93 falhas finais foram `distant_historical_candle`, não 429;
+- scheduler sob carga perdeu precisão: em 284 intervalos consecutivos, mediana 60s, p95 120s,
+  máximo 121s e 40 intervalos acima de 90s;
+- causa dominante: retries de 4s/8s recuperavam as consultas, mas bloqueavam o ciclo e faziam o
+  polling seguinte atrasar;
+- funnel permaneceu íntegro: 6 discovery rounds, 226 analisados, 169 válidos, 9 candidatos v3,
+  6 sinais novos e 0 rejeições de persistência;
+- novos sinais 104–109 receberam cinco políticas cada;
+- SQLite `integrity_check` e `quick_check`: ok; nenhuma violação de foreign key.
+
+Conclusão v2:
+- semântica de erro temporário: APROVADA;
+- 429 causando perda definitiva de posição: CORRIGIDO na amostra;
+- telemetria HTTP: APROVADA;
+- estabilidade de polling 1m sob 429: NÃO APROVADA;
+- coleta forward longa: BLOQUEADA até nova correção operacional.
+
+### Runtime v3 — `exit_runtime_v3_adaptive_provider_budget`
+
+**IMPLEMENTADO / TESTADO EM SUÍTE / AINDA NÃO VALIDADO OPERACIONALMENTE.**
+
+Correção mínima implementada sem alterar estratégia, T0 ou parâmetros das saídas:
+- rate-limit passa a ser compartilhado globalmente entre instâncias do provider no mesmo processo,
+  evitando reset do pacing entre ciclos/discovery;
+- após HTTP 429, entra em modo conservador de 12s entre chamadas por uma janela de 5 minutos;
+- `Retry-After` continua sendo respeitado como cooldown mínimo quando útil;
+- máximo de duas tentativas HTTP por consulta; removido o padrão de três tentativas que gerava
+  ciclos de ~120s;
+- orçamento temporal por instância/ciclo de 52s; quando a próxima chamada ultrapassaria o orçamento,
+  retorna `provider_cycle_budget_exhausted` sem fazer novo HTTP;
+- `provider_cycle_budget_exhausted` é retryable e NÃO consome contadores de retry de posições,
+  observações ou checkpoints;
+- trajetória dinâmica forward é priorizada antes de benchmarks fixos e checkpoints históricos,
+  pois estes podem consultar posteriormente o candle exato sem alterar o resultado;
+- no monitor híbrido, settlement e discovery foram desacoplados: quando ambos vencem no mesmo
+  instante, o ciclo de preço roda primeiro; o radar persiste/enrola novos sinais com
+  `--defer-price-update` e não executa uma segunda coleta de preço embutida; isso evita que a
+  latência do discovery some ao orçamento de polling e crie gaps artificiais de ~120s;
+- sinais que possuem apenas políticas fixed-time abertas deixam de consumir observação dinâmica
+  desnecessária;
+- falha dinâmica não altera mais retry/status de posições fixed-time;
+- erros temporários de fixed-time permanecem abertos; somente erros não-retryable podem encerrar a
+  posição por retry limit;
+- telemetria HTTP ganhou `wait_ms` e `control_mode` (`normal` / `rate_limited`);
+- monitor imprime duração real de settlement/discovery e estimativa de carga normal versus
+  rate-limited;
+- `start-monitor.ps1` foi tornado ASCII-safe para Windows PowerShell 5.1, removendo o travessão que
+  causava ParserError em arquivos UTF-8 sem BOM.
+
+Validação local antes de publicação:
+- migração aplicada em cópia de `copytrader(8).db`: `integrity_check = ok`, 466 registros de
+  telemetria preservados e novas colunas adicionadas sem perda;
+- suíte completa: **168 testes, 168 aprovados, zero falhas**;
+- `python -m compileall -q .`: aprovado;
+- `git diff --check`: aprovado.
+
+Critério da próxima validação curta (60–90 min):
+- manter v3/exit policies congelados e o mesmo T0;
+- p95 do polling voltar próximo de 60s, sem cauda recorrente em ~120s;
+- reduzir drasticamente a incidência de 429 por tentativa;
+- `temporary_provider_error` definitivo em posição = 0;
+- `provider_cycle_budget_exhausted` pode ocorrer sob excesso de carga, mas não pode consumir retry
+  nem atrasar o scheduler; deve ser auditado como deferimento operacional;
+- verificar cobertura dinâmica separando `distant_historical_candle`, 429 e budget deferral;
+- somente após aprovação retomar coleta forward longa.

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from src import database
 from src.database import initialize_database, rows
-from src.prices import PermanentPriceProviderError
+from src.prices import PermanentPriceProviderError, ProviderCycleBudgetExhausted
 from src.wave_paper import (
     LEGACY_WAVE_STRATEGY_VERSION,
     WAVE_STRATEGY_VERSION,
@@ -39,6 +39,11 @@ class FailingPriceProvider:
             "Candle histórico distante.",
             code="distant_historical_candle",
         )
+
+
+class BudgetFailingPriceProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise ProviderCycleBudgetExhausted("cycle budget")
 
 
 class WavePaperTests(unittest.TestCase):
@@ -177,6 +182,25 @@ class WavePaperTests(unittest.TestCase):
         self.assertEqual(check["error_code"], "distant_historical_candle")
         self.assertIn("Candle histórico distante", check["error"])
         self.assertEqual(check["retry_count"], 1)
+
+    def test_cycle_budget_deferral_keeps_checkpoint_pending_without_retry_penalty(self):
+        record_paper_signals(
+            self.approved_results(),
+            detected_at=1_000,
+            copy_size_usd=25,
+            slippage_bps=100,
+        )
+
+        result = update_due_paper_checks(BudgetFailingPriceProvider(), now=1_301)
+        check = rows(
+            """SELECT status, error_code, retry_count
+            FROM wave_signal_checks WHERE horizon_minutes=5"""
+        )[0]
+
+        self.assertEqual(result, {"completed": 0, "failed": 0, "pending": 3})
+        self.assertEqual(check["status"], "pending")
+        self.assertEqual(check["error_code"], "provider_cycle_budget_exhausted")
+        self.assertEqual(check["retry_count"], 0)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,10 @@ def format_paper_report(update, signals: list[dict], *, now: int) -> str:
             f"{getattr(update, 'exit_price_failures', 0)} falhas de observação"
         ),
     ]
+    if getattr(update, "price_update_deferred", False):
+        lines.append(
+            "Atualização de preços: adiada para o ciclo dedicado do monitor."
+        )
     if not signals:
         lines.extend(["", "Nenhum sinal apto foi salvo até agora."])
         return "\n".join(lines)
@@ -197,6 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-paper",
         action="store_true",
         help="Não salva nem atualiza o laboratório paper nesta execução.",
+    )
+    parser.add_argument(
+        "--defer-price-update",
+        action="store_true",
+        help="Salva/enrola sinais, mas deixa o monitor executar preços em ciclo dedicado.",
     )
     return parser
 
@@ -258,7 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_paper:
         initialize_database()
         now = int(datetime.now(timezone.utc).timestamp())
-        update = run_wave_paper_cycle(report.results, now=now)
+        update = run_wave_paper_cycle(
+            report.results,
+            now=now,
+            settle_prices=not args.defer_price_update,
+        )
         funnel = record_discovery_run(
             report,
             requested_token_limit=args.tokens,

@@ -45,10 +45,10 @@ class HybridMonitorTests(unittest.TestCase):
             )
 
         self.assertEqual(radar.call_count, 2)
-        self.assertEqual(prices.call_count, 2)
+        self.assertEqual(prices.call_count, 4)
         self.assertEqual(summary.successful_discoveries, 2)
-        self.assertEqual(summary.settlement_runs, 2)
-        self.assertEqual(summary.completed_checks, 2)
+        self.assertEqual(summary.settlement_runs, 4)
+        self.assertEqual(summary.completed_checks, 4)
         self.assertEqual(clock.value, 20 * 60)
 
     def test_transient_discovery_failure_still_settles_existing_prices(self):
@@ -72,11 +72,12 @@ class HybridMonitorTests(unittest.TestCase):
 
         self.assertEqual(summary.discovery_runs, 2)
         self.assertEqual(summary.failed_discoveries, 1)
-        self.assertEqual(prices.call_count, 2)
-        self.assertEqual(summary.completed_checks, 4)
+        self.assertEqual(prices.call_count, 3)
+        self.assertEqual(summary.completed_checks, 6)
 
-    def test_configuration_error_aborts_without_sleeping(self):
+    def test_configuration_error_preserves_due_price_settlement_then_aborts(self):
         clock = FakeClock()
+        prices = Mock(return_value={"completed": 0, "pending": 0, "failed": 0})
         with redirect_stdout(io.StringIO()):
             summary = run_hybrid_monitor(
                 duration_seconds=3_600,
@@ -84,12 +85,13 @@ class HybridMonitorTests(unittest.TestCase):
                 discovery_interval_seconds=1_800,
                 radar_args=[],
                 radar_runner=Mock(return_value=2),
-                price_updater=Mock(),
+                price_updater=prices,
                 clock=clock,
                 sleeper=clock.sleep,
             )
 
         self.assertTrue(summary.configuration_error)
+        self.assertEqual(prices.call_count, 1)
         self.assertEqual(clock.sleeps, [])
 
     def test_polling_load_warning_is_visible_near_throttle_capacity(self):
@@ -119,8 +121,36 @@ class HybridMonitorTests(unittest.TestCase):
                 sleeper=clock.sleep,
             )
 
-        self.assertIn("carga dinâmica estimada 52.5s/60s (87.5%)", output.getvalue())
+        self.assertIn("normal 52.5s | sob rate-limit 300.0s/60s (500.0%)", output.getvalue())
         self.assertIn("ALERTA: carga próxima da capacidade", output.getvalue())
+
+    def test_slow_discovery_does_not_push_price_scheduler_to_next_full_minute(self):
+        clock = FakeClock()
+        price_starts = []
+
+        def prices():
+            price_starts.append(clock.value)
+            clock.value += 48
+            return {"completed": 0, "pending": 0, "failed": 0}
+
+        def radar(_args):
+            clock.value += 18
+            return 0
+
+        with redirect_stdout(io.StringIO()):
+            run_hybrid_monitor(
+                duration_seconds=130,
+                price_interval_seconds=60,
+                discovery_interval_seconds=900,
+                radar_args=["--defer-price-update"],
+                radar_runner=radar,
+                price_updater=prices,
+                clock=clock,
+                sleeper=clock.sleep,
+            )
+
+        self.assertEqual(price_starts[:3], [0.0, 66.0, 120.0])
+        self.assertLessEqual(max(b - a for a, b in zip(price_starts, price_starts[1:])), 66)
 
     def test_main_handles_keyboard_interrupt_safely(self):
         output = io.StringIO()
@@ -173,6 +203,21 @@ class HybridMonitorTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         evaluator.assert_called_once_with(["--update-prices", "--cohorts"])
+
+    def test_main_defers_radar_price_update_to_dedicated_scheduler_cycle(self):
+        summary = HybridMonitorSummary(0, 0, 0, 0, 0, 0)
+        runner = Mock(return_value=summary)
+        with (
+            patch("monitor.initialize_database"),
+            patch("monitor.ensure_exit_experiment", return_value={"id": 1, "activated_at": 1, "start_after_signal_id": 0}),
+            patch("monitor.run_hybrid_monitor", runner),
+            patch("monitor.evaluate_main", return_value=0),
+            redirect_stdout(io.StringIO()),
+        ):
+            main(["--hours", "1"])
+
+        radar_args = runner.call_args.kwargs["radar_args"]
+        self.assertIn("--defer-price-update", radar_args)
 
     def test_final_evaluation_can_be_skipped(self):
         summary = HybridMonitorSummary(

@@ -28,6 +28,7 @@ class WavePaperUpdate:
     exit_open_positions: int = 0
     exit_open_signals: int = 0
     exit_price_failures: int = 0
+    price_update_deferred: bool = False
     persistence_outcomes: tuple["SignalPersistenceOutcome", ...] = ()
 
 
@@ -194,8 +195,11 @@ def update_wave_paper_prices(
 
     now = int(time.time()) if now is None else int(now)
     provider = provider or GeckoTerminalPriceProvider()
-    checks = update_due_paper_checks(provider, now=now)
+    # Prioritize the forward exit trajectory. Legacy fixed checkpoints query an
+    # exact historical target candle and can safely run after the time-sensitive
+    # current-minute observation when provider capacity is tight.
     exits = update_exit_positions(provider, now=now)
+    checks = update_due_paper_checks(provider, now=now)
     return {
         **checks,
         "exit_observed_signals": exits.observed_signals,
@@ -239,9 +243,14 @@ def update_due_paper_checks(
             if market_price <= 0:
                 raise PriceProviderError("Preço retornado não é positivo.")
         except PriceProviderError as exc:
-            retry_count = int(check["retry_count"] or 0) + 1
+            counts_toward_retry = bool(
+                getattr(exc, "counts_toward_retry", True)
+            )
+            retry_count = int(check["retry_count"] or 0) + (
+                1 if counts_toward_retry else 0
+            )
             retryable = bool(getattr(exc, "retryable", False))
-            status = "pending" if retryable and retry_count < retry_limit else "failed"
+            status = "pending" if retryable else "failed"
             with connection() as conn:
                 conn.execute(
                     """UPDATE wave_signal_checks SET status=?, error=?, error_code=?,
@@ -335,6 +344,7 @@ def run_wave_paper_cycle(
     provider: GeckoTerminalPriceProvider | None = None,
     *,
     now: int | None = None,
+    settle_prices: bool = True,
 ) -> WavePaperUpdate:
     from src.exit_engine import ensure_exit_experiment, enroll_forward_signals
 
@@ -342,7 +352,35 @@ def run_wave_paper_cycle(
     experiment = ensure_exit_experiment(activated_at=now)
     created, outcomes = record_paper_signals_with_outcomes(results, detected_at=now)
     enrollment = enroll_forward_signals(experiment["id"])
-    check_result = update_wave_paper_prices(provider, now=now)
+    if settle_prices:
+        check_result = update_wave_paper_prices(provider, now=now)
+    else:
+        pending = rows(
+            "SELECT COUNT(*) AS total FROM wave_signal_checks WHERE status='pending'"
+        )[0]["total"]
+        open_positions = rows(
+            """SELECT COUNT(*) AS total FROM exit_positions
+            WHERE experiment_id=? AND status='open'""",
+            (experiment["id"],),
+        )[0]["total"]
+        open_signals = rows(
+            """SELECT COUNT(DISTINCT p.signal_id) AS total FROM exit_positions p
+            JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE p.experiment_id=? AND p.status='open'
+              AND ep.policy_type!='fixed_time'""",
+            (experiment["id"],),
+        )[0]["total"]
+        check_result = {
+            "completed": 0,
+            "failed": 0,
+            "pending": pending,
+            "exit_observed_signals": 0,
+            "exit_closed_positions": 0,
+            "exit_failed_positions": 0,
+            "exit_open_positions": open_positions,
+            "exit_open_signals": open_signals,
+            "exit_price_failures": 0,
+        }
     return WavePaperUpdate(
         created_signals=created,
         completed_checks=check_result["completed"],
@@ -356,5 +394,6 @@ def run_wave_paper_cycle(
         exit_open_positions=check_result["exit_open_positions"],
         exit_open_signals=check_result["exit_open_signals"],
         exit_price_failures=check_result["exit_price_failures"],
+        price_update_deferred=not settle_prices,
         persistence_outcomes=outcomes,
     )

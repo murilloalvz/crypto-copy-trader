@@ -223,6 +223,8 @@ CREATE TABLE IF NOT EXISTS provider_http_attempts (
     retry_after TEXT,
     outcome TEXT NOT NULL,
     error TEXT,
+    wait_ms REAL NOT NULL DEFAULT 0,
+    control_mode TEXT NOT NULL DEFAULT 'normal',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -313,6 +315,10 @@ MIGRATIONS = {
         "source_item_count": "INTEGER NOT NULL DEFAULT 0",
         "source_invalid_count": "INTEGER NOT NULL DEFAULT 0",
         "source_duplicate_count": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "provider_http_attempts": {
+        "wait_ms": "REAL NOT NULL DEFAULT 0",
+        "control_mode": "TEXT NOT NULL DEFAULT 'normal'",
     },
 }
 

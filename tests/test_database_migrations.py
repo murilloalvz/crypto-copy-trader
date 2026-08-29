@@ -65,6 +65,23 @@ CREATE TABLE wave_signal_checks (
 );
 """
 
+OLD_PROVIDER_HTTP_ATTEMPTS_SCHEMA = """
+CREATE TABLE provider_http_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_version TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    path TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms REAL NOT NULL,
+    retry_after TEXT,
+    outcome TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_exit_engine_and_funnel_tables_are_initialized(self):
@@ -88,6 +105,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "exit_policies",
                 "exit_positions",
                 "exit_price_observations",
+                "provider_http_attempts",
                 "wave_discovery_runs",
                 "wave_discovery_candidates",
             }.issubset(tables)
@@ -196,6 +214,43 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("error_code", columns)
         self.assertEqual(row["status"], "failed")
         self.assertEqual(row["error"], "erro antigo")
+
+    def test_provider_telemetry_control_columns_migrate_in_place(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-provider.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript(OLD_PROVIDER_HTTP_ATTEMPTS_SCHEMA)
+                conn.execute(
+                    """INSERT INTO provider_http_attempts
+                    (runtime_version, requested_at, provider, path, attempt_number,
+                     status_code, latency_ms, outcome)
+                    VALUES ('exit_runtime_v2_provider_stability', 1000,
+                            'geckoterminal', '/old', 1, 429, 12.5, 'failed')"""
+                )
+                conn.commit()
+
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                columns = {
+                    row["name"]
+                    for row in conn.execute(
+                        "PRAGMA table_info(provider_http_attempts)"
+                    ).fetchall()
+                }
+                row = conn.execute(
+                    "SELECT runtime_version, wait_ms, control_mode FROM provider_http_attempts"
+                ).fetchone()
+
+        self.assertIn("wait_ms", columns)
+        self.assertIn("control_mode", columns)
+        self.assertEqual(row["runtime_version"], "exit_runtime_v2_provider_stability")
+        self.assertEqual(row["wait_ms"], 0)
+        self.assertEqual(row["control_mode"], "normal")
 
 
 if __name__ == "__main__":

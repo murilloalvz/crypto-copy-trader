@@ -32,7 +32,7 @@ $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogPath = Join-Path $LogDirectory "monitor-$Timestamp.log"
 
 Set-Location $ProjectRoot
-Write-Host "Crypto Copy Trader — iniciador do laboratorio paper"
+Write-Host "Crypto Copy Trader - iniciador do laboratorio paper"
 Write-Host "Log desta sessao: $LogPath"
 Write-Host "Mantenha o notebook ligado e sem suspensao. Ctrl+C encerra com seguranca."
 

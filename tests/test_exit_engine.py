@@ -12,7 +12,11 @@ from src.exit_engine import (
     enroll_forward_signals,
     update_exit_positions,
 )
-from src.prices import PermanentPriceProviderError, TemporaryPriceProviderError
+from src.prices import (
+    PermanentPriceProviderError,
+    ProviderCycleBudgetExhausted,
+    TemporaryPriceProviderError,
+)
 from src.strategy_versions import WAVE_STRATEGY_VERSION
 
 
@@ -34,6 +38,20 @@ class FailingProvider:
 class TemporaryFailingProvider:
     def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
         raise TemporaryPriceProviderError("rate limited")
+
+
+class BudgetFailingProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise ProviderCycleBudgetExhausted("cycle budget")
+
+
+class DynamicFailFixedSuccessProvider:
+    def price_at(self, _token, timestamp, *, max_distance_seconds=3_600):
+        if timestamp == 1920:
+            raise PermanentPriceProviderError("dynamic missing", code="distant_historical_candle")
+        if timestamp == 1900:
+            return 1.0
+        raise AssertionError(timestamp)
 
 
 class OrderingProvider:
@@ -112,7 +130,7 @@ class ExitEngineTests(unittest.TestCase):
                 JOIN exit_policies ep ON ep.id=p.policy_id"""
             )
         }
-        self.assertEqual(provider.timestamps, [1200, 1500, 1900, 1920, 4600])
+        self.assertEqual(provider.timestamps, [1200, 1500, 1920, 1900, 4600])
         self.assertEqual(positions["take_profit_20_v1"]["exit_at"], 1200)
         self.assertEqual(positions["trailing_stop_10_v1"]["exit_at"], 1500)
         self.assertEqual(positions["stop_loss_10_v1"]["exit_at"], 1920)
@@ -195,7 +213,25 @@ class ExitEngineTests(unittest.TestCase):
         self.assertEqual(fixed_15["status"], "open")
         self.assertEqual(fixed_15["target_retry_count"], 1)
 
-    def test_runtime_v2_marks_new_positions_and_observations(self):
+    def test_repeated_temporary_target_failures_never_become_permanent_position_failure(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        for _ in range(4):
+            update_exit_positions(
+                TemporaryFailingProvider(), now=1_981,
+                experiment_id=experiment["id"], max_attempts=3
+            )
+
+        fixed_15 = rows(
+            """SELECT p.* FROM exit_positions p JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE ep.policy_version='fixed_15m_v1'"""
+        )[0]
+        self.assertEqual(fixed_15["status"], "open")
+        self.assertEqual(fixed_15["target_retry_count"], 4)
+
+    def test_runtime_v3_marks_new_positions_and_observations(self):
         experiment = ensure_exit_experiment(activated_at=900)
         self.insert_signal(1_000)
         enroll_forward_signals(experiment["id"])
@@ -204,12 +240,46 @@ class ExitEngineTests(unittest.TestCase):
         )
         self.assertEqual(
             {r["runtime_version"] for r in rows("SELECT runtime_version FROM exit_positions")},
-            {"exit_runtime_v2_provider_stability"},
+            {"exit_runtime_v3_adaptive_provider_budget"},
         )
         self.assertEqual(
             rows("SELECT runtime_version FROM exit_price_observations")[0]["runtime_version"],
-            "exit_runtime_v2_provider_stability",
+            "exit_runtime_v3_adaptive_provider_budget",
         )
+
+    def test_cycle_budget_deferral_does_not_consume_position_retry_counters(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        update_exit_positions(
+            BudgetFailingProvider(), now=1_981,
+            experiment_id=experiment["id"], max_attempts=1
+        )
+
+        positions = rows("SELECT * FROM exit_positions ORDER BY id")
+        self.assertTrue(all(row["status"] == "open" for row in positions))
+        self.assertTrue(all(row["retry_count"] == 0 for row in positions))
+        self.assertTrue(all(row["dynamic_retry_count"] == 0 for row in positions))
+        self.assertTrue(all(row["target_retry_count"] == 0 for row in positions))
+
+    def test_dynamic_failure_does_not_fail_fixed_time_position(self):
+        experiment = ensure_exit_experiment(activated_at=900)
+        self.insert_signal(1_000)
+        enroll_forward_signals(experiment["id"])
+
+        update_exit_positions(
+            DynamicFailFixedSuccessProvider(), now=1_981,
+            experiment_id=experiment["id"], max_attempts=1
+        )
+
+        fixed_15 = rows(
+            """SELECT p.* FROM exit_positions p JOIN exit_policies ep ON ep.id=p.policy_id
+            WHERE ep.policy_version='fixed_15m_v1'"""
+        )[0]
+        self.assertEqual(fixed_15["status"], "closed")
+        self.assertEqual(fixed_15["exit_at"], 1900)
+        self.assertEqual(fixed_15["dynamic_retry_count"], 0)
 
     def test_signal_order_rotates_deterministically_by_observation_minute(self):
         experiment = ensure_exit_experiment(activated_at=900)

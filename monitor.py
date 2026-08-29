@@ -10,7 +10,10 @@ from evaluate import main as evaluate_main
 from radar import main as radar_main
 from src.database import initialize_database
 from src.exit_engine import ensure_exit_experiment
-from src.prices import GECKOTERMINAL_MIN_INTERVAL_SECONDS
+from src.prices import (
+    GECKOTERMINAL_MIN_INTERVAL_SECONDS,
+    GECKOTERMINAL_RATE_LIMIT_INTERVAL_SECONDS,
+)
 from src.wave_paper import update_wave_paper_prices
 
 
@@ -52,7 +55,9 @@ def run_hybrid_monitor(
 
     def settle_prices() -> None:
         nonlocal settlement_runs, completed_checks, failed_checks
+        cycle_started = clock()
         result = price_updater()
+        cycle_duration = max(0.0, clock() - cycle_started)
         settlement_runs += 1
         completed_checks += result["completed"]
         failed_checks += result["failed"]
@@ -63,8 +68,9 @@ def run_hybrid_monitor(
         )
         if "exit_open_positions" in result:
             open_signals = result.get("exit_open_signals", 0)
-            estimated_seconds = open_signals * GECKOTERMINAL_MIN_INTERVAL_SECONDS
-            load_pct = estimated_seconds / price_interval_seconds * 100
+            normal_seconds = open_signals * GECKOTERMINAL_MIN_INTERVAL_SECONDS
+            limited_seconds = open_signals * GECKOTERMINAL_RATE_LIMIT_INTERVAL_SECONDS
+            load_pct = limited_seconds / price_interval_seconds * 100
             print(
                 "[exit-engine-v1] "
                 f"{result['exit_closed_positions']} fechadas | "
@@ -74,8 +80,10 @@ def run_hybrid_monitor(
             )
             print(
                 "[exit-polling] "
-                f"carga dinâmica estimada {estimated_seconds:.1f}s/"
-                f"{price_interval_seconds:.0f}s ({load_pct:.1f}%)"
+                f"ciclo {cycle_duration:.1f}s | carga dinâmica aproximada: "
+                f"normal {normal_seconds:.1f}s | sob rate-limit "
+                f"{limited_seconds:.1f}s/{price_interval_seconds:.0f}s "
+                f"({load_pct:.1f}%)"
             )
             if load_pct >= 80:
                 print(
@@ -88,11 +96,24 @@ def run_hybrid_monitor(
         discovery_due = now >= next_discovery
         settlement_due = now >= next_settlement
 
+        if settlement_due:
+            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            print()
+            print(f"========== ATUALIZAÇÃO DE PREÇOS | {timestamp} ==========")
+            settle_prices()
+            next_settlement = _next_after(
+                next_settlement, price_interval_seconds, clock()
+            )
+            continue
+
         if discovery_due:
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
             print()
             print(f"========== DISCOVERY | {timestamp} ==========")
+            discovery_started = clock()
             exit_code = radar_runner(radar_args)
+            discovery_duration = max(0.0, clock() - discovery_started)
+            print(f"[scheduler] discovery concluído em {discovery_duration:.1f}s")
             discovery_runs += 1
             if exit_code == 0:
                 successful += 1
@@ -109,26 +130,6 @@ def run_hybrid_monitor(
                 configuration_error = True
                 print("Monitor interrompido por erro de configuração.")
                 break
-            if exit_code == 0:
-                # radar.py already settles due checkpoints after a successful search.
-                next_settlement = _next_after(
-                    next_settlement, price_interval_seconds, now
-                )
-            elif settlement_due:
-                settle_prices()
-                next_settlement = _next_after(
-                    next_settlement, price_interval_seconds, clock()
-                )
-            continue
-
-        if settlement_due:
-            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            print()
-            print(f"========== ATUALIZAÇÃO DE PREÇOS | {timestamp} ==========")
-            settle_prices()
-            next_settlement = _next_after(
-                next_settlement, price_interval_seconds, clock()
-            )
             continue
 
         next_event = min(next_discovery, next_settlement, ends_at)
@@ -217,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         str(args.min_acceleration),
         "--min-wave-score",
         str(args.min_wave_score),
+        "--defer-price-update",
     ]
     initialize_database()
     experiment = ensure_exit_experiment(

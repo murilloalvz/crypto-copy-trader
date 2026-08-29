@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 from src.config import settings
 from src.database import connection, rows
-from src.prices import GeckoTerminalPriceProvider, PriceProviderError
+from src.prices import GeckoTerminalPriceProvider, PRICE_RUNTIME_VERSION, PriceProviderError
 from src.strategy_versions import WAVE_STRATEGY_VERSION
 
 
 EXIT_ENGINE_VERSION = "exit_engine_v1"
 DEFAULT_OBSERVATION_INTERVAL_SECONDS = 60
-EXIT_RUNTIME_VERSION = "exit_runtime_v2_provider_stability"
+EXIT_RUNTIME_VERSION = PRICE_RUNTIME_VERSION
 
 
 @dataclass(frozen=True)
@@ -248,13 +248,15 @@ def _record_price_failure(
     retry_limit: int,
 ) -> int:
     code = str(getattr(error, "code", "provider_error"))
+    counts_toward_retry = bool(getattr(error, "counts_toward_retry", True))
     with connection() as conn:
         existing = conn.execute(
             """SELECT retry_count FROM exit_price_observations
             WHERE experiment_id=? AND signal_id=? AND observed_at=?""",
             (experiment_id, signal["signal_id"], observed_at),
         ).fetchone()
-        observation_retry = int(existing["retry_count"] or 0) + 1 if existing else 1
+        previous_observation_retry = int(existing["retry_count"] or 0) if existing else 0
+        observation_retry = previous_observation_retry + (1 if counts_toward_retry else 0)
         conn.execute(
             """INSERT INTO exit_price_observations
             (experiment_id, signal_id, observed_at, requested_at, status,
@@ -281,13 +283,18 @@ def _record_price_failure(
             """SELECT p.id, p.entry_at, p.retry_count, p.dynamic_retry_count, ep.parameters_json
             FROM exit_positions p
             JOIN exit_policies ep ON ep.id=p.policy_id
-            WHERE p.experiment_id=? AND p.signal_id=? AND p.status='open'""",
+            WHERE p.experiment_id=? AND p.signal_id=? AND p.status='open'
+              AND ep.policy_type!='fixed_time'""",
             (experiment_id, signal["signal_id"]),
         ).fetchall()
         failed = 0
         for position in positions:
-            dynamic_retry_count = int(position["dynamic_retry_count"] or 0) + 1
-            retry_count = int(position["retry_count"] or 0) + 1
+            dynamic_retry_count = int(position["dynamic_retry_count"] or 0) + (
+                1 if counts_toward_retry else 0
+            )
+            retry_count = int(position["retry_count"] or 0) + (
+                1 if counts_toward_retry else 0
+            )
             max_duration = int(json.loads(position["parameters_json"])["max_duration_seconds"])
             is_due = observed_at - position["entry_at"] >= max_duration
             retryable = bool(getattr(error, "retryable", False))
@@ -447,9 +454,21 @@ def _update_due_fixed_positions(
                     raise PriceProviderError("Preço retornado não é positivo.")
             except PriceProviderError as exc:
                 price_failures += 1
-                retry_count = int(position["retry_count"] or 0) + 1
-                target_retry_count = int(position["target_retry_count"] or 0) + 1
-                status = "failed" if target_retry_count >= retry_limit else "open"
+                counts_toward_retry = bool(
+                    getattr(exc, "counts_toward_retry", True)
+                )
+                retry_count = int(position["retry_count"] or 0) + (
+                    1 if counts_toward_retry else 0
+                )
+                target_retry_count = int(position["target_retry_count"] or 0) + (
+                    1 if counts_toward_retry else 0
+                )
+                retryable = bool(getattr(exc, "retryable", False))
+                status = (
+                    "failed"
+                    if not retryable and target_retry_count >= retry_limit
+                    else "open"
+                )
                 failed_positions += status == "failed"
                 with connection() as conn:
                     conn.execute(
@@ -541,22 +560,13 @@ def update_exit_positions(
         experiment_id = active[0]["id"]
 
     observed_at = _last_completed_minute(now)
-    (
-        fixed_observed,
-        fixed_closed,
-        fixed_failed,
-        fixed_price_failures,
-    ) = _update_due_fixed_positions(
-        provider,
-        experiment_id=experiment_id,
-        now=now,
-        retry_limit=max(1, int(retry_limit)),
-    )
     signals = rows(
         """SELECT DISTINCT p.signal_id, s.token_mint, s.detected_at
         FROM exit_positions p
+        JOIN exit_policies ep ON ep.id=p.policy_id
         JOIN wave_signals s ON s.id=p.signal_id
         WHERE p.experiment_id=? AND p.status='open'
+          AND ep.policy_type!='fixed_time'
         ORDER BY p.signal_id""",
         (experiment_id,),
     )
@@ -566,10 +576,13 @@ def update_exit_positions(
         offset = (observed_at // 60) % len(signals)
         signals = signals[offset:] + signals[:offset]
 
-    observed_signals = fixed_observed
-    closed_positions = fixed_closed
-    failed_positions = fixed_failed
-    price_failures = fixed_price_failures
+    # Current-minute dynamic observations are the time-sensitive path. Exact
+    # fixed targets are historical candles and can be queried after dynamics,
+    # so provider pressure cannot starve SL/TP/trailing observations first.
+    observed_signals = 0
+    closed_positions = 0
+    failed_positions = 0
+    price_failures = 0
     for signal in signals:
         if observed_at <= signal["detected_at"]:
             continue
@@ -630,14 +643,32 @@ def update_exit_positions(
             skip_due_fixed=True,
         )
 
+    (
+        fixed_observed,
+        fixed_closed,
+        fixed_failed,
+        fixed_price_failures,
+    ) = _update_due_fixed_positions(
+        provider,
+        experiment_id=experiment_id,
+        now=now,
+        retry_limit=max(1, int(retry_limit)),
+    )
+    observed_signals += fixed_observed
+    closed_positions += fixed_closed
+    failed_positions += fixed_failed
+    price_failures += fixed_price_failures
+
     open_positions = rows(
         """SELECT COUNT(*) AS total FROM exit_positions
         WHERE experiment_id=? AND status='open'""",
         (experiment_id,),
     )[0]["total"]
     open_signals = rows(
-        """SELECT COUNT(DISTINCT signal_id) AS total FROM exit_positions
-        WHERE experiment_id=? AND status='open'""",
+        """SELECT COUNT(DISTINCT p.signal_id) AS total FROM exit_positions p
+        JOIN exit_policies ep ON ep.id=p.policy_id
+        WHERE p.experiment_id=? AND p.status='open'
+          AND ep.policy_type!='fixed_time'""",
         (experiment_id,),
     )[0]["total"]
     return ExitEngineUpdate(
