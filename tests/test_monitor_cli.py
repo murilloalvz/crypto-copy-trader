@@ -75,6 +75,34 @@ class HybridMonitorTests(unittest.TestCase):
         self.assertEqual(prices.call_count, 3)
         self.assertEqual(summary.completed_checks, 6)
 
+    def test_unexpected_discovery_exception_is_isolated_and_monitor_continues(self):
+        clock = FakeClock()
+        radar = Mock(side_effect=[RuntimeError("temporary discovery crash"), 0])
+        prices = Mock(
+            return_value={"completed": 1, "pending": 0, "failed": 0}
+        )
+        output = io.StringIO()
+        errors = io.StringIO()
+
+        with redirect_stdout(output), redirect_stderr(errors):
+            summary = run_hybrid_monitor(
+                duration_seconds=601,
+                price_interval_seconds=300,
+                discovery_interval_seconds=600,
+                radar_args=[],
+                radar_runner=radar,
+                price_updater=prices,
+                clock=clock,
+                sleeper=clock.sleep,
+            )
+
+        self.assertEqual(summary.discovery_runs, 2)
+        self.assertEqual(summary.failed_discoveries, 1)
+        self.assertEqual(summary.successful_discoveries, 1)
+        self.assertEqual(prices.call_count, 3)
+        self.assertIn("discovery lançou exceção inesperada", errors.getvalue())
+        self.assertIn("RuntimeError: temporary discovery crash", errors.getvalue())
+
     def test_configuration_error_preserves_due_price_settlement_then_aborts(self):
         clock = FakeClock()
         prices = Mock(return_value={"completed": 0, "pending": 0, "failed": 0})
