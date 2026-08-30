@@ -31,6 +31,15 @@ New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogPath = Join-Path $LogDirectory "monitor-$Timestamp.log"
 
+# Windows PowerShell 5.1 redirects native stdout/stderr through a pipe. Force Python and
+# the console pipeline to UTF-8 so radar symbols cannot raise cp1252/charmap errors.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUNBUFFERED = "1"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
+
 Set-Location $ProjectRoot
 Write-Host "Crypto Copy Trader - iniciador do laboratorio paper"
 Write-Host "Log desta sessao: $LogPath"
@@ -50,7 +59,7 @@ $StartedAt = Get-Date
 
 $ExitCode = 0
 try {
-    & $Python monitor.py `
+    & $Python -u monitor.py `
         --hours $Hours `
         --price-interval-minutes $PriceIntervalMinutes `
         --discovery-interval-minutes $DiscoveryIntervalMinutes `
