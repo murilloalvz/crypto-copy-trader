@@ -36,19 +36,38 @@ Write-Host "Crypto Copy Trader - iniciador do laboratorio paper"
 Write-Host "Log desta sessao: $LogPath"
 Write-Host "Mantenha o notebook ligado e sem suspensao. Ctrl+C encerra com seguranca."
 
-Start-Transcript -Path $LogPath | Out-Null
+$StartedAt = Get-Date
+@(
+    "Crypto Copy Trader - monitor log"
+    "StartedAt: $($StartedAt.ToString('o'))"
+    "Hours: $Hours"
+    "PriceIntervalMinutes: $PriceIntervalMinutes"
+    "DiscoveryIntervalMinutes: $DiscoveryIntervalMinutes"
+    "Tokens: $Tokens"
+    "Top: $Top"
+    "---"
+) | Set-Content -Path $LogPath -Encoding UTF8
+
+$ExitCode = 0
 try {
     & $Python monitor.py `
         --hours $Hours `
         --price-interval-minutes $PriceIntervalMinutes `
         --discovery-interval-minutes $DiscoveryIntervalMinutes `
         --tokens $Tokens `
-        --top $Top
+        --top $Top 2>&1 | ForEach-Object {
+            $Line = "$_"
+            Write-Host $Line
+            Add-Content -Path $LogPath -Value $Line -Encoding UTF8
+        }
     $ExitCode = $LASTEXITCODE
 }
 finally {
-    Stop-Transcript | Out-Null
+    $EndedAt = Get-Date
+    $EndLine = "EndedAt: $($EndedAt.ToString('o')) | ExitCode: $ExitCode"
+    Write-Host $EndLine
+    Add-Content -Path $LogPath -Value $EndLine -Encoding UTF8
+    Write-Host "Monitor encerrado. Log salvo em: $LogPath"
 }
 
-Write-Host "Monitor encerrado. Log salvo em: $LogPath"
 exit $ExitCode
