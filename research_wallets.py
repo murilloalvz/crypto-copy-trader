@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+from src.discovery.copyability import COPYABILITY_REJECTION_LABELS
+from src.discovery.ranking import REJECTION_LABELS
 from src.discovery.solana_tracker import (
     SolanaTrackerAuthenticationError,
     SolanaTrackerConfigurationError,
@@ -12,6 +14,15 @@ from src.wallet_intelligence import build_wallet_strategy_profile, format_durati
 
 def _short(address: str) -> str:
     return f"{address[:6]}...{address[-6:]}"
+
+
+def _print_reason_counts(title: str, counts: dict[str, int], labels: dict[str, str]) -> None:
+    if not counts:
+        return
+    print()
+    print(title)
+    for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        print(f"- {labels.get(key, key)}: {count}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +80,19 @@ def main(argv: list[str] | None = None) -> int:
         f"{discovery.passed_count} Candidate Score | "
         f"{discovery.copyability_evaluated_count} avaliadas por copyability"
     )
+    _print_reason_counts(
+        "PRINCIPAIS ELIMINAÇÕES DO DISCOVERY",
+        discovery.rejected_by_reason,
+        REJECTION_LABELS,
+    )
+    _print_reason_counts(
+        "PRINCIPAIS BARREIRAS DE COPYABILITY",
+        discovery.copyability_rejected_by_reason,
+        COPYABILITY_REJECTION_LABELS,
+    )
+    if discovery.data_errors:
+        print()
+        print(f"Falhas de dados no funil: {len(discovery.data_errors)}")
     if not shortlist:
         print("Nenhuma wallet com dados suficientes nesta rodada.")
         return 0
