@@ -11,7 +11,7 @@ param(
     [int]$Top = 3
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ProjectRoot = $PSScriptRoot
 $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $EnvFile = Join-Path $ProjectRoot ".env"
