@@ -2,6 +2,7 @@ import argparse
 import math
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -111,7 +112,23 @@ def run_hybrid_monitor(
             print()
             print(f"========== DISCOVERY | {timestamp} ==========")
             discovery_started = clock()
-            exit_code = radar_runner(radar_args)
+            try:
+                exit_code = radar_runner(radar_args)
+            except Exception as exc:
+                discovery_duration = max(0.0, clock() - discovery_started)
+                discovery_runs += 1
+                discovery_failures += 1
+                print(
+                    "[scheduler] discovery lançou exceção inesperada; "
+                    "o monitor continuará e tentará novamente na próxima rodada. "
+                    f"Erro: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
+                next_discovery = _next_after(
+                    next_discovery, discovery_interval_seconds, clock()
+                )
+                continue
             discovery_duration = max(0.0, clock() - discovery_started)
             print(f"[scheduler] discovery concluído em {discovery_duration:.1f}s")
             discovery_runs += 1
