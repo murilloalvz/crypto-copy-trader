@@ -87,6 +87,56 @@ class WalletQuoteMetricsTests(unittest.TestCase):
         self.assertEqual(metrics.delays[1].median_request_lag_seconds, 1.0)
         self.assertEqual(metrics.delays[2].errors, (("RuntimeError", 1),))
 
+    def test_source_event_scope_excludes_other_same_wallet_attempts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metrics.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_wallet_forward_observation(
+                    WalletActionObservation("W", "T", "buy", 100, 120),
+                    observation_key="run-a-buy",
+                )
+                first = schedule_buy_quotes(
+                    load_forward_buys_after(0), delays_seconds=[0]
+                )[0]
+                record_quote_attempt(
+                    first,
+                    requested_at=120,
+                    completed_at=121,
+                    status="error",
+                    error=RuntimeError("first run error"),
+                )
+
+                baseline = first.event_id
+                record_wallet_forward_observation(
+                    WalletActionObservation("W", "T", "buy", 200, 220),
+                    observation_key="run-b-buy",
+                )
+                second = schedule_buy_quotes(
+                    load_forward_buys_after(baseline), delays_seconds=[0]
+                )[0]
+                record_quote_attempt(
+                    second,
+                    requested_at=220,
+                    completed_at=221,
+                    status="error",
+                    error=RuntimeError("second run error"),
+                )
+
+                run_b = summarize_wallet_quote_metrics(
+                    wallet_addresses=["W"],
+                    source_event_keys=["run-b-buy"],
+                )
+                empty = summarize_wallet_quote_metrics(
+                    wallet_addresses=["W"],
+                    source_event_keys=[],
+                )
+
+        self.assertEqual(run_b.attempt_count, 1)
+        self.assertEqual(run_b.failure_count, 1)
+        self.assertEqual(run_b.delays[0].errors, (("RuntimeError", 1),))
+        self.assertEqual(empty.attempt_count, 0)
+        self.assertEqual(empty.delays, ())
+
 
 if __name__ == "__main__":
     unittest.main()
