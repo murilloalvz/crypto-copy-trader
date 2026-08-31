@@ -62,6 +62,30 @@ class WalletStrategyCompareTests(unittest.TestCase):
 
         self.assertTrue(fingerprint_evidence_ready(fingerprint))
 
+    def test_short_burst_with_small_exit_sample_is_not_promoted_to_ready(self):
+        swaps = []
+        for token_index in range(4):
+            base = token_index * 1_000
+            token = f"T{token_index}"
+            swaps.extend(
+                [
+                    _swap(token, base, 20),
+                    _swap(token, base + 60, 20),
+                    _swap(token, base + 120, 20),
+                    _swap(token, base + 180, -30),
+                    _swap(token, base + 240, -30),
+                ]
+            )
+
+        fingerprint = build_wallet_strategy_fingerprint("burst", swaps)
+
+        self.assertNotEqual(fingerprint.sample_grade, "INSUFFICIENT")
+        self.assertGreaterEqual(fingerprint.roundtrip_share_pct, 50.0)
+        self.assertGreaterEqual(fingerprint.complete_like_sizing_count, 3)
+        self.assertIn("short_observation_window", fingerprint.flags)
+        self.assertIn("exit_sizing_sample_too_small", fingerprint.flags)
+        self.assertFalse(fingerprint_evidence_ready(fingerprint))
+
     def test_recurring_signature_requires_multiple_ready_wallets_for_preliminary_support(self):
         first = _swing_single("first")
         second = _swing_single("second", offset=777)
