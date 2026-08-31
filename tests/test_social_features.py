@@ -7,8 +7,8 @@ from src.social_intelligence import SocialEvent
 class SocialBurstFeatureTests(unittest.TestCase):
     def test_compares_current_rate_with_non_overlapping_prior_baseline(self):
         events = [
-            SocialEvent("x", "old-1", "a", 100, 100, token_mint="T"),
-            SocialEvent("x", "old-2", "b", 200, 200, token_mint="T"),
+            SocialEvent("x", "old-1", "a", 1_000, 1_000, token_mint="T"),
+            SocialEvent("x", "old-2", "b", 2_000, 2_000, token_mint="T"),
             SocialEvent("x", "new-1", "c", 3_800, 3_800, token_mint="T"),
             SocialEvent("x", "new-2", "d", 3_850, 3_850, token_mint="T"),
             SocialEvent("x", "new-3", "e", 3_900, 3_900, token_mint="T"),
