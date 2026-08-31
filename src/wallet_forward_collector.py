@@ -12,6 +12,7 @@ class ForwardWalletCaptureSummary:
     new_transaction_count: int
     recorded_action_count: int
     ignored_new_transaction_count: int
+    prestart_new_transaction_count: int
     known_signatures: frozenset[str]
 
 
@@ -30,14 +31,21 @@ def capture_new_wallet_actions(
     *,
     known_signatures: set[str] | frozenset[str],
     observed_at: int,
+    not_before_chain_time: int | None = None,
 ) -> ForwardWalletCaptureSummary:
-    """Persist swaps that appeared in SQLite after the caller's previous signature snapshot.
+    """Persist newly observed swaps while keeping historical backfill out of forward data.
 
-    The caller is responsible for taking a bootstrap snapshot before forward collection starts.
-    That bootstrap prevents historical RPC backfill from being mislabeled as a live action.
+    ``known_signatures`` remains the primary bootstrap boundary. ``not_before_chain_time`` is a
+    second causal guard: if bootstrap/RPC transaction hydration was incomplete, a transaction
+    whose chain timestamp predates the forward collection boundary is never relabeled as a live
+    action merely because its details became readable later.
     """
     if observed_at < 0:
         raise ValueError("observed_at must be non-negative")
+    if not_before_chain_time is not None and not_before_chain_time < 0:
+        raise ValueError("not_before_chain_time must be non-negative")
+    if not_before_chain_time is not None and not_before_chain_time > observed_at:
+        raise ValueError("not_before_chain_time cannot be after observed_at")
 
     txs = rows(
         """SELECT signature, block_time, status, kind, dex, token_mint, token_change
@@ -47,7 +55,7 @@ def capture_new_wallet_actions(
     all_signatures = {str(item["signature"]) for item in txs}
     new_rows = [item for item in txs if str(item["signature"]) not in known_signatures]
 
-    recorded = ignored = 0
+    recorded = ignored = prestart = 0
     for item in new_rows:
         token_mint = item.get("token_mint")
         token_change = item.get("token_change")
@@ -65,13 +73,20 @@ def capture_new_wallet_actions(
             ignored += 1
             continue
 
+        chain_time = int(block_time)
+        if not_before_chain_time is not None and chain_time < not_before_chain_time:
+            # Keep it in known_signatures for later cycles, but never publish it as forward.
+            ignored += 1
+            prestart += 1
+            continue
+
         side = "buy" if float(token_change) > 0 else "sell"
         signature = str(item["signature"])
         observation = WalletActionObservation(
             address=address,
             token_mint=str(token_mint),
             side=side,
-            chain_time=int(block_time),
+            chain_time=chain_time,
             observed_at=observed_at,
         )
         inserted = record_wallet_forward_observation(
@@ -88,5 +103,6 @@ def capture_new_wallet_actions(
         new_transaction_count=len(new_rows),
         recorded_action_count=recorded,
         ignored_new_transaction_count=ignored,
+        prestart_new_transaction_count=prestart,
         known_signatures=frozenset(all_signatures),
     )
