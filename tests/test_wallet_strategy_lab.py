@@ -62,23 +62,35 @@ class WalletStrategyLabTests(unittest.TestCase):
         self.assertEqual(result.dominant_dex, "PumpSwap")
         self.assertAlmostEqual(result.dominant_dex_share_pct, 100.0)
 
-    def test_frequency_bucket_uses_median_gap_not_distant_calendar_outlier(self):
+    def test_frequency_bucket_uses_active_day_median_not_gap_extrapolation(self):
         swaps = [
             _swap("A", 0, 100),
-            _swap("A", 60, -100),
-            _swap("B", 120, 100),
-            _swap("B", 180, -100),
+            _swap("A", 1, -100),
+            _swap("B", 2, 100),
+            _swap("B", 3, -100),
             _swap("C", 100 * 86_400, 100),
-            _swap("C", 100 * 86_400 + 60, -100),
+            _swap("C", 100 * 86_400 + 1, -100),
         ]
 
         result = build_wallet_strategy_fingerprint("bursty", swaps)
 
         self.assertLess(result.swaps_per_day, 1.0)
-        self.assertGreater(result.frequency_rate_per_day, 100.0)
-        self.assertEqual(result.frequency_basis, "median_swap_gap")
-        self.assertEqual(result.frequency_bucket, "high_frequency")
+        self.assertEqual(result.frequency_rate_per_day, 3.0)
+        self.assertEqual(result.frequency_basis, "median_active_day_swaps")
+        self.assertEqual(result.frequency_bucket, "moderate")
         self.assertIn("calendar_frequency_differs_from_active_intensity", result.flags)
+
+    def test_many_observed_swaps_on_active_day_remain_high_frequency(self):
+        swaps = [
+            _swap(f"T{index}", index * 10, 100 if index % 2 == 0 else -100)
+            for index in range(30)
+        ]
+
+        result = build_wallet_strategy_fingerprint("busy-day", swaps)
+
+        self.assertEqual(result.frequency_rate_per_day, 30.0)
+        self.assertEqual(result.frequency_basis, "median_active_day_swaps")
+        self.assertEqual(result.frequency_bucket, "high_frequency")
 
     def test_small_or_empty_sample_is_marked_as_insufficient_not_invented(self):
         result = build_wallet_strategy_fingerprint("empty", [])
