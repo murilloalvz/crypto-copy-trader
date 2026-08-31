@@ -61,6 +61,49 @@ class SocialIntelligenceTests(unittest.TestCase):
         self.assertEqual(later.windows[300].like_count, 50)
         self.assertEqual(later.windows[300].event_count, 1)
 
+    def test_engagement_refresh_does_not_make_old_post_a_new_mention(self):
+        events = [
+            SocialEvent(
+                source="x",
+                event_id="old",
+                author_id="alice",
+                created_at=100,
+                observed_at=120,
+                token_mint="TOKEN",
+                like_count=5,
+            ),
+            SocialEvent(
+                source="x",
+                event_id="old",
+                author_id="alice",
+                created_at=100,
+                observed_at=990,
+                token_mint="TOKEN",
+                like_count=500,
+            ),
+            SocialEvent(
+                source="x",
+                event_id="new",
+                author_id="bob",
+                created_at=950,
+                observed_at=960,
+                token_mint="TOKEN",
+                like_count=2,
+            ),
+        ]
+
+        context = build_social_context(
+            events,
+            as_of=1_000,
+            token_mint="TOKEN",
+            windows=(300, 1_000),
+        )
+
+        self.assertEqual(context.windows[300].event_count, 1)
+        self.assertEqual(context.windows[300].like_count, 2)
+        self.assertEqual(context.windows[1_000].event_count, 2)
+        self.assertEqual(context.windows[1_000].like_count, 502)
+
     def test_counts_mentions_and_unique_authors_in_causal_windows(self):
         events = [
             SocialEvent("x", "1", "alice", 800, 810, token_mint="TOKEN"),
