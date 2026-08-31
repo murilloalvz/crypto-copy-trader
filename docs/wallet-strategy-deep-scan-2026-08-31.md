@@ -13,7 +13,7 @@ Coorte aprofundada:
 - `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
 - `DKgvpfttzmJqZXdavDwTxwSVkajibjzJnN2FA99dyciK`
 
-Comando executado antes do ajuste de robustez de frequência:
+Comando de backfill:
 
 ```powershell
 python wallet_strategy_lab.py --file wallets/research-cohort-deep.txt --sync-onchain --pages 10
@@ -26,7 +26,7 @@ Não houve falhas RPC nas páginas observadas.
 
 ### 7mPti
 
-- 94 swaps, 36 tokens, span local 306,3 dias, grau DEVELOPING.
+- 94 swaps, 36 tokens, span local 306,3 dias, grau DEVELOPING;
 - primeira saída mediana: 18,5h;
 - roundtrip observado: 72,2%;
 - scale-in: 7,7%;
@@ -39,8 +39,6 @@ Não houve falhas RPC nas páginas observadas.
 - `preexisting_inventory_observed`.
 
 Leitura: o backfill maior manteve a hipótese comportamental principal de posição aproximadamente `one_day`, uso relevante de múltiplas vendas e um modo staged próximo de 50/50 em parte dos ciclos completos. A wallet continua sendo a referência de melhor cobertura local, mas isso ainda não mede edge.
-
-A classificação antiga de frequência caiu para `sparse` porque `94 / 306,3 dias` é muito sensível a observações históricas distantes e backfill parcial. Esse problema motivou o ajuste descrito abaixo.
 
 ### Gf9X
 
@@ -87,54 +85,59 @@ Leitura: é um caso forte para estudar comportamento ultra-short/high-frequency,
 
 Leitura: existe semelhança superficial com o cluster high-frequency/reentry, mas a evidência ainda é fraca. Não deve ser usada como confirmação de arquétipo.
 
-## Comparação cross-wallet antes do ajuste
+## Correções metodológicas derivadas do scan
 
-A comparação antiga retornou cinco wallets locais com >=20 swaps e marcou duas como `evidence_ready`: 7mPti e 3tc4.
+### 1. Gate de evidência
 
-Isso revelou dois problemas metodológicos:
+A comparação inicial marcou 7mPti e 3tc4 como `evidence_ready`. A 3tc4 não deveria passar porque a amostra tinha apenas ~0,2 dia e poucos ciclos/tokens.
 
-1. `3tc4` passava na gate apesar de `short_observation_window` e `exit_sizing_sample_too_small`;
-2. a dimensão de frequência usava `swap_count / observed_span`, ficando instável quando um único registro histórico distante expandia o span local.
+A gate passou a bloquear:
 
-## Correção metodológica implementada
+- `short_observation_window`;
+- `exit_sizing_sample_too_small`;
+- `exit_sizing_quantity_anomalies`;
+- `sequence_coverage_low`;
+- além dos requisitos de amostra não insuficiente, >=50% de roundtrips e >=3 ciclos complete-like.
 
-Após este scan:
+Na reavaliação do mesmo SQLite, somente a 7mPti permaneceu `evidence_ready`.
 
-- a gate `fingerprint_evidence_ready` passou a bloquear:
-  - `short_observation_window`;
-  - `exit_sizing_sample_too_small`;
-  - `exit_sizing_quantity_anomalies`;
-  - `sequence_coverage_low`;
-- a média calendário `swap_count / observed_span` continua registrada separadamente;
-- o **bucket de intensidade/frequência** agora usa a mediana do gap entre swaps quando disponível, reduzindo sensibilidade a um registro histórico distante ou backfill parcial;
-- quando a intensidade mediana e a média calendário divergem por >=3x, o fingerprint recebe `calendar_frequency_differs_from_active_intensity`.
+### 2. Frequência: span calendário era frágil
 
-Essas mudanças são de metodologia descritiva; não ajustam resultado financeiro e não selecionam uma wallet vencedora.
+A classificação baseada em `swap_count / observed_span` transformou a 7mPti em `sparse` quando um registro histórico distante expandiu o span para 306,3 dias. A métrica passou então a usar mediana de gaps entre swaps.
+
+### 3. Frequência: extrapolação por gap também era frágil
+
+A reavaliação com mediana de gap revelou o problema oposto:
+
+- 3tc4: `86400 swaps/dia` implícitos;
+- DKgv: `24685,7 swaps/dia` implícitos.
+
+Esses números não representam volume diário observado. Eles aparecem porque rajadas com swaps separados por segundos foram extrapoladas para 24 horas.
+
+A metodologia foi corrigida novamente: o bucket de frequência agora usa a **mediana do número de swaps realmente observados por dia UTC ativo**. A média calendário continua separada como diagnóstico.
+
+Isso mantém wallets realmente muito ativas como high-frequency quando dezenas de swaps foram observados no mesmo dia, mas não converte uma distância de 1 segundo entre duas ações em uma taxa fictícia de 86.400 swaps/dia.
+
+## Estado das hipóteses após a revisão
+
+1. **7mPti / one-day mixed-exit** — hipótese comportamental mais madura; 72,2% de roundtrips e 21 ciclos complete-like. Ainda sem edge provado.
+2. **Gf9X / ultra-short single-exit** — candidato distinto, porém só 36,1% de roundtrips; precisa de melhor cobertura antes de comparação forte.
+3. **3tc4 / ultra-short staged/reentry bursty** — interessante, mas 5 tokens e janela sub-dia impedem promoção; high-frequency deve ser interpretado como atividade observada, não cadência contínua.
+4. **DKgv / intraday high-frequency reentry candidate** — ainda mais fraco: 3 tokens, baixa cobertura e sizing insuficiente.
+
+Nenhuma hipótese representa estratégia validada ou recomendação de cópia.
 
 ## Validação técnica
 
-Head de código após as correções: `144769a497bf4cd2d8816a7b19b04f65216fa518`.
-
-GitHub Actions em Ubuntu / Python 3.11:
+A primeira rodada de correções passou em GitHub Actions com:
 
 ```text
 Ran 242 tests in 3.331s
 OK
 ```
 
-`compileall` também passou.
-
-Status: **TESTADO EM CI LIMPO**.
-
-## Hipóteses que permanecem abertas
-
-1. **7mPti / one-day path-sensitive** — entrada relativamente rara, holding mais longo, múltiplas vendas frequentes e subset de ciclos próximos de 50/50.
-2. **Gf9X / ultra-short single-exit** — saída rápida, menor reentrada e menor dependência de staged exit; cobertura insuficiente ainda.
-3. **3tc4 / ultra-short high-frequency staged/reentry** — intensidade muito alta, scale-in/reentrada e runner grande, mas a janela atual é curta e não permite generalização.
-4. **DKgv / high-frequency reentry candidate** — possível vizinho do terceiro arquétipo, mas ainda sem cobertura mínima.
-
-Nenhuma dessas hipóteses representa edge validado.
+A segunda correção de frequência adiciona testes específicos para impedir extrapolação de rajadas de segundos e preservar dias realmente high-frequency. O status deve ser atualizado com o CI do novo head antes de classificar essa segunda correção como TESTADA.
 
 ## Próximo passo recomendado
 
-Primeiro recalcular os fingerprints no SQLite existente com a metodologia corrigida, sem novo RPC. Depois escolher seletivamente quais wallets merecem mais backfill/forward watch. Não ampliar a coorte indiscriminadamente antes dessa revisão.
+Recalcular novamente os fingerprints no SQLite existente sem novo RPC após a segunda correção de frequência. Em seguida escolher seletivamente backfill/forward watch. Não ampliar a coorte indiscriminadamente até a frequência e a cobertura estarem estáveis.
