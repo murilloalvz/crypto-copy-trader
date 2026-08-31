@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from pathlib import Path
 
 from src.assets import USDC_MINT
 from src.causal_quote_store import record_causal_quote
@@ -25,6 +26,20 @@ from src.wallet_quote_watch import (
 USDC_DECIMALS = 6
 
 
+def _load_addresses(positional: list[str], file_path: str | None) -> list[str]:
+    addresses = [item.strip() for item in positional if item.strip()]
+    if file_path:
+        path = Path(file_path)
+        if not path.exists():
+            raise ValueError(f"arquivo de wallets não encontrado: {path}")
+        addresses.extend(
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
+    return list(dict.fromkeys(addresses))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -32,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
             "causais de rota via Jupiter Swap V2. RESEARCH/READ ONLY: nunca assina nem executa."
         )
     )
+    parser.add_argument("addresses", nargs="*", help="wallets da coorte; vazio = todas")
+    parser.add_argument("--file", help="arquivo UTF-8 com uma wallet por linha")
     parser.add_argument("--hours", type=float, default=1.0)
     parser.add_argument(
         "--delays-seconds",
@@ -90,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    try:
+        addresses = _load_addresses(args.addresses, args.file)
+    except ValueError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 2
+
     amount_raw = int(round(args.copy_size_usd * (10**USDC_DECIMALS)))
     if amount_raw <= 0:
         print("Erro: notional virou zero em unidades de USDC.", file=sys.stderr)
@@ -111,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Modo: RESEARCH / READ ONLY — Jupiter GET /order; sem assinatura e sem /execute.")
     print(
         f"Baseline wallet_forward_observations id={cursor_id} | duração {args.hours:.2f}h | "
-        f"delays {list(delays)} | notional USDC ${args.copy_size_usd:.2f}"
+        f"delays {list(delays)} | notional USDC ${args.copy_size_usd:.2f} | "
+        f"wallets {'todas' if not addresses else len(addresses)}"
     )
     print(
         "Taker: "
@@ -128,7 +152,9 @@ def main(argv: list[str] | None = None) -> int:
             if now_mono < intake_deadline:
                 newest_id = latest_forward_observation_id()
                 if newest_id > cursor_id:
-                    events = load_forward_buys_after(cursor_id)
+                    events = load_forward_buys_after(
+                        cursor_id, wallet_addresses=addresses or None
+                    )
                     cursor_id = newest_id
                     if events:
                         discovered_buys += len(events)
