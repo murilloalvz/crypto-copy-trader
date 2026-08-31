@@ -37,13 +37,33 @@ Cada wallet recebe dimensões descritivas:
 - holding observado: `ultra_short`, `intraday`, `one_day`, `swing`, `long_hold` ou desconhecido;
 - formato de saída: `single_exit_dominant`, `staged_exit_dominant`, `mixed_exit` ou amostra insuficiente;
 - reentrada: rara, ocasional ou frequente;
-- frequência observada: sparse, moderate, active ou high_frequency;
+- intensidade/frequência observada: sparse, moderate, active ou high_frequency;
 - cobertura de roundtrips;
 - scale-in;
 - múltiplas vendas;
 - sizing complete-like;
 - primeira tranche e runner em ciclos multi-sell complete-like;
 - DEX dominante e concentração observada.
+
+### Frequência: intensidade ativa vs média calendário
+
+A média calendário `swap_count / observed_span` continua sendo exibida, mas não é mais usada diretamente para definir o bucket de frequência quando existe gap suficiente entre swaps.
+
+O bucket usa preferencialmente a intensidade implícita pela **mediana dos gaps entre swaps**:
+
+```text
+frequency_rate_per_day = 86400 / median_swap_gap_seconds
+```
+
+Motivo: um registro histórico distante ou um backfill parcial pode aumentar muito o span local e transformar falsamente uma wallet ativa em `sparse`.
+
+Se a intensidade mediana e a média calendário divergirem por pelo menos 3x, o fingerprint recebe:
+
+```text
+calendar_frequency_differs_from_active_intensity
+```
+
+Isso não resolve todos os vieses de amostragem. Uma wallet naturalmente bursty também pode apresentar divergência. O campo serve como alerta metodológico, não como correção econômica definitiva.
 
 A assinatura combina quatro dimensões:
 
@@ -62,7 +82,17 @@ Ela é um agrupamento determinístico de pesquisa, não uma classe econômica de
 
 A similaridade compara apenas dimensões informativas entre holding, exit, reentry e frequency. Amostras vazias ou dimensões desconhecidas não são tratadas como coincidência.
 
-A gate `fingerprint_evidence_ready` é somente de cobertura. Ela exige amostra on-chain não insuficiente, pelo menos 50% de roundtrips observados e pelo menos três ciclos de sizing complete-like. Ela **não** mede PnL e não diz que a wallet deve ser copiada.
+A gate `fingerprint_evidence_ready` é somente de cobertura. Ela exige:
+
+- amostra on-chain diferente de `INSUFFICIENT`;
+- pelo menos 50% de roundtrips observados;
+- pelo menos três ciclos de sizing complete-like;
+- ausência de `sequence_coverage_low`;
+- ausência de `short_observation_window`;
+- ausência de `exit_sizing_sample_too_small`;
+- ausência de `exit_sizing_quantity_anomalies`.
+
+A gate **não** mede PnL, não mede copyability e não diz que a wallet deve ser copiada. Ela apenas evita promover fingerprints ainda muito sensíveis a poucos tokens/ciclos ou a uma janela sub-dia.
 
 Padrões de assinatura recebem graus de recorrência:
 
@@ -95,7 +125,8 @@ Também é possível usar `--file` e `--json`.
 4. Transferências, token mechanics e backfill incompleto podem distorcer sizing.
 5. `staged_exit_dominant` exige pelo menos três ciclos de sizing complete-like e evidência repetida de múltiplas vendas; ainda assim descreve a amostra, não intenção.
 6. Similaridade de fingerprint não é evidência de edge.
-7. Nenhum fingerprint modifica automaticamente o bot.
+7. Intensidade por gap mediano mede comportamento dentro da amostra ativa, não uma taxa econômica garantida em calendário completo.
+8. Nenhum fingerprint modifica automaticamente o bot.
 
 ## Próxima sequência de validação
 
