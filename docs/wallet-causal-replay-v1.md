@@ -19,18 +19,29 @@ Cada ação forward já possui:
 - `chain_time`: horário da ação na Solana;
 - `observed_at`: horário em que nosso sistema realmente detectou a ação.
 
-Cada quote causal passa a possuir:
+Cada quote causal possui:
 
 - `market_time`: horário do estado de mercado representado;
 - `observed_at`: horário em que nosso sistema realmente recebeu/registrou o quote.
 
 O replay seleciona quotes por `observed_at`. Um preço histórico que represente um minuto antigo mas só seja consultado depois **não pode ser tratado como informação disponível no passado**.
 
+## Direção da rota é obrigatória
+
+Cada quote tem `side=buy|sell` do ponto de vista do Copy Trader. Um quote de venda nunca pode preencher uma ação de compra e vice-versa.
+
+Para quotes marcados como executáveis, o modelo também exige `input_mint` e `output_mint` coerentes:
+
+- `buy`: `output_mint == token_mint` pesquisado;
+- `sell`: `input_mint == token_mint` pesquisado.
+
+Isso evita transformar uma referência de preço genérica em evidência de uma rota que não corresponde à operação simulada.
+
 ## Quote executável x proxy
 
 `CausalQuoteObservation.executable` separa duas classes de evidência:
 
-- `True`: quote cuja fonte/semântica pode representar uma oportunidade executável sob as premissas do coletor;
+- `True`: quote cuja fonte/semântica representa uma rota cotada para a direção declarada;
 - `False`: proxy de pesquisa, como candle ou outra referência que não garante rota executável.
 
 Por padrão o replay exige quote executável. Proxies só entram com opção explícita e nunca contam como validação de execução live.
@@ -41,18 +52,17 @@ Para uma ação de wallet:
 
 1. a ação precisa satisfazer `observed_at >= chain_time`;
 2. `decision_ready_at = wallet_observed_at + decision_delay_seconds`;
-3. um quote só pode entrar se `quote.observed_at >= decision_ready_at`;
-4. o quote precisa chegar dentro de `max_quote_wait_seconds`;
-5. `quote.observed_at - quote.market_time` precisa respeitar `max_quote_age_seconds`;
-6. por padrão o quote precisa estar marcado como executável;
-7. slippage é aplicado contra o replay: compra paga acima do market quote e venda recebe abaixo.
-
-Essas regras evitam transformar sincronização posterior, candle histórico ou quote atrasado em fill artificialmente favorável.
+3. quote precisa ser do mesmo token **e do mesmo lado**;
+4. um quote só pode entrar se `quote.observed_at >= decision_ready_at`;
+5. o quote precisa chegar dentro de `max_quote_wait_seconds`;
+6. `quote.observed_at - quote.market_time` precisa respeitar `max_quote_age_seconds`;
+7. por padrão o quote precisa estar marcado como executável;
+8. slippage é aplicado contra o replay: compra paga acima do market quote e venda recebe abaixo.
 
 ## Componentes
 
 - `src/causal_quotes.py`: modelo, validação e seleção do primeiro quote causal elegível;
-- `src/causal_quote_store.py`: persistência SQLite idempotente;
+- `src/causal_quote_store.py`: persistência SQLite idempotente, incluindo direção e metadados de rota;
 - `src/wallet_causal_replay.py`: replay por ação e métricas agregadas;
 - `causal_quote_ingest.py`: importador JSONL offline para snapshots já coletados;
 - `wallet_causal_replay.py`: CLI de avaliação sobre ações forward + quotes persistidos.
@@ -65,12 +75,7 @@ A CLI avalia, por padrão:
 0s, 15s, 30s, 60s, 120s
 ```
 
-O atraso acima é **adicional ao atraso real de detecção** já presente em `wallet_observed_at - chain_time`. Assim o relatório consegue separar:
-
-- atraso da fonte/on-chain até nossa detecção;
-- atraso de decisão configurado;
-- espera pelo quote;
-- atraso total `chain_time -> quote_observed_at`.
+O atraso acima é **adicional ao atraso real de detecção** já presente em `wallet_observed_at - chain_time`.
 
 ## Uso offline
 
@@ -86,8 +91,6 @@ Para diagnóstico com proxies explicitamente marcados como não executáveis:
 python wallet_causal_replay.py --allow-proxy-quotes
 ```
 
-Esse segundo modo é somente pesquisa de cobertura/timing. Não deve ser apresentado como evidência de preço executável.
-
 Um arquivo JSONL externo também pode ser validado/importado:
 
 ```powershell
@@ -95,13 +98,13 @@ python causal_quote_ingest.py quotes.jsonl --dry-run
 python causal_quote_ingest.py quotes.jsonl
 ```
 
-Formato mínimo por linha:
+Exemplo de quote executável de compra:
 
 ```json
-{"quote_key":"provider:id","token_mint":"...","market_time":123,"observed_at":124,"price_usd":0.01,"source":"provider_name","executable":true,"resolution_seconds":1}
+{"quote_key":"provider:id","token_mint":"TOKEN","side":"buy","market_time":123,"observed_at":124,"price_usd":0.01,"source":"provider_name","executable":true,"resolution_seconds":1,"input_mint":"USDC","output_mint":"TOKEN","input_amount_raw":"1000000","output_amount_raw":"100000000","route_id":"request-or-route-id"}
 ```
 
-`liquidity_usd` é opcional.
+`liquidity_usd`, amounts raw e `route_id` são metadados adicionais; para `executable=true`, a direção `input_mint/output_mint` é obrigatória.
 
 ## O que v1 não faz
 
@@ -115,4 +118,4 @@ Formato mínimo por linha:
 
 ## Próximo estágio
 
-A próxima peça necessária é um coletor de **quotes realmente utilizáveis/executáveis**, persistindo `market_time`, `observed_at`, preço, liquidez/route context e fonte. Só depois faz sentido promover o replay de observabilidade para replay de edge/PnL e, posteriormente, shadow execution.
+A próxima peça necessária é um coletor de **route quotes realmente utilizáveis**, persistindo direção, `market_time`, `observed_at`, preço normalizado e contexto de rota. Só depois faz sentido promover o replay de observabilidade para replay de edge/PnL e, posteriormente, ativar um shadow runner.
