@@ -22,9 +22,13 @@ class OnchainWalletProfile:
     multi_action_token_share_pct: float
     scale_in_token_share_pct: float
     partial_exit_token_share_pct: float
+    multi_sell_without_reentry_token_share_pct: float
     reentry_token_share_pct: float
     median_first_exit_seconds: float | None
     median_roundtrip_span_seconds: float | None
+    median_same_token_sell_gap_seconds: float | None
+    same_token_sell_gap_over_1h_share_pct: float
+    median_reentry_gap_seconds: float | None
     median_swap_gap_seconds: float | None
     dex_mix: dict[str, int]
     sample_grade: str
@@ -53,6 +57,8 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
     A roundtrip is counted only when at least one observed sell occurs after the first
     observed buy for that token; sell-before-buy activity can represent inventory opened
     before the synchronized window and must not be treated as a completed local roundtrip.
+    Multiple observed sells are kept separate from reentries so the report does not label
+    every multi-sell token as a deliberate staged exit.
     """
     clean = [
         item
@@ -70,9 +76,12 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         per_token.setdefault(str(item["token_mint"]), []).append(item)
 
     roundtrips = multi_action = scale_in = partial_exit = reentry = 0
+    multi_sell_without_reentry = 0
     buy_only = sell_only = sell_before_first_buy = 0
     first_exit_durations: list[float] = []
     roundtrip_spans: list[float] = []
+    same_token_sell_gaps: list[float] = []
+    reentry_gaps: list[float] = []
     action_counts: list[float] = []
 
     for token_swaps in per_token.values():
@@ -110,10 +119,24 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         ]
         if len(buys_before_first_sell) >= 2:
             scale_in += 1
+
         if len(sells_after_first_buy) >= 2:
             partial_exit += 1
-        if any(int(item["block_time"]) > first_sell_at for item in buys):
+            sell_times = [int(item["block_time"]) for item in sells_after_first_buy]
+            same_token_sell_gaps.extend(
+                float(current - previous)
+                for previous, current in zip(sell_times, sell_times[1:])
+                if current >= previous
+            )
+
+        reentries = [
+            item for item in buys if int(item["block_time"]) > first_sell_at
+        ]
+        if reentries:
             reentry += 1
+            reentry_gaps.append(float(int(reentries[0]["block_time"]) - first_sell_at))
+        elif len(sells_after_first_buy) >= 2:
+            multi_sell_without_reentry += 1
 
     times = [int(item["block_time"]) for item in clean]
     gaps = [
@@ -161,9 +184,20 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         multi_action_token_share_pct=_pct(multi_action, token_count),
         scale_in_token_share_pct=_pct(scale_in, roundtrips),
         partial_exit_token_share_pct=_pct(partial_exit, roundtrips),
+        multi_sell_without_reentry_token_share_pct=_pct(
+            multi_sell_without_reentry, roundtrips
+        ),
         reentry_token_share_pct=_pct(reentry, roundtrips),
         median_first_exit_seconds=median(first_exit_durations) if first_exit_durations else None,
         median_roundtrip_span_seconds=median(roundtrip_spans) if roundtrip_spans else None,
+        median_same_token_sell_gap_seconds=(
+            median(same_token_sell_gaps) if same_token_sell_gaps else None
+        ),
+        same_token_sell_gap_over_1h_share_pct=_pct(
+            sum(gap >= 3_600 for gap in same_token_sell_gaps),
+            len(same_token_sell_gaps),
+        ),
+        median_reentry_gap_seconds=median(reentry_gaps) if reentry_gaps else None,
         median_swap_gap_seconds=median(gaps) if gaps else None,
         dex_mix=dict(dex_mix.most_common()),
         sample_grade=_sample_grade(len(clean)),
