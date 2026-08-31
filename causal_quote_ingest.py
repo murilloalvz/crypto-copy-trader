@@ -10,19 +10,32 @@ from src.database import initialize_database
 
 def _parse_quote(payload: dict, *, fallback_key: str) -> tuple[str, CausalQuoteObservation]:
     quote_key = str(payload.get("quote_key") or fallback_key).strip()
+    executable = payload["executable"]
+    if not isinstance(executable, bool):
+        raise ValueError("executable precisa ser boolean JSON (true/false)")
     quote = CausalQuoteObservation(
         token_mint=str(payload["token_mint"]).strip(),
+        side=str(payload["side"]).strip(),
         market_time=int(payload["market_time"]),
         observed_at=int(payload["observed_at"]),
         price_usd=float(payload["price_usd"]),
         source=str(payload["source"]).strip(),
-        executable=bool(payload["executable"]),
+        executable=executable,
         resolution_seconds=int(payload.get("resolution_seconds", 1)),
         liquidity_usd=(
             float(payload["liquidity_usd"])
             if payload.get("liquidity_usd") is not None
             else None
         ),
+        input_mint=(str(payload["input_mint"]).strip() if payload.get("input_mint") else None),
+        output_mint=(str(payload["output_mint"]).strip() if payload.get("output_mint") else None),
+        input_amount_raw=(
+            str(payload["input_amount_raw"]) if payload.get("input_amount_raw") is not None else None
+        ),
+        output_amount_raw=(
+            str(payload["output_amount_raw"]) if payload.get("output_amount_raw") is not None else None
+        ),
+        route_id=(str(payload["route_id"]).strip() if payload.get("route_id") else None),
     )
     validate_causal_quote(quote)
     return quote_key, quote
