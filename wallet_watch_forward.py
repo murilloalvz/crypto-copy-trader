@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     for address in addresses:
         add_wallet(address, "Forward Wallet Watch")
 
-    print("Crypto Copy Trader — Forward Wallet Watch v1")
+    print("Crypto Copy Trader — Forward Wallet Watch v2")
     print("Modo: RESEARCH / READ ONLY — Solana RPC, sem ordens e sem Tracker Data API.")
     print(
         f"Wallets: {len(addresses)} | polling {args.interval_seconds}s | "
@@ -112,9 +112,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[bootstrap] {address[:10]}… RPC falhou: {exc}", file=sys.stderr)
         known[address] = load_known_wallet_signatures(address)
 
+    # Strict causal boundary independent from signature hydration. If an old transaction failed
+    # to hydrate during bootstrap and becomes readable later, it remains historical rather than
+    # being mislabeled as a live forward action.
+    forward_started_at = int(time.time())
     started = time.monotonic()
     deadline = started + args.hours * 3_600
-    cycles = sync_failures = recorded_actions = ignored_rows = 0
+    cycles = sync_failures = recorded_actions = ignored_rows = prestart_ignored = 0
+    print(f"Forward causal boundary (chain_time >=): {forward_started_at}")
 
     try:
         while time.monotonic() < deadline:
@@ -135,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                         address,
                         known_signatures=previous,
                         observed_at=observed_at,
+                        not_before_chain_time=forward_started_at,
                     )
                 except ValueError as exc:
                     sync_failures += 1
@@ -148,12 +154,14 @@ def main(argv: list[str] | None = None) -> int:
                 known[address] = set(capture.known_signatures)
                 recorded_actions += capture.recorded_action_count
                 ignored_rows += capture.ignored_new_transaction_count
+                prestart_ignored += capture.prestart_new_transaction_count
                 if capture.new_transaction_count or result["failed"]:
                     print(
                         f"[cycle {cycles}] {address[:10]}… novos tx "
                         f"{capture.new_transaction_count} | ações forward "
                         f"{capture.recorded_action_count} | ignorados "
-                        f"{capture.ignored_new_transaction_count} | RPC falhas {result['failed']}"
+                        f"{capture.ignored_new_transaction_count} | pré-início "
+                        f"{capture.prestart_new_transaction_count} | RPC falhas {result['failed']}"
                     )
 
             remaining = deadline - time.monotonic()
@@ -171,8 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     print("RESUMO")
     print(
         f"Ciclos: {cycles} | ações forward persistidas: {recorded_actions} | "
-        f"linhas novas ignoradas: {ignored_rows} | falhas de sync/capture: {sync_failures} | "
-        f"falhas no bootstrap: {bootstrap_failures}"
+        f"linhas novas ignoradas: {ignored_rows} | pré-início bloqueadas: {prestart_ignored} | "
+        f"falhas de sync/capture: {sync_failures} | falhas no bootstrap: {bootstrap_failures}"
     )
     print(
         "Estas observações podem alimentar Opportunity Intelligence porque preservam chain_time "
