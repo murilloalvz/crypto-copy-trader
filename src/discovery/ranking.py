@@ -38,7 +38,7 @@ REJECTION_LABELS = {
     "too_few_realized_outcomes": "menos de 5 resultados realizados",
     "too_few_tokens": "menos de 3 tokens no período",
     "inactive_7d": "nenhum trade nos últimos 7 dias",
-    "too_few_trading_days": "menos de 3 dias ativos em 30d",
+    "too_few_trading_days": "menos de 10 dias ativos em 30d",
     "last_trade_unavailable": "data do último trade indisponível",
     "last_trade_too_old": "último trade há mais de 7 dias",
     "pnl_mode_not_strict": "PnL da fonte não está em modo estrito",
