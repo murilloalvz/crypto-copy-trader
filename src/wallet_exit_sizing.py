@@ -13,6 +13,7 @@ class ExitSizingObservation:
     total_sold_fraction_pct: float
     observed_runner_after_first_sell_pct: float
     quantity_anomaly: bool
+    coverage_class: str
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,11 @@ class ExitSizingSummary:
     first_sell_below_50_share_pct: float
     multi_sell_share_pct: float
     quantity_anomaly_share_pct: float
+    complete_like_count: int
+    partial_or_open_count: int
+    complete_multi_sell_count: int
+    median_complete_multi_first_sell_fraction_pct: float | None
+    median_complete_multi_runner_pct: float | None
 
 
 def _median(values: list[float]) -> float | None:
@@ -33,6 +39,16 @@ def _median(values: list[float]) -> float | None:
 
 def _share(values: list[bool]) -> float:
     return 100.0 * sum(values) / len(values) if values else 0.0
+
+
+def _coverage_class(total_fraction: float) -> str:
+    # This is deliberately descriptive, not a claim that the position really closed.
+    # Swap-only inventory can be distorted by transfers, token mechanics or incomplete backfill.
+    if total_fraction > 105.0:
+        return "quantity_anomaly"
+    if total_fraction >= 90.0:
+        return "complete_like"
+    return "partial_or_open"
 
 
 def analyze_exit_sizing(swaps: list[dict]) -> list[ExitSizingObservation]:
@@ -108,6 +124,7 @@ def analyze_exit_sizing(swaps: list[dict]) -> list[ExitSizingObservation]:
                 total_sold_fraction_pct=total_fraction,
                 observed_runner_after_first_sell_pct=runner,
                 quantity_anomaly=anomaly,
+                coverage_class=_coverage_class(total_fraction),
             )
         )
 
@@ -120,6 +137,9 @@ def summarize_exit_sizing(
 ) -> ExitSizingSummary:
     rows = list(observations)
     multi = [item for item in rows if item.sell_count >= 2]
+    complete = [item for item in rows if item.coverage_class == "complete_like"]
+    partial = [item for item in rows if item.coverage_class == "partial_or_open"]
+    complete_multi = [item for item in complete if item.sell_count >= 2]
     return ExitSizingSummary(
         token_count=len(rows),
         multi_sell_token_count=len(multi),
@@ -133,4 +153,13 @@ def summarize_exit_sizing(
         ),
         multi_sell_share_pct=_share([item.sell_count >= 2 for item in rows]),
         quantity_anomaly_share_pct=_share([item.quantity_anomaly for item in rows]),
+        complete_like_count=len(complete),
+        partial_or_open_count=len(partial),
+        complete_multi_sell_count=len(complete_multi),
+        median_complete_multi_first_sell_fraction_pct=_median(
+            [item.first_sell_fraction_pct for item in complete_multi]
+        ),
+        median_complete_multi_runner_pct=_median(
+            [item.observed_runner_after_first_sell_pct for item in complete_multi]
+        ),
     )
