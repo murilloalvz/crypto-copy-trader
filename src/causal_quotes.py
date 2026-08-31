@@ -78,6 +78,7 @@ def select_first_causal_quote(
         return CausalQuoteSelection(None, "no_quotes_for_token")
 
     saw_after_ready = False
+    saw_in_window = False
     saw_executable = False
     saw_fresh = False
     deadline = ready_at + max_quote_wait_seconds
@@ -88,6 +89,7 @@ def select_first_causal_quote(
         saw_after_ready = True
         if quote.observed_at > deadline:
             break
+        saw_in_window = True
         if require_executable and not quote.executable:
             continue
         saw_executable = True
@@ -99,8 +101,10 @@ def select_first_causal_quote(
 
     if not saw_after_ready:
         return CausalQuoteSelection(None, "no_quote_after_decision")
+    if not saw_in_window:
+        return CausalQuoteSelection(None, "no_quote_within_wait_window")
     if require_executable and not saw_executable:
         return CausalQuoteSelection(None, "no_executable_quote_in_window")
     if not saw_fresh:
         return CausalQuoteSelection(None, "no_fresh_quote_in_window")
-    return CausalQuoteSelection(None, "no_quote_within_wait_window")
+    return CausalQuoteSelection(None, "no_eligible_quote")
