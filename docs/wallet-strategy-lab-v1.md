@@ -93,10 +93,12 @@ A similaridade compara apenas dimensões informativas entre holding, exit, reent
 A gate `fingerprint_evidence_ready` é somente de cobertura. Ela exige:
 
 - amostra on-chain diferente de `INSUFFICIENT`;
+- pelo menos **10 tokens observados**, para reduzir o risco de chamar um único episódio/token de "estratégia da wallet";
 - pelo menos 50% de roundtrips observados;
 - pelo menos três ciclos de sizing complete-like;
 - ausência de `sequence_coverage_low`;
 - ausência de `short_observation_window`;
+- ausência de `strategy_token_sample_too_small`;
 - ausência de `exit_sizing_sample_too_small`;
 - ausência de `exit_sizing_quantity_anomalies`.
 
@@ -134,7 +136,8 @@ Também é possível usar `--file` e `--json`.
 5. `staged_exit_dominant` exige pelo menos três ciclos de sizing complete-like e evidência repetida de múltiplas vendas; ainda assim descreve a amostra, não intenção.
 6. Similaridade de fingerprint não é evidência de edge.
 7. Intensidade por dia ativo mede somente dias realmente observados; não é uma taxa econômica garantida em calendário completo.
-8. Nenhum fingerprint modifica automaticamente o bot.
+8. Muitos swaps concentrados em menos de 10 tokens continuam úteis descritivamente, mas não bastam para declarar um padrão cross-token pronto para comparação forte.
+9. Nenhum fingerprint modifica automaticamente o bot.
 
 ## Próxima sequência de validação
 
