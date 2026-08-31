@@ -69,7 +69,7 @@ Padrões de assinatura recebem graus de recorrência:
 - `SINGLE_WALLET`: visto em uma wallet;
 - `REPEATED_LOW_COVERAGE`: repetiu, mas menos de duas wallets têm cobertura mínima;
 - `MULTI_WALLET_PRELIMINARY`: pelo menos duas wallets com cobertura mínima compartilham a assinatura;
-- `MULTI_WALLET_BROADER_SUPPORT`: assinatura presente em cinco ou mais wallets, com pelo menos duas coberturas mínimas.
+- `MULTI_WALLET_BROADER_SUPPORT`: pelo menos cinco wallets com cobertura mínima compartilham a assinatura.
 
 Esses nomes descrevem **recorrência comportamental**, não performance.
 
