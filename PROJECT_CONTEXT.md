@@ -13,6 +13,8 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - Solana RPC público: Wallet Forward Watch.
 - Jupiter Swap V2 `GET /order`: integração read-only implementada e smoke real concluído fora da rede escolar.
 - Rede escolar apresentou TLS/certificado raiz não confiável para Jupiter; não usar para coletas longas.
+- Em 2026-08-31 existe uma coleta Wallet + Jupiter de 6h já em execução no PC do usuário. Ela começou antes do runtime v2 e deve ser preservada como `wallet_forward_runtime_v1_unversioned`; **não reiniciar nem reclassificar retroativamente**.
+- Última suíte completa confirmada no GitHub após as mudanças de Wallet Forward v2: **357 testes aprovados, zero falhas**, além de `compileall` aprovado. O workflow seguinte, apenas documental, também concluiu com sucesso.
 
 ## Regra central de validação
 
@@ -54,15 +56,40 @@ Código funcionando não prova edge. Backtest positivo não libera live. Nenhuma
 - `wallet_watch_forward.py`: coletor RPC.
 - Wallet Intelligence não altera a Wave atual.
 
+### Wallet Forward runtime v2 / observabilidade causal
+
+- Runtime atual para **novas** coletas: `wallet_forward_runtime_v2_causal_boundary`.
+- Manifests anteriores são migrados explicitamente para `wallet_forward_runtime_v1_unversioned`; abrir banco antigo com código novo não falsifica a versão que gerou os dados.
+- O collector v2 congela `not_before_chain_time` depois do bootstrap. Uma transação histórica que só consiga ser hidratada posteriormente não vira observação forward se seu `chain_time` for anterior à fronteira.
+- `prestart_new_transaction_count` torna essa exclusão auditável.
+- `wallet_forward_integrity.py` audita runs sem apagar/reclassificar linhas: `observed_at` pré-run, `chain_time` pré-run, lag negativo, source lag >5m/>1h e p50/p95/max.
+- Labels de integridade: `CAUSAL_BOUNDARY_CLEAN`, `PRESTART_CHAIN_CAUTION`, `STALE_SOURCE_CAUTION`, `STALE_SOURCE_CRITICAL`, `CAUSAL_BOUNDARY_FAILED`.
+- `wallet_forward_runs` persiste `runtime_version` e `quote_intake_grace_seconds`.
+- Em novas runs, `end_observation_id` é congelado quando o Wallet Watch termina, antes do drain de quotes, evitando que o escopo de ações aumente apenas porque o Quote Watch continua trabalhando.
+- `wallet_forward_experiment.py` v2 adiciona grace de intake de pelo menos um ciclo (`max(5s, interval+5s)`; 35s em polling de 30s) para reduzir corrida no último ciclo.
+
 ### Causal Quote / Jupiter / Replay
 
 - `src/jupiter_swap_v2.py`: cliente read-only para `/swap/v2/order`; não implementa `/execute`.
 - `src/causal_quotes.py` + `src/causal_quote_store.py`: quotes causais BUY/SELL e metadados de rota.
 - `src/wallet_quote_watch.py`: agenda quotes +0/+15/+30/+60/+120s após BUY forward e persiste sucesso **e falha**.
+- O Quote Watch v2 congela `MAX(id)`, lê exatamente `(cursor, MAX]`, só então avança o cursor e faz uma varredura final bounded antes do drain.
+- `src/wallet_quote_completeness.py` + `wallet_quote_completeness.py` reconstroem o denominador esperado `BUY causal × delays congelados`, mantendo probes nunca iniciados explicitamente como missing em vez de apagá-los da análise.
 - `src/wallet_causal_replay.py`: replay sem lookahead, usando apenas quotes disponíveis depois de detecção + delay.
 - `wallet_forward_experiment.py`: orquestra Wallet Watch + Quote Watch.
-- `wallet_forward_checkpoint.py`: checkpoint run-scoped, BUY-only para entry feasibility e quotes ligados ao evento que os originou.
+- `wallet_forward_checkpoint.py`: checkpoint run-scoped, BUY-only para entry feasibility e quotes ligados ao evento exato que os originou.
+- `src/wallet_quote_drift.py` + `wallet_quote_drift.py`: compara cada quote atrasada somente com o +0 do **mesmo BUY**, reportando cobertura pareada, adverse drift p50/p95, extremos, atraso do request e mudança de rota.
+- Drift positivo significa preço pior para copiar (BUY mais caro; SELL mais barato quando essa trilha existir). É diagnóstico de rota/latência, não retorno futuro.
 - Quote-only é proxy causal de preço/rota; transação montada também não prova landing/fill.
+
+### Multi-wallet convergence
+
+- `src/wallet_forward_convergence.py` + `wallet_forward_convergence.py`: detecta convergência causal de BUYs da mesma run.
+- Regra exploratória padrão: janela 300s, threshold >=2 wallets BUY únicas e cooldown 1800s/token.
+- Usa `observed_at`; uma transação descoberta depois não confirma retrospectivamente o passado.
+- O evento nasce apenas quando o BUY atual faz a contagem de wallets únicas cruzar o threshold.
+- O `trigger_observation_key` liga a convergência às próprias attempts Jupiter do BUY que fechou o threshold.
+- Convergência é feature/variável de pesquisa; não é edge, não cria sinal e não substitui target x placebo pré-período.
 
 ### Rejection Intelligence
 
@@ -98,7 +125,7 @@ Código funcionando não prova edge. Backtest positivo não libera live. Nenhuma
 - Target/placebos devem ser escolhidos com dados pré-período e avaliados no mesmo universo/relógio de oportunidades.
 - Comparação mantém pending/failed/missing no denominador e reporta target menos mediana dos placebos.
 - Labels são apenas `NO_COMPARABLE_OUTCOMES`, `DESCRIPTIVE_LOW_COVERAGE` e `DESCRIPTIVE_PLACEBO_COMPARISON`; não existe `edge_proven`.
-- As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquéti​pos, não uma cesta econômica já validada.
+- As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquétipos, não uma cesta econômica já validada.
 - Universo local atual ainda é insuficiente para congelar um placebo study economicamente sério; infraestrutura pronta não significa evidência pronta.
 
 ### Social / Opportunity Intelligence
@@ -190,29 +217,33 @@ Smoke integrado ~3min:
 - zero ações forward porque as wallets não operaram;
 - run `COMPLETED`; checkpoint retornou `SEM AMOSTRA` corretamente.
 
-Status:
+Status antes da coleta longa:
 
 - orquestração/manifest/bootstrap/RPC/checkpoint: **VALIDADO OPERACIONALMENTE em smoke curto**;
 - evento real `Wallet BUY -> detector -> Jupiter -> persistência -> causal replay`: **AGUARDANDO AMOSTRA**;
-- coleta de 6h em internet estável: liberada tecnicamente e pendente.
+- coleta de 6h em internet estável iniciada em 2026-08-31 pelo runtime anterior e atualmente **EM TESTE**.
 
-Comando preferido:
+A coleta longa em andamento deve terminar com o código que a iniciou. Os commits v2 remotos não alteram o processo já aberto e não justificam reinício.
 
-```powershell
-python wallet_forward_experiment.py `
-  --file wallets/forward-watch-archetypes-2026-08-31.txt `
-  --hours 6 `
-  --interval-seconds 30 `
-  --with-jupiter-quotes
-```
-
-Depois:
+Após o término da coleta de 6h e **somente depois de preservar o output final**, atualizar a branch local e auditar nesta ordem:
 
 ```powershell
+python wallet_forward_integrity.py
+python wallet_quote_completeness.py
 python wallet_forward_checkpoint.py
+python wallet_forward_convergence.py
+python wallet_quote_drift.py
 python evaluate_wallet_forward.py
 python evaluate_wallet_quotes.py
 ```
+
+Interpretação esperada:
+
+- `wallet_forward_integrity.py`: determina se a run v1 permaneceu causalmente limpa ou contém sinais de backfill stale;
+- `wallet_quote_completeness.py`: mede probes esperados versus realmente tentados, inclusive os que não ganharam uma linha de attempt;
+- `wallet_forward_checkpoint.py`: consolida wallet latency, quote coverage, replay causal, convergence e route drift;
+- convergence/drift são descritivos e não promovem edge;
+- a run só pode sustentar decisão posterior se missingness, causalidade e timing forem aceitáveis.
 
 ## Pesquisa externa incorporada como priors
 
@@ -223,7 +254,9 @@ Documentos principais:
 - `docs/rejection-intelligence-v1.md`;
 - `docs/market-integrity-v1.md`;
 - `docs/wallet-confirmation-placebo-v1.md`;
-- `docs/wallet-placebo-matching-v1.md`.
+- `docs/wallet-placebo-matching-v1.md`;
+- `docs/wallet-forward-convergence-v1.md`;
+- `docs/wallet-forward-runtime-v2.md`.
 
 Priors atuais:
 
@@ -265,6 +298,8 @@ Não é necessário terminar Wave + Wallet + Social para o primeiro canary; bast
 - GeckoTerminal possui missingness, distant candles e rate limit.
 - RPC polling não é streaming; ultra-fast wallets podem não ser copiáveis.
 - Jupiter quote-only não é fill.
+- Runs Wallet Forward v1 podem conter risco de late-hydrated pre-start backfill; a auditoria de integridade torna isso visível, e runtime v2 bloqueia prospectivamente.
+- Runs Wallet Forward v1 podem ter probes nunca tentados ausentes da tabela de attempts; Quote Completeness reconstrói o denominador esperado.
 - candles 1m não resolvem ordem intraminuto de TP/SL/trailing.
 - fingerprints podem refletir inventário preexistente/cobertura parcial.
 - realized PnL pode esconder perdas não realizadas.
@@ -275,15 +310,16 @@ Não é necessário terminar Wave + Wallet + Social para o primeiro canary; bast
 
 ## Próximas prioridades
 
-1. Rodar/auditar as 6h Wallet + Jupiter em internet estável.
-2. Fazer causal replay com latência/custos nos BUYs realmente observados.
-3. Usar `market_integrity_lab.py` para caracterizar accepted/rejected snapshots existentes sem criar novos gates.
-4. Quando Tracker voltar, continuar Wave v3 congelada + Rejection Intelligence prospectivo.
-5. Ampliar Wallet Strategy Intelligence e formar target/placebos usando somente pré-período.
-6. Quando houver universo suficiente, pré-registrar o primeiro `wave_opportunity_v1` no registry e só então iniciar outcomes.
-7. Avançar anti-manipulação para microestrutura/grafo apenas quando houver dados que suportem isso.
-8. Promover a primeira candidata para shadow somente com critério pré-declarado.
-9. Construir execução real/risk controls depois de uma candidata passar o gate de evidência.
+1. **Não interferir** na coleta Wallet + Jupiter de 6h já em andamento.
+2. Ao término, preservar output e auditar causalidade, quote completeness, latency, convergence, route drift e replay antes de qualquer interpretação econômica.
+3. Se a run v1 estiver causalmente limpa e tiver BUYs, usar seus dados como primeiro checkpoint real `Wallet BUY -> Jupiter -> replay`; se estiver contaminada, manter o diagnóstico e repetir futuramente com runtime v2 sem apagar a evidência ruim.
+4. Fazer causal replay/cost stress apenas nos BUYs realmente observados e com quotes do mesmo evento.
+5. Usar `market_integrity_lab.py` para caracterizar accepted/rejected snapshots existentes sem criar novos gates.
+6. Quando Tracker voltar, continuar Wave v3 congelada + Rejection Intelligence prospectivo.
+7. Ampliar Wallet Strategy Intelligence e formar target/placebos usando somente pré-período.
+8. Quando houver universo suficiente, pré-registrar o primeiro estudo de Wallet Confirmation e só então iniciar outcomes.
+9. Avançar anti-manipulação para microestrutura/grafo apenas quando houver dados que suportem isso.
+10. Promover a primeira candidata para shadow somente com critério pré-declarado; execução real/risk controls vêm depois do gate de evidência.
 
 ## Regra para handoffs
 
