@@ -53,6 +53,40 @@ holding | exit | reentry | frequency
 
 Ela é um agrupamento determinístico de pesquisa, não uma classe econômica definitiva e não um score de qualidade.
 
+## Comparação cross-wallet
+
+`src/wallet_strategy_compare.py` e `wallet_strategy_compare.py` separam duas perguntas diferentes:
+
+1. **as fingerprints se parecem?**
+2. **a evidência local de cada wallet é suficiente para levar essa semelhança a sério?**
+
+A similaridade compara apenas dimensões informativas entre holding, exit, reentry e frequency. Amostras vazias ou dimensões desconhecidas não são tratadas como coincidência.
+
+A gate `fingerprint_evidence_ready` é somente de cobertura. Ela exige amostra on-chain não insuficiente, pelo menos 50% de roundtrips observados e pelo menos três ciclos de sizing complete-like. Ela **não** mede PnL e não diz que a wallet deve ser copiada.
+
+Padrões de assinatura recebem graus de recorrência:
+
+- `SINGLE_WALLET`: visto em uma wallet;
+- `REPEATED_LOW_COVERAGE`: repetiu, mas menos de duas wallets têm cobertura mínima;
+- `MULTI_WALLET_PRELIMINARY`: pelo menos duas wallets com cobertura mínima compartilham a assinatura;
+- `MULTI_WALLET_BROADER_SUPPORT`: assinatura presente em cinco ou mais wallets, com pelo menos duas coberturas mínimas.
+
+Esses nomes descrevem **recorrência comportamental**, não performance.
+
+### Comparar wallets já presentes no SQLite
+
+```powershell
+python wallet_strategy_compare.py --all-local --min-swaps 20
+```
+
+Ou explicitamente:
+
+```powershell
+python wallet_strategy_compare.py WALLET_A WALLET_B WALLET_C
+```
+
+Também é possível usar `--file` e `--json`.
+
 ## Guardrails
 
 1. O laboratório não calcula PnL a partir do RPC puro.
@@ -60,7 +94,8 @@ Ela é um agrupamento determinístico de pesquisa, não uma classe econômica de
 3. A amostra local pode começar depois de uma posição já existir.
 4. Transferências, token mechanics e backfill incompleto podem distorcer sizing.
 5. `staged_exit_dominant` exige pelo menos três ciclos de sizing complete-like e evidência repetida de múltiplas vendas; ainda assim descreve a amostra, não intenção.
-6. Nenhum fingerprint modifica automaticamente o bot.
+6. Similaridade de fingerprint não é evidência de edge.
+7. Nenhum fingerprint modifica automaticamente o bot.
 
 ## Próxima sequência de validação
 
