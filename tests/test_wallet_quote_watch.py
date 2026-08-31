@@ -10,6 +10,7 @@ from src.wallet_forward_observations import record_wallet_forward_observation
 from src.wallet_quote_watch import (
     latest_forward_observation_id,
     load_forward_buys_after,
+    load_successful_quote_keys_by_event,
     quote_attempt_exists,
     record_quote_attempt,
     schedule_buy_quotes,
@@ -110,6 +111,40 @@ class WalletQuoteWatchTests(unittest.TestCase):
                         completed_at=122,
                         status="success",
                     )
+
+    def test_successful_quote_keys_are_grouped_by_exact_source_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "attempts.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_wallet_forward_observation(
+                    WalletActionObservation("A", "T", "buy", 100, 120),
+                    observation_key="buy-a",
+                )
+                record_wallet_forward_observation(
+                    WalletActionObservation("B", "T", "buy", 101, 121),
+                    observation_key="buy-b",
+                )
+                probes = schedule_buy_quotes(
+                    load_forward_buys_after(0), delays_seconds=[0, 15]
+                )
+                for probe in probes:
+                    record_quote_attempt(
+                        probe,
+                        requested_at=probe.target_at,
+                        completed_at=probe.target_at + 1,
+                        status="success",
+                        quote_key=probe.quote_key,
+                    )
+
+                grouped = load_successful_quote_keys_by_event(["buy-a"])
+                both = load_successful_quote_keys_by_event(["buy-a", "buy-b"])
+                empty = load_successful_quote_keys_by_event([])
+
+        self.assertEqual(set(grouped), {"buy-a"})
+        self.assertEqual(len(grouped["buy-a"]), 2)
+        self.assertEqual(set(both), {"buy-a", "buy-b"})
+        self.assertEqual(len(both["buy-b"]), 2)
+        self.assertEqual(empty, {})
 
     def test_negative_delay_is_rejected(self):
         with self.assertRaises(ValueError):
