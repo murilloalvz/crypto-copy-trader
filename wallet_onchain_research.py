@@ -93,8 +93,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Ações por token (mediana): {profile.median_actions_per_token:.1f}")
     print(f"Tokens multi-ação: {profile.multi_action_token_share_pct:.1f}%")
     print(f"Scale-in entre roundtrips: {profile.scale_in_token_share_pct:.1f}%")
-    print(f"Saída em múltiplas vendas entre roundtrips: {profile.partial_exit_token_share_pct:.1f}%")
-    print(f"Reentrada após primeira venda entre roundtrips: {profile.reentry_token_share_pct:.1f}%")
+    print(f"Múltiplas vendas entre roundtrips: {profile.partial_exit_token_share_pct:.1f}%")
+    print(
+        "Múltiplas vendas sem reentrada: "
+        f"{profile.multi_sell_without_reentry_token_share_pct:.1f}%"
+    )
+    print(
+        "Gap entre vendas do mesmo token (mediana): "
+        f"{_duration(profile.median_same_token_sell_gap_seconds)} | "
+        f">=1h: {profile.same_token_sell_gap_over_1h_share_pct:.1f}%"
+    )
+    print(
+        "Reentrada após primeira venda entre roundtrips: "
+        f"{profile.reentry_token_share_pct:.1f}% | "
+        f"gap mediano: {_duration(profile.median_reentry_gap_seconds)}"
+    )
     print(f"Primeira saída após primeira compra (mediana): {_duration(profile.median_first_exit_seconds)}")
     print(f"Span compra→última venda observada (mediana): {_duration(profile.median_roundtrip_span_seconds)}")
     print(f"Gap global entre swaps (mediana): {_duration(profile.median_swap_gap_seconds)}")
@@ -111,7 +124,9 @@ def main(argv: list[str] | None = None) -> int:
     print("LIMITAÇÃO IMPORTANTE")
     print(
         "Este relatório descreve sequência on-chain observada. Sem os dados enriquecidos da Data API, "
-        "ele não afirma PnL, ROI, liquidez histórica nem qualidade da entrada."
+        "ele não afirma PnL, ROI, liquidez histórica nem qualidade da entrada. "
+        "Múltiplas vendas são observações de sequência; o espaçamento temporal ajuda a distinguir "
+        "saída escalonada de simples fragmentação, mas não prova a intenção da wallet."
     )
     return 0
 
