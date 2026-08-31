@@ -174,6 +174,8 @@ def build_wallet_strategy_fingerprint(
         dominant_dex_share_pct = 100.0 * dominant_count / profile.swap_count
 
     flags = list(profile.flags)
+    if profile.token_count < 10:
+        flags.append("strategy_token_sample_too_small")
     if sizing.token_count < 5:
         flags.append("exit_sizing_sample_too_small")
     if sizing.quantity_anomaly_share_pct > 10.0:
