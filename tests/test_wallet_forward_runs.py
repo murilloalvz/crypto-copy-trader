@@ -5,7 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src import database
+from src.database import connection
 from src.wallet_forward_runs import (
+    CURRENT_RUNTIME_VERSION,
+    LEGACY_RUNTIME_VERSION,
     create_wallet_forward_run,
     finish_wallet_forward_run,
     get_wallet_forward_run,
@@ -28,6 +31,7 @@ class WalletForwardRunTests(unittest.TestCase):
                     with_jupiter_quotes=True,
                     copy_size_usd=25.0,
                     quote_mode="proxy",
+                    quote_intake_grace_seconds=35,
                 )
                 finished = finish_wallet_forward_run(
                     "run-1",
@@ -42,6 +46,8 @@ class WalletForwardRunTests(unittest.TestCase):
         self.assertEqual(created.cohort, ("A", "B"))
         self.assertEqual(created.baseline_observation_id, 12)
         self.assertEqual(created.quote_delays_seconds, (0, 15, 30, 60, 120))
+        self.assertEqual(created.runtime_version, CURRENT_RUNTIME_VERSION)
+        self.assertEqual(created.quote_intake_grace_seconds, 35)
         self.assertEqual(finished.status, "COMPLETED")
         self.assertEqual(finished.end_observation_id, 18)
         self.assertEqual(loaded, finished)
@@ -134,6 +140,48 @@ class WalletForwardRunTests(unittest.TestCase):
                     finish_wallet_forward_run(
                         "run", status="COMPLETED", ended_at=20, end_observation_id=4
                     )
+
+    def test_old_manifest_schema_migrates_to_explicit_legacy_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-runs.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                with connection() as conn:
+                    conn.executescript(
+                        """
+                        CREATE TABLE wallet_forward_runs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            run_key TEXT NOT NULL UNIQUE,
+                            started_at INTEGER NOT NULL,
+                            ended_at INTEGER,
+                            baseline_observation_id INTEGER NOT NULL,
+                            end_observation_id INTEGER,
+                            cohort_json TEXT NOT NULL,
+                            interval_seconds INTEGER NOT NULL,
+                            quote_delays_json TEXT NOT NULL,
+                            with_jupiter_quotes INTEGER NOT NULL,
+                            copy_size_usd REAL NOT NULL,
+                            quote_mode TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        );
+                        INSERT INTO wallet_forward_runs(
+                            run_key, started_at, ended_at, baseline_observation_id,
+                            end_observation_id, cohort_json, interval_seconds,
+                            quote_delays_json, with_jupiter_quotes, copy_size_usd,
+                            quote_mode, status
+                        ) VALUES (
+                            'legacy', 100, 200, 0, 1, '["A"]', 30,
+                            '[0,15,30,60,120]', 1, 25.0, 'proxy', 'COMPLETED'
+                        );
+                        """
+                    )
+
+                loaded = get_wallet_forward_run("legacy")
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.runtime_version, LEGACY_RUNTIME_VERSION)
+        self.assertEqual(loaded.quote_intake_grace_seconds, 0)
 
 
 if __name__ == "__main__":
