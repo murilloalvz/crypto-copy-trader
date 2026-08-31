@@ -14,6 +14,10 @@ class OnchainWalletProfile:
     last_swap_at: int | None
     observed_span_days: float
     median_actions_per_token: float
+    roundtrip_token_count: int
+    buy_only_token_count: int
+    sell_only_token_count: int
+    sell_before_first_buy_token_count: int
     roundtrip_token_share_pct: float
     multi_action_token_share_pct: float
     scale_in_token_share_pct: float
@@ -46,6 +50,9 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
 
     This intentionally does not infer profitability, token quality or market state. It only
     summarizes the sequence that is present in the locally synchronized Solana RPC sample.
+    A roundtrip is counted only when at least one observed sell occurs after the first
+    observed buy for that token; sell-before-buy activity can represent inventory opened
+    before the synchronized window and must not be treated as a completed local roundtrip.
     """
     clean = [
         item
@@ -63,6 +70,7 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         per_token.setdefault(str(item["token_mint"]), []).append(item)
 
     roundtrips = multi_action = scale_in = partial_exit = reentry = 0
+    buy_only = sell_only = sell_before_first_buy = 0
     first_exit_durations: list[float] = []
     roundtrip_spans: list[float] = []
     action_counts: list[float] = []
@@ -73,29 +81,39 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         sells = [item for item in token_swaps if float(item["token_change"]) < 0]
         if len(token_swaps) > 2:
             multi_action += 1
+        if buys and not sells:
+            buy_only += 1
+            continue
+        if sells and not buys:
+            sell_only += 1
+            continue
         if not buys or not sells:
             continue
 
-        roundtrips += 1
         first_buy_at = int(buys[0]["block_time"])
+        if any(int(item["block_time"]) < first_buy_at for item in sells):
+            sell_before_first_buy += 1
         sells_after_first_buy = [
             item for item in sells if int(item["block_time"]) >= first_buy_at
         ]
-        if sells_after_first_buy:
-            first_sell_at = int(sells_after_first_buy[0]["block_time"])
-            last_sell_at = int(sells_after_first_buy[-1]["block_time"])
-            first_exit_durations.append(float(first_sell_at - first_buy_at))
-            roundtrip_spans.append(float(last_sell_at - first_buy_at))
+        if not sells_after_first_buy:
+            continue
 
-            buys_before_first_sell = [
-                item for item in buys if int(item["block_time"]) <= first_sell_at
-            ]
-            if len(buys_before_first_sell) >= 2:
-                scale_in += 1
-            if len(sells_after_first_buy) >= 2:
-                partial_exit += 1
-            if any(int(item["block_time"]) > first_sell_at for item in buys):
-                reentry += 1
+        roundtrips += 1
+        first_sell_at = int(sells_after_first_buy[0]["block_time"])
+        last_sell_at = int(sells_after_first_buy[-1]["block_time"])
+        first_exit_durations.append(float(first_sell_at - first_buy_at))
+        roundtrip_spans.append(float(last_sell_at - first_buy_at))
+
+        buys_before_first_sell = [
+            item for item in buys if int(item["block_time"]) <= first_sell_at
+        ]
+        if len(buys_before_first_sell) >= 2:
+            scale_in += 1
+        if len(sells_after_first_buy) >= 2:
+            partial_exit += 1
+        if any(int(item["block_time"]) > first_sell_at for item in buys):
+            reentry += 1
 
     times = [int(item["block_time"]) for item in clean]
     gaps = [
@@ -116,16 +134,14 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
     flags = []
     if len(clean) < 20:
         flags.append("onchain_sample_too_small")
-    # If most observed tokens do not contain both a buy and a sell inside the
-    # synchronized window, sequence summaries can overstate how complete the
-    # wallet history is. Flag that condition instead of treating the sample as
-    # representative of full round trips.
     if token_count and roundtrips / token_count < 0.50:
         flags.append("many_tokens_without_observed_roundtrip")
     if clean and not any(float(item["token_change"]) < 0 for item in clean):
         flags.append("no_observed_sells")
     if observed_span_days < 1 and len(clean) < 150:
         flags.append("short_observation_window")
+    if sell_before_first_buy:
+        flags.append("preexisting_inventory_observed")
 
     return OnchainWalletProfile(
         address=address,
@@ -137,6 +153,10 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
         last_swap_at=last_at,
         observed_span_days=observed_span_days,
         median_actions_per_token=median(action_counts) if action_counts else 0.0,
+        roundtrip_token_count=roundtrips,
+        buy_only_token_count=buy_only,
+        sell_only_token_count=sell_only,
+        sell_before_first_buy_token_count=sell_before_first_buy,
         roundtrip_token_share_pct=_pct(roundtrips, token_count),
         multi_action_token_share_pct=_pct(multi_action, token_count),
         scale_in_token_share_pct=_pct(scale_in, roundtrips),
