@@ -98,7 +98,11 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
                 reentry += 1
 
     times = [int(item["block_time"]) for item in clean]
-    gaps = [float(current - previous) for previous, current in zip(times, times[1:]) if current >= previous]
+    gaps = [
+        float(current - previous)
+        for previous, current in zip(times, times[1:])
+        if current >= previous
+    ]
     dex_mix = Counter(str(item.get("dex") or "unknown") for item in clean)
     token_count = len(per_token)
     first_at = times[0] if times else None
@@ -112,7 +116,11 @@ def build_onchain_wallet_profile(address: str, swaps: list[dict]) -> OnchainWall
     flags = []
     if len(clean) < 20:
         flags.append("onchain_sample_too_small")
-    if token_count and roundtrips / token_count < 0.25:
+    # If most observed tokens do not contain both a buy and a sell inside the
+    # synchronized window, sequence summaries can overstate how complete the
+    # wallet history is. Flag that condition instead of treating the sample as
+    # representative of full round trips.
+    if token_count and roundtrips / token_count < 0.50:
         flags.append("many_tokens_without_observed_roundtrip")
     if clean and not any(float(item["token_change"]) < 0 for item in clean):
         flags.append("no_observed_sells")
