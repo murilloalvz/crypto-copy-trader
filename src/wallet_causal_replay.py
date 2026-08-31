@@ -104,6 +104,7 @@ def replay_wallet_action(
     selection = select_first_causal_quote(
         quotes,
         token_mint=action.token_mint,
+        side=action.side,
         ready_at=decision_ready_at,
         max_quote_age_seconds=config.max_quote_age_seconds,
         max_quote_wait_seconds=config.max_quote_wait_seconds,
