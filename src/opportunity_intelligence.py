@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from src.discovery.models import WaveTokenSnapshot
+from src.market_integrity import MarketIntegrityFeatures, build_market_integrity_features
 from src.social_features import SocialBurstFeatures, build_social_burst_features
 from src.social_intelligence import SocialEvent
 
@@ -40,6 +42,7 @@ class OpportunityContextSnapshot:
     wave: WaveOpportunityEvidence | None
     wallets: WalletOpportunityContext
     social: SocialBurstFeatures | None
+    market_integrity: MarketIntegrityFeatures | None
     available_channels: tuple[str, ...]
 
 
@@ -94,13 +97,16 @@ def build_opportunity_context(
     | tuple[WalletActionObservation, ...] = (),
     social_events: list[SocialEvent] | tuple[SocialEvent, ...] = (),
     include_social: bool = True,
+    market_snapshot: WaveTokenSnapshot | None = None,
 ) -> OpportunityContextSnapshot:
     """Join independent evidence channels without assigning a trading score.
 
     Every channel is constrained by what was observable at ``as_of``. Historical chain data
     synchronized later must not be represented as if it had been observed live; callers need
-    a real ``observed_at`` for wallet actions. The returned snapshot is research context only,
-    not a buy/sell decision.
+    a real ``observed_at`` for wallet actions. ``market_snapshot`` must itself be a snapshot
+    captured no later than the requested context by the caller; this function never fetches or
+    reconstructs market state. The returned snapshot is research context only, not a buy/sell
+    decision.
     """
     if as_of < 0:
         raise ValueError("as_of must be non-negative")
@@ -130,6 +136,12 @@ def build_opportunity_context(
             token_mint=token_mint,
         )
 
+    market_integrity = None
+    if market_snapshot is not None:
+        if market_snapshot.token != token_mint:
+            raise ValueError("market snapshot token does not match opportunity token")
+        market_integrity = build_market_integrity_features(market_snapshot)
+
     channels: list[str] = []
     if eligible_wave is not None:
         channels.append("wave")
@@ -139,6 +151,8 @@ def build_opportunity_context(
         social.current_event_count or social.prior_baseline_event_count
     ):
         channels.append("social")
+    if market_integrity is not None:
+        channels.append("market_integrity")
 
     return OpportunityContextSnapshot(
         token_mint=token_mint,
@@ -146,5 +160,6 @@ def build_opportunity_context(
         wave=eligible_wave,
         wallets=wallet_context,
         social=social,
+        market_integrity=market_integrity,
         available_channels=tuple(channels),
     )
