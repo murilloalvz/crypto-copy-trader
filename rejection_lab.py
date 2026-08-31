@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             f"falhos {settlement.failed} | adiados temporariamente {settlement.deferred}"
         )
 
-    print("\nHORIZONTES")
+    print("\nHORIZONTES — AMOSTRA TOTAL")
     if not summary.horizons:
         print("Nenhum follow-up agendado.")
     for item in summary.horizons:
@@ -121,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
             f"({item.coverage_pct:.1f}%) | pendentes {item.pending_count} | falhos {item.failed_count} | "
             f"média/mediana {_fmt(item.mean_return_pct)} / {_fmt(item.median_return_pct)} | "
             f">0 {positive:.1f}% | >=+20 {rally20:.1f}% | <=-25 {crash25:.1f}%"
+        )
+
+    print("\nBARREIRA ÚNICA — OUTCOMES ISOLADOS")
+    if not summary.single_barrier_horizons:
+        print("Ainda não há follow-up de rejeição com uma única barreira.")
+    for item in summary.single_barrier_horizons:
+        label = RADAR_BARRIER_LABELS.get(item.barrier, item.barrier)
+        print(
+            f"- {label} | {item.horizon_minutes}m | "
+            f"{item.completed_count}/{item.selected_count} completos ({item.coverage_pct:.1f}%) | "
+            f"média/mediana {_fmt(item.mean_return_pct)} / {_fmt(item.median_return_pct)} | "
+            f"falhos {item.failed_count} | pendentes {item.pending_count}"
         )
 
     print("\nBARREIRAS DA RUN")
