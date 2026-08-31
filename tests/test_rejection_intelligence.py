@@ -189,6 +189,18 @@ class RejectionIntelligenceTests(unittest.TestCase):
         self.assertEqual(rows[1]["retry_count"], 1)
         self.assertEqual(summary.horizons[0].coverage_pct, 50.0)
 
+        isolated = {
+            (item.barrier, item.horizon_minutes): item
+            for item in summary.single_barrier_horizons
+        }
+        self.assertEqual(isolated[("liquidity_low", 5)].coverage_pct, 100.0)
+        self.assertAlmostEqual(
+            isolated[("liquidity_low", 5)].mean_return_pct,
+            20.0,
+        )
+        self.assertEqual(isolated[("risk_high", 5)].coverage_pct, 0.0)
+        self.assertEqual(isolated[("risk_high", 5)].pending_count, 1)
+
     def test_permanent_provider_error_fails_followup(self):
         class FakeProvider:
             def price_at(self, mint, timestamp, *, max_distance_seconds):
