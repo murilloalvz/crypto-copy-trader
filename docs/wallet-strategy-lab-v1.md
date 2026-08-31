@@ -45,25 +45,33 @@ Cada wallet recebe dimensões descritivas:
 - primeira tranche e runner em ciclos multi-sell complete-like;
 - DEX dominante e concentração observada.
 
-### Frequência: intensidade ativa vs média calendário
+### Frequência: dias ativos vs média calendário
 
-A média calendário `swap_count / observed_span` continua sendo exibida, mas não é mais usada diretamente para definir o bucket de frequência quando existe gap suficiente entre swaps.
+A média calendário `swap_count / observed_span` continua sendo exibida, mas não define sozinha o bucket de frequência porque um backfill parcial pode conter uma observação histórica distante e expandir artificialmente o span.
 
-O bucket usa preferencialmente a intensidade implícita pela **mediana dos gaps entre swaps**:
+A primeira tentativa de robustez usava:
 
 ```text
-frequency_rate_per_day = 86400 / median_swap_gap_seconds
+86400 / median_swap_gap_seconds
 ```
 
-Motivo: um registro histórico distante ou um backfill parcial pode aumentar muito o span local e transformar falsamente uma wallet ativa em `sparse`.
+Ela foi descartada após o deep scan de 31/08/2026 porque wallets bursty produziram extrapolações absurdas, como `86400 swaps/dia`, quando vários swaps ocorreram com diferença de aproximadamente um segundo.
 
-Se a intensidade mediana e a média calendário divergirem por pelo menos 3x, o fingerprint recebe:
+O bucket agora usa a **mediana da quantidade realmente observada de swaps por dia UTC ativo**:
+
+```text
+frequency_rate_per_day = median(swaps_observados_em_cada_dia_UTC_com_atividade)
+```
+
+Isso preserva a distinção entre uma wallet que faz dezenas de swaps num dia ativo e outra que faz poucos, sem assumir que uma rajada de segundos se manteria por 24 horas.
+
+A média calendário permanece separada como diagnóstico. Se ela e a intensidade dos dias ativos divergirem por pelo menos 3x, o fingerprint recebe:
 
 ```text
 calendar_frequency_differs_from_active_intensity
 ```
 
-Isso não resolve todos os vieses de amostragem. Uma wallet naturalmente bursty também pode apresentar divergência. O campo serve como alerta metodológico, não como correção econômica definitiva.
+A métrica continua descritiva e sujeita ao recorte do backfill: dias não sincronizados não são reconstruídos e um único dia ativo ainda não prova frequência estrutural.
 
 A assinatura combina quatro dimensões:
 
@@ -125,7 +133,7 @@ Também é possível usar `--file` e `--json`.
 4. Transferências, token mechanics e backfill incompleto podem distorcer sizing.
 5. `staged_exit_dominant` exige pelo menos três ciclos de sizing complete-like e evidência repetida de múltiplas vendas; ainda assim descreve a amostra, não intenção.
 6. Similaridade de fingerprint não é evidência de edge.
-7. Intensidade por gap mediano mede comportamento dentro da amostra ativa, não uma taxa econômica garantida em calendário completo.
+7. Intensidade por dia ativo mede somente dias realmente observados; não é uma taxa econômica garantida em calendário completo.
 8. Nenhum fingerprint modifica automaticamente o bot.
 
 ## Próxima sequência de validação
