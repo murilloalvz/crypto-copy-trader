@@ -140,7 +140,7 @@ def _support_grade(wallet_count: int, evidence_ready_count: int) -> str:
         return "SINGLE_WALLET"
     if evidence_ready_count < 2:
         return "REPEATED_LOW_COVERAGE"
-    if wallet_count < 5:
+    if evidence_ready_count < 5:
         return "MULTI_WALLET_PRELIMINARY"
     return "MULTI_WALLET_BROADER_SUPPORT"
 
