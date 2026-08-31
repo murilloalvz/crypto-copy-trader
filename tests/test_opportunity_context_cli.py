@@ -62,13 +62,17 @@ class OpportunityContextCliTests(unittest.TestCase):
                         ) VALUES ('T','T','T',100,60,1,1,25,100,'wave_v3_volume_integrity',?)""",
                         (json.dumps({"token": asdict(signal_token)}),),
                     )
-                    run = conn.execute(
-                        """INSERT INTO wave_discovery_runs(
-                            started_at, completed_at, source, requested_token_limit,
-                            policy_json, status
-                        ) VALUES (1000, 1100, 'test', 1, '{}', 'completed')"""
-                    )
-                    for detected_at, snapshot in ((200, reject_token), (400, future_token)):
+                    for index, (detected_at, snapshot) in enumerate(
+                        ((200, reject_token), (400, future_token)),
+                        start=1,
+                    ):
+                        run = conn.execute(
+                            """INSERT INTO wave_discovery_runs(
+                                started_at, completed_at, source, requested_token_limit,
+                                policy_json, status
+                            ) VALUES (?, ?, 'test', 1, '{}', 'completed')""",
+                            (1000 + index * 100, 1050 + index * 100),
+                        )
                         conn.execute(
                             """INSERT INTO wave_rejection_decisions(
                                 run_id, token_mint, symbol, detected_at, entry_price_usd,
