@@ -79,9 +79,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Amostra: {profile.swap_count} swaps | {profile.token_count} tokens | grau {profile.sample_grade}")
     print(f"Compras/vendas: {profile.buy_count}/{profile.sell_count} | janela observada: {profile.observed_span_days:.2f}d")
     print()
+    print("COBERTURA DA SEQUÊNCIA")
+    print(
+        f"Roundtrips cronológicos: {profile.roundtrip_token_count}/{profile.token_count} "
+        f"({profile.roundtrip_token_share_pct:.1f}%)"
+    )
+    print(
+        f"Somente compra: {profile.buy_only_token_count} | somente venda: {profile.sell_only_token_count} | "
+        f"venda anterior à primeira compra observada: {profile.sell_before_first_buy_token_count}"
+    )
+    print()
     print("PADRÃO DE EXECUÇÃO OBSERVADO")
     print(f"Ações por token (mediana): {profile.median_actions_per_token:.1f}")
-    print(f"Tokens com buy+sell observado: {profile.roundtrip_token_share_pct:.1f}%")
     print(f"Tokens multi-ação: {profile.multi_action_token_share_pct:.1f}%")
     print(f"Scale-in entre roundtrips: {profile.scale_in_token_share_pct:.1f}%")
     print(f"Saída em múltiplas vendas entre roundtrips: {profile.partial_exit_token_share_pct:.1f}%")
