@@ -7,7 +7,13 @@
 Arquivos:
 
 - `src/wallet_confirmation_placebo.py`;
-- `tests/test_wallet_confirmation_placebo.py`.
+- `src/wallet_placebo_matching.py`;
+- `src/wallet_confirmation_study.py`;
+- `wallet_placebo_match.py`;
+- `tests/test_wallet_confirmation_placebo.py`;
+- `tests/test_wallet_placebo_matching.py`;
+- `tests/test_wallet_confirmation_study.py`;
+- `docs/wallet-placebo-matching-v1.md`.
 
 A camada existe para responder uma pergunta antes de Wallet Confirmation virar estratégia:
 
@@ -16,8 +22,6 @@ A camada existe para responder uma pergunta antes de Wallet Confirmation virar e
 Sem placebo, a frase "duas smart wallets compraram" pode apenas significar que o token já estava popular.
 
 ## Hipótese
-
-Hipótese de pesquisa:
 
 ```text
 confirmação por uma coorte target pré-selecionada
@@ -42,60 +46,107 @@ Cada observação é definida por:
 
 ## Regra primária de confirmação v1
 
-Para a infraestrutura inicial:
+Para o primeiro estudo:
 
 - janela: 300 segundos;
 - confirmação: >=2 wallets únicas da coorte com BUY observado na janela.
 
-Esses valores são parâmetros do **estudo**, não filtros da Wave nem autorização de trade. Eles devem permanecer congelados no primeiro estudo prospectivo; não fazer grid search 30s/60s/5m/15m e escolher o que ficou melhor depois.
+Esses valores são parâmetros do **estudo**, não filtros da Wave nem autorização de trade. Devem permanecer congelados no primeiro estudo prospectivo; não fazer grid search e escolher a janela que ficou melhor depois.
 
 ## Coorte target
 
-A target deve ser formada **antes** de olhar os outcomes do período de teste.
+A target precisa ser formada antes dos outcomes do período de teste.
 
-Critérios de seleção podem usar somente informação pré-período, como:
+Pode usar somente evidência pré-período, como:
 
 - evidence readiness;
-- qualidade de sequência observada;
-- repeatability do fingerprint;
+- qualidade de sequência;
+- repeatability/fingerprint;
 - token breadth;
-- intensidade de atividade;
+- intensidade em dia ativo;
 - holding horizon;
 - DEX mix;
-- copyability/latency quando disponível.
+- copyability/latency já observada antes do estudo.
 
-Não selecionar wallet porque ela acertou especificamente os tokens que serão usados para medir o estudo.
+As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquéti​pos, não uma "smart-wallet basket" validada. Não devem ser fundidas automaticamente em uma confirmação econômica única.
 
-As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquéti​pos, não uma "smart-wallet basket" já validada. Elas não devem ser fundidas automaticamente em uma confirmação econômica única.
+## Placebo Matching v1
+
+O matching pré-período está implementado em `src/wallet_placebo_matching.py` e documentado separadamente.
+
+Ele não usa PnL/outcome futuro e não cria Match Score ponderado. Expõe separadamente:
+
+- bucket similarity;
+- active-day rate ratio;
+- token breadth ratio;
+- first-exit/holding ratio;
+- observed span ratio;
+- diferenças de roundtrip/scale-in/multi-sell/reentry;
+- DEX dominante;
+- warnings de coverage/evidence readiness.
+
+A ordenação é lexicográfica/auditável. Isso reduz pseudo-precisão e deixa claro onde uma candidata difere da target.
+
+CLI:
+
+```powershell
+python wallet_placebo_match.py <TARGET_ADDRESS> --all-local --min-swaps 20
+```
+
+O universo local atual ainda é estreito; portanto a existência do matching não significa que já temos placebos suficientemente bons.
 
 ## Placebos
 
-Usar múltiplas coortes placebo. Ideal inicial: pelo menos 3 grupos.
+Usar múltiplas coortes placebo. Ideal inicial: pelo menos 3 grupos quando o universo permitir.
 
-Regras estruturais já suportadas pelo código:
+Regras estruturais:
 
-- wallets target e placebo precisam ser disjuntas;
-- nomes de coorte únicos;
+- target/placebos wallet-disjoint;
+- nomes únicos;
 - papel explícito `target`/`placebo`;
-- por padrão, mesmo número de wallets em cada coorte.
+- mesmo número de wallets por coorte por padrão.
 
-O matching qualitativo precisa ser documentado com dados do pré-período. Os placebos devem ser parecidos, dentro do possível, em:
+O matching qualitativo precisa ser congelado com dados pré-período. Dentro do possível, placebos devem ser semelhantes em:
 
 - swaps por dia ativo;
-- número de tokens distintos;
-- holding horizon/fingerprint;
+- número de tokens;
+- holding/fingerprint;
 - atividade recente;
 - DEX mix;
 - cobertura de sequência;
 - janela de observação.
 
-Não usar wallets completamente aleatórias/inativas como único placebo, porque seria um controle fácil demais.
+Wallets completamente aleatórias/inativas não são controle suficiente.
+
+## Registro prospectivo imutável
+
+`src/wallet_confirmation_study.py` adiciona um registry local para pré-registrar o desenho **antes** do período de outcome.
+
+O `ConfirmationStudySpec` congela:
+
+- `study_key`;
+- `preperiod_cutoff`;
+- `frozen_at`;
+- `starts_at` e opcional `ends_at`;
+- target;
+- placebos;
+- regra de confirmação;
+- horizontes;
+- context scope;
+- versão do matching;
+- notas.
+
+Uma `study_key` já registrada com configuração diferente é rejeitada. O registry também impede ativação antes de `starts_at`. Estados:
+
+```text
+FROZEN -> ACTIVE -> CLOSED
+```
+
+O registry não contém outcomes e não escolhe cohort automaticamente; ele existe para impedir que a configuração seja silenciosamente reescrita depois de vermos resultados.
 
 ## Mesma oportunidade, mesmo relógio
 
-O estudo deve construir target e placebos sobre o mesmo universo de timestamps/oportunidades.
-
-Exemplo:
+Target e placebos precisam ser avaliados no mesmo universo temporal.
 
 ```text
 as_of t0 / token X
@@ -109,102 +160,74 @@ as_of t1 / token Y
   mesmos placebos -> confirmou ou não
 ```
 
-Isso reduz o risco de comparar uma coorte em dias/regimes favoráveis contra outra em mercado diferente.
+O primeiro context scope suportado pelo registry é `wave_opportunity_v1`: a pergunta incremental é feita sobre oportunidades Wave, sem alterar a entrada Wave.
 
 ## Outcomes
 
-A infraestrutura suporta outcomes `completed`, `pending` e `failed` por horizonte. Missingness permanece no denominador.
+A infraestrutura analítica suporta `completed`, `pending` e `failed`. Missingness permanece no denominador.
 
 Resumo por coorte:
 
 - eventos confirmados;
-- outcomes completos;
-- falhos;
-- pendentes/ausentes;
+- completos/falhos/pendentes ou ausentes;
 - cobertura;
-- média;
-- mediana;
-- proporção >0;
-- proporção >=+20%;
-- proporção <=-25%.
+- média/mediana;
+- share >0;
+- share >=+20%;
+- share <=-25%.
 
 Os cortes +20/-25 são descritivos, não TP/SL.
 
-## Comparação target x placebo
+## Target x placebo
 
-O comparador calcula, de forma descritiva:
+O comparador reporta:
 
-- target minus mediana das médias dos placebos;
-- target minus mediana das medianas dos placebos;
-- target minus mediana da taxa positiva dos placebos.
+- target menos mediana das médias dos placebos;
+- target menos mediana das medianas;
+- target menos mediana da taxa positiva.
 
-Labels possíveis:
+Labels:
 
 - `NO_COMPARABLE_OUTCOMES`;
 - `DESCRIPTIVE_LOW_COVERAGE`;
 - `DESCRIPTIVE_PLACEBO_COMPARISON`.
 
-Nenhum label significa "edge proven".
+Nenhum significa `edge proven`.
 
 ## Critérios antes de promoção
 
 Wallet Confirmation só merece avançar para Strategy Lab/Shadow se, prospectivamente:
 
-1. target tiver amostra suficiente de confirmações;
-2. cobertura/missingness forem comparáveis entre target e placebos;
-3. o efeito não depender de um único token vencedor;
-4. média e mediana não contarem histórias totalmente incompatíveis;
-5. target superar vários placebos, não só o pior deles;
-6. o efeito aparecer em mais de um dia/regime;
-7. latency/quotes reais mostrarem que ainda existe oportunidade depois da detecção;
-8. custos e liquidez não apagarem o diferencial;
-9. o critério de sucesso tiver sido declarado antes de abrir o outcome final.
-
-## Relação com Wallet Strategy Intelligence
-
-Os fingerprints continuam úteis para duas coisas diferentes:
-
-1. escolher a target de forma defensável;
-2. construir placebos de atividade/arquetipo semelhante.
-
-Eles não provam que a wallet é boa para copiar.
-
-Exemplo futuro:
-
-```text
-7mPti-like target
-vs
-placebos com holding/atividade parecidos
-```
-
-é metodologicamente melhor do que:
-
-```text
-wallet lucrativa
-vs
-wallets aleatórias inativas
-```
+1. target tiver amostra suficiente;
+2. coverage/missingness forem comparáveis;
+3. o efeito não depender de um único winner;
+4. média/mediana forem coerentes o suficiente para interpretação;
+5. target superar vários placebos, não só o pior;
+6. aparecer em mais de um dia/regime;
+7. quotes/latência mostrarem oportunidade depois da detecção;
+8. custos/liquidez não apagarem o diferencial;
+9. critério de sucesso tiver sido pré-declarado.
 
 ## Relação com Wave
 
-Primeiro teste recomendado é incremental, não substitutivo:
+Primeiro teste recomendado:
 
 ```text
 Wave opportunity em t
--> target wallets confirmaram até t?
--> placebos também confirmaram?
+-> target confirmou até t?
+-> placebos confirmaram até t?
 -> outcome futuro
 ```
 
 Pergunta:
 
-> entre oportunidades comparáveis do Wave, a confirmação target acrescenta algo além da atividade normal de wallets semelhantes?
+> entre oportunidades comparáveis do Wave, a confirmação target acrescenta informação além da atividade normal de wallets semelhantes?
 
-Não alterar `wave_v3_volume_integrity` enquanto essa pergunta estiver sendo respondida.
+`wave_v3_volume_integrity` permanece congelada enquanto a pergunta é respondida.
 
 ## Relação com Jupiter
 
-Se Wallet Confirmation mostrar sinal descritivo, o próximo gate usa a infraestrutura Wallet Forward + Jupiter:
+Se houver sinal descritivo:
 
 ```text
 wallet BUY observado
@@ -215,14 +238,15 @@ wallet BUY observado
 -> outcome executável aproximado
 ```
 
-Um efeito que existe no preço de referência mas desaparece depois de 30–120s não é copiável para nós.
+Se o efeito desaparecer depois de +30–120s, ele não é copiável para nós, mesmo que exista no preço de referência.
 
 ## Próximo passo real
 
-Ainda não existe amostra prospectiva suficiente para executar este estudo de forma séria. Primeiro precisamos:
+Ainda não existe universo/amostra suficiente para congelar um estudo econômico sério. Antes disso:
 
-1. concluir a coleta Wallet Forward + Jupiter;
-2. aumentar o universo de wallets pesquisadas quando a fonte permitir;
-3. formar target e placebos usando somente dados pré-período;
-4. congelar os grupos;
-5. iniciar a coleta prospectiva do estudo.
+1. concluir Wallet Forward + Jupiter;
+2. ampliar o universo de wallets quando a fonte permitir;
+3. rodar matching somente com dados pré-período;
+4. revisar coverage/warnings;
+5. congelar target/placebos no registry;
+6. só então iniciar o período prospectivo.
