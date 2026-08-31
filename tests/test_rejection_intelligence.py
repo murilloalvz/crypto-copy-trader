@@ -9,6 +9,7 @@ from src.database import connection, initialize_database
 from src.discovery.models import WaveTokenSnapshot
 from src.prices import PermanentPriceProviderError, TemporaryPriceProviderError
 from src.rejection_intelligence import (
+    REJECTION_SELECTION_COOLDOWN_SECONDS,
     record_rejection_decisions,
     select_rejection_followups,
     settle_due_rejection_followups,
@@ -76,12 +77,13 @@ def _report() -> WaveRadarReport:
 
 
 class RejectionIntelligenceTests(unittest.TestCase):
-    def _seed_run(self) -> int:
+    def _seed_run(self, *, started_at: int = 1000) -> int:
         with connection() as conn:
             cursor = conn.execute(
                 """INSERT INTO wave_discovery_runs(
                     started_at, completed_at, source, requested_token_limit, policy_json, status
-                ) VALUES (1000, 1100, 'test', 4, '{}', 'completed')"""
+                ) VALUES (?, ?, 'test', 4, '{}', 'completed')""",
+                (started_at, started_at + 100),
             )
             run_id = int(cursor.lastrowid)
             for mint, score, passed, barriers in (
@@ -149,6 +151,40 @@ class RejectionIntelligenceTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(followups), 6)
+
+    def test_selection_cooldown_avoids_reusing_same_mint_then_allows_expiry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "reject.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                initialize_database()
+
+                run_1 = self._seed_run(started_at=1_000)
+                record_rejection_decisions(_report(), run_id=run_1, detected_at=100)
+                select_rejection_followups(run_1, max_tokens=1)
+
+                run_2 = self._seed_run(started_at=2_000)
+                record_rejection_decisions(_report(), run_id=run_2, detected_at=200)
+                select_rejection_followups(run_2, max_tokens=1)
+
+                run_3 = self._seed_run(started_at=3_000)
+                expired_at = 100 + REJECTION_SELECTION_COOLDOWN_SECONDS + 1
+                record_rejection_decisions(
+                    _report(), run_id=run_3, detected_at=expired_at
+                )
+                select_rejection_followups(run_3, max_tokens=1)
+
+                with connection() as conn:
+                    selected = conn.execute(
+                        """SELECT run_id, token_mint
+                        FROM wave_rejection_decisions
+                        WHERE selected_for_followup=1
+                        ORDER BY run_id"""
+                    ).fetchall()
+
+        self.assertEqual(
+            [(row["run_id"], row["token_mint"]) for row in selected],
+            [(run_1, "LIQ"), (run_2, "RISK"), (run_3, "LIQ")],
+        )
 
     def test_settlement_records_returns_and_defers_temporary_errors(self):
         class FakeProvider:
