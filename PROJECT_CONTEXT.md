@@ -1,324 +1,308 @@
 # Crypto Copy Trader — Project Context
 
-Este arquivo registra o estado técnico consolidado do projeto. Ideias discutidas fora do código
-devem ser tratadas como hipóteses até serem confirmadas no repositório e por testes reproduzíveis.
+Este arquivo registra o estado técnico consolidado do projeto. Ideias discutidas fora do código devem ser tratadas como hipóteses até serem confirmadas no repositório e por testes reproduzíveis.
 
-## Estado atual
+## Estado operacional
 
-- Modo operacional: **PAPER/READ ONLY**. Não existem ordens, assinaturas ou movimentações reais.
 - Branch de trabalho: `feat/exit-engine-v1`.
-- Persistência local em SQLite, configurada por `DATABASE_PATH` (padrão `data/copytrader.db`).
-- Fonte do Wave Radar: Solana Tracker Token Search.
-- Fonte dos checkpoints históricos: GeckoTerminal, com rastreio do pool de entrada e saída.
-- A estratégia ativa para novos sinais é `wave_v3_volume_integrity`.
-- O monitor híbrido atualiza checkpoints fixos e posições do exit engine na mesma frequência.
-- Última suíte completa conhecida nesta branch: 150 testes aprovados.
+- Modo: **PAPER / RESEARCH / READ ONLY** em relação ao mercado. O projeto não possui fluxo habilitado que assine ou envie transações reais.
+- Persistência: SQLite, `DATABASE_PATH` (padrão `data/copytrader.db`).
+- Estratégia Wave ativa: `wave_v3_volume_integrity`, com entrada **CONGELADA** enquanto a evidência forward é formada.
+- Solana Tracker Data API: atualmente bloqueada por `403 Insufficient credits`; não gastar novas chamadas até reset/restauração de créditos.
+- GeckoTerminal: usado para preços/candles e settlement histórico com pacing/adaptação de rate limit.
+- Solana RPC público: usado no Wallet Forward Watch.
+- Jupiter Swap V2 `GET /order`: integração read-only validada em smoke real fora da rede escolar.
+- Rede escolar apresentou TLS/certificado raiz não confiável para Jupiter; não usar para coletas longas.
 
-## Arquitetura atual
+## Princípio de validação
 
-Fluxo principal:
+O projeto separa explicitamente:
 
-1. `discover.py`: discovery e ranking de wallets públicas.
-2. `radar.py`: busca tokens, aplica política do Wave Radar, exibe ranking e registra sinais paper.
-3. `src/wave_radar.py`: integridade, barreiras, componentes do Wave Score e elegibilidade.
-4. `src/wave_paper.py`: versionamento, cooldown, persistência e checkpoints 5m/15m/60m.
-5. `monitor.py`: agenda discovery e atualização de preços.
-6. `evaluate.py` + `src/wave_metrics.py`: cobertura, estatísticas, custos, coortes, outliers e falhas.
-7. `simulate_bankroll.py`: simulação sequencial de banca.
-8. `backtest_concurrent.py` + `src/wave_bankroll.py`: capital limitado, posições concorrentes,
-   reinvestimento, exposição e stress de custo.
-9. `app.py`: interface Streamlit.
-10. `src/exit_engine.py`: coorte forward, políticas pareadas e trajetória observada.
-11. `src/exit_metrics.py` + `evaluate_exits.py`: avaliação multi-métrica das saídas.
-12. `src/wave_funnel.py`: auditoria de cobertura e redução do universo por rodada.
-
-Tabelas relevantes:
-
-- `wallets`, `transactions`, `paper_trades`;
-- `token_pool_cache`, `price_cache`;
-- `wave_signals`, `wave_signal_checks`.
-- `exit_experiments`, `exit_policies`, `exit_positions`, `exit_price_observations`;
-- `wave_discovery_runs`, `wave_discovery_candidates`.
-
-## Estratégias existentes
-
-### `wave_v1_baseline`
-
-- **IMPLEMENTADO / HISTÓRICO**.
-- Apenas 2 sinais; amostra inconclusiva.
-- Preservada como benchmark, não recebe novos sinais.
-
-### `wave_v2_momentum`
-
-- **IMPLEMENTADO / HISTÓRICO**.
-- 65 sinais registrados.
-- Resultado 5m observado: n=64, win rate 82,8%, média +5,18%, mediana +5,11%, PF 6,61.
-- Limitação crítica: 35/65 snapshots tinham janelas `5m/1h/24h` inconsistentes.
-- Não recebe novos sinais; resultados servem apenas como evidência exploratória.
-
-### `wave_v3_volume_integrity`
-
-- **IMPLEMENTADO / EM TESTE**.
-- Estratégia de momentum atual com exigência `volume_5m <= volume_1h <= volume_24h`.
-- Mantém filtros de risco, liquidez, aceleração, concentração, authorities e desequilíbrio.
-- Cooldown de 360 minutos por mint evita repetição artificial do mesmo token.
-- Parâmetros de entrada devem permanecer congelados durante a formação da amostra.
-
-## Funcionalidades implementadas
-
-- Monitoramento de wallets Solana e parsing de swaps suportados.
-- Ledger paper FIFO e métricas de wallets.
-- Discovery, Candidate Score, Copyability Score e watchlist de wallets.
-- Detecção de convergência de wallets em código, ainda não usada como estratégia ativa do Wave Radar.
-- Wave Radar com barreiras explícitas e score reproduzível.
-- Integridade obrigatória das janelas cumulativas de volume.
-- Sinais paper versionados com snapshots de entrada.
-- Checkpoints 5m, 15m e 60m com slippage configurado nos dois lados.
-- Rastreio e auditoria do pool usado para precificação.
-- Avaliação com cobertura, Wilson 95%, PF, drawdown, outliers, stress de resultados ausentes,
-  stress de slippage e coortes pré-fixadas.
-- Backtests sequencial e concorrente com reinvestimento e capital bloqueado.
-- Stress adicional de custos no backtest concorrente.
-- Monitor híbrido reiniciável; dados concluídos persistem mesmo após interrupção.
-- Exit Engine v1 forward-only com fronteira por timestamp e ID do último sinal existente.
-- Cinco políticas pareadas por nova entrada v3: 15m, 60m, SL -10%, TP +20% e trailing 10%.
-- Máximo, mínimo, MFE, MAE, trajetória observada, motivo e execução de saída persistidos.
-- Funil por discovery com limite solicitado, retorno da fonte, validade, barreiras,
-  candidatos, duplicados/cooldown, rejeições de persistência e sinais criados.
-
-## Experimentos ativos
-
-### Exit Engine v1
-
-- **IMPLEMENTADO / EM TESTE FORWARD**.
-- Engine `exit_engine_v1`; políticas pré-registradas:
-  - `fixed_15m_v1`: 900 segundos;
-  - `fixed_60m_v1`: 3.600 segundos;
-  - `stop_loss_10_v1`: -10%, fallback em 60m;
-  - `take_profit_20_v1`: +20%, fallback em 60m;
-  - `trailing_stop_10_v1`: 10% abaixo do maior preço observado, fallback em 60m.
-- A fronteira real é criada na primeira execução desta versão no banco operacional. Ela registra
-  `activated_at` e `start_after_signal_id`; os 19 sinais anteriores não entram na coorte.
-- Cada novo sinal recebe todas as políticas; não há seleção por token nem política vencedora.
-- Benchmarks fixos usam o candle de seu target exato. Políticas dinâmicas usam apenas o último candle
-  de minuto concluído observado durante cada ciclo, sem backfill do caminho perdido.
-- O intervalo esperado fica salvo. Padrão operacional pré-registrado para a primeira coorte:
-  60s. Cada preço por sinal é compartilhado pelas cinco políticas.
-- O cliente GeckoTerminal impõe 2,1s entre requisições. O monitor estima a carga dinâmica por
-  ciclo e alerta a partir de 80% da capacidade teórica.
-- No backup com 19 sinais v3, o pico reproduzido foi 7 sinais em uma janela de 60m: estimativa de
-  14,7s por ciclo, 420 consultas dinâmicas/h e 24,5% da capacidade teórica. Rate limit público,
-  benchmarks vencidos e resolução inicial de pool ainda precisam de validação operacional.
-
-### Formação da amostra v3
-
-- **EM TESTE**.
-- Banco mais recente reproduzido: `copytrader(1).db`, SQLite `integrity_check: ok`.
-- Estado reproduzido: 19 sinais v3; 54 checkpoints concluídos; 1 pendente; 2 falhos.
-- Integridade: 19/19 snapshots legíveis; 0 janelas de volume inconsistentes.
-
-Resultados v3 reproduzidos:
-
-| Horizonte | Cobertura | Win rate | Média | Mediana | PF | Observação |
-|---|---:|---:|---:|---:|---:|---|
-| 5m | 19/19 | 42,1% | +1,69% | -0,02% | 1,79 | Média vira -0,07% sem o melhor trade |
-| 15m | 19/19 | 63,2% | +9,31% | +4,13% | 8,64 | Média sem o melhor trade permanece +3,25% |
-| 60m | 16/19 | 75,0% | +23,03% | +10,08% | 5,52 | 2 falhas e 1 pendente; melhor +113,34%, pior -66,93% |
-
-- Conclusão: amostra ainda inconclusiva (<30). 5m continua frágil e dependente de outlier; 15m e
-  60m ganharam suporte, mas ainda não constituem evidência suficiente para live.
-- O experimento acelerado de 4 horas acrescentou 7 sinais v3: discovery a cada 15 minutos,
-  atualização de preços a cada 5 minutos, até 50 tokens por busca. Os filtros v3 permaneceram iguais.
-
-Comando do experimento acelerado:
-
-```powershell
-python monitor.py --hours 4 --price-interval-minutes 5 --discovery-interval-minutes 15 --tokens 50 --top 10
+```text
+implementado -> testado -> validado operacionalmente -> evidência econômica -> shadow -> live canary
 ```
 
-## Decisões consolidadas
+Código funcionando não prova edge. Backtest positivo não libera live. Qualquer estratégia candidata precisa atravessar dados causalmente válidos, custos/slippage, missingness/outliers, forward/shadow e controles de execução antes de capital real.
 
-- Permanecer PAPER/READ ONLY até autorização explícita e validações adicionais.
-- Não misturar resultados de estratégias diferentes como uma única amostra.
-- Não alterar filtros preditivos com menos de 30 observações; 100 observações ainda não são garantia.
-- Manter v1 e v2 como benchmarks históricos; v3 é a única entrada ativa.
-- Aumentar cobertura do discovery sem afrouxar as barreiras de qualidade.
-- Usar cooldown por mint para evitar duplicação de sinais correlacionados.
-- Preservar sinais rejeitados e motivos para futura análise contrafactual.
-- Construir saída dinâmica sem reescrever entradas ou checkpoints históricos.
-- Wallet Intelligence e Social/Event Intelligence devem começar em shadow, coletando evidência sem
-  controlar capital ou alterar a entrada v3.
-- Confluências futuras devem começar como features de ranking; só viram filtros após validação.
-- Não fazer merge na `main` até consolidar a branch avançada, resolver a divergência de histórico e
-  executar a suíte completa.
+## Arquitetura principal
 
-## Limitações e problemas conhecidos
+### Wave / paper
 
-- Amostra v3 pequena e concentrada em poucos vencedores.
-- Checkpoints fixos não reconstruem o caminho intraperíodo necessário para TP, SL e trailing reais.
-- Atualização em 1 minuto ainda pode perder gatilhos e gaps intraminuto; os dados originais são
-  preservados para futura subamostragem comparativa em 5m.
-- Em gap, SL/TP/trailing usam o primeiro preço observado e podem executar melhor ou pior que o
-  limiar; nenhum preenchimento artificial no threshold é criado.
-- Candles de um minuto não revelam a ordem intraminuto entre máximos, mínimos e cruzamentos.
-- GeckoTerminal pode falhar ou não oferecer candle suficientemente próximo, especialmente em 60m.
-- Retornos paper não possuem quotes executáveis históricos completos, impacto de mercado observado,
-  prioridade de transação ou todas as fees por sinal.
-- Resultados de 60m têm risco de survivorship bias quando há falhas de preço.
-- Aumentar frequência de discovery melhora cobertura, mas não cria observações independentes nem
-  substitui diversidade de dias e regimes de mercado.
-- A branch local e remota têm árvores iguais, mas históricos divergentes; evitar push forçado.
+- `radar.py`: discovery de tokens, Wave Radar e persistência paper.
+- `src/wave_radar.py`: política, integridade, Wave Score, barreiras e cautions.
+- `src/wave_paper.py`: sinais versionados, cooldown e checkpoints 5m/15m/60m.
+- `src/wave_funnel.py`: cobertura e attrition por discovery.
+- `evaluate.py` + `src/wave_metrics.py`: cobertura, retorno, PF, drawdown, Wilson, missingness, outliers e slippage.
+- `backtest_concurrent.py` / `simulate_bankroll.py`: capital concorrente e stress.
 
-## Funcionalidades planejadas relevantes
+### Exit Engine
 
-### Exit Engine v1
+- `src/exit_engine.py`: políticas forward pareadas e trajetória observada.
+- `src/exit_metrics.py` + `evaluate_exits.py`: avaliação das políticas.
+- Políticas v1 congeladas: fixed 15m, fixed 60m, SL -10%, TP +20%, trailing 10%.
+- Gatilhos dinâmicos usam apenas candles realmente observados; não há backfill retrospectivo do caminho.
 
-- **IMPLEMENTADO / EM TESTE**.
-- Próximo passo é formar exclusivamente a coorte forward e avaliar cobertura pareada.
-- Parâmetros e entrada v3 permanecem congelados; não houve grid search nem escolha de vencedora.
+### Wallet Intelligence / Strategy Lab
 
-### Execução e validação
+- `src/wallet_strategy_lab.py`: fingerprint descritivo de holding/exit/reentry/frequência/sizing/DEX.
+- `src/wallet_strategy_compare.py`: comparação entre fingerprints com evidence readiness.
+- `src/wallet_strategy_readiness.py`: fila de evidência e bloqueadores.
+- `src/wallet_forward_observations.py` / `src/wallet_forward_collector.py`: observações forward com `chain_time` e `observed_at` reais.
+- `wallet_watch_forward.py`: observador RPC.
+- Wallet Intelligence não controla a Wave atual.
 
-- **PLANEJADO**: quotes executáveis, rota/pool, latência, fees, slippage e falhas de execução.
-- **PLANEJADO**: shadow execution com decisões completas registradas, sem assinatura/transação.
-- **PLANEJADO**: backtest concorrente exclusivo da v3 após amostra suficiente.
-- **PLANEJADO**: micro-live com wallet exclusiva, limites rígidos e kill switch, somente após evidência.
+### Causal Quote / Jupiter / Replay
 
-### Estratégias e confirmações futuras
+- `src/jupiter_swap_v2.py`: cliente read-only para Jupiter Swap V2 `/order`; não implementa `/execute`.
+- `src/causal_quotes.py` + `src/causal_quote_store.py`: quote causal com lado BUY/SELL e metadados de rota.
+- `src/wallet_quote_watch.py`: após um BUY forward, agenda quotes em +0/+15/+30/+60/+120s e persiste sucesso **e falha**.
+- `src/wallet_causal_replay.py`: reprocessa decisões apenas com informação disponível após detecção + delay.
+- `wallet_forward_experiment.py`: orquestra Wallet Watch + Quote Watch sob um único run manifest.
+- `wallet_forward_checkpoint.py`: relatório run-scoped; replay de entrada é BUY-only e cada quote é ligado ao evento exato que o originou.
+- Quote-only é proxy causal de preço/rota, não fill. Transação candidata montada também não prova landing/fill.
 
-- **HIPÓTESE**: Wallet Intelligence como confirmação e futura estratégia independente.
-- **HIPÓTESE**: Social/Event Intelligence como confirmação e futura estratégia independente.
-- **HIPÓTESE**: cruzar momentum, wallets e eventos; inicialmente como ranking, não filtro obrigatório.
+### Shadow / live readiness
 
-## Próxima prioridade
+- `src/shadow_execution_store.py`: auditoria de runs e decisões shadow, sem private key, assinatura ou submission.
+- `docs/live-readiness-gates-v1.md`: gates de processo antes de live.
+- Execução real `quote -> route -> tx -> assinatura -> envio -> confirmação -> reconciliação` ainda não está liberada/fechada.
 
-1. Ativar a nova branch no banco operacional e anotar a fronteira impressa pelo monitor.
-2. Continuar a coleta v3 e a coorte forward sem alterar entradas ou parâmetros de saída.
-3. Inspecionar o funil por várias rodadas antes de decidir qualquer ampliação do discovery.
-4. Aos 30 sinais forward, avaliar cobertura pareada, mediana, PF, MFE/MAE, duração, drawdown e outliers.
-5. Só depois escolher candidatas para shadow execution com quotes executáveis.
+### Rejection Intelligence
 
-## Handoff para outros chats
+- `src/rejection_intelligence.py`: sidecar observacional para tokens rejeitados pela Wave.
+- `rejection_lab.py`: auditoria/settlement explícito.
+- Toda nova discovery bem-sucedida registra snapshots de rejeições sem alterar pass/fail.
+- Amostra de follow-up padrão: até 12 rejeições data-valid por run, priorizando single-barrier near misses; horizontes 5m/15m/60m.
+- Erros temporários de preço permanecem pending; permanentes ficam failed; missingness é visível.
+- Relatório inclui distribuição total e outcomes isolados de rejeições com uma única barreira.
+- `+20%` e `-25%` são cortes descritivos, não novos gates.
+- Rejeições antigas sem snapshot causal completo não são reconstruídas com estado futuro.
 
-- **Estado atual:** v3 ativa em paper, 19 sinais reproduzidos; o teste acelerado de 4 horas acrescentou
-  7 sinais com integridade completa.
-- **O que está implementado:** infraestrutura exit-engine-v1, cinco políticas pareadas, fronteira
-  forward, persistência de trajetória, relatório de saídas e funil auditável.
-- **O que está em teste:** estabilidade da v3 e efeito forward das políticas de saída.
-- **O que continua incerto:** edge líquido da v3, robustez com n>=30, melhor horizonte e efeito real
-  de uma saída dinâmica.
-- **Próxima prioridade:** coletar a nova coorte e conferir cobertura/qualidade do funil.
-- **Pergunta para o Copiloto:** qual regra de decisão prévia usar quando a coorte pareada atingir 30,
-  sem reduzir a comparação a uma única métrica?
+Tabelas adicionais:
 
-## 2026-08-29 — provider-stability runtime v2 (IMPLEMENTADO, NÃO VALIDADO OPERACIONALMENTE)
+- `wallet_forward_observations`;
+- `wallet_forward_runs`;
+- `causal_quote_observations`;
+- `causal_quote_attempts`;
+- `shadow_runs` / `shadow_decisions` (schema da camada shadow);
+- `wave_rejection_decisions`;
+- `wave_rejection_followups`.
 
-Após a auditoria da execução forward de ~6h, foi implementada a primeira correção operacional mínima sem alterar `wave_v3_volume_integrity`, o T0 ou qualquer uma das cinco políticas de saída.
+## Estado da Wave v3 — checkpoint 2026-08-31
 
-Mudanças implementadas:
-- `GeckoTerminalPriceProvider` agora aplica pacing antes de **cada tentativa HTTP real**, inclusive retries;
-- `Retry-After` válido é respeitado; sem header útil, o backoff passou a 4s/8s em vez de 1s/2s;
-- falhas esgotadas de um mesmo token/minuto são compartilhadas dentro da instância/ciclo para evitar consulta redundante imediata entre checkpoint e exit engine;
-- `exit_positions` separa `dynamic_retry_count` de `target_retry_count`, impedindo que falhas acumuladas na trajetória contaminem diretamente o retry do target fixo;
-- erro temporário na trajetória dinâmica não torna posição definitivamente `failed` apenas por estar vencida;
-- ordem dos sinais no polling dinâmico passou a rotacionar deterministicamente por minuto, reduzindo starvation dos IDs mais altos;
-- novos dados recebem marcador `exit_runtime_v2_provider_stability`; migração de bancos existentes marca dados anteriores como `exit_runtime_v1`.
+Total registrado: 59 sinais = 19 históricos + 40 forward.
 
-Baseline antes da mudança: 150 testes aprovados.
-Após a primeira correção: 156 testes aprovados, zero falhas.
+### 5 minutos
 
-Estado:
-- correção: IMPLEMENTADA;
-- validação operacional pós-correção: PENDENTE;
-- polling 1m pós-correção: EM TESTE;
-- resultados econômicos: NÃO usar ainda para escolher política;
-- próxima etapa planejada: adicionar/confirmar telemetria operacional mínima e executar validação curta de 60–90 min antes de qualquer nova coleta longa.
+- cobertura 57/59 = 96,6%;
+- WR 33,3%;
+- média/mediana -0,44% / -1,60%;
+- PF 0,84;
+- média sem maior vencedor -1,05%;
+- a 1% de slippage por lado, o edge observado não é positivo.
 
-### Telemetria pós-correção
-Foi adicionada telemetria persistente `provider_http_attempts` para cada tentativa HTTP real do GeckoTerminal, registrando runtime, timestamp, path lógico, número da tentativa, status HTTP, latência, `Retry-After`, outcome e erro. A escrita é best-effort e não pode interromper a coleta de preço. Não registra API keys/segredos.
+### 15 minutos
 
-Limitação conhecida: a telemetria HTTP ainda não grava `signal_id` diretamente; a associação pode ser reconstruída pelo path/pool e cronologia. Telemetria detalhada de ciclos vazios do scheduler continua como melhoria opcional, não bloqueadora para a primeira validação curta porque a estabilidade do scheduler já foi aprovada na auditoria de 6h.
+- cobertura 53/59 = 89,8%;
+- WR 45,3%;
+- média/mediana +2,08% / -1,15%;
+- PF 1,49;
+- melhor +118,40%, pior -97,93%;
+- média sem maior vencedor -0,16%;
+- missingness e dependência de outlier impedem promoção.
 
-## 2026-08-29 — validação operacional runtime v2 e correção adaptativa runtime v3
+### 60 minutos
 
-### Resultado da validação curta v2 (90 min)
+- cobertura 46/59 = 78,0%;
+- WR 45,7%;
+- média/mediana +5,28% / -0,14%;
+- PF 1,54;
+- média sem maior vencedor +2,88%;
+- 22% de falhas de preço dominam a incerteza.
 
-Execução observada entre aproximadamente 17:26 e 18:56 BRT, mantendo PAPER/READ ONLY,
-`wave_v3_volume_integrity`, mesmo T0 e as cinco políticas congeladas.
+Conclusão: `wave_v3_volume_integrity` permanece **EM TESTE**. Pode ser mais útil como detector de oportunidade/contexto do que como regra final de compra, mas isso é hipótese e não alteração da estratégia.
 
-Banco auditado: `copytrader(8).db`.
+## Exit Engine — checkpoint 2026-08-31
 
-Resultados de infraestrutura:
-- 466 tentativas HTTP reais do GeckoTerminal;
-- 305 HTTP 200 e 161 HTTP 429;
-- 97 consultas receberam 429 na tentativa 1; 64 ainda receberam 429 na tentativa 2;
-- todas as consultas que chegaram à tentativa 3 recuperaram, portanto nenhum 429 terminou como
-  `temporary_provider_error` nesta execução;
-- nenhum `exit_position` foi definitivamente perdido por HTTP 429;
-- 300 observações de saída no runtime v2: 207 concluídas e 93 falhas;
-- cobertura bruta de observações: 69,0%, contra 67,2% na execução PRE-FIX;
-- as 93 falhas finais foram `distant_historical_candle`, não 429;
-- scheduler sob carga perdeu precisão: em 284 intervalos consecutivos, mediana 60s, p95 120s,
-  máximo 121s e 40 intervalos acima de 90s;
-- causa dominante: retries de 4s/8s recuperavam as consultas, mas bloqueavam o ciclo e faziam o
-  polling seguinte atrasar;
-- funnel permaneceu íntegro: 6 discovery rounds, 226 analisados, 169 válidos, 9 candidatos v3,
-  6 sinais novos e 0 rejeições de persistência;
-- novos sinais 104–109 receberam cinco políticas cada;
-- SQLite `integrity_check` e `quick_check`: ok; nenhuma violação de foreign key.
+25 sinais possuíam todas as políticas fechadas no checkpoint.
 
-Conclusão v2:
-- semântica de erro temporário: APROVADA;
-- 429 causando perda definitiva de posição: CORRIGIDO na amostra;
-- telemetria HTTP: APROVADA;
-- estabilidade de polling 1m sob 429: NÃO APROVADA;
-- coleta forward longa: BLOQUEADA até nova correção operacional.
+- fixed15: média -1,94%, mediana -1,68%, PF 0,67;
+- fixed60: média -4,45%, mediana -1,26%, PF 0,65;
+- SL10: média -18,88%, mediana -4,23%, PF 0,10;
+- TP20: média +4,17%, mediana -1,35%, PF 2,29, média sem melhor +3,49%;
+- trailing10: média -17,80%, mediana -4,68%, PF 0,10.
 
-### Runtime v3 — `exit_runtime_v3_adaptive_provider_budget`
+`take_profit_20_v1` é **PROMISSOR / EM TESTE**, não vencedor. Cobertura desigual e amostra pequena impedem seleção. SL/trailing sob observação por candle não representam stop garantido de -10%.
 
-**IMPLEMENTADO / TESTADO EM SUÍTE / AINDA NÃO VALIDADO OPERACIONALMENTE.**
+## Wallet Strategy Intelligence — evidência atual
 
-Correção mínima implementada sem alterar estratégia, T0 ou parâmetros das saídas:
-- rate-limit passa a ser compartilhado globalmente entre instâncias do provider no mesmo processo,
-  evitando reset do pacing entre ciclos/discovery;
-- após HTTP 429, entra em modo conservador de 12s entre chamadas por uma janela de 5 minutos;
-- `Retry-After` continua sendo respeitado como cooldown mínimo quando útil;
-- máximo de duas tentativas HTTP por consulta; removido o padrão de três tentativas que gerava
-  ciclos de ~120s;
-- orçamento temporal por instância/ciclo de 52s; quando a próxima chamada ultrapassaria o orçamento,
-  retorna `provider_cycle_budget_exhausted` sem fazer novo HTTP;
-- `provider_cycle_budget_exhausted` é retryable e NÃO consome contadores de retry de posições,
-  observações ou checkpoints;
-- trajetória dinâmica forward é priorizada antes de benchmarks fixos e checkpoints históricos,
-  pois estes podem consultar posteriormente o candle exato sem alterar o resultado;
-- no monitor híbrido, settlement e discovery foram desacoplados: quando ambos vencem no mesmo
-  instante, o ciclo de preço roda primeiro; o radar persiste/enrola novos sinais com
-  `--defer-price-update` e não executa uma segunda coleta de preço embutida; isso evita que a
-  latência do discovery some ao orçamento de polling e crie gaps artificiais de ~120s;
-- sinais que possuem apenas políticas fixed-time abertas deixam de consumir observação dinâmica
-  desnecessária;
-- falha dinâmica não altera mais retry/status de posições fixed-time;
-- erros temporários de fixed-time permanecem abertos; somente erros não-retryable podem encerrar a
-  posição por retry limit;
-- telemetria HTTP ganhou `wait_ms` e `control_mode` (`normal` / `rate_limited`);
-- monitor imprime duração real de settlement/discovery e estimativa de carga normal versus
-  rate-limited;
-- `start-monitor.ps1` foi tornado ASCII-safe para Windows PowerShell 5.1, removendo o travessão que
-  causava ParserError em arquivos UTF-8 sem BOM.
+### `7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH`
 
-Validação local antes de publicação:
-- migração aplicada em cópia de `copytrader(8).db`: `integrity_check = ok`, 466 registros de
-  telemetria preservados e novas colunas adicionadas sem perda;
-- suíte completa: **168 testes, 168 aprovados, zero falhas**;
-- `python -m compileall -q .`: aprovado;
-- `git diff --check`: aprovado.
+- 94 swaps / 36 tokens / 306,3 dias;
+- fingerprint: `one_day|mixed_exit|occasional_reentry|moderate`;
+- intensidade em dia ativo: mediana 1 swap/dia;
+- first exit mediano 18,5h;
+- roundtrip observado 72,2%;
+- multi-sell 42,3%; reentry 19,2%;
+- 21 ciclos complete-like; evidence-ready descritivamente.
 
-Critério da próxima validação curta (60–90 min):
-- manter v3/exit policies congelados e o mesmo T0;
-- p95 do polling voltar próximo de 60s, sem cauda recorrente em ~120s;
-- reduzir drasticamente a incidência de 429 por tentativa;
-- `temporary_provider_error` definitivo em posição = 0;
-- `provider_cycle_budget_exhausted` pode ocorrer sob excesso de carga, mas não pode consumir retry
-  nem atrasar o scheduler; deve ser auditado como deferimento operacional;
-- verificar cobertura dinâmica separando `distant_historical_candle`, 429 e budget deferral;
-- somente após aprovação retomar coleta forward longa.
+Hipótese forward congelada H1, a verificar com >=10 novos roundtrips: first exit >6h, multi-sell >=25%, reentry <40%.
+
+### `Gf9XgdmvNHt8fUTFsWAccNbKeyDXsgJyZN8iFJKg5Pbd`
+
+- 71 swaps / 36 tokens / 21,2 dias;
+- fingerprint: `ultra_short|single_exit_dominant|rare_reentry|moderate`;
+- first exit mediano 5,3min;
+- roundtrip 36,1%; sequência incompleta;
+- evidence-ready: NÃO.
+
+H2, somente após amostra forward adequada: first exit <15m, multi-sell <=25%, reentry <15%.
+
+### `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
+
+- 93 swaps / 5 tokens / 0,2 dia;
+- fingerprint: `ultra_short|staged_exit_dominant|frequent_reentry|high_frequency`;
+- first exit mediano 1,2min;
+- amostra de tokens/janela muito estreita;
+- evidence-ready: NÃO.
+
+H3 só pode ser avaliada após >=10 tokens e >=10 complete-like.
+
+Nenhum arquétipo multi-wallet está confirmado e nenhuma dessas fingerprints prova edge.
+
+## Wallet Forward + Jupiter
+
+Coorte inicial:
+
+- 7mPti;
+- Gf9X;
+- 3tc4.
+
+Jupiter smoke real fora da rede escolar:
+
+- API key aceita;
+- SOL -> USDC retornou rota `metis`;
+- resposta parseada;
+- sem `taker`, nenhuma transação foi montada;
+- nenhuma ordem foi enviada.
+
+Smoke integrado de ~3 minutos:
+
+- run `wallet-forward-1788212954-67ee16b5`;
+- 3 wallets;
+- polling 30s;
+- 6 ciclos;
+- zero falhas de sync/bootstrap;
+- zero ações forward porque as wallets não operaram na janela;
+- run finalizada `COMPLETED`;
+- checkpoint corretamente retornou `SEM AMOSTRA`.
+
+Classificação:
+
+- orquestração/manifest/bootstrap/RPC/checkpoint: **VALIDADO OPERACIONALMENTE em smoke curto**;
+- evento real `Wallet BUY -> detector -> Jupiter -> persistência -> causal replay`: **AGUARDANDO AMOSTRA**;
+- coleta de 6h em internet estável: liberada tecnicamente e ainda pendente de resultado.
+
+Comando preferido:
+
+```powershell
+python wallet_forward_experiment.py `
+  --file wallets/forward-watch-archetypes-2026-08-31.txt `
+  --hours 6 `
+  --interval-seconds 30 `
+  --with-jupiter-quotes
+```
+
+Depois:
+
+```powershell
+python wallet_forward_checkpoint.py
+python evaluate_wallet_forward.py
+python evaluate_wallet_quotes.py
+```
+
+## Pesquisa externa de mercado
+
+Documentos:
+
+- `docs/memecoin-market-research-priors-2026-08-31.md`;
+- `docs/external-evidence-reuse-map-v1.md`;
+- `docs/rejection-intelligence-v1.md`.
+
+Princípios incorporados como priors, não como estratégia:
+
+- traders lucrativos podem pertencer a arquétipos muito diferentes;
+- wallet lucrativa pode ser incopiável por vantagem de timing/creator/sniper;
+- volume público simples pode não conter edge suficiente isoladamente;
+- memecoins têm heavy tails e dependência extrema de poucos winners;
+- liquidez/rota/latência fazem parte da estratégia;
+- volume aparente pode conter wash trading/manipulação;
+- presença simultânea de smart wallets exige placebo/controle antes de inferência causal;
+- estudar rejeitados reduz busca cega e mede false negatives;
+- evidência pre-graduation não deve ser misturada automaticamente com mercado pós-graduação.
+
+Fontes externas são usadas para gerar hipóteses e desenhos experimentais. Nenhum threshold externo é copiado diretamente para produção.
+
+## Social / Opportunity Intelligence
+
+- Fundação de Social Intelligence e persistência de eventos existe.
+- Opportunity Intelligence combina contexto Wave/Wallet/Social causalmente sem score final de trading.
+- Coletor X real ainda é PLANEJADO.
+- Social deve ser testado por valor incremental, nunca como `tweet -> buy`.
+
+## Live readiness
+
+Live permanece **BLOQUEADO**.
+
+Sequência congelada de alto nível:
+
+```text
+causal data
+-> hipótese/estratégia congelada
+-> replay com custos
+-> robustness/missingness/outliers
+-> shadow forward
+-> execution engine real + risk controls
+-> live canary pequeno em wallet separada
+-> comparação live x shadow
+-> escala somente depois
+```
+
+Controles mínimos antes de live incluem limite por trade, exposição total, concorrência, perda diária, kill switch, idempotência, stale-quote protection e reconciliação on-chain.
+
+Não é necessário terminar Wave + Wallet + Social para liberar o primeiro canary; basta **uma** estratégia atravessar todo o funil sem mudança pós-hoc de critérios.
+
+## Limitações e riscos conhecidos
+
+- Solana Tracker credits atualmente bloqueiam nova discovery Wave/leaderboard.
+- GeckoTerminal continua sujeito a cobertura incompleta, distant candles, rate limit e missingness.
+- RPC polling não é streaming; wallets ultra-fast podem ser pouco copiáveis.
+- Quote Jupiter é melhor proxy que candle, mas quote-only não é fill.
+- 1m candles não resolvem ordem intraminuto de TP/SL/trailing.
+- Wallet fingerprints podem refletir inventário preexistente ou cobertura incompleta.
+- Realized PnL de wallets pode esconder perdas não realizadas.
+- Memecoin market data é vulnerável a manipulação e seleção de sobreviventes.
+- Rejection Intelligence começa prospectivamente; não há backfill causal honesto dos snapshots antigos.
+
+## Próximas prioridades
+
+1. Rodar e auditar a coleta Wallet + Jupiter de 6h em internet estável.
+2. Fazer causal replay com latência/custos nos BUYs realmente observados.
+3. Continuar Wallet Strategy Intelligence e decidir se alguma hipótese merece shadow.
+4. Quando o Tracker voltar, continuar Wave v3 congelada e formar Rejection Intelligence prospectivo em paralelo.
+5. Auditar false negatives por barreira sem retunar a própria amostra.
+6. Pesquisar/implementar controles anti-manipulação apenas como features observacionais antes de qualquer gate novo.
+7. Promover a primeira estratégia para shadow somente com critério pré-declarado.
+8. Construir execução real/risk controls apenas depois de uma candidata passar o gate de evidência.
+
+## Regra para handoffs
+
+Ao transferir trabalho entre Copiloto/Work, informar:
+
+- branch/commit atual;
+- status real: implementado/testado/validado/em teste/hipótese/planejado;
+- dados e coorte exatos;
+- critérios congelados;
+- riscos de leakage/missingness;
+- próximo teste e critério de sucesso;
+- nunca chamar uma política/estratégia de vencedora sem evidência suficiente.
