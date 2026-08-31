@@ -187,3 +187,40 @@ def quote_attempt_exists(attempt_key: str) -> bool:
             (attempt_key.strip(),),
         ).fetchone()
     return row is not None
+
+
+def load_successful_quote_keys_by_event(
+    source_event_keys: tuple[str, ...] | list[str],
+) -> dict[str, tuple[str, ...]]:
+    """Return only successful persisted quote keys linked to the exact forward events.
+
+    Event-level linkage prevents a same-token quote captured for another wallet action or
+    another experiment from satisfying the causal replay of this event.
+    """
+    event_keys = tuple(
+        dict.fromkeys(str(item).strip() for item in source_event_keys if str(item).strip())
+    )
+    if not event_keys:
+        return {}
+
+    ensure_quote_attempt_schema()
+    placeholders = ",".join("?" for _ in event_keys)
+    with connection() as conn:
+        result = conn.execute(
+            f"""SELECT source_event_key, quote_key
+            FROM causal_quote_attempts
+            WHERE source_event_key IN ({placeholders})
+              AND side='buy'
+              AND status='success'
+              AND quote_key IS NOT NULL
+            ORDER BY target_at, id""",
+            event_keys,
+        ).fetchall()
+
+    grouped: dict[str, list[str]] = {key: [] for key in event_keys}
+    for row in result:
+        source_event_key = str(row["source_event_key"])
+        quote_key = str(row["quote_key"])
+        if quote_key not in grouped[source_event_key]:
+            grouped[source_event_key].append(quote_key)
+    return {key: tuple(values) for key, values in grouped.items()}
