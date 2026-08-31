@@ -6,6 +6,8 @@ from src.database import connection
 
 RUN_STATUSES = {"ACTIVE", "COMPLETED", "ABORTED"}
 QUOTE_MODES = {"none", "proxy", "assembled_candidate"}
+LEGACY_RUNTIME_VERSION = "wallet_forward_runtime_v1_unversioned"
+CURRENT_RUNTIME_VERSION = "wallet_forward_runtime_v2_causal_boundary"
 
 
 @dataclass(frozen=True)
@@ -22,9 +24,11 @@ class WalletForwardRun:
     copy_size_usd: float
     quote_mode: str
     status: str
+    runtime_version: str
+    quote_intake_grace_seconds: int
 
 
-_SCHEMA = """
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS wallet_forward_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_key TEXT NOT NULL UNIQUE,
@@ -39,6 +43,8 @@ CREATE TABLE IF NOT EXISTS wallet_forward_runs (
     copy_size_usd REAL NOT NULL,
     quote_mode TEXT NOT NULL,
     status TEXT NOT NULL,
+    runtime_version TEXT NOT NULL DEFAULT '{CURRENT_RUNTIME_VERSION}',
+    quote_intake_grace_seconds INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -51,6 +57,22 @@ ON wallet_forward_runs(started_at, id);
 def ensure_wallet_forward_run_schema() -> None:
     with connection() as conn:
         conn.executescript(_SCHEMA)
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(wallet_forward_runs)").fetchall()
+        }
+        # Existing run manifests were created before runtime versioning. Mark them explicitly
+        # as legacy rather than pretending they used the new causal-boundary collector.
+        if "runtime_version" not in existing:
+            conn.execute(
+                "ALTER TABLE wallet_forward_runs ADD COLUMN runtime_version "
+                f"TEXT NOT NULL DEFAULT '{LEGACY_RUNTIME_VERSION}'"
+            )
+        if "quote_intake_grace_seconds" not in existing:
+            conn.execute(
+                "ALTER TABLE wallet_forward_runs ADD COLUMN quote_intake_grace_seconds "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 def _normalize_cohort(cohort: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -78,6 +100,8 @@ def create_wallet_forward_run(
     with_jupiter_quotes: bool,
     copy_size_usd: float,
     quote_mode: str,
+    runtime_version: str = CURRENT_RUNTIME_VERSION,
+    quote_intake_grace_seconds: int = 0,
 ) -> WalletForwardRun:
     key = run_key.strip()
     if not key:
@@ -94,6 +118,11 @@ def create_wallet_forward_run(
         raise ValueError("Jupiter-enabled run cannot use quote_mode=none")
     if not with_jupiter_quotes and quote_mode != "none":
         raise ValueError("run without Jupiter quotes must use quote_mode=none")
+    normalized_runtime = runtime_version.strip()
+    if not normalized_runtime:
+        raise ValueError("runtime_version cannot be empty")
+    if quote_intake_grace_seconds < 0:
+        raise ValueError("quote_intake_grace_seconds must be non-negative")
 
     addresses = _normalize_cohort(cohort)
     delays = _normalize_delays(quote_delays_seconds)
@@ -107,8 +136,9 @@ def create_wallet_forward_run(
                 """INSERT INTO wallet_forward_runs(
                     run_key, started_at, baseline_observation_id, cohort_json,
                     interval_seconds, quote_delays_json, with_jupiter_quotes,
-                    copy_size_usd, quote_mode, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')""",
+                    copy_size_usd, quote_mode, status, runtime_version,
+                    quote_intake_grace_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)""",
                 (
                     key,
                     started_at,
@@ -119,6 +149,8 @@ def create_wallet_forward_run(
                     int(with_jupiter_quotes),
                     copy_size_usd,
                     quote_mode,
+                    normalized_runtime,
+                    quote_intake_grace_seconds,
                 ),
             )
         except Exception as exc:
@@ -126,7 +158,7 @@ def create_wallet_forward_run(
                 raise ValueError(f"wallet forward run already exists: {key}") from exc
             raise
     run = get_wallet_forward_run(key)
-    if run is None:  # defensive; insert above should make this impossible
+    if run is None:
         raise RuntimeError("failed to persist wallet forward run")
     return run
 
@@ -168,6 +200,13 @@ def finish_wallet_forward_run(
     return finished
 
 
+def _select_columns() -> str:
+    return """run_key, started_at, ended_at, baseline_observation_id,
+        end_observation_id, cohort_json, interval_seconds, quote_delays_json,
+        with_jupiter_quotes, copy_size_usd, quote_mode, status,
+        runtime_version, quote_intake_grace_seconds"""
+
+
 def get_wallet_forward_run(run_key: str) -> WalletForwardRun | None:
     key = run_key.strip()
     if not key:
@@ -175,10 +214,7 @@ def get_wallet_forward_run(run_key: str) -> WalletForwardRun | None:
     ensure_wallet_forward_run_schema()
     with connection() as conn:
         row = conn.execute(
-            """SELECT run_key, started_at, ended_at, baseline_observation_id,
-                end_observation_id, cohort_json, interval_seconds, quote_delays_json,
-                with_jupiter_quotes, copy_size_usd, quote_mode, status
-            FROM wallet_forward_runs WHERE run_key=?""",
+            f"SELECT {_select_columns()} FROM wallet_forward_runs WHERE run_key=?",
             (key,),
         ).fetchone()
     return _row_to_run(row) if row is not None else None
@@ -186,10 +222,7 @@ def get_wallet_forward_run(run_key: str) -> WalletForwardRun | None:
 
 def latest_wallet_forward_run(*, completed_only: bool = False) -> WalletForwardRun | None:
     ensure_wallet_forward_run_schema()
-    query = """SELECT run_key, started_at, ended_at, baseline_observation_id,
-        end_observation_id, cohort_json, interval_seconds, quote_delays_json,
-        with_jupiter_quotes, copy_size_usd, quote_mode, status
-        FROM wallet_forward_runs"""
+    query = f"SELECT {_select_columns()} FROM wallet_forward_runs"
     params: tuple[object, ...] = ()
     if completed_only:
         query += " WHERE status='COMPLETED'"
@@ -208,6 +241,12 @@ def _row_to_run(row) -> WalletForwardRun:
         raise ValueError(f"invalid persisted wallet forward run status: {status}")
     if quote_mode not in QUOTE_MODES:
         raise ValueError(f"invalid persisted wallet forward quote mode: {quote_mode}")
+    runtime_version = str(row["runtime_version"])
+    if not runtime_version:
+        raise ValueError("persisted wallet forward runtime_version cannot be empty")
+    grace = int(row["quote_intake_grace_seconds"])
+    if grace < 0:
+        raise ValueError("persisted quote intake grace cannot be negative")
     return WalletForwardRun(
         run_key=str(row["run_key"]),
         started_at=int(row["started_at"]),
@@ -225,4 +264,6 @@ def _row_to_run(row) -> WalletForwardRun:
         copy_size_usd=float(row["copy_size_usd"]),
         quote_mode=quote_mode,
         status=status,
+        runtime_version=runtime_version,
+        quote_intake_grace_seconds=grace,
     )
