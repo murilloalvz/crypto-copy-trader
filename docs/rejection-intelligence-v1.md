@@ -19,6 +19,17 @@ A inspiração metodológica vem de trabalhos públicos de **Post-Rejection Foll
 
 A ideia genérica de acompanhar rejeições é reaproveitável. O próprio depósito informa que existem pedidos de patente pendentes relacionados a metodologias específicas de trading/DEX. Portanto, este projeto **não copia filtros proprietários ou lógica específica alegadamente protegida**; aproveita apenas o desenho científico genérico de registrar a decisão e observar o desfecho.
 
+## Integração com o Wave Funnel
+
+Toda `record_discovery_run(...)` concluída agora chama o sidecar de Rejection Intelligence **depois** de persistir e confirmar `wave_discovery_runs` e `wave_discovery_candidates`.
+
+Isso preserva duas propriedades:
+
+1. o sidecar referencia um `run_id` já comprometido no SQLite;
+2. nenhuma lógica de Rejection Intelligence participa da decisão `passed`, do Wave Score ou da criação do sinal.
+
+Se a fonte de discovery falhar, não inventamos uma coorte de rejeição.
+
 ## O que é persistido
 
 Toda nova rejeição produzida por uma discovery bem-sucedida passa a registrar, no instante da decisão:
@@ -62,13 +73,17 @@ Por segurança de orçamento do GeckoTerminal, isso é explícito e não roda es
 python rejection_lab.py --settle --max-checks 12
 ```
 
-Sem `--settle`, o CLI apenas lê o banco e não consulta preço externo.
+Sem `--settle`, o CLI não faz requests externos de preço. Novas discoveries já selecionam a amostra automaticamente. Para uma run antiga que já possua snapshots de Rejection Intelligence mas não tenha sido selecionada, existe um comando manual explícito:
+
+```powershell
+python rejection_lab.py --run-id <RUN_ID> --select --select-limit 12
+```
 
 Erros temporários continuam `pending` e podem ser tentados novamente. Erros permanentes ficam `failed`. A ausência de preço permanece visível e entra na análise de missingness; não é apagada.
 
 ## Métricas v1
 
-Por horizonte:
+Por horizonte, na amostra total:
 
 - selecionados;
 - completos, pendentes e falhos;
@@ -78,6 +93,8 @@ Por horizonte:
 - proporção acima de 0%;
 - proporção >= +20%;
 - proporção <= -25%.
+
+Além disso, o relatório cria uma seção **BARREIRA ÚNICA — OUTCOMES ISOLADOS**. Ela calcula as mesmas métricas somente para tokens rejeitados por exatamente uma barreira. Isso evita atribuir o desfecho a `liquidity_low`, por exemplo, quando o mesmo token também falhou em risco, concentração e volume.
 
 Os cortes `+20%` e `-25%` são **descrições**, não novos filtros, take profits ou stop losses.
 
@@ -101,6 +118,7 @@ A comparação mais informativa no futuro será entre:
 - O preço pós-rejeição é observacional; não representa fill executável.
 - Um token pode não ter preço futuro porque morreu, perdeu pool ou o provider não conseguiu observá-lo. Isso pode ser informativo e não deve ser silenciosamente removido.
 - Não há correção causal automática para diferenças entre tokens aceitos/rejeitados.
+- A seção por barreira única melhora atribuição descritiva, mas ainda não transforma a comparação em experimento randomizado.
 - O laboratório mede qualidade do filtro, não prova edge de execução.
 
 ## Fluxo
@@ -112,7 +130,8 @@ Wave discovery
   -> REJECT salva snapshot
        -> amostra limitada/estratificada
        -> 5m / 15m / 60m follow-up
-       -> relatório por barreira
+       -> relatório total
+       -> relatório isolado por barreira única
 ```
 
 ## Guardrails
