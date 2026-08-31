@@ -2,7 +2,7 @@
 
 ## Status
 
-PLANEJADO como arquitetura de pesquisa. A camada causal básica de eventos sociais já está IMPLEMENTADA em `src/social_intelligence.py`. Wallet Strategy Lab v1 também está IMPLEMENTADO. Nenhum destes componentes altera automaticamente `wave_v3_volume_integrity`.
+**IMPLEMENTADO como infraestrutura de pesquisa** em `src/opportunity_intelligence.py`, `src/social_intelligence.py` e `src/social_features.py`. Wallet Strategy Lab e comparação cross-wallet também estão implementados. Nenhum destes componentes altera automaticamente `wave_v3_volume_integrity` e nenhum deles gera ordem.
 
 ## Tese
 
@@ -15,7 +15,7 @@ wallet behavior
       +
 social / X
       ↓
-opportunity context
+causal opportunity context
       ↓
 strategy hypothesis
       ↓
@@ -24,45 +24,84 @@ causal replay → execution stress → shadow
 
 A meta não é criar um score alto por somar indicadores. A meta é medir se sinais independentes, disponíveis antes da decisão, acrescentam informação sobre o resultado futuro e se esse ganho sobrevive à execução realista.
 
-## Sensores
+## Contrato temporal
 
-### 1. Market / Wave
+O ponto central desta camada é distinguir o momento em que algo aconteceu do momento em que o sistema realmente soube disso.
+
+- Wave usa `detected_at`.
+- Wallet usa `chain_time` **e** `observed_at`.
+- Social usa `created_at` **e** `observed_at`.
+- Um contexto em `as_of=T` só pode usar informações com `observed_at <= T` ou `detected_at <= T`.
+
+Isso impede um erro grave de replay: sincronizar depois uma transação antiga e fingir que o bot conhecia aquela compra no momento original da blockchain.
+
+## 1. Market / Wave
 
 `wave_v3_volume_integrity` continua congelada enquanto a coleta forward existente amadurece. Ela é uma fonte de oportunidade de mercado, não necessariamente a estratégia final inteira.
 
-### 2. Wallet Strategy Intelligence
+`WaveOpportunityEvidence` só entra no contexto quando `detected_at <= as_of`.
+
+## 2. Wallet Strategy Intelligence
 
 O Wallet Strategy Lab compara comportamento de várias wallets sem exigir a Solana Tracker Data API. Ele descreve holding, frequência, scale-in, reentry, full exit versus staged exit, runner observado e DEX mix.
 
-O objetivo é descobrir padrões repetidos entre wallets, não copiar uma transação individual depois que ela já aconteceu.
+A comparação cross-wallet separa recorrência de padrão de qualidade da evidência. Uma fingerprint repetida serve para formular hipótese; não prova PnL, intenção ou copyability.
 
-### 3. Social / X Intelligence
+### Regra causal para wallets
 
-O tracker social futuro deve registrar eventos com dois tempos separados:
+`WalletActionObservation` exige `chain_time` e `observed_at`. O SQLite histórico atual de `transactions` registra `block_time`, mas não registra o instante real em que um futuro coletor live viu a transação.
+
+Portanto, backfill RPC atual é útil para reconstrução comportamental, mas **não deve ser usado como prova de confirmação live histórica ou latência de cópia**. Antes de medir `wallet entrou → nosso sistema decidiu`, será necessário um coletor forward que persista o instante de observação.
+
+## 3. Social / X Intelligence
+
+Eventos sociais usam dois tempos separados:
 
 - `created_at`: quando o post/evento foi publicado;
 - `observed_at`: quando nosso coletor realmente tomou conhecimento dele.
 
 Replay histórico só pode usar eventos cujo `observed_at <= decision_time`. Essa regra evita um look-ahead sutil em que um post antigo, descoberto horas depois, seria tratado como se o bot o conhecesse desde a publicação.
 
-A fundação atual também permite snapshots repetidos do mesmo post. Em cada decisão histórica, somente o snapshot de engajamento mais recente já observado naquele instante pode ser usado.
+### Snapshot de engagement sem falso burst
+
+A camada social foi endurecida para snapshots repetidos do mesmo post:
+
+- entrada do post em uma janela = **primeira vez em que o coletor o observou**;
+- likes/reposts/replies/quotes = snapshot mais recente que já era observável em `as_of`;
+- uma atualização de engagement horas depois não transforma um post antigo em nova menção de 5 minutos.
+
+Isso evita um falso sinal social que poderia inflar artificialmente bursts em replay.
 
 ## Social features v1
 
-A primeira versão é deliberadamente descritiva e não possui pesos de trading.
+`SocialBurstFeatures` é deliberadamente descritivo e não possui pesos de trading.
 
-Para janelas como 5m, 15m e 60m ela mede:
+Ele mede:
 
-- quantidade de eventos;
+- quantidade de eventos na janela recente;
 - autores únicos;
-- posts originais;
-- reposts/quotes;
-- likes;
-- reposts;
-- replies;
-- quotes.
+- taxa de eventos por minuto;
+- quantidade/taxa na parte anterior e não sobreposta da janela-base;
+- razão de aceleração quando existe baseline anterior;
+- diversidade de autores;
+- proporção de posts originais;
+- engagement total e por evento observado.
 
-Essas métricas só viram sinal depois de testes causais. Não existe no v1 uma regra como "muitos likes = comprar".
+Se o baseline anterior for zero, a razão de aceleração fica `None` em vez de virar infinito. Nenhuma regra atual chama o resultado de bullish, viral ou tradeable.
+
+## Opportunity Context
+
+`OpportunityContextSnapshot` junta os canais que estavam realmente disponíveis em `as_of` e expõe:
+
+- evidência Wave elegível;
+- compras/vendas de wallets já observadas;
+- quantidade de wallets únicas comprando/vendendo;
+- features sociais causais;
+- lista de canais disponíveis.
+
+Não existe `score`, peso `Wave + Wallet + X`, threshold de compra ou escolha automática de política nesta fase.
+
+Isso é deliberado. Pesos só devem surgir depois que replay causal e forward/shadow mostrarem ganho incremental fora da amostra.
 
 ## Identidade do token
 
@@ -96,14 +135,14 @@ Métricas mínimas:
 - drawdown;
 - MFE/MAE;
 - dependência dos maiores vencedores;
-- comportamento por regime/arquetipo;
+- comportamento por regime/arquétipo;
 - taxas/slippage;
 - atraso de detecção e execução;
 - liquidez executável.
 
 ## Strategy Router
 
-O Strategy Router permanece PLANEJADO. Ele só deve existir depois que mais de um arquétipo de estratégia tiver evidência própria.
+O Strategy Router permanece **PLANEJADO**. Ele só deve existir depois que mais de um arquétipo de estratégia tiver evidência própria.
 
 Possível fluxo futuro:
 
@@ -121,17 +160,18 @@ shadow concorrente
 
 Não devemos treinar um roteador para escolher, olhando para trás, qual política teria vencido cada trade. Isso criaria leakage de seleção.
 
-## Ordem de construção
+## Ordem de construção atual
 
-1. ampliar Wallet Strategy Lab para múltiplas wallets;
-2. conseguir uma nova fonte/coorte de wallets sem confundir research com copyability;
-3. implementar coletor social/X com timestamps de observação;
-4. persistir eventos e resolver mint/token com segurança;
-5. juntar contextos apenas por informação disponível no instante da decisão;
-6. fazer replay causal de hipóteses pré-declaradas;
-7. stress de taxas, slippage, liquidez e atraso;
-8. promover sobreviventes para shadow concorrente;
-9. só então considerar Strategy Router e eventual live controlado.
+1. ampliar a coorte multi-wallet e procurar fingerprints recorrentes;
+2. obter novas wallets sem confundir research com copyability;
+3. construir coletor forward de wallet actions com `observed_at` real;
+4. implementar coletor social/X com timestamps de observação;
+5. persistir eventos e resolver mint/token com segurança;
+6. juntar contextos apenas por informação disponível no instante da decisão;
+7. fazer replay causal de hipóteses pré-declaradas;
+8. stress de taxas, slippage, liquidez e atraso;
+9. promover sobreviventes para shadow concorrente;
+10. só então considerar Strategy Router e eventual live controlado.
 
 ## Regra de ouro
 
