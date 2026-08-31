@@ -40,6 +40,23 @@ def _load_addresses(positional: list[str], file_path: str | None) -> list[str]:
     return list(dict.fromkeys(addresses))
 
 
+def _poll_new_buys(
+    cursor_id: int,
+    *,
+    addresses: list[str],
+):
+    """Freeze MAX(id), then read exactly that interval before advancing the cursor."""
+    newest_id = latest_forward_observation_id()
+    if newest_id <= cursor_id:
+        return cursor_id, []
+    events = load_forward_buys_after(
+        cursor_id,
+        wallet_addresses=addresses or None,
+        through_id=newest_id,
+    )
+    return newest_id, events
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -95,8 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not 0 < args.hours <= 24:
-        print("Erro: --hours precisa ficar entre >0 e 24.", file=sys.stderr)
+    if not 0 < args.hours <= 24.1:
+        print("Erro: --hours precisa ficar entre >0 e 24.1.", file=sys.stderr)
         return 2
     if args.after_id is not None and args.after_id < 0:
         print("Erro: --after-id precisa ser >= 0.", file=sys.stderr)
@@ -142,11 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     drain_deadline = intake_deadline + max(delays) + 60
     last_request_mono: float | None = None
     discovered_buys = attempts = successes = failures = duplicates = 0
+    intake_closed = False
 
-    print("Crypto Copy Trader — Wallet Quote Watch v1")
+    print("Crypto Copy Trader — Wallet Quote Watch v2")
     print("Modo: RESEARCH / READ ONLY — Jupiter GET /order; sem assinatura e sem /execute.")
     print(
-        f"Baseline wallet_forward_observations id={cursor_id} | duração {args.hours:.2f}h | "
+        f"Baseline wallet_forward_observations id={cursor_id} | duração {args.hours:.3f}h | "
         f"delays {list(delays)} | notional USDC ${args.copy_size_usd:.2f} | "
         f"wallets {'todas' if not addresses else len(addresses)}"
     )
@@ -159,29 +177,39 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
+    def ingest_once(*, final_sweep: bool = False) -> None:
+        nonlocal cursor_id, discovered_buys, pending
+        cursor_id, events = _poll_new_buys(cursor_id, addresses=addresses)
+        if not events:
+            if final_sweep:
+                print(f"[final intake] cursor fechado em observation id={cursor_id}; sem BUY novo.")
+            return
+        discovered_buys += len(events)
+        pending.extend(schedule_buy_quotes(events, delays_seconds=delays))
+        pending.sort(key=lambda item: (item.target_at, item.event_id, item.delay_seconds))
+        prefix = "final wallet buy" if final_sweep else "wallet buy"
+        for event in events:
+            print(
+                f"[{prefix}] {event.wallet_address[:10]}… "
+                f"token {event.token_mint[:10]}… observed_at={event.observed_at}"
+            )
+        if final_sweep:
+            print(
+                f"[final intake] {len(events)} BUY(s) adicionados; cursor fechado em id={cursor_id}."
+            )
+
     try:
         while time.monotonic() < drain_deadline:
             now_mono = time.monotonic()
             if now_mono < intake_deadline:
-                newest_id = latest_forward_observation_id()
-                if newest_id > cursor_id:
-                    events = load_forward_buys_after(
-                        cursor_id, wallet_addresses=addresses or None
-                    )
-                    cursor_id = newest_id
-                    if events:
-                        discovered_buys += len(events)
-                        pending.extend(schedule_buy_quotes(events, delays_seconds=delays))
-                        pending.sort(
-                            key=lambda item: (item.target_at, item.event_id, item.delay_seconds)
-                        )
-                        for event in events:
-                            print(
-                                f"[wallet buy] {event.wallet_address[:10]}… "
-                                f"token {event.token_mint[:10]}… observed_at={event.observed_at}"
-                            )
+                ingest_once()
+            elif not intake_closed:
+                # One explicit bounded sweep closes the intake so rows committed near the
+                # deadline are not lost merely because quote processing occupied the loop.
+                ingest_once(final_sweep=True)
+                intake_closed = True
 
-            if not pending and time.monotonic() >= intake_deadline:
+            if not pending and intake_closed:
                 break
 
             now_epoch = int(time.time())
@@ -266,8 +294,14 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"compras forward novas: {discovered_buys} | probes tentados: {attempts} | "
         f"sucesso: {successes} | falhas: {failures} | duplicados ignorados: {duplicates} | "
-        f"pendentes não executados: {len(pending)}"
+        f"pendentes não executados: {len(pending)} | final cursor id={cursor_id}"
     )
+    if pending:
+        print(
+            "ATENÇÃO: o drain deadline terminou com probes ainda pendentes; o checkpoint deve "
+            "comparar tentativas reais contra BUYs×delays esperados e manter essa missingness visível.",
+            file=sys.stderr,
+        )
     print(
         "Quote-only sem taker permanece proxy. Mesmo assembled_tx=yes é só uma transação "
         "candidata montada pelo provider; não prova landing nem fill real."
