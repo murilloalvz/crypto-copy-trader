@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Audita tokens rejeitados pelo Wave sem alterar os filtros. "
-            "RESEARCH/READ ONLY: acompanha contrafactuais de rejeição."
+            "RESEARCH/NO ORDERS: acompanha contrafactuais de rejeição."
         )
     )
     parser.add_argument(
@@ -29,10 +29,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="wave_discovery_runs.id; padrão = última run com rejeições",
     )
     parser.add_argument(
+        "--select",
+        action="store_true",
+        help=(
+            "agenda explicitamente uma amostra de follow-up; normalmente desnecessário, "
+            "pois novas discoveries já fazem seleção automática"
+        ),
+    )
+    parser.add_argument(
         "--select-limit",
         type=int,
         default=12,
-        help="máximo de rejeições acompanhadas por run",
+        help="máximo de rejeições acompanhadas por run quando --select for usado",
     )
     parser.add_argument(
         "--settle",
@@ -69,7 +77,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    selection = select_rejection_followups(run_id, max_tokens=args.select_limit)
+    selection = None
+    if args.select:
+        selection = select_rejection_followups(run_id, max_tokens=args.select_limit)
+
     settlement = None
     if args.settle:
         settlement = settle_due_rejection_followups(
@@ -80,17 +91,18 @@ def main(argv: list[str] | None = None) -> int:
     summary = summarize_rejection_lab(run_id)
 
     print("Crypto Copy Trader — Rejection Intelligence v1")
-    print("Modo: RESEARCH / READ ONLY — rejeição observada não vira sinal de compra.")
+    print("Modo: RESEARCH / NO ORDERS — rejeição observada não vira sinal de compra.")
     print(f"Discovery run_id: {run_id}")
     print(
         f"Rejeições: {summary.rejection_count} | dados válidos: {summary.data_valid_count} | "
         f"barreira única: {summary.single_barrier_count} | acompanhadas: {summary.selected_count}"
     )
-    print(
-        f"Seleção: disponíveis {selection.available_count} | "
-        f"já selecionadas {selection.already_selected_count} | "
-        f"novas {selection.newly_selected_count} | total {selection.selected_total}"
-    )
+    if selection is not None:
+        print(
+            f"Seleção explícita: disponíveis {selection.available_count} | "
+            f"já selecionadas {selection.already_selected_count} | "
+            f"novas {selection.newly_selected_count} | total {selection.selected_total}"
+        )
     if settlement is not None:
         print(
             f"Settlement: tentados {settlement.attempted} | completos {settlement.completed} | "
