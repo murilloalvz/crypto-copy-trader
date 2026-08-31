@@ -51,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file", help="arquivo UTF-8 com uma wallet por linha")
     parser.add_argument("--hours", type=float, default=1.0)
     parser.add_argument(
+        "--after-id",
+        type=int,
+        help=(
+            "baseline explícito de wallet_forward_observations. Quando omitido, congela o "
+            "último id existente no startup."
+        ),
+    )
+    parser.add_argument(
         "--delays-seconds",
         type=int,
         nargs="+",
@@ -90,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     if not 0 < args.hours <= 24:
         print("Erro: --hours precisa ficar entre >0 e 24.", file=sys.stderr)
         return 2
+    if args.after_id is not None and args.after_id < 0:
+        print("Erro: --after-id precisa ser >= 0.", file=sys.stderr)
+        return 2
     delays = tuple(dict.fromkeys(args.delays_seconds))
     if not delays or any(delay < 0 for delay in delays):
         print("Erro: delays precisam ser >= 0.", file=sys.stderr)
@@ -122,7 +133,9 @@ def main(argv: list[str] | None = None) -> int:
     jupiter = JupiterSwapV2Client(api_key=settings.jupiter_api_key)
     decimals = TokenDecimalsCache(SolanaClient())
 
-    cursor_id = latest_forward_observation_id()
+    cursor_id = (
+        args.after_id if args.after_id is not None else latest_forward_observation_id()
+    )
     pending = []
     started = time.monotonic()
     intake_deadline = started + args.hours * 3_600
