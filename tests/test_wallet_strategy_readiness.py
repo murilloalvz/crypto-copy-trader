@@ -45,13 +45,17 @@ class WalletStrategyReadinessTests(unittest.TestCase):
         swaps = []
         for index in range(12):
             buy_at = index * 86_400
-            swaps.append(_swap(f"T{index}", buy_at, 100))
+            token = f"T{index}"
+            swaps.append(_swap(token, buy_at, 60))
+            if index < 8:
+                swaps.append(_swap(token, buy_at + 60, 40))
             if index < 4:
-                swaps.append(_swap(f"T{index}", buy_at + 3_600, -100))
+                swaps.append(_swap(token, buy_at + 3_600, -100))
         fingerprint = build_wallet_strategy_fingerprint("sequence-gap", swaps)
 
         result = assess_wallet_strategy_readiness(fingerprint)
 
+        self.assertGreaterEqual(fingerprint.swap_count, 20)
         self.assertFalse(result.evidence_ready)
         self.assertIn("roundtrip_coverage_below_50", result.blockers)
         self.assertIn("SELECTIVE_BACKFILL_SEQUENCE", result.next_actions)
