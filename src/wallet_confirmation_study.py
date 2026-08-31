@@ -2,6 +2,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from src.database import connection
+from src.strategy_versions import WAVE_STRATEGY_VERSION
 from src.wallet_confirmation_placebo import (
     ConfirmationPolicy,
     WalletCohort,
@@ -61,6 +62,7 @@ class ConfirmationStudySpec:
     horizons_minutes: tuple[int, ...]
     context_scope: str = DEFAULT_CONTEXT_SCOPE
     matching_method_version: str = DEFAULT_MATCHING_METHOD_VERSION
+    wave_strategy_version: str = WAVE_STRATEGY_VERSION
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -78,6 +80,8 @@ class ConfirmationStudySpec:
             raise ValueError("unsupported context_scope for v1")
         if not self.matching_method_version.strip():
             raise ValueError("matching_method_version cannot be empty")
+        if not self.wave_strategy_version.strip():
+            raise ValueError("wave_strategy_version cannot be empty")
         horizons = tuple(int(value) for value in self.horizons_minutes)
         if not horizons or any(value <= 0 for value in horizons):
             raise ValueError("horizons_minutes must contain positive values")
@@ -143,6 +147,9 @@ def _spec_from_json(raw: str) -> ConfirmationStudySpec:
         horizons_minutes=tuple(int(value) for value in payload["horizons_minutes"]),
         context_scope=str(payload["context_scope"]),
         matching_method_version=str(payload["matching_method_version"]),
+        wave_strategy_version=str(
+            payload.get("wave_strategy_version") or WAVE_STRATEGY_VERSION
+        ),
         notes=str(payload.get("notes") or ""),
     )
 
