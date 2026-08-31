@@ -83,7 +83,30 @@ class WalletStrategyCompareTests(unittest.TestCase):
         self.assertGreaterEqual(fingerprint.roundtrip_share_pct, 50.0)
         self.assertGreaterEqual(fingerprint.complete_like_sizing_count, 3)
         self.assertIn("short_observation_window", fingerprint.flags)
+        self.assertIn("strategy_token_sample_too_small", fingerprint.flags)
         self.assertIn("exit_sizing_sample_too_small", fingerprint.flags)
+        self.assertFalse(fingerprint_evidence_ready(fingerprint))
+
+    def test_nine_token_sample_is_descriptive_but_not_ready(self):
+        swaps = []
+        for token_index in range(9):
+            base = token_index * 2 * 86_400
+            token = f"N{token_index}"
+            swaps.extend(
+                [
+                    _swap(token, base, 100),
+                    _swap(token, base + 3_600, -50),
+                    _swap(token, base + 7_200, -50),
+                ]
+            )
+
+        fingerprint = build_wallet_strategy_fingerprint("nine-token", swaps)
+
+        self.assertNotEqual(fingerprint.sample_grade, "INSUFFICIENT")
+        self.assertEqual(fingerprint.token_count, 9)
+        self.assertEqual(fingerprint.roundtrip_share_pct, 100.0)
+        self.assertGreaterEqual(fingerprint.complete_like_sizing_count, 3)
+        self.assertIn("strategy_token_sample_too_small", fingerprint.flags)
         self.assertFalse(fingerprint_evidence_ready(fingerprint))
 
     def test_recurring_signature_requires_multiple_ready_wallets_for_preliminary_support(self):
