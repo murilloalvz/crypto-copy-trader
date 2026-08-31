@@ -51,6 +51,30 @@ class WalletQuoteWatchTests(unittest.TestCase):
             ],
         )
 
+    def test_through_id_freezes_exact_poll_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bounded.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_wallet_forward_observation(
+                    WalletActionObservation("A", "T1", "buy", 100, 110),
+                    observation_key="buy-1",
+                )
+                frozen = latest_forward_observation_id()
+                record_wallet_forward_observation(
+                    WalletActionObservation("A", "T2", "buy", 120, 130),
+                    observation_key="buy-2",
+                )
+
+                first_batch = load_forward_buys_after(0, through_id=frozen)
+                second_batch = load_forward_buys_after(frozen)
+
+        self.assertEqual([item.observation_key for item in first_batch], ["buy-1"])
+        self.assertEqual([item.observation_key for item in second_batch], ["buy-2"])
+
+    def test_invalid_through_id_is_rejected(self):
+        with self.assertRaises(ValueError):
+            load_forward_buys_after(10, through_id=9)
+
     def test_attempt_audit_is_idempotent_and_records_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "attempts.db"
