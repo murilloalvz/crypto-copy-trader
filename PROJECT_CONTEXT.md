@@ -4,32 +4,35 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 
 ## Estado operacional
 
-- Branch de trabalho: `feat/exit-engine-v1`.
-- Modo: **PAPER / RESEARCH / READ ONLY** em relação ao mercado. O projeto não possui fluxo habilitado que assine ou envie transações reais.
-- Persistência: SQLite, `DATABASE_PATH` (padrão `data/copytrader.db`).
-- Estratégia Wave ativa: `wave_v3_volume_integrity`, com entrada **CONGELADA** enquanto a evidência forward é formada.
-- Solana Tracker Data API: atualmente bloqueada por `403 Insufficient credits`; não gastar novas chamadas até reset/restauração de créditos.
-- GeckoTerminal: usado para preços/candles e settlement histórico com pacing/adaptação de rate limit.
-- Solana RPC público: usado no Wallet Forward Watch.
-- Jupiter Swap V2 `GET /order`: integração read-only validada em smoke real fora da rede escolar.
+- Branch ativa: `feat/exit-engine-v1`.
+- Modo de mercado: **PAPER / RESEARCH / READ ONLY**. Nenhum fluxo habilitado assina ou envia transações reais.
+- Persistência: SQLite via `DATABASE_PATH` (padrão `data/copytrader.db`).
+- Estratégia Wave ativa: `wave_v3_volume_integrity`, com entrada **CONGELADA** durante a formação de evidência forward.
+- Solana Tracker Data API: bloqueada por `403 Insufficient credits`; não gastar novas chamadas até reset/restauração.
+- GeckoTerminal: preços/candles/settlement histórico com pacing e budget adaptativo.
+- Solana RPC público: Wallet Forward Watch.
+- Jupiter Swap V2 `GET /order`: integração read-only implementada e smoke real concluído fora da rede escolar.
 - Rede escolar apresentou TLS/certificado raiz não confiável para Jupiter; não usar para coletas longas.
 
-## Princípio de validação
-
-O projeto separa explicitamente:
+## Regra central de validação
 
 ```text
-implementado -> testado -> validado operacionalmente -> evidência econômica -> shadow -> live canary
+IMPLEMENTADO
+-> TESTADO
+-> VALIDADO OPERACIONALMENTE
+-> EVIDÊNCIA ECONÔMICA
+-> SHADOW
+-> LIVE CANARY
 ```
 
-Código funcionando não prova edge. Backtest positivo não libera live. Qualquer estratégia candidata precisa atravessar dados causalmente válidos, custos/slippage, missingness/outliers, forward/shadow e controles de execução antes de capital real.
+Código funcionando não prova edge. Backtest positivo não libera live. Nenhuma política é chamada de vencedora sem cobertura, missingness, custos, outliers, causalidade e validação forward adequados.
 
-## Arquitetura principal
+## Arquitetura atual
 
 ### Wave / paper
 
-- `radar.py`: discovery de tokens, Wave Radar e persistência paper.
-- `src/wave_radar.py`: política, integridade, Wave Score, barreiras e cautions.
+- `radar.py`: token discovery, Wave Radar e persistência paper.
+- `src/wave_radar.py`: integridade, Wave Score, barreiras e cautions.
 - `src/wave_paper.py`: sinais versionados, cooldown e checkpoints 5m/15m/60m.
 - `src/wave_funnel.py`: cobertura e attrition por discovery.
 - `evaluate.py` + `src/wave_metrics.py`: cobertura, retorno, PF, drawdown, Wilson, missingness, outliers e slippage.
@@ -37,171 +40,156 @@ Código funcionando não prova edge. Backtest positivo não libera live. Qualque
 
 ### Exit Engine
 
-- `src/exit_engine.py`: políticas forward pareadas e trajetória observada.
-- `src/exit_metrics.py` + `evaluate_exits.py`: avaliação das políticas.
-- Políticas v1 congeladas: fixed 15m, fixed 60m, SL -10%, TP +20%, trailing 10%.
-- Gatilhos dinâmicos usam apenas candles realmente observados; não há backfill retrospectivo do caminho.
+- `src/exit_engine.py`: coorte forward e políticas pareadas.
+- Políticas v1 congeladas: fixed15, fixed60, SL -10%, TP +20%, trailing 10%.
+- `src/exit_metrics.py` + `evaluate_exits.py`: avaliação pareada.
+- Políticas dinâmicas usam apenas candles realmente observados; não existe reconstrução retroativa do caminho.
 
-### Wallet Intelligence / Strategy Lab
+### Wallet Strategy Intelligence
 
-- `src/wallet_strategy_lab.py`: fingerprint descritivo de holding/exit/reentry/frequência/sizing/DEX.
-- `src/wallet_strategy_compare.py`: comparação entre fingerprints com evidence readiness.
-- `src/wallet_strategy_readiness.py`: fila de evidência e bloqueadores.
-- `src/wallet_forward_observations.py` / `src/wallet_forward_collector.py`: observações forward com `chain_time` e `observed_at` reais.
-- `wallet_watch_forward.py`: observador RPC.
-- Wallet Intelligence não controla a Wave atual.
+- `src/wallet_strategy_lab.py`: fingerprints de holding/exit/reentry/frequência/sizing/DEX.
+- `src/wallet_strategy_compare.py`: comparação multi-wallet.
+- `src/wallet_strategy_readiness.py`: evidence readiness e fila de pesquisa.
+- `src/wallet_forward_observations.py` / `src/wallet_forward_collector.py`: ações forward com `chain_time` e `observed_at`.
+- `wallet_watch_forward.py`: coletor RPC.
+- Wallet Intelligence não altera a Wave atual.
 
 ### Causal Quote / Jupiter / Replay
 
-- `src/jupiter_swap_v2.py`: cliente read-only para Jupiter Swap V2 `/order`; não implementa `/execute`.
-- `src/causal_quotes.py` + `src/causal_quote_store.py`: quote causal com lado BUY/SELL e metadados de rota.
-- `src/wallet_quote_watch.py`: após um BUY forward, agenda quotes em +0/+15/+30/+60/+120s e persiste sucesso **e falha**.
-- `src/wallet_causal_replay.py`: reprocessa decisões apenas com informação disponível após detecção + delay.
-- `wallet_forward_experiment.py`: orquestra Wallet Watch + Quote Watch sob um único run manifest.
-- `wallet_forward_checkpoint.py`: relatório run-scoped; replay de entrada é BUY-only e cada quote é ligado ao evento exato que o originou.
-- Quote-only é proxy causal de preço/rota, não fill. Transação candidata montada também não prova landing/fill.
-
-### Shadow / live readiness
-
-- `src/shadow_execution_store.py`: auditoria de runs e decisões shadow, sem private key, assinatura ou submission.
-- `docs/live-readiness-gates-v1.md`: gates de processo antes de live.
-- Execução real `quote -> route -> tx -> assinatura -> envio -> confirmação -> reconciliação` ainda não está liberada/fechada.
+- `src/jupiter_swap_v2.py`: cliente read-only para `/swap/v2/order`; não implementa `/execute`.
+- `src/causal_quotes.py` + `src/causal_quote_store.py`: quotes causais BUY/SELL e metadados de rota.
+- `src/wallet_quote_watch.py`: agenda quotes +0/+15/+30/+60/+120s após BUY forward e persiste sucesso **e falha**.
+- `src/wallet_causal_replay.py`: replay sem lookahead, usando apenas quotes disponíveis depois de detecção + delay.
+- `wallet_forward_experiment.py`: orquestra Wallet Watch + Quote Watch.
+- `wallet_forward_checkpoint.py`: checkpoint run-scoped, BUY-only para entry feasibility e quotes ligados ao evento que os originou.
+- Quote-only é proxy causal de preço/rota; transação montada também não prova landing/fill.
 
 ### Rejection Intelligence
 
-- `src/rejection_intelligence.py`: sidecar observacional para tokens rejeitados pela Wave.
-- `rejection_lab.py`: auditoria/settlement explícito.
-- Toda nova discovery bem-sucedida registra snapshots de rejeições sem alterar pass/fail.
-- Amostra de follow-up padrão: até 12 rejeições data-valid por run, priorizando single-barrier near misses; horizontes 5m/15m/60m.
-- Erros temporários de preço permanecem pending; permanentes ficam failed; missingness é visível.
-- Relatório inclui distribuição total e outcomes isolados de rejeições com uma única barreira.
-- `+20%` e `-25%` são cortes descritivos, não novos gates.
-- Rejeições antigas sem snapshot causal completo não são reconstruídas com estado futuro.
+- `src/rejection_intelligence.py`: sidecar observacional para rejeições da Wave.
+- `rejection_lab.py`: seleção/auditoria/settlement explícito.
+- Toda nova discovery bem-sucedida salva snapshots causais de rejeições sem alterar pass/fail.
+- Follow-up padrão: até 12 rejeições data-valid por run; prioriza single-barrier near misses; horizontes 5m/15m/60m.
+- Cooldown de 6h por mint reduz repetição artificial da mesma rejeição.
+- Missingness permanece visível; erros temporários ficam pending e permanentes failed.
+- Relatório separa outcomes totais e outcomes de barreira única.
+- `+20%` e `-25%` são cortes descritivos, não TP/SL/gates.
 
-Tabelas adicionais:
+### Market Integrity v1
 
-- `wallet_forward_observations`;
-- `wallet_forward_runs`;
-- `causal_quote_observations`;
-- `causal_quote_attempts`;
-- `shadow_runs` / `shadow_decisions` (schema da camada shadow);
-- `wave_rejection_decisions`;
-- `wave_rejection_followups`.
+- `src/market_integrity.py`: features observacionais de integridade a partir de snapshots causais agregados.
+- `market_integrity_lab.py`: inspeção local de sinais aceitos e rejeições; não precisa de rede.
+- Features: buy pressure, imbalance, shape/aceleração de volume, transações por holder e campos de concentração/risco.
+- `existing_gate_flags` apenas reapresenta thresholds que já pertencem à Wave; nenhum novo filtro foi criado.
+- Não existe manipulation score nem `wash_trading_detected`.
+- Limites explícitos: snapshot agregado não mostra self-trading, grafo de contrapartes, sequência order-level nem relações de funding.
+- Próxima geração anti-manipulação exige dados de microestrutura/participantes antes de qualquer gate novo.
 
-## Estado da Wave v3 — checkpoint 2026-08-31
+### Wallet Confirmation + Placebo v1
 
-Total registrado: 59 sinais = 19 históricos + 40 forward.
+- `src/wallet_confirmation_placebo.py`: núcleo analítico causal para confirmação de wallets com controles placebo.
+- Regra primária do primeiro estudo: janela 300s, >=2 BUY wallets únicas; é parâmetro de pesquisa, não entrada da Wave.
+- Target/placebos precisam ser pré-selecionados, wallet-disjoint e, por padrão, do mesmo tamanho.
+- Placebos devem ser parecidos usando dados **pré-período**: intensidade de atividade, token breadth, holding/fingerprint, DEX mix e cobertura.
+- Target e placebos devem ser avaliados sobre o mesmo relógio/universo de oportunidades.
+- Comparação mantém pending/failed/missing no denominador e reporta target menos mediana dos placebos.
+- Labels são apenas `NO_COMPARABLE_OUTCOMES`, `DESCRIPTIVE_LOW_COVERAGE` e `DESCRIPTIVE_PLACEBO_COMPARISON`; não existe `edge_proven`.
+- As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquéti​pos, não uma cesta econômica já validada.
 
-### 5 minutos
+### Social / Opportunity Intelligence
 
-- cobertura 57/59 = 96,6%;
-- WR 33,3%;
-- média/mediana -0,44% / -1,60%;
-- PF 0,84;
-- média sem maior vencedor -1,05%;
-- a 1% de slippage por lado, o edge observado não é positivo.
+- Fundação de Social Intelligence e persistência de eventos existe.
+- Opportunity Intelligence combina Wave/Wallet/Social causalmente sem score final de trading.
+- Coletor X real ainda é **PLANEJADO**.
+- Social será avaliado por valor incremental; nunca `tweet -> buy`.
 
-### 15 minutos
+### Shadow / live readiness
 
-- cobertura 53/59 = 89,8%;
-- WR 45,3%;
-- média/mediana +2,08% / -1,15%;
-- PF 1,49;
-- melhor +118,40%, pior -97,93%;
-- média sem maior vencedor -0,16%;
-- missingness e dependência de outlier impedem promoção.
+- `src/shadow_execution_store.py`: persistência/auditoria de runs shadow, sem private key/signing/submission.
+- `docs/live-readiness-gates-v1.md`: gates de processo até live canary.
+- Execução real `quote -> route -> tx -> assinatura -> envio -> confirmação -> reconciliação` ainda não está fechada/liberada.
 
-### 60 minutos
+## Wave v3 — checkpoint 2026-08-31
 
-- cobertura 46/59 = 78,0%;
-- WR 45,7%;
-- média/mediana +5,28% / -0,14%;
-- PF 1,54;
-- média sem maior vencedor +2,88%;
-- 22% de falhas de preço dominam a incerteza.
+59 sinais registrados = 19 históricos + 40 forward.
 
-Conclusão: `wave_v3_volume_integrity` permanece **EM TESTE**. Pode ser mais útil como detector de oportunidade/contexto do que como regra final de compra, mas isso é hipótese e não alteração da estratégia.
+| Horizonte | Cobertura | WR | Média | Mediana | PF | Diagnóstico |
+|---|---:|---:|---:|---:|---:|---|
+| 5m | 57/59 = 96,6% | 33,3% | -0,44% | -1,60% | 0,84 | sem edge observado a 1% slippage/lado |
+| 15m | 53/59 = 89,8% | 45,3% | +2,08% | -1,15% | 1,49 | média sem maior winner = -0,16%; outlier/missingness |
+| 60m | 46/59 = 78,0% | 45,7% | +5,28% | -0,14% | 1,54 | 22% failures dominam a inferência |
+
+Conclusão: `wave_v3_volume_integrity` permanece **EM TESTE**. Hipótese atual: pode ser mais útil como sensor de oportunidade/contexto do que como compra automática, mas isso ainda não altera a estratégia.
 
 ## Exit Engine — checkpoint 2026-08-31
 
-25 sinais possuíam todas as políticas fechadas no checkpoint.
+25 sinais possuíam as cinco políticas fechadas.
 
-- fixed15: média -1,94%, mediana -1,68%, PF 0,67;
-- fixed60: média -4,45%, mediana -1,26%, PF 0,65;
-- SL10: média -18,88%, mediana -4,23%, PF 0,10;
-- TP20: média +4,17%, mediana -1,35%, PF 2,29, média sem melhor +3,49%;
+- fixed15: média -1,94%, mediana -1,68%, PF 0,67.
+- fixed60: média -4,45%, mediana -1,26%, PF 0,65.
+- SL10: média -18,88%, mediana -4,23%, PF 0,10.
+- TP20: média +4,17%, mediana -1,35%, PF 2,29, média sem melhor +3,49%.
 - trailing10: média -17,80%, mediana -4,68%, PF 0,10.
 
-`take_profit_20_v1` é **PROMISSOR / EM TESTE**, não vencedor. Cobertura desigual e amostra pequena impedem seleção. SL/trailing sob observação por candle não representam stop garantido de -10%.
+`take_profit_20_v1` = **PROMISSOR / EM TESTE**, não vencedor. Cobertura desigual e amostra pequena impedem promoção. SL/trailing observados em candle não equivalem a stop garantido de -10%.
 
 ## Wallet Strategy Intelligence — evidência atual
 
-### `7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH`
+### 7mPti
 
-- 94 swaps / 36 tokens / 306,3 dias;
-- fingerprint: `one_day|mixed_exit|occasional_reentry|moderate`;
-- intensidade em dia ativo: mediana 1 swap/dia;
-- first exit mediano 18,5h;
-- roundtrip observado 72,2%;
-- multi-sell 42,3%; reentry 19,2%;
-- 21 ciclos complete-like; evidence-ready descritivamente.
+`7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH`
 
-Hipótese forward congelada H1, a verificar com >=10 novos roundtrips: first exit >6h, multi-sell >=25%, reentry <40%.
+- 94 swaps / 36 tokens / 306,3d.
+- fingerprint `one_day|mixed_exit|occasional_reentry|moderate`.
+- first exit mediano 18,5h; roundtrip 72,2%; multi-sell 42,3%; reentry 19,2%.
+- 21 ciclos complete-like; **DESCRIPTIVE_READY**.
+- H1 forward congelada: com >=10 novos roundtrips, first exit >6h, multi-sell >=25%, reentry <40%.
 
-### `Gf9XgdmvNHt8fUTFsWAccNbKeyDXsgJyZN8iFJKg5Pbd`
+### Gf9X
 
-- 71 swaps / 36 tokens / 21,2 dias;
-- fingerprint: `ultra_short|single_exit_dominant|rare_reentry|moderate`;
-- first exit mediano 5,3min;
-- roundtrip 36,1%; sequência incompleta;
-- evidence-ready: NÃO.
+`Gf9XgdmvNHt8fUTFsWAccNbKeyDXsgJyZN8iFJKg5Pbd`
 
-H2, somente após amostra forward adequada: first exit <15m, multi-sell <=25%, reentry <15%.
+- 71 swaps / 36 tokens / 21,2d.
+- fingerprint `ultra_short|single_exit_dominant|rare_reentry|moderate`.
+- first exit 5,3min; roundtrip 36,1%; sequência incompleta; **EVIDENCE_GAPS**.
+- H2: após amostra forward adequada, first exit <15m, multi-sell <=25%, reentry <15%.
 
-### `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
+### 3tc4
 
-- 93 swaps / 5 tokens / 0,2 dia;
-- fingerprint: `ultra_short|staged_exit_dominant|frequent_reentry|high_frequency`;
-- first exit mediano 1,2min;
-- amostra de tokens/janela muito estreita;
-- evidence-ready: NÃO.
+`3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
 
-H3 só pode ser avaliada após >=10 tokens e >=10 complete-like.
+- 93 swaps / 5 tokens / 0,2d.
+- fingerprint `ultra_short|staged_exit_dominant|frequent_reentry|high_frequency`.
+- first exit 1,2min; amostra de tokens/janela estreita; **EVIDENCE_GAPS**.
+- H3 só é avaliada após >=10 tokens e >=10 complete-like.
 
-Nenhum arquétipo multi-wallet está confirmado e nenhuma dessas fingerprints prova edge.
+Nenhum arquétipo multi-wallet está confirmado. Fingerprint não prova edge nem copyability.
 
 ## Wallet Forward + Jupiter
 
-Coorte inicial:
+Coorte inicial: 7mPti, Gf9X, 3tc4.
 
-- 7mPti;
-- Gf9X;
-- 3tc4.
-
-Jupiter smoke real fora da rede escolar:
+Smoke real Jupiter:
 
 - API key aceita;
-- SOL -> USDC retornou rota `metis`;
+- SOL -> USDC retornou rota;
 - resposta parseada;
-- sem `taker`, nenhuma transação foi montada;
-- nenhuma ordem foi enviada.
+- sem `taker`, nenhuma transação montada;
+- nenhuma ordem enviada.
 
-Smoke integrado de ~3 minutos:
+Smoke integrado ~3min:
 
 - run `wallet-forward-1788212954-67ee16b5`;
-- 3 wallets;
-- polling 30s;
-- 6 ciclos;
+- 3 wallets, polling 30s, 6 ciclos;
 - zero falhas de sync/bootstrap;
-- zero ações forward porque as wallets não operaram na janela;
-- run finalizada `COMPLETED`;
-- checkpoint corretamente retornou `SEM AMOSTRA`.
+- zero ações forward porque as wallets não operaram;
+- run `COMPLETED`; checkpoint retornou `SEM AMOSTRA` corretamente.
 
-Classificação:
+Status:
 
 - orquestração/manifest/bootstrap/RPC/checkpoint: **VALIDADO OPERACIONALMENTE em smoke curto**;
 - evento real `Wallet BUY -> detector -> Jupiter -> persistência -> causal replay`: **AGUARDANDO AMOSTRA**;
-- coleta de 6h em internet estável: liberada tecnicamente e ainda pendente de resultado.
+- coleta de 6h em internet estável: liberada tecnicamente e pendente.
 
 Comando preferido:
 
@@ -221,83 +209,78 @@ python evaluate_wallet_forward.py
 python evaluate_wallet_quotes.py
 ```
 
-## Pesquisa externa de mercado
+## Pesquisa externa incorporada como priors
 
-Documentos:
+Documentos principais:
 
 - `docs/memecoin-market-research-priors-2026-08-31.md`;
 - `docs/external-evidence-reuse-map-v1.md`;
-- `docs/rejection-intelligence-v1.md`.
+- `docs/rejection-intelligence-v1.md`;
+- `docs/market-integrity-v1.md`;
+- `docs/wallet-confirmation-placebo-v1.md`.
 
-Princípios incorporados como priors, não como estratégia:
+Priors atuais:
 
-- traders lucrativos podem pertencer a arquétipos muito diferentes;
-- wallet lucrativa pode ser incopiável por vantagem de timing/creator/sniper;
-- volume público simples pode não conter edge suficiente isoladamente;
-- memecoins têm heavy tails e dependência extrema de poucos winners;
-- liquidez/rota/latência fazem parte da estratégia;
-- volume aparente pode conter wash trading/manipulação;
-- presença simultânea de smart wallets exige placebo/controle antes de inferência causal;
-- estudar rejeitados reduz busca cega e mede false negatives;
-- evidência pre-graduation não deve ser misturada automaticamente com mercado pós-graduação.
+- wallets lucrativas podem usar arquétipos muito diferentes;
+- PnL alto não significa copyability;
+- volume público simples pode não possuir edge isolado;
+- memecoins apresentam heavy tails e dependência de poucos winners;
+- latência/liquidez/rota fazem parte da estratégia;
+- volume aparente pode conter manipulação;
+- smart-wallet confirmation precisa de placebo/controle;
+- estudar rejeitados ajuda a medir false negatives;
+- evidência de regimes/mercados diferentes não deve ser misturada automaticamente.
 
-Fontes externas são usadas para gerar hipóteses e desenhos experimentais. Nenhum threshold externo é copiado diretamente para produção.
-
-## Social / Opportunity Intelligence
-
-- Fundação de Social Intelligence e persistência de eventos existe.
-- Opportunity Intelligence combina contexto Wave/Wallet/Social causalmente sem score final de trading.
-- Coletor X real ainda é PLANEJADO.
-- Social deve ser testado por valor incremental, nunca como `tweet -> buy`.
+Nenhum threshold externo é copiado diretamente para produção.
 
 ## Live readiness
 
 Live permanece **BLOQUEADO**.
 
-Sequência congelada de alto nível:
-
 ```text
 causal data
--> hipótese/estratégia congelada
+-> hipótese congelada
 -> replay com custos
--> robustness/missingness/outliers
+-> robustness / missingness / outliers
 -> shadow forward
--> execution engine real + risk controls
--> live canary pequeno em wallet separada
--> comparação live x shadow
--> escala somente depois
+-> execution engine + risk controls
+-> live canary pequeno e separado
+-> comparar live x shadow
+-> escalar somente depois
 ```
 
-Controles mínimos antes de live incluem limite por trade, exposição total, concorrência, perda diária, kill switch, idempotência, stale-quote protection e reconciliação on-chain.
+Controles mínimos: limite por trade, exposição total, concorrência, perda diária, kill switch, idempotência, stale-quote protection e reconciliação on-chain.
 
-Não é necessário terminar Wave + Wallet + Social para liberar o primeiro canary; basta **uma** estratégia atravessar todo o funil sem mudança pós-hoc de critérios.
+Não é necessário terminar Wave + Wallet + Social para o primeiro canary; basta uma única estratégia atravessar todo o funil sem retuning pós-hoc.
 
-## Limitações e riscos conhecidos
+## Limitações conhecidas
 
-- Solana Tracker credits atualmente bloqueiam nova discovery Wave/leaderboard.
-- GeckoTerminal continua sujeito a cobertura incompleta, distant candles, rate limit e missingness.
-- RPC polling não é streaming; wallets ultra-fast podem ser pouco copiáveis.
-- Quote Jupiter é melhor proxy que candle, mas quote-only não é fill.
-- 1m candles não resolvem ordem intraminuto de TP/SL/trailing.
-- Wallet fingerprints podem refletir inventário preexistente ou cobertura incompleta.
-- Realized PnL de wallets pode esconder perdas não realizadas.
-- Memecoin market data é vulnerável a manipulação e seleção de sobreviventes.
-- Rejection Intelligence começa prospectivamente; não há backfill causal honesto dos snapshots antigos.
+- Tracker credits bloqueiam nova discovery Wave/leaderboard.
+- GeckoTerminal possui missingness, distant candles e rate limit.
+- RPC polling não é streaming; ultra-fast wallets podem não ser copiáveis.
+- Jupiter quote-only não é fill.
+- candles 1m não resolvem ordem intraminuto de TP/SL/trailing.
+- fingerprints podem refletir inventário preexistente/cobertura parcial.
+- realized PnL pode esconder perdas não realizadas.
+- market snapshots agregados não provam wash trading.
+- Rejection Intelligence é prospectivo; não existe backfill causal honesto de rejeições antigas.
+- Wallet Confirmation placebo ainda não possui target/placebos prospectivos congelados nem amostra econômica.
 
 ## Próximas prioridades
 
-1. Rodar e auditar a coleta Wallet + Jupiter de 6h em internet estável.
+1. Rodar/auditar as 6h Wallet + Jupiter em internet estável.
 2. Fazer causal replay com latência/custos nos BUYs realmente observados.
-3. Continuar Wallet Strategy Intelligence e decidir se alguma hipótese merece shadow.
-4. Quando o Tracker voltar, continuar Wave v3 congelada e formar Rejection Intelligence prospectivo em paralelo.
-5. Auditar false negatives por barreira sem retunar a própria amostra.
-6. Pesquisar/implementar controles anti-manipulação apenas como features observacionais antes de qualquer gate novo.
-7. Promover a primeira estratégia para shadow somente com critério pré-declarado.
-8. Construir execução real/risk controls apenas depois de uma candidata passar o gate de evidência.
+3. Usar `market_integrity_lab.py` para caracterizar causalmente accepted/rejected snapshots existentes, sem criar novos gates.
+4. Quando Tracker voltar, continuar Wave v3 congelada + Rejection Intelligence prospectivo.
+5. Ampliar Wallet Strategy Intelligence e formar target/placebos usando somente pré-período.
+6. Iniciar Wallet Confirmation placebo prospectivo apenas depois dos grupos congelados.
+7. Avançar anti-manipulação para microestrutura/grafo apenas quando houver dados que suportem isso.
+8. Promover a primeira candidata para shadow somente com critério pré-declarado.
+9. Construir execução real/risk controls depois de uma candidata passar o gate de evidência.
 
 ## Regra para handoffs
 
-Ao transferir trabalho entre Copiloto/Work, informar:
+Todo handoff deve informar:
 
 - branch/commit atual;
 - status real: implementado/testado/validado/em teste/hipótese/planejado;
@@ -305,4 +288,4 @@ Ao transferir trabalho entre Copiloto/Work, informar:
 - critérios congelados;
 - riscos de leakage/missingness;
 - próximo teste e critério de sucesso;
-- nunca chamar uma política/estratégia de vencedora sem evidência suficiente.
+- nunca chamar política/estratégia de vencedora sem evidência suficiente.
