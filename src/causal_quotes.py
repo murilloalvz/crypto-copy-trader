@@ -3,14 +3,15 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CausalQuoteObservation:
-    """One market quote with both market time and real observation time.
+    """One normalized market quote with real availability time.
 
-    ``market_time`` describes when the quoted market state applies. ``observed_at`` is when
-    our system actually had the quote available. Keeping both timestamps prevents a replay
-    from treating historical data as if it had been known earlier.
+    ``token_mint`` is the researched asset. ``side`` is from our perspective: a buy quote
+    acquires the researched token and a sell quote disposes of it. Executable quotes must
+    retain route direction so a sell route can never satisfy a buy replay (or vice versa).
     """
 
     token_mint: str
+    side: str
     market_time: int
     observed_at: int
     price_usd: float
@@ -18,6 +19,11 @@ class CausalQuoteObservation:
     executable: bool
     resolution_seconds: int = 1
     liquidity_usd: float | None = None
+    input_mint: str | None = None
+    output_mint: str | None = None
+    input_amount_raw: str | None = None
+    output_amount_raw: str | None = None
+    route_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,8 @@ class CausalQuoteSelection:
 def validate_causal_quote(quote: CausalQuoteObservation) -> None:
     if not quote.token_mint.strip():
         raise ValueError("quote token_mint cannot be empty")
+    if quote.side not in {"buy", "sell"}:
+        raise ValueError("quote side must be buy or sell")
     if not quote.source.strip():
         raise ValueError("quote source cannot be empty")
     if quote.market_time < 0 or quote.observed_at < 0:
@@ -42,25 +50,33 @@ def validate_causal_quote(quote: CausalQuoteObservation) -> None:
     if quote.liquidity_usd is not None and quote.liquidity_usd < 0:
         raise ValueError("quote liquidity_usd cannot be negative")
 
+    if quote.executable:
+        if not quote.input_mint or not quote.input_mint.strip():
+            raise ValueError("executable quote requires input_mint")
+        if not quote.output_mint or not quote.output_mint.strip():
+            raise ValueError("executable quote requires output_mint")
+        if quote.side == "buy" and quote.output_mint != quote.token_mint:
+            raise ValueError("buy quote must output the researched token")
+        if quote.side == "sell" and quote.input_mint != quote.token_mint:
+            raise ValueError("sell quote must input the researched token")
+
 
 def select_first_causal_quote(
     quotes: list[CausalQuoteObservation] | tuple[CausalQuoteObservation, ...],
     *,
     token_mint: str,
+    side: str,
     ready_at: int,
     max_quote_age_seconds: int,
     max_quote_wait_seconds: int,
     require_executable: bool = True,
 ) -> CausalQuoteSelection:
-    """Select the first quote that could really have been used after ``ready_at``.
-
-    This intentionally selects by ``observed_at``, never by market timestamp alone. A quote
-    only becomes eligible after our system observed it. Quotes that are too stale, arrive too
-    late or are proxy/non-executable are not silently upgraded into executable evidence.
-    """
+    """Select the first quote that could really have been used after ``ready_at``."""
 
     if not token_mint.strip():
         raise ValueError("token_mint cannot be empty")
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy or sell")
     if ready_at < 0:
         raise ValueError("ready_at must be non-negative")
     if max_quote_age_seconds < 0:
@@ -68,14 +84,20 @@ def select_first_causal_quote(
     if max_quote_wait_seconds < 0:
         raise ValueError("max_quote_wait_seconds must be non-negative")
 
-    token_quotes: list[CausalQuoteObservation] = []
+    matching_quotes: list[CausalQuoteObservation] = []
+    token_quotes_seen = False
     for quote in quotes:
         validate_causal_quote(quote)
-        if quote.token_mint == token_mint:
-            token_quotes.append(quote)
+        if quote.token_mint != token_mint:
+            continue
+        token_quotes_seen = True
+        if quote.side == side:
+            matching_quotes.append(quote)
 
-    if not token_quotes:
+    if not token_quotes_seen:
         return CausalQuoteSelection(None, "no_quotes_for_token")
+    if not matching_quotes:
+        return CausalQuoteSelection(None, "no_quote_for_side")
 
     saw_after_ready = False
     saw_in_window = False
@@ -83,7 +105,7 @@ def select_first_causal_quote(
     saw_fresh = False
     deadline = ready_at + max_quote_wait_seconds
 
-    for quote in sorted(token_quotes, key=lambda item: (item.observed_at, item.market_time)):
+    for quote in sorted(matching_quotes, key=lambda item: (item.observed_at, item.market_time)):
         if quote.observed_at < ready_at:
             continue
         saw_after_ready = True
