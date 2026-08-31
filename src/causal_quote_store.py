@@ -76,6 +76,7 @@ def load_causal_quotes(
     token_mint: str | None = None,
     side: str | None = None,
     as_of: int | None = None,
+    quote_keys: tuple[str, ...] | list[str] | None = None,
 ) -> list[CausalQuoteObservation]:
     if token_mint is not None and not token_mint.strip():
         raise ValueError("token_mint cannot be empty")
@@ -83,6 +84,16 @@ def load_causal_quotes(
         raise ValueError("side must be buy or sell")
     if as_of is not None and as_of < 0:
         raise ValueError("as_of must be non-negative")
+
+    normalized_quote_keys: tuple[str, ...] | None = None
+    if quote_keys is not None:
+        normalized_quote_keys = tuple(
+            dict.fromkeys(str(item).strip() for item in quote_keys if str(item).strip())
+        )
+        # An explicit empty set means "load nothing". This matters for experiment-scoped
+        # replay: falling back to every persisted quote would contaminate the cohort.
+        if not normalized_quote_keys:
+            return []
 
     ensure_causal_quote_schema()
     clauses: list[str] = []
@@ -96,6 +107,10 @@ def load_causal_quotes(
     if as_of is not None:
         clauses.append("observed_at<=?")
         params.append(as_of)
+    if normalized_quote_keys is not None:
+        placeholders = ",".join("?" for _ in normalized_quote_keys)
+        clauses.append(f"quote_key IN ({placeholders})")
+        params.extend(normalized_quote_keys)
 
     query = """SELECT token_mint, side, market_time, observed_at, price_usd,
         liquidity_usd, executable, resolution_seconds, source,
