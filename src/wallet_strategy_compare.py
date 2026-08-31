@@ -56,7 +56,9 @@ def fingerprint_evidence_ready(fingerprint: WalletStrategyFingerprint) -> bool:
     """Return whether the local sample is usable for cross-wallet pattern research.
 
     This is an evidence-coverage gate only. It says nothing about profitability or whether a
-    wallet should be copied.
+    wallet should be copied. Short sub-day bursts and undersized exit-sizing samples are kept
+    descriptive, but they are not promoted to "ready" because their archetype can still move
+    materially with a small amount of additional backfill.
     """
     if fingerprint.sample_grade == "INSUFFICIENT":
         return False
@@ -64,7 +66,13 @@ def fingerprint_evidence_ready(fingerprint: WalletStrategyFingerprint) -> bool:
         return False
     if fingerprint.complete_like_sizing_count < 3:
         return False
-    if "sequence_coverage_low" in fingerprint.flags:
+    blocking_flags = {
+        "sequence_coverage_low",
+        "short_observation_window",
+        "exit_sizing_sample_too_small",
+        "exit_sizing_quantity_anomalies",
+    }
+    if any(flag in blocking_flags for flag in fingerprint.flags):
         return False
     return True
 
