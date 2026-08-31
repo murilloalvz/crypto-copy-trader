@@ -10,6 +10,7 @@ from src.wave_radar import WaveRadarReport
 
 DEFAULT_REJECTION_HORIZONS_MINUTES = (5, 15, 60)
 DEFAULT_REJECTION_SAMPLE_PER_RUN = 12
+REJECTION_SELECTION_COOLDOWN_SECONDS = 6 * 60 * 60
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS wave_rejection_decisions (
@@ -35,6 +36,9 @@ CREATE TABLE IF NOT EXISTS wave_rejection_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_wave_rejection_run
 ON wave_rejection_decisions(run_id, selected_for_followup, data_valid);
+
+CREATE INDEX IF NOT EXISTS idx_wave_rejection_mint_selected
+ON wave_rejection_decisions(token_mint, selected_for_followup, detected_at);
 
 CREATE TABLE IF NOT EXISTS wave_rejection_followups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,22 +186,36 @@ def select_rejection_followups(
     *,
     max_tokens: int = DEFAULT_REJECTION_SAMPLE_PER_RUN,
     horizons_minutes: tuple[int, ...] = DEFAULT_REJECTION_HORIZONS_MINUTES,
+    mint_cooldown_seconds: int = REJECTION_SELECTION_COOLDOWN_SECONDS,
 ) -> RejectionSelectionSummary:
-    """Select a bounded deterministic sample, preferring clean single-barrier rejects."""
+    """Select a bounded sample and avoid repeatedly spending follow-ups on the same mint."""
     if run_id <= 0 or max_tokens <= 0:
         raise ValueError("run_id and max_tokens must be positive")
+    if mint_cooldown_seconds < 0:
+        raise ValueError("mint_cooldown_seconds must be non-negative")
     horizons = tuple(dict.fromkeys(int(item) for item in horizons_minutes))
     if not horizons or any(item <= 0 for item in horizons):
         raise ValueError("horizons_minutes must contain positive values")
     ensure_rejection_schema()
     with connection() as conn:
         raw = conn.execute(
-            """SELECT id, token_mint, wave_score, barrier_count, barriers_json,
-                selected_for_followup
-            FROM wave_rejection_decisions
-            WHERE run_id=? AND data_valid=1 AND entry_price_usd>0
-            ORDER BY wave_score DESC, token_mint""",
-            (run_id,),
+            """SELECT d.id, d.token_mint, d.wave_score, d.barrier_count,
+                d.barriers_json, d.selected_for_followup, d.detected_at
+            FROM wave_rejection_decisions d
+            WHERE d.run_id=? AND d.data_valid=1 AND d.entry_price_usd>0
+              AND (
+                d.selected_for_followup=1
+                OR NOT EXISTS (
+                    SELECT 1 FROM wave_rejection_decisions previous
+                    WHERE previous.token_mint=d.token_mint
+                      AND previous.selected_for_followup=1
+                      AND previous.id<>d.id
+                      AND previous.detected_at<d.detected_at
+                      AND previous.detected_at>=d.detected_at-?
+                )
+              )
+            ORDER BY d.wave_score DESC, d.token_mint""",
+            (run_id, mint_cooldown_seconds),
         ).fetchall()
     candidates = [dict(row) for row in raw]
     selected_ids = {
@@ -428,9 +446,7 @@ def summarize_rejection_lab(run_id: int) -> RejectionLabSummary:
         group = [
             row for row in followups if int(row["horizon_minutes"]) == horizon
         ]
-        horizons.append(
-            _summarize_horizon_rows(group, horizon_minutes=horizon)
-        )
+        horizons.append(_summarize_horizon_rows(group, horizon_minutes=horizon))
 
     isolated_groups: dict[tuple[str, int], list[dict]] = {}
     for row in followups:
