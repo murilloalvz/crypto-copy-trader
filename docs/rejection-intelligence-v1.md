@@ -57,9 +57,12 @@ Padrão v1:
 - somente rejeições com dados básicos válidos e preço de entrada positivo;
 - primeiro, selecionar o melhor near miss de cada barreira única;
 - depois preencher as vagas restantes priorizando menos barreiras e maior Wave Score;
-- horizontes: 5, 15 e 60 minutos.
+- horizontes: 5, 15 e 60 minutos;
+- o mesmo mint não é selecionado novamente por **6 horas** se já recebeu follow-up em outra run recente.
 
 **Near miss** significa um token que ficou perto de passar, por exemplo por ter somente uma barreira. Ele é especialmente útil porque isola melhor a pergunta "o que acontece quando este gate rejeita?".
+
+O cooldown de 6h por mint é uma proteção de **amostragem**, não um gate da estratégia. Ele evita gastar a cota de follow-ups várias vezes no mesmo token em discoveries próximas e reduz dependência artificial entre observações quase idênticas. A rejeição ainda é registrada em todas as runs; somente a seleção de novos preços futuros é temporariamente suprimida.
 
 A amostra não é desenhada para maximizar retorno e não muda nenhum threshold da Wave.
 
@@ -119,6 +122,7 @@ A comparação mais informativa no futuro será entre:
 - Um token pode não ter preço futuro porque morreu, perdeu pool ou o provider não conseguiu observá-lo. Isso pode ser informativo e não deve ser silenciosamente removido.
 - Não há correção causal automática para diferenças entre tokens aceitos/rejeitados.
 - A seção por barreira única melhora atribuição descritiva, mas ainda não transforma a comparação em experimento randomizado.
+- O cooldown de mint reduz repetição próxima, mas não torna as amostras independentes entre regimes/dias.
 - O laboratório mede qualidade do filtro, não prova edge de execução.
 
 ## Fluxo
@@ -129,6 +133,7 @@ Wave discovery
   -> PASS segue o paper existente
   -> REJECT salva snapshot
        -> amostra limitada/estratificada
+       -> cooldown de follow-up por mint
        -> 5m / 15m / 60m follow-up
        -> relatório total
        -> relatório isolado por barreira única
