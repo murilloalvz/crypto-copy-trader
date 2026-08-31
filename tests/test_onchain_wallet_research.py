@@ -15,6 +15,7 @@ class OnchainWalletResearchTests(unittest.TestCase):
         profile = build_onchain_wallet_profile("wallet", swaps)
         self.assertEqual(profile.swap_count, 5)
         self.assertEqual(profile.token_count, 1)
+        self.assertEqual(profile.roundtrip_token_count, 1)
         self.assertEqual(profile.roundtrip_token_share_pct, 100.0)
         self.assertEqual(profile.scale_in_token_share_pct, 100.0)
         self.assertEqual(profile.partial_exit_token_share_pct, 100.0)
@@ -32,6 +33,7 @@ class OnchainWalletResearchTests(unittest.TestCase):
         self.assertEqual(profile.swap_count, 1)
         self.assertEqual(profile.buy_count, 1)
         self.assertEqual(profile.sell_count, 0)
+        self.assertEqual(profile.buy_only_token_count, 1)
         self.assertIn("no_observed_sells", profile.flags)
 
     def test_multi_token_summary_is_not_overstated(self):
@@ -43,9 +45,25 @@ class OnchainWalletResearchTests(unittest.TestCase):
         ]
         profile = build_onchain_wallet_profile("wallet", swaps)
         self.assertEqual(profile.token_count, 3)
+        self.assertEqual(profile.roundtrip_token_count, 1)
+        self.assertEqual(profile.buy_only_token_count, 2)
         self.assertAlmostEqual(profile.roundtrip_token_share_pct, 100 / 3)
         self.assertEqual(profile.dex_mix["PumpSwap"], 2)
         self.assertEqual(profile.dex_mix["Raydium CPMM"], 2)
+        self.assertIn("many_tokens_without_observed_roundtrip", profile.flags)
+
+    def test_sell_before_buy_is_not_counted_as_completed_roundtrip(self):
+        swaps = [
+            {"block_time": 100, "status": "success", "kind": "swap", "dex": "PumpSwap", "token_mint": "A", "token_change": -3},
+            {"block_time": 200, "status": "success", "kind": "swap", "dex": "PumpSwap", "token_mint": "A", "token_change": 2},
+        ]
+        profile = build_onchain_wallet_profile("wallet", swaps)
+        self.assertEqual(profile.token_count, 1)
+        self.assertEqual(profile.roundtrip_token_count, 0)
+        self.assertEqual(profile.sell_before_first_buy_token_count, 1)
+        self.assertEqual(profile.roundtrip_token_share_pct, 0.0)
+        self.assertIsNone(profile.median_first_exit_seconds)
+        self.assertIn("preexisting_inventory_observed", profile.flags)
         self.assertIn("many_tokens_without_observed_roundtrip", profile.flags)
 
 
