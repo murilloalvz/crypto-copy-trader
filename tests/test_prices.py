@@ -1,8 +1,13 @@
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
+from src import database
 from src.assets import USDC_MINT
+from src.database import initialize_database
 from src.prices import (
     GeckoTerminalPriceProvider,
     Pool,
@@ -40,7 +45,19 @@ class FakeResponse:
 
 class PriceTests(unittest.TestCase):
     def setUp(self):
+        self._tempdir = tempfile.TemporaryDirectory()
+        self._settings_patch = patch.object(
+            database,
+            "settings",
+            SimpleNamespace(database_path=Path(self._tempdir.name) / "prices-test.db"),
+        )
+        self._settings_patch.start()
+        initialize_database()
         GeckoTerminalPriceProvider.reset_global_rate_limit_state()
+
+    def tearDown(self):
+        self._settings_patch.stop()
+        self._tempdir.cleanup()
 
     def test_stablecoin_price_does_not_require_network(self):
         provider = GeckoTerminalPriceProvider()
