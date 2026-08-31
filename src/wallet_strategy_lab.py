@@ -1,5 +1,6 @@
 from collections import Counter
 from dataclasses import dataclass
+from statistics import median
 
 from src.onchain_wallet_research import build_onchain_wallet_profile
 from src.wallet_exit_sizing import analyze_exit_sizing, summarize_exit_sizing
@@ -68,6 +69,30 @@ def _frequency_bucket(swaps_per_day: float) -> str:
     return "sparse"
 
 
+def _median_active_day_swaps(swaps: list[dict]) -> float | None:
+    """Return median observed swaps per UTC day that contains at least one clean swap.
+
+    Inter-swap gaps can collapse to one or a few seconds when a wallet scales in/out in a
+    burst. Extrapolating that gap to a full day produced absurd rates such as 86,400
+    swaps/day. Counting actual swaps on active UTC days preserves bursty/high-frequency
+    behavior without pretending the wallet sustains a one-second cadence for 24 hours.
+    """
+    day_counts: Counter[int] = Counter()
+    for item in swaps:
+        if (
+            item.get("kind") != "swap"
+            or item.get("status") != "success"
+            or not item.get("token_mint")
+            or item.get("token_change") is None
+            or item.get("block_time") is None
+        ):
+            continue
+        day_counts[int(item["block_time"]) // 86_400] += 1
+    if not day_counts:
+        return None
+    return float(median(day_counts.values()))
+
+
 def _reentry_bucket(reentry_share_pct: float) -> str:
     if reentry_share_pct >= 40:
         return "frequent_reentry"
@@ -108,10 +133,10 @@ def build_wallet_strategy_fingerprint(
     should be copied. It is a research abstraction that groups observed execution behavior
     so multiple wallets can be compared without using the Solana Tracker Data API.
 
-    Calendar swaps/day is kept as a descriptive field, but the frequency archetype uses the
-    median inter-swap gap when available. This prevents one distant historical observation or
-    a partial backfill from turning an otherwise active execution pattern into a false
-    ``sparse`` classification.
+    Calendar swaps/day is kept as a descriptive field. The frequency archetype uses the
+    median number of observed swaps on active UTC days when available. This is robust to a
+    distant historical observation while avoiding the impossible extrapolation that can occur
+    when a burst contains several swaps seconds apart.
     """
     profile = build_onchain_wallet_profile(address, swaps)
     sizing_rows = analyze_exit_sizing(swaps)
@@ -121,9 +146,10 @@ def build_wallet_strategy_fingerprint(
     calendar_swaps_per_day = (
         profile.swap_count / effective_days if profile.swap_count else 0.0
     )
-    if profile.median_swap_gap_seconds is not None and profile.median_swap_gap_seconds > 0:
-        frequency_rate_per_day = 86_400.0 / profile.median_swap_gap_seconds
-        frequency_basis = "median_swap_gap"
+    active_day_rate = _median_active_day_swaps(swaps)
+    if active_day_rate is not None:
+        frequency_rate_per_day = active_day_rate
+        frequency_basis = "median_active_day_swaps"
     else:
         frequency_rate_per_day = calendar_swaps_per_day
         frequency_basis = "calendar_span"
