@@ -53,6 +53,15 @@ def main() -> int:
         f"{_pct(summary.median_runner_after_first_sell_pct)}"
     )
     print(f"Anomalias de quantidade (>105%): {summary.quantity_anomaly_share_pct:.1f}%")
+    print(
+        f"Cobertura de quantidade: complete-like {summary.complete_like_count} | "
+        f"parcial/possivelmente aberta {summary.partial_or_open_count}"
+    )
+    print(
+        f"Multi-sell complete-like: {summary.complete_multi_sell_count} | "
+        f"1ª tranche mediana {_pct(summary.median_complete_multi_first_sell_fraction_pct)} | "
+        f"runner mediano {_pct(summary.median_complete_multi_runner_pct)}"
+    )
 
     print()
     print("AMOSTRA POR TOKEN")
@@ -62,6 +71,7 @@ def main() -> int:
             f"1ª venda {item.first_sell_fraction_pct:.1f}% | "
             f"total ciclo {item.total_sold_fraction_pct:.1f}% | "
             f"runner proxy {item.observed_runner_after_first_sell_pct:.1f}% | "
+            f"cobertura {item.coverage_class} | "
             f"anomalia {'sim' if item.quantity_anomaly else 'não'}"
         )
 
@@ -69,6 +79,7 @@ def main() -> int:
     print("LIMITAÇÕES")
     print("- Quantidades vêm apenas de token_change dos swaps observados localmente.")
     print("- Transferências fora de swaps, estoque prévio, taxa/reflexão do token ou backfill incompleto podem distorcer as frações.")
+    print("- 'Complete-like' significa apenas 90%–105% da quantidade comprada observada vendida em swaps; não prova fechamento real.")
     print("- Runner é 100% menos a primeira venda observada; não prova intenção da wallet.")
     print("- Este relatório não calcula PnL e não autoriza alterar wave_v3/exit_engine_v1.")
     return 0
