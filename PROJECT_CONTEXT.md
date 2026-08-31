@@ -79,6 +79,7 @@ Código funcionando não prova edge. Backtest positivo não libera live. Nenhuma
 
 - `src/market_integrity.py`: features observacionais de integridade a partir de snapshots causais agregados.
 - `market_integrity_lab.py`: inspeção local de sinais aceitos e rejeições; não precisa de rede.
+- `opportunity_context.py` agora pode anexar o snapshot causal de Market Integrity disponível até `as_of`.
 - Features: buy pressure, imbalance, shape/aceleração de volume, transações por holder e campos de concentração/risco.
 - `existing_gate_flags` apenas reapresenta thresholds que já pertencem à Wave; nenhum novo filtro foi criado.
 - Não existe manipulation score nem `wash_trading_detected`.
@@ -87,19 +88,23 @@ Código funcionando não prova edge. Backtest positivo não libera live. Nenhuma
 
 ### Wallet Confirmation + Placebo v1
 
-- `src/wallet_confirmation_placebo.py`: núcleo analítico causal para confirmação de wallets com controles placebo.
-- Regra primária do primeiro estudo: janela 300s, >=2 BUY wallets únicas; é parâmetro de pesquisa, não entrada da Wave.
-- Target/placebos precisam ser pré-selecionados, wallet-disjoint e, por padrão, do mesmo tamanho.
-- Placebos devem ser parecidos usando dados **pré-período**: intensidade de atividade, token breadth, holding/fingerprint, DEX mix e cobertura.
-- Target e placebos devem ser avaliados sobre o mesmo relógio/universo de oportunidades.
+- `src/wallet_confirmation_placebo.py`: núcleo causal para eventos de confirmação e target x placebo.
+- Regra primária do primeiro estudo: janela 300s, >=2 BUY wallets únicas; parâmetro de pesquisa, não filtro Wave.
+- `src/wallet_placebo_matching.py` + `wallet_placebo_match.py`: matching pré-período sem PnL/outcomes e sem Match Score ponderado; expõe bucket similarity, atividade, token breadth, holding, DEX, coverage e warnings.
+- `src/wallet_confirmation_study.py`: registry imutável para pré-registrar cutoff, start/end, Wave strategy version, target, placebos, policy, horizons e matching version antes do período de outcome.
+- `src/wallet_confirmation_wave_study.py`: materializa confirmações para oportunidades Wave elegíveis usando somente wallet observations com `observed_at <= detected_at`; eventos já congelados não são reescritos por backfill posterior.
+- `wallet_confirmation_study.py`: CLI de register/show/activate/materialize/evaluate/close para estudos prospectivos.
+- Target/placebos precisam ser wallet-disjoint e, por padrão, do mesmo tamanho.
+- Target/placebos devem ser escolhidos com dados pré-período e avaliados no mesmo universo/relógio de oportunidades.
 - Comparação mantém pending/failed/missing no denominador e reporta target menos mediana dos placebos.
 - Labels são apenas `NO_COMPARABLE_OUTCOMES`, `DESCRIPTIVE_LOW_COVERAGE` e `DESCRIPTIVE_PLACEBO_COMPARISON`; não existe `edge_proven`.
 - As três wallets atuais do Forward Watch são uma coorte de observabilidade/arquéti​pos, não uma cesta econômica já validada.
+- Universo local atual ainda é insuficiente para congelar um placebo study economicamente sério; infraestrutura pronta não significa evidência pronta.
 
 ### Social / Opportunity Intelligence
 
 - Fundação de Social Intelligence e persistência de eventos existe.
-- Opportunity Intelligence combina Wave/Wallet/Social causalmente sem score final de trading.
+- Opportunity Intelligence combina Wave/Wallet/Social/Market Integrity causalmente sem score final de trading.
 - Coletor X real ainda é **PLANEJADO**.
 - Social será avaliado por valor incremental; nunca `tweet -> buy`.
 
@@ -217,7 +222,8 @@ Documentos principais:
 - `docs/external-evidence-reuse-map-v1.md`;
 - `docs/rejection-intelligence-v1.md`;
 - `docs/market-integrity-v1.md`;
-- `docs/wallet-confirmation-placebo-v1.md`.
+- `docs/wallet-confirmation-placebo-v1.md`;
+- `docs/wallet-placebo-matching-v1.md`.
 
 Priors atuais:
 
@@ -265,15 +271,16 @@ Não é necessário terminar Wave + Wallet + Social para o primeiro canary; bast
 - market snapshots agregados não provam wash trading.
 - Rejection Intelligence é prospectivo; não existe backfill causal honesto de rejeições antigas.
 - Wallet Confirmation placebo ainda não possui target/placebos prospectivos congelados nem amostra econômica.
+- O registry/runner de placebo está implementado para prevenir retuning; ele não resolve a falta atual de universo de wallets comparáveis.
 
 ## Próximas prioridades
 
 1. Rodar/auditar as 6h Wallet + Jupiter em internet estável.
 2. Fazer causal replay com latência/custos nos BUYs realmente observados.
-3. Usar `market_integrity_lab.py` para caracterizar causalmente accepted/rejected snapshots existentes, sem criar novos gates.
+3. Usar `market_integrity_lab.py` para caracterizar accepted/rejected snapshots existentes sem criar novos gates.
 4. Quando Tracker voltar, continuar Wave v3 congelada + Rejection Intelligence prospectivo.
 5. Ampliar Wallet Strategy Intelligence e formar target/placebos usando somente pré-período.
-6. Iniciar Wallet Confirmation placebo prospectivo apenas depois dos grupos congelados.
+6. Quando houver universo suficiente, pré-registrar o primeiro `wave_opportunity_v1` no registry e só então iniciar outcomes.
 7. Avançar anti-manipulação para microestrutura/grafo apenas quando houver dados que suportem isso.
 8. Promover a primeira candidata para shadow somente com critério pré-declarado.
 9. Construir execução real/risk controls depois de uma candidata passar o gate de evidência.
