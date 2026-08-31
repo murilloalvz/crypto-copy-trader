@@ -115,6 +115,22 @@ def record_discovery_run(
                 for result in report.results
             ],
         )
+
+    # The discovery run and candidate rows must be committed before the sidecar
+    # opens its own connection, because its rows reference run_id by foreign key.
+    # This sidecar is observational only: it never changes pass/fail or creates a signal.
+    from src.rejection_intelligence import (
+        record_rejection_decisions,
+        select_rejection_followups,
+    )
+
+    record_rejection_decisions(
+        report,
+        run_id=run_id,
+        detected_at=completed_at_ms // 1_000,
+    )
+    select_rejection_followups(run_id)
+
     normalized_source_items = (
         returned_count if source_item_count is None else source_item_count
     )
