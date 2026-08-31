@@ -201,8 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "Os fingerprints descrevem a amostra on-chain local. Eles não medem PnL, não provam "
         "intenção da wallet e não são regras de trading. O bucket de frequência usa a mediana "
-        "dos gaps entre swaps quando disponível para reduzir sensibilidade a backfill parcial; "
-        "a média calendário continua exibida separadamente."
+        "da quantidade realmente observada de swaps nos dias UTC ativos; a média calendário "
+        "continua exibida separadamente e ambos dependem da cobertura do backfill local."
     )
     return 0
 
