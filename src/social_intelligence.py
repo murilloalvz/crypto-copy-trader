@@ -71,6 +71,34 @@ def _matches_token(
     return False
 
 
+def _causal_event_histories(
+    events: list[SocialEvent] | tuple[SocialEvent, ...],
+    *,
+    as_of: int,
+    token_mint: str | None,
+    symbol: str | None,
+) -> dict[tuple[str, str], tuple[int, SocialEvent]]:
+    """Return first-observed time plus latest observable snapshot for each post."""
+    histories: dict[tuple[str, str], tuple[int, SocialEvent]] = {}
+    for event in events:
+        _validate_event(event)
+        if event.observed_at > as_of:
+            continue
+        if not _matches_token(event, token_mint=token_mint, symbol=symbol):
+            continue
+        key = (event.source, event.event_id)
+        previous = histories.get(key)
+        if previous is None:
+            histories[key] = (event.observed_at, event)
+            continue
+        first_observed_at, latest = previous
+        histories[key] = (
+            min(first_observed_at, event.observed_at),
+            event if event.observed_at > latest.observed_at else latest,
+        )
+    return histories
+
+
 def causal_event_snapshots(
     events: list[SocialEvent] | tuple[SocialEvent, ...],
     *,
@@ -91,20 +119,14 @@ def causal_event_snapshots(
     if token_mint is None and symbol is None:
         raise ValueError("token_mint or symbol is required")
 
-    selected: dict[tuple[str, str], SocialEvent] = {}
-    for event in events:
-        _validate_event(event)
-        if event.observed_at > as_of:
-            continue
-        if not _matches_token(event, token_mint=token_mint, symbol=symbol):
-            continue
-        key = (event.source, event.event_id)
-        previous = selected.get(key)
-        if previous is None or event.observed_at > previous.observed_at:
-            selected[key] = event
-
+    histories = _causal_event_histories(
+        events,
+        as_of=as_of,
+        token_mint=token_mint,
+        symbol=symbol,
+    )
     return sorted(
-        selected.values(),
+        (latest for _, latest in histories.values()),
         key=lambda item: (item.observed_at, item.source, item.event_id),
     )
 
@@ -117,10 +139,14 @@ def build_social_context(
     symbol: str | None = None,
     windows: tuple[int, ...] = (300, 900, 3_600),
 ) -> SocialContext:
+    if as_of < 0:
+        raise ValueError("as_of must be non-negative")
+    if token_mint is None and symbol is None:
+        raise ValueError("token_mint or symbol is required")
     if not windows or any(window <= 0 for window in windows):
         raise ValueError("social windows must be positive")
 
-    snapshots = causal_event_snapshots(
+    histories = _causal_event_histories(
         events,
         as_of=as_of,
         token_mint=token_mint,
@@ -130,10 +156,12 @@ def build_social_context(
 
     for window in sorted(set(windows)):
         lower_bound = as_of - window
+        # Window membership is anchored to when the collector first observed the post.
+        # A later engagement refresh must not make an old mention look newly discovered.
         rows = [
-            event
-            for event in snapshots
-            if lower_bound < event.observed_at <= as_of
+            latest
+            for first_observed_at, latest in histories.values()
+            if lower_bound < first_observed_at <= as_of
         ]
         stats[window] = SocialWindowStats(
             window_seconds=window,
