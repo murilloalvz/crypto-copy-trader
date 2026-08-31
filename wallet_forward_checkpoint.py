@@ -11,6 +11,10 @@ from src.wallet_causal_replay import (
     replay_wallet_actions,
     summarize_wallet_causal_replay,
 )
+from src.wallet_forward_convergence import (
+    build_forward_wallet_convergence_events,
+    summarize_forward_wallet_convergence,
+)
 from src.wallet_forward_metrics import (
     summarize_forward_wallet_latency,
     summarize_forward_wallet_latency_by_address,
@@ -21,8 +25,13 @@ from src.wallet_forward_runs import (
     get_wallet_forward_run,
     latest_wallet_forward_run,
 )
+from src.wallet_quote_drift import (
+    build_wallet_quote_drift_observations,
+    load_successful_quote_path_points,
+    summarize_wallet_quote_drift,
+)
 from src.wallet_quote_metrics import summarize_wallet_quote_metrics
-from src.wallet_quote_watch import load_successful_quote_keys_by_event
+from src.wallet_quote_watch import ForwardBuyEvent, load_successful_quote_keys_by_event
 
 
 DEFAULT_DELAYS = (0, 15, 30, 60, 120)
@@ -91,6 +100,23 @@ def _load_scoped_observations(
     ]
 
 
+def _as_forward_buy_events(
+    observations: list[ScopedForwardObservation],
+) -> list[ForwardBuyEvent]:
+    return [
+        ForwardBuyEvent(
+            id=item.id,
+            observation_key=item.observation_key,
+            wallet_address=item.action.address,
+            token_mint=item.action.token_mint,
+            chain_time=item.action.chain_time,
+            observed_at=item.action.observed_at,
+        )
+        for item in observations
+        if item.action.side == "buy"
+    ]
+
+
 def _replay_event_scoped(
     observations: list[ScopedForwardObservation],
     *,
@@ -119,11 +145,15 @@ def _fmt(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.1f}s"
 
 
+def _fmt_pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:+.2f}%"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Relatório único de observabilidade wallet + route quotes + causal replay. "
-            "RESEARCH/READ ONLY; não calcula PnL nem envia ordens."
+            "Relatório único de observabilidade wallet + route quotes + causal replay + "
+            "convergência + quote drift. RESEARCH/READ ONLY; não calcula PnL nem envia ordens."
         )
     )
     parser.add_argument(
@@ -142,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--delays-seconds", type=int, nargs="+", default=list(DEFAULT_DELAYS)
     )
     parser.add_argument("--slippage-bps", type=int, default=100)
+    parser.add_argument("--convergence-window-seconds", type=int, default=300)
+    parser.add_argument("--convergence-min-wallets", type=int, default=2)
+    parser.add_argument("--convergence-token-cooldown-seconds", type=int, default=1800)
+    parser.add_argument("--drift-baseline-delay-seconds", type=int, default=0)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -154,6 +188,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not 0 <= args.slippage_bps <= 10_000:
         print("Erro: --slippage-bps precisa ficar entre 0 e 10000.")
+        return 2
+    if args.convergence_window_seconds <= 0:
+        print("Erro: --convergence-window-seconds precisa ser positivo.")
+        return 2
+    if args.convergence_min_wallets < 2:
+        print("Erro: --convergence-min-wallets precisa ser >= 2.")
+        return 2
+    if args.convergence_token_cooldown_seconds < 0:
+        print("Erro: --convergence-token-cooldown-seconds precisa ser >= 0.")
+        return 2
+    if args.drift_baseline_delay_seconds < 0:
+        print("Erro: --drift-baseline-delay-seconds precisa ser >= 0.")
         return 2
 
     initialize_database()
@@ -184,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     actions = [item.action for item in scoped_observations]
     buy_observations = [item for item in scoped_observations if item.action.side == "buy"]
+    buy_events = _as_forward_buy_events(scoped_observations)
     buy_event_keys = [item.observation_key for item in buy_observations]
 
     forward = summarize_forward_wallet_latency(actions)
@@ -195,6 +242,11 @@ def main(argv: list[str] | None = None) -> int:
 
     strict_reports = []
     proxy_reports = []
+    convergence_events = ()
+    convergence_summary = None
+    quote_drift_summary = None
+    quote_drift_observations = ()
+    trigger_quote_metrics = None
     if scoped:
         for delay in delays:
             strict_config = WalletCausalReplayConfig(
@@ -224,6 +276,34 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+        convergence_events = build_forward_wallet_convergence_events(
+            buy_events,
+            window_seconds=args.convergence_window_seconds,
+            min_unique_buy_wallets=args.convergence_min_wallets,
+            token_cooldown_seconds=args.convergence_token_cooldown_seconds,
+        )
+        convergence_summary = summarize_forward_wallet_convergence(
+            buy_events,
+            convergence_events,
+        )
+        trigger_quote_metrics = summarize_wallet_quote_metrics(
+            wallet_addresses=addresses,
+            source_event_keys=[item.trigger_observation_key for item in convergence_events],
+        )
+
+        quote_path_points = load_successful_quote_path_points(
+            source_event_keys=buy_event_keys,
+        )
+        quote_drift_observations = build_wallet_quote_drift_observations(
+            quote_path_points,
+            baseline_delay_seconds=args.drift_baseline_delay_seconds,
+        )
+        quote_drift_summary = summarize_wallet_quote_drift(
+            quote_path_points,
+            quote_drift_observations,
+            baseline_delay_seconds=args.drift_baseline_delay_seconds,
+        )
+
     if args.json:
         print(
             json.dumps(
@@ -246,6 +326,36 @@ def main(argv: list[str] | None = None) -> int:
                         {"delay_seconds": delay, **asdict(summary)}
                         for delay, summary in proxy_reports
                     ],
+                    "convergence_policy": (
+                        {
+                            "window_seconds": args.convergence_window_seconds,
+                            "min_unique_buy_wallets": args.convergence_min_wallets,
+                            "token_cooldown_seconds": args.convergence_token_cooldown_seconds,
+                        }
+                        if scoped
+                        else None
+                    ),
+                    "convergence": (
+                        asdict(convergence_summary)
+                        if convergence_summary is not None
+                        else None
+                    ),
+                    "convergence_events": [
+                        asdict(item) for item in convergence_events
+                    ],
+                    "convergence_trigger_quote_metrics": (
+                        asdict(trigger_quote_metrics)
+                        if trigger_quote_metrics is not None
+                        else None
+                    ),
+                    "quote_drift": (
+                        asdict(quote_drift_summary)
+                        if quote_drift_summary is not None
+                        else None
+                    ),
+                    "quote_drift_observations": [
+                        asdict(item) for item in quote_drift_observations
+                    ],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -253,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    print("Crypto Copy Trader — Wallet Forward Checkpoint v2")
+    print("Crypto Copy Trader — Wallet Forward Checkpoint v3")
     print("Modo: RESEARCH / READ ONLY — observabilidade, não edge/PnL.")
     if run is not None:
         print(
@@ -326,6 +436,54 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     print()
+    print("4. MULTI-WALLET BUY CONVERGENCE — DESCRITIVO")
+    if not scoped or convergence_summary is None:
+        print("BLOQUEADO: convergência exige run manifest.")
+    else:
+        print(
+            f"janela {args.convergence_window_seconds}s | threshold {args.convergence_min_wallets} | "
+            f"cooldown/token {args.convergence_token_cooldown_seconds}s"
+        )
+        print(
+            f"BUYs {convergence_summary.buy_event_count} | tokens {convergence_summary.buy_token_count} | "
+            f"convergências {convergence_summary.convergence_event_count} em "
+            f"{convergence_summary.convergence_token_count} tokens | span p50 "
+            f"{_fmt(convergence_summary.median_convergence_span_seconds)} | trigger lag p50/p95 "
+            f"{_fmt(convergence_summary.median_trigger_source_lag_seconds)}/"
+            f"{_fmt(convergence_summary.p95_trigger_source_lag_seconds)}"
+        )
+        if trigger_quote_metrics is not None and convergence_events:
+            print(
+                f"Jupiter no BUY gatilho: {trigger_quote_metrics.success_count}/"
+                f"{trigger_quote_metrics.attempt_count} tentativas com sucesso "
+                f"({trigger_quote_metrics.success_pct:.1f}%)."
+            )
+        print("Convergência não prova smart-wallet edge; target x placebo continua obrigatório.")
+
+    print()
+    print("5. ROUTE PRICE DRIFT — MESMO BUY VS BASELINE")
+    if not scoped or quote_drift_summary is None:
+        print("BLOQUEADO: quote drift exige run manifest e quotes event-scoped.")
+    elif run is not None and not run.with_jupiter_quotes:
+        print("Esta run não habilitou Jupiter quotes.")
+    else:
+        print(
+            f"baseline +{quote_drift_summary.baseline_delay_seconds}s | eventos com baseline "
+            f"{quote_drift_summary.baseline_event_count} | tokens {quote_drift_summary.token_count}"
+        )
+        if quote_drift_summary.baseline_event_count == 0:
+            print("Sem baseline pareável; nenhum outro token/evento é usado como substituto.")
+        for item in quote_drift_summary.delays:
+            print(
+                f"- +{item.delay_seconds}s: {item.paired_count}/{item.baseline_event_count} pares "
+                f"({item.paired_coverage_pct:.1f}%) | adverse drift p50/p95 "
+                f"{_fmt_pct(item.median_adverse_drift_pct)}/"
+                f"{_fmt_pct(item.p95_adverse_drift_pct)} | pior "
+                f"{_fmt_pct(item.worst_adverse_drift_pct)}"
+            )
+        print("Drift positivo = preço pior para copiar; isso mede rota/latência, não retorno futuro.")
+
+    print()
     print("GATE")
     if not scoped:
         print("BLOQUEADO: execute uma nova coleta via wallet_forward_experiment.py para criar manifest.")
@@ -342,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(
             "Há dados run-scoped para auditar observabilidade de entrada. Próxima decisão depende "
-            "de cobertura, timing e missingness; este relatório não promove estratégia sozinho."
+            "de cobertura, timing, drift e missingness; este relatório não promove estratégia sozinho."
         )
     return 0
 
