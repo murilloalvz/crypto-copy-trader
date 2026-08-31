@@ -157,9 +157,10 @@ def main(argv: list[str] | None = None) -> int:
             f"{item.observed_span_days:.1f}d | grau {item.sample_grade}"
         )
         print(
-            f"Fingerprint: {item.signature} | frequência observada: "
-            f"{item.swaps_per_day:.1f} swaps/dia"
+            f"Fingerprint: {item.signature} | intensidade mediana: "
+            f"{item.frequency_rate_per_day:.1f} swaps/dia ({item.frequency_basis})"
         )
+        print(f"Média calendário observada: {item.swaps_per_day:.1f} swaps/dia")
         print(
             f"Primeira saída mediana: {_duration(item.median_first_exit_seconds)} | "
             f"roundtrip observado: {item.roundtrip_share_pct:.1f}%"
@@ -199,8 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     print("LIMITAÇÃO IMPORTANTE")
     print(
         "Os fingerprints descrevem a amostra on-chain local. Eles não medem PnL, não provam "
-        "intenção da wallet e não são regras de trading. O objetivo é encontrar padrões que se "
-        "repitam entre wallets antes de formular hipóteses para replay causal e shadow."
+        "intenção da wallet e não são regras de trading. O bucket de frequência usa a mediana "
+        "dos gaps entre swaps quando disponível para reduzir sensibilidade a backfill parcial; "
+        "a média calendário continua exibida separadamente."
     )
     return 0
 
