@@ -92,6 +92,22 @@ class RejectionHorizonSummary:
 
 
 @dataclass(frozen=True)
+class RejectionBarrierHorizonSummary:
+    barrier: str
+    horizon_minutes: int
+    selected_count: int
+    completed_count: int
+    failed_count: int
+    pending_count: int
+    coverage_pct: float
+    mean_return_pct: float | None
+    median_return_pct: float | None
+    positive_share_pct: float | None
+    rally_20_share_pct: float | None
+    crash_25_share_pct: float | None
+
+
+@dataclass(frozen=True)
 class RejectionLabSummary:
     run_id: int
     rejection_count: int
@@ -99,6 +115,7 @@ class RejectionLabSummary:
     single_barrier_count: int
     selected_count: int
     horizons: tuple[RejectionHorizonSummary, ...]
+    single_barrier_horizons: tuple[RejectionBarrierHorizonSummary, ...]
     rejection_counts_by_barrier: tuple[tuple[str, int], ...]
 
 
@@ -358,47 +375,95 @@ def _share(values: list[float], predicate) -> float | None:
     return 100.0 * sum(bool(predicate(value)) for value in values) / len(values)
 
 
+def _summarize_horizon_rows(
+    group: list[dict],
+    *,
+    horizon_minutes: int,
+) -> RejectionHorizonSummary:
+    values = [
+        float(row["return_pct"])
+        for row in group
+        if row["status"] == "completed" and row["return_pct"] is not None
+    ]
+    return RejectionHorizonSummary(
+        horizon_minutes=horizon_minutes,
+        selected_count=len(group),
+        completed_count=sum(row["status"] == "completed" for row in group),
+        failed_count=sum(row["status"] == "failed" for row in group),
+        pending_count=sum(row["status"] == "pending" for row in group),
+        coverage_pct=100.0 * len(values) / len(group) if group else 0.0,
+        mean_return_pct=mean(values) if values else None,
+        median_return_pct=median(values) if values else None,
+        positive_share_pct=_share(values, lambda value: value > 0),
+        rally_20_share_pct=_share(values, lambda value: value >= 20),
+        crash_25_share_pct=_share(values, lambda value: value <= -25),
+    )
+
+
 def summarize_rejection_lab(run_id: int) -> RejectionLabSummary:
     if run_id <= 0:
         raise ValueError("run_id must be positive")
     ensure_rejection_schema()
     with connection() as conn:
-        decisions = conn.execute(
-            "SELECT * FROM wave_rejection_decisions WHERE run_id=? ORDER BY id",
-            (run_id,),
-        ).fetchall()
-        followups = conn.execute(
-            """SELECT f.* FROM wave_rejection_followups f
-            JOIN wave_rejection_decisions d ON d.id=f.rejection_id
-            WHERE d.run_id=? ORDER BY f.horizon_minutes, f.id""",
-            (run_id,),
-        ).fetchall()
+        decisions = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM wave_rejection_decisions WHERE run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        ]
+        followups = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT f.*, d.barrier_count, d.barriers_json
+                FROM wave_rejection_followups f
+                JOIN wave_rejection_decisions d ON d.id=f.rejection_id
+                WHERE d.run_id=? ORDER BY f.horizon_minutes, f.id""",
+                (run_id,),
+            ).fetchall()
+        ]
 
     horizons: list[RejectionHorizonSummary] = []
     for horizon in sorted({int(row["horizon_minutes"]) for row in followups}):
         group = [
             row for row in followups if int(row["horizon_minutes"]) == horizon
         ]
-        values = [
-            float(row["return_pct"])
-            for row in group
-            if row["status"] == "completed" and row["return_pct"] is not None
-        ]
         horizons.append(
-            RejectionHorizonSummary(
-                horizon_minutes=horizon,
-                selected_count=len(group),
-                completed_count=sum(row["status"] == "completed" for row in group),
-                failed_count=sum(row["status"] == "failed" for row in group),
-                pending_count=sum(row["status"] == "pending" for row in group),
-                coverage_pct=100.0 * len(values) / len(group) if group else 0.0,
-                mean_return_pct=mean(values) if values else None,
-                median_return_pct=median(values) if values else None,
-                positive_share_pct=_share(values, lambda value: value > 0),
-                rally_20_share_pct=_share(values, lambda value: value >= 20),
-                crash_25_share_pct=_share(values, lambda value: value <= -25),
+            _summarize_horizon_rows(group, horizon_minutes=horizon)
+        )
+
+    isolated_groups: dict[tuple[str, int], list[dict]] = {}
+    for row in followups:
+        if int(row["barrier_count"]) != 1:
+            continue
+        barriers = _barriers(str(row["barriers_json"]))
+        if not barriers:
+            continue
+        key = (barriers[0], int(row["horizon_minutes"]))
+        isolated_groups.setdefault(key, []).append(row)
+
+    single_barrier_horizons: list[RejectionBarrierHorizonSummary] = []
+    for (barrier, horizon), group in sorted(
+        isolated_groups.items(), key=lambda item: (item[0][0], item[0][1])
+    ):
+        base = _summarize_horizon_rows(group, horizon_minutes=horizon)
+        single_barrier_horizons.append(
+            RejectionBarrierHorizonSummary(
+                barrier=barrier,
+                horizon_minutes=base.horizon_minutes,
+                selected_count=base.selected_count,
+                completed_count=base.completed_count,
+                failed_count=base.failed_count,
+                pending_count=base.pending_count,
+                coverage_pct=base.coverage_pct,
+                mean_return_pct=base.mean_return_pct,
+                median_return_pct=base.median_return_pct,
+                positive_share_pct=base.positive_share_pct,
+                rally_20_share_pct=base.rally_20_share_pct,
+                crash_25_share_pct=base.crash_25_share_pct,
             )
         )
+
     counts: dict[str, int] = {}
     for row in decisions:
         for barrier in _barriers(str(row["barriers_json"])):
@@ -414,6 +479,7 @@ def summarize_rejection_lab(run_id: int) -> RejectionLabSummary:
             int(row["selected_for_followup"]) == 1 for row in decisions
         ),
         horizons=tuple(horizons),
+        single_barrier_horizons=tuple(single_barrier_horizons),
         rejection_counts_by_barrier=tuple(
             sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         ),
