@@ -35,6 +35,7 @@ class Settings:
     max_price_retry_attempts: int = int(getenv("MAX_PRICE_RETRY_ATTEMPTS", "3"))
     birdeye_api_key: str = getenv("BIRDEYE_API_KEY", "").strip()
     solana_tracker_api_key: str = getenv("SOLANA_TRACKER_API_KEY", "").strip()
+    jupiter_api_key: str = getenv("JUPITER_API_KEY", "").strip()
     solana_tracker_timeout_seconds: int = int(
         getenv("SOLANA_TRACKER_TIMEOUT_SECONDS", "12")
     )
