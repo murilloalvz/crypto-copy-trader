@@ -4,7 +4,9 @@ import time
 from dataclasses import asdict
 
 from src.database import initialize_database, rows
+from src.discovery.models import WaveTokenSnapshot
 from src.opportunity_intelligence import WaveOpportunityEvidence, build_opportunity_context
+from src.rejection_intelligence import ensure_rejection_schema
 from src.social_event_store import load_social_events
 from src.wallet_forward_observations import load_wallet_forward_observations
 
@@ -29,11 +31,63 @@ def _latest_wave(token_mint: str, as_of: int) -> WaveOpportunityEvidence | None:
     )
 
 
+def _parse_market_snapshot(raw: str, *, wrapped: bool) -> WaveTokenSnapshot:
+    payload = json.loads(raw)
+    token_payload = payload.get("token") if wrapped else payload
+    if not isinstance(token_payload, dict):
+        raise ValueError("snapshot does not contain token market state")
+    return WaveTokenSnapshot(**token_payload)
+
+
+def _latest_market_snapshot(token_mint: str, as_of: int) -> WaveTokenSnapshot | None:
+    """Load the latest market snapshot that was actually persisted by ``as_of``."""
+
+    candidates: list[tuple[int, int, WaveTokenSnapshot]] = []
+    signals = rows(
+        """SELECT id, detected_at, snapshot_json FROM wave_signals
+        WHERE token_mint=? AND detected_at<=?
+        ORDER BY detected_at DESC, id DESC LIMIT 1""",
+        (token_mint, as_of),
+    )
+    if signals:
+        item = signals[0]
+        candidates.append(
+            (
+                int(item["detected_at"]),
+                1,
+                _parse_market_snapshot(str(item["snapshot_json"]), wrapped=True),
+            )
+        )
+
+    ensure_rejection_schema()
+    rejected = rows(
+        """SELECT id, detected_at, snapshot_json FROM wave_rejection_decisions
+        WHERE token_mint=? AND detected_at<=?
+        ORDER BY detected_at DESC, id DESC LIMIT 1""",
+        (token_mint, as_of),
+    )
+    if rejected:
+        item = rejected[0]
+        candidates.append(
+            (
+                int(item["detected_at"]),
+                0,
+                _parse_market_snapshot(str(item["snapshot_json"]), wrapped=False),
+            )
+        )
+
+    if not candidates:
+        return None
+    # Prefer the newest persisted snapshot. At an exact timestamp tie, an accepted
+    # signal snapshot wins because it contains the same token state plus strategy context.
+    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Inspeciona o contexto causal disponível para um token a partir de Wave, "
-            "observações forward de wallets e snapshots sociais já persistidos."
+            "market-integrity snapshot, observações forward de wallets e social persistido."
         )
     )
     parser.add_argument("token_mint", help="mint Solana do token")
@@ -59,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
 
     initialize_database()
     wave = _latest_wave(args.token_mint, as_of)
+    market_snapshot = _latest_market_snapshot(args.token_mint, as_of)
     wallet_observations = load_wallet_forward_observations(
         token_mint=args.token_mint,
         as_of=as_of,
@@ -75,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         wallet_observations=wallet_observations,
         social_events=social_events,
         include_social=not args.no_social,
+        market_snapshot=market_snapshot,
     )
 
     if args.json:
@@ -99,6 +155,49 @@ def main(argv: list[str] | None = None) -> int:
             f"- signal_id {context.wave.signal_id} | score {context.wave.wave_score:.1f} | "
             f"{context.wave.strategy_version} | detected_at {context.wave.detected_at}"
         )
+
+    print()
+    print("MARKET INTEGRITY")
+    if context.market_integrity is None:
+        print("- nenhum snapshot causal de mercado persistido até as_of")
+    else:
+        integrity = context.market_integrity
+        pressure = (
+            f"{integrity.buy_pressure_pct:.1f}%"
+            if integrity.buy_pressure_pct is not None
+            else "n/a"
+        )
+        imbalance = (
+            f"{integrity.trade_imbalance_pct:.1f}%"
+            if integrity.trade_imbalance_pct is not None
+            else "n/a"
+        )
+        acceleration = (
+            f"{integrity.volume_acceleration:.2f}x"
+            if integrity.volume_acceleration is not None
+            else "n/a"
+        )
+        print(
+            f"- buy pressure {pressure} | imbalance {imbalance} | "
+            f"volume acceleration {acceleration}"
+        )
+        print(
+            "- existing gate flags: "
+            + (
+                ", ".join(integrity.existing_gate_flags)
+                if integrity.existing_gate_flags
+                else "nenhum"
+            )
+        )
+        print(
+            "- data quality: "
+            + (
+                ", ".join(integrity.data_quality_flags)
+                if integrity.data_quality_flags
+                else "sem alerta agregado"
+            )
+        )
+        print("- observacional; snapshot agregado não prova wash trading/self-trading")
 
     print()
     print("WALLETS FORWARD")
@@ -133,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print(
-        "Este relatório só mostra evidências que já eram observáveis em as_of. Não existe score "
+        "Este relatório só mostra evidências persistidas/observáveis até as_of. Não existe score "
         "combinado nem regra de compra nesta camada."
     )
     return 0
