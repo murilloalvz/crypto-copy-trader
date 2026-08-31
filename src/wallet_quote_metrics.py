@@ -53,6 +53,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 def _load_rows(
     *,
     wallet_addresses: tuple[str, ...] | list[str] | None = None,
+    source_event_keys: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     ensure_wallet_forward_observation_schema()
     ensure_quote_attempt_schema()
@@ -60,6 +61,16 @@ def _load_rows(
     addresses = tuple(
         dict.fromkeys(item.strip() for item in (wallet_addresses or []) if item.strip())
     )
+    normalized_event_keys: tuple[str, ...] | None = None
+    if source_event_keys is not None:
+        normalized_event_keys = tuple(
+            dict.fromkeys(
+                str(item).strip() for item in source_event_keys if str(item).strip()
+            )
+        )
+        if not normalized_event_keys:
+            return []
+
     query = """SELECT
         a.wallet_address,
         a.token_mint,
@@ -69,6 +80,7 @@ def _load_rows(
         a.status,
         a.error_class,
         a.error_message,
+        a.source_event_key,
         w.observed_at AS wallet_observed_at,
         q.executable AS quote_executable
     FROM causal_quote_attempts a
@@ -82,6 +94,10 @@ def _load_rows(
         placeholders = ",".join("?" for _ in addresses)
         query += f" AND a.wallet_address IN ({placeholders})"
         params.extend(addresses)
+    if normalized_event_keys is not None:
+        placeholders = ",".join("?" for _ in normalized_event_keys)
+        query += f" AND a.source_event_key IN ({placeholders})"
+        params.extend(normalized_event_keys)
     query += " ORDER BY a.target_at, a.id"
     with connection() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
@@ -91,8 +107,12 @@ def _load_rows(
 def summarize_wallet_quote_metrics(
     *,
     wallet_addresses: tuple[str, ...] | list[str] | None = None,
+    source_event_keys: tuple[str, ...] | list[str] | None = None,
 ) -> WalletQuoteMetrics:
-    rows = _load_rows(wallet_addresses=wallet_addresses)
+    rows = _load_rows(
+        wallet_addresses=wallet_addresses,
+        source_event_keys=source_event_keys,
+    )
     success = [row for row in rows if row["status"] == "success"]
     failure = [row for row in rows if row["status"] == "error"]
 
