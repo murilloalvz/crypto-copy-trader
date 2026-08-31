@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS causal_quote_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     quote_key TEXT NOT NULL UNIQUE,
     token_mint TEXT NOT NULL,
+    side TEXT NOT NULL,
     market_time INTEGER NOT NULL,
     observed_at INTEGER NOT NULL,
     price_usd REAL NOT NULL,
@@ -14,11 +15,16 @@ CREATE TABLE IF NOT EXISTS causal_quote_observations (
     executable INTEGER NOT NULL,
     resolution_seconds INTEGER NOT NULL,
     source TEXT NOT NULL,
+    input_mint TEXT,
+    output_mint TEXT,
+    input_amount_raw TEXT,
+    output_amount_raw TEXT,
+    route_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_causal_quotes_token_observed
-ON causal_quote_observations(token_mint, observed_at);
+CREATE INDEX IF NOT EXISTS idx_causal_quotes_token_side_observed
+ON causal_quote_observations(token_mint, side, observed_at);
 """
 
 
@@ -40,12 +46,14 @@ def record_causal_quote(
     with connection() as conn:
         cursor = conn.execute(
             """INSERT OR IGNORE INTO causal_quote_observations(
-                quote_key, token_mint, market_time, observed_at, price_usd,
-                liquidity_usd, executable, resolution_seconds, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quote_key, token_mint, side, market_time, observed_at, price_usd,
+                liquidity_usd, executable, resolution_seconds, source,
+                input_mint, output_mint, input_amount_raw, output_amount_raw, route_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 quote_key.strip(),
                 quote.token_mint.strip(),
+                quote.side,
                 quote.market_time,
                 quote.observed_at,
                 quote.price_usd,
@@ -53,6 +61,11 @@ def record_causal_quote(
                 int(quote.executable),
                 quote.resolution_seconds,
                 quote.source.strip(),
+                quote.input_mint,
+                quote.output_mint,
+                quote.input_amount_raw,
+                quote.output_amount_raw,
+                quote.route_id,
             ),
         )
         return cursor.rowcount == 1
@@ -61,10 +74,13 @@ def record_causal_quote(
 def load_causal_quotes(
     *,
     token_mint: str | None = None,
+    side: str | None = None,
     as_of: int | None = None,
 ) -> list[CausalQuoteObservation]:
     if token_mint is not None and not token_mint.strip():
         raise ValueError("token_mint cannot be empty")
+    if side is not None and side not in {"buy", "sell"}:
+        raise ValueError("side must be buy or sell")
     if as_of is not None and as_of < 0:
         raise ValueError("as_of must be non-negative")
 
@@ -74,12 +90,16 @@ def load_causal_quotes(
     if token_mint is not None:
         clauses.append("token_mint=?")
         params.append(token_mint.strip())
+    if side is not None:
+        clauses.append("side=?")
+        params.append(side)
     if as_of is not None:
         clauses.append("observed_at<=?")
         params.append(as_of)
 
-    query = """SELECT token_mint, market_time, observed_at, price_usd,
-        liquidity_usd, executable, resolution_seconds, source
+    query = """SELECT token_mint, side, market_time, observed_at, price_usd,
+        liquidity_usd, executable, resolution_seconds, source,
+        input_mint, output_mint, input_amount_raw, output_amount_raw, route_id
         FROM causal_quote_observations"""
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -90,6 +110,7 @@ def load_causal_quotes(
     return [
         CausalQuoteObservation(
             token_mint=str(row["token_mint"]),
+            side=str(row["side"]),
             market_time=int(row["market_time"]),
             observed_at=int(row["observed_at"]),
             price_usd=float(row["price_usd"]),
@@ -101,6 +122,11 @@ def load_causal_quotes(
             executable=bool(row["executable"]),
             resolution_seconds=int(row["resolution_seconds"]),
             source=str(row["source"]),
+            input_mint=row["input_mint"],
+            output_mint=row["output_mint"],
+            input_amount_raw=row["input_amount_raw"],
+            output_amount_raw=row["output_amount_raw"],
+            route_id=row["route_id"],
         )
         for row in rows
     ]
