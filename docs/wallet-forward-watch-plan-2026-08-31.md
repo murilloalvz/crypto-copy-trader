@@ -8,7 +8,12 @@ RESEARCH / READ ONLY. Este plano não altera `wave_v3_volume_integrity`, não ex
 
 O deep scan cross-wallet produziu fingerprints descritivos úteis, mas ainda só uma wallet (`7mPti`) passou a gate de cobertura `evidence_ready`. Nenhuma assinatura apareceu em duas wallets com cobertura mínima.
 
-Continuar aumentando backfill indiscriminadamente tem retorno informacional menor do que começar a observar algumas wallets em tempo real e medir o atraso real `chain_time -> observed_at`.
+Continuar aumentando backfill indiscriminadamente tem retorno informacional menor do que observar algumas wallets em tempo real e medir o atraso real `chain_time -> observed_at`.
+
+Desde a versão inicial deste plano, a infraestrutura de Causal Replay e de route quotes foi preparada. Portanto o mesmo período forward pode, opcionalmente, produzir **duas camadas independentes de evidência**:
+
+1. observabilidade da ação da wallet;
+2. disponibilidade de uma rota cotada depois que a ação foi observada.
 
 ## Coorte forward v1
 
@@ -31,62 +36,148 @@ Wallets:
 
 3. `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
    - candidato `ultra_short | staged_exit_dominant | frequent_reentry | high_frequency`;
-   - comportamento muito concentrado em poucos tokens e janela curta, portanto ainda não `evidence_ready`;
-   - incluída no forward watch porque o objetivo é verificar se o padrão bursty continua aparecendo fora do recorte histórico.
+   - comportamento concentrado em poucos tokens e janela curta;
+   - incluída porque queremos verificar se o comportamento bursty persiste fora do recorte histórico.
 
-`DKgv` fica fora desta primeira coorte porque tem apenas três tokens observados, baixa cobertura de sequência e sizing insuficiente; hoje adicionaria carga sem informação proporcional.
+`DKgv` fica fora desta primeira coorte porque adicionaria carga sem informação proporcional.
 
-## Primeiro run recomendado
+## Polling do watcher
 
-Usar polling de 30 segundos por 6 horas:
+Usar 30 segundos por 6 horas.
+
+Racional:
+
+- 60s é grosseiro para candidatos com primeira saída histórica em ~1–5 minutos;
+- 30s permite medir empiricamente cobertura <=30s/<=60s;
+- três wallets mantêm carga RPC pequena;
+- 10s continua prematuro antes de validação operacional de 30s.
+
+O primeiro sync é bootstrap e não conta como confirmação forward. Só transações novas depois da linha de base recebem `observed_at`.
+
+## Modo A — sem Jupiter
+
+Se ainda não houver `JUPITER_API_KEY`, manter o experimento original:
 
 ```powershell
-python wallet_watch_forward.py `
+python wallet_forward_experiment.py `
   --file wallets/forward-watch-archetypes-2026-08-31.txt `
   --hours 6 `
   --interval-seconds 30
 ```
 
-Racional:
+Esse modo mede somente observabilidade das wallets.
 
-- 60s é aceitável para a 7mPti, mas grosseiro para candidatos com primeira saída histórica em ~1–5 minutos;
-- 30s permite medir empiricamente cobertura em <=30s/<=60s sem tentar prometer precisão de 15s;
-- com três wallets, a carga permanece muito menor do que um watch amplo;
-- 10s ainda não é necessário antes de sabermos se os RPCs públicos sustentam 30s de maneira estável.
+## Modo B — forward + route quotes causais
 
-O primeiro sync é bootstrap e não conta como confirmação forward. Só transações novas depois da linha de base recebem `observed_at`.
+Com `JUPITER_API_KEY` configurado no `.env`:
+
+```powershell
+python wallet_forward_experiment.py `
+  --file wallets/forward-watch-archetypes-2026-08-31.txt `
+  --hours 6 `
+  --interval-seconds 30 `
+  --with-jupiter-quotes
+```
+
+O orquestrador inicia primeiro `wallet_quote_watch.py`, congela o ID-base local e só então inicia o RPC watcher. Assim ações já existentes não geram snapshots de quote retrospectivos.
+
+Para cada **nova compra forward** da coorte, o Quote Watch agenda snapshots em:
+
+```text
++0s, +15s, +30s, +60s, +120s
+```
+
+O notional padrão é `COPY_SIZE_USD`, cotado como USDC -> token. A direção é explicitamente `buy`; uma rota sell nunca pode preencher um replay buy.
+
+### Quote-only x transação candidata
+
+Sem `--taker`, Jupiter retorna preço/rota sem transação montada. O snapshot é persistido com `executable=false` e serve apenas como proxy causal de route pricing.
+
+Opcionalmente, pode-se passar uma **chave pública** em `--taker`. Isso permite ao `/order` tentar montar uma transação candidata, mas o projeto:
+
+- não lê chave privada;
+- não assina;
+- não chama `/execute`;
+- não envia transação.
+
+`transaction != null/""` é armazenado como `executable=true` no sentido estrito de "transação candidata montada pelo provider". Isso **não prova landing ou fill real**.
+
+## Rate limit
+
+A implementação espaça requests em pelo menos 1,1s por padrão, de forma conservadora para o tier Free atual do Jupiter (1 request/s, 60/min no bucket principal). Se várias ações ocorrerem em rajada, o atraso real em relação ao target é persistido e aparece na avaliação — não é escondido.
+
+Cada tentativa é auditada em `causal_quote_attempts`, inclusive falhas. Assim o relatório não calcula cobertura apenas sobre quotes que deram certo.
 
 ## Avaliação depois do run
+
+Observabilidade da wallet:
 
 ```powershell
 python evaluate_wallet_forward.py
 ```
 
-Interpretar:
+Cobertura/timing dos route quotes:
 
-- quantidade de ações forward por wallet;
-- buys/sells e diversidade de tokens;
-- lag mínimo, p50, p95 e máximo;
-- cobertura <=15s, <=30s, <=60s e <=120s;
-- falhas de RPC/sync durante a execução.
+```powershell
+python evaluate_wallet_quotes.py `
+  --file wallets/forward-watch-archetypes-2026-08-31.txt
+```
+
+Replay causal:
+
+```powershell
+python wallet_causal_replay.py
+```
+
+Sem taker, o replay padrão corretamente rejeita quote-only. Para diagnóstico de timing/price proxy apenas:
+
+```powershell
+python wallet_causal_replay.py --allow-proxy-quotes
+```
+
+## O que cada saída responde
+
+`evaluate_wallet_forward.py`:
+
+- quantas ações foram realmente observadas;
+- chain -> detection lag p50/p95;
+- cobertura <=15/30/60/120s;
+- comportamento por wallet.
+
+`evaluate_wallet_quotes.py`:
+
+- tentativas totais, sucessos e falhas;
+- cobertura em cada delay;
+- quote-only x transação candidata;
+- atraso real do request em relação ao target;
+- atraso de conclusão;
+- classes de erro.
+
+`wallet_causal_replay.py`:
+
+- se, depois do atraso real de detecção e do delay declarado, existia quote elegível;
+- quanto tempo adicional foi necessário até o quote;
+- não mede edge completo enquanto não houver regra de estratégia/saída causal completa.
 
 ## Critério para próximo passo
 
-Este run não valida edge. Ele só decide se a camada de observabilidade é adequada para pesquisa causal.
+O run não valida edge. Ele decide se observabilidade e route pricing estão bons o suficiente para avançar.
 
-Se o polling de 30s for operacionalmente estável e produzir ações:
+Se 30s for operacionalmente estável e houver route quotes com boa cobertura:
 
-1. manter coleta forward por mais tempo;
-2. cruzar entradas observadas com preço executável/liquidez quando essa camada estiver disponível;
-3. medir se o comportamento de cada arquétipo persiste fora do backfill;
-4. somente depois formular braços de replay/shadow.
+1. aumentar forward somente onde a informação marginal justificar;
+2. cruzar com regras congeladas dos arquétipos;
+3. calcular replay de entrada/saída com fees/slippage/missingness;
+4. promover apenas candidato robusto para Shadow Execution.
 
-Se houver muitas falhas RPC ou lag >60–120s, corrigir observabilidade antes de qualquer tentativa de copiar estratégia ultra-short.
+Se houver lag alto, muitas falhas RPC/Jupiter ou route coverage ruim, corrigir a camada causal antes de qualquer tentativa ultra-short.
 
 ## Guardrails
 
 - Não chamar a wallet mais rápida de melhor.
 - Não inferir lucro a partir de frequência ou fingerprint.
 - Não misturar bootstrap histórico com observações forward.
+- Não tratar quote-only como execução.
+- Não tratar transação montada como transação confirmada.
 - Não integrar as wallets à estratégia do bot nesta etapa.
 - Não alterar filtros da `wave_v3` por causa deste experimento.
