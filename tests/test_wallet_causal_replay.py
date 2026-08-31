@@ -20,13 +20,17 @@ def _quote(
     observed_at: int,
     *,
     token: str = "T",
+    side: str = "buy",
     market_time: int | None = None,
     price: float = 10.0,
     executable: bool = True,
     resolution_seconds: int = 1,
 ) -> CausalQuoteObservation:
+    input_mint = "USDC" if side == "buy" else token
+    output_mint = token if side == "buy" else "USDC"
     return CausalQuoteObservation(
         token_mint=token,
+        side=side,
         market_time=observed_at if market_time is None else market_time,
         observed_at=observed_at,
         price_usd=price,
@@ -34,6 +38,11 @@ def _quote(
         executable=executable,
         resolution_seconds=resolution_seconds,
         liquidity_usd=50_000.0,
+        input_mint=input_mint if executable else None,
+        output_mint=output_mint if executable else None,
+        input_amount_raw="1000000" if executable else None,
+        output_amount_raw="100000" if executable else None,
+        route_id="route-1" if executable else None,
     )
 
 
@@ -51,22 +60,29 @@ class WalletCausalReplayTests(unittest.TestCase):
         self.assertEqual(result.market_price_usd, 10.0)
 
     def test_buy_and_sell_slippage_are_directionally_conservative(self):
-        quote = _quote(130, price=10.0)
         config = WalletCausalReplayConfig(slippage_bps=200)
 
         buy = replay_wallet_action(
             WalletActionObservation("W", "T", "buy", 100, 120),
-            [quote],
+            [_quote(130, side="buy", price=10.0)],
             config=config,
         )
         sell = replay_wallet_action(
             WalletActionObservation("W", "T", "sell", 100, 120),
-            [quote],
+            [_quote(130, side="sell", price=10.0)],
             config=config,
         )
 
         self.assertAlmostEqual(buy.simulated_execution_price_usd, 10.2)
         self.assertAlmostEqual(sell.simulated_execution_price_usd, 9.8)
+
+    def test_opposite_side_quote_cannot_fill_action(self):
+        action = WalletActionObservation("W", "T", "buy", 100, 120)
+
+        result = replay_wallet_action(action, [_quote(125, side="sell")])
+
+        self.assertEqual(result.status, "missing_quote")
+        self.assertEqual(result.reason, "no_quote_for_side")
 
     def test_proxy_quote_is_rejected_by_default(self):
         action = WalletActionObservation("W", "T", "buy", 100, 120)
@@ -104,6 +120,7 @@ class WalletCausalReplayTests(unittest.TestCase):
         selection = select_first_causal_quote(
             [_quote(151)],
             token_mint="T",
+            side="buy",
             ready_at=120,
             max_quote_age_seconds=15,
             max_quote_wait_seconds=30,
@@ -132,20 +149,23 @@ class WalletCausalReplayTests(unittest.TestCase):
         self.assertEqual(summary.median_quote_wait_seconds, 10.0)
         self.assertEqual(summary.p95_total_chain_to_quote_seconds, 30.0)
 
-    def test_quote_store_is_idempotent_and_respects_as_of(self):
+    def test_quote_store_is_idempotent_and_respects_filters(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quotes.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
-                first = _quote(120, token="T")
-                second = _quote(170, token="T")
+                first = _quote(120, token="T", side="buy")
+                second = _quote(170, token="T", side="sell")
                 self.assertTrue(record_causal_quote(first, quote_key="q1"))
                 self.assertFalse(record_causal_quote(first, quote_key="q1"))
                 self.assertTrue(record_causal_quote(second, quote_key="q2"))
 
                 early = load_causal_quotes(token_mint="T", as_of=150)
+                sells = load_causal_quotes(token_mint="T", side="sell")
                 all_rows = load_causal_quotes(token_mint="T")
 
         self.assertEqual(len(early), 1)
+        self.assertEqual(len(sells), 1)
+        self.assertEqual(sells[0].side, "sell")
         self.assertEqual(len(all_rows), 2)
 
     def test_invalid_quote_cannot_claim_future_market_state_was_seen_earlier(self):
@@ -154,6 +174,29 @@ class WalletCausalReplayTests(unittest.TestCase):
             select_first_causal_quote(
                 [invalid],
                 token_mint="T",
+                side="buy",
+                ready_at=100,
+                max_quote_age_seconds=15,
+                max_quote_wait_seconds=30,
+            )
+
+    def test_executable_quote_requires_route_direction_matching_side(self):
+        invalid = CausalQuoteObservation(
+            token_mint="T",
+            side="buy",
+            market_time=100,
+            observed_at=100,
+            price_usd=1.0,
+            source="test",
+            executable=True,
+            input_mint="T",
+            output_mint="USDC",
+        )
+        with self.assertRaises(ValueError):
+            select_first_causal_quote(
+                [invalid],
+                token_mint="T",
+                side="buy",
                 ready_at=100,
                 max_quote_age_seconds=15,
                 max_quote_wait_seconds=30,
