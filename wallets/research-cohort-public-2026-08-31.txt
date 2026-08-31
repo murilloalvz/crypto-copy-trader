@@ -1,0 +1,19 @@
+# Public candidate cohort for Wallet Strategy Lab
+# Added 2026-08-31. One address per line.
+# These are research candidates only. Inclusion does NOT mean the wallet is
+# profitable, copyable, trustworthy, or suitable for live trading.
+# Revalidate all behavior from our own RPC/SQLite observations.
+
+7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH
+3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk
+DKgvpfttzmJqZXdavDwTxwSVkajibjzJnN2FA99dyciK
+636N7frU8bUwYfyUAtvMQQsXhTFRuSWjxnEZihr5axGV
+7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS
+9jyqFiLnruggwNn4EQwBNFXwpbLM9hrA4hV59ytyAVVz
+2tgaERy66PYPEovadPh5y7coWjyURTmvKgdrHd9DAoxw
+2RssnB7hcrnBEx55hXMKT1E7gN27g9ecQFbbCc5Zjajq
+8fSnLTnRViK83dDesivTsPx2wiRhwti9xoafeMGjEyLJ
+5wTLevkkUWzKgRTWKcSjrgdoP8TnrEnXYGaAxFKibsS5
+DNfuF1L62WWyW3pNakVkyGGFzVVhj4Yr52jSmdTyeBHm
+B8CdgWxMFm8vARVjXaR2cngTgAxYz9LJYBdikXHxi4dd
+Gf9XgdmvNHt8fUTFsWAccNbKeyDXsgJyZN8iFJKg5Pbd
