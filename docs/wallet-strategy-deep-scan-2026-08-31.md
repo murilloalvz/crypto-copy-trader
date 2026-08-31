@@ -91,15 +91,16 @@ Leitura: existe semelhança superficial com o cluster high-frequency/reentry, ma
 
 A comparação inicial marcou 7mPti e 3tc4 como `evidence_ready`. A 3tc4 não deveria passar porque a amostra tinha apenas ~0,2 dia e poucos ciclos/tokens.
 
-A gate passou a bloquear:
+A gate passou a exigir, além de amostra não insuficiente, >=50% de roundtrips e >=3 ciclos complete-like:
 
-- `short_observation_window`;
-- `exit_sizing_sample_too_small`;
-- `exit_sizing_quantity_anomalies`;
-- `sequence_coverage_low`;
-- além dos requisitos de amostra não insuficiente, >=50% de roundtrips e >=3 ciclos complete-like.
+- pelo menos 10 tokens observados;
+- ausência de `short_observation_window`;
+- ausência de `strategy_token_sample_too_small`;
+- ausência de `exit_sizing_sample_too_small`;
+- ausência de `exit_sizing_quantity_anomalies`;
+- ausência de `sequence_coverage_low`.
 
-Na reavaliação do mesmo SQLite, somente a 7mPti permaneceu `evidence_ready`.
+Na reavaliação do mesmo SQLite, somente a 7mPti permaneceu `evidence_ready`. O corte de 10 tokens é uma gate de generalização cross-token, não um filtro de lucro.
 
 ### 2. Frequência: span calendário era frágil
 
@@ -129,15 +130,15 @@ Nenhuma hipótese representa estratégia validada ou recomendação de cópia.
 
 ## Validação técnica
 
-A primeira rodada de correções passou em GitHub Actions com:
+Após as correções de frequência e da gate cross-token, GitHub Actions em Ubuntu / Python 3.11 executou compilação e suíte completa:
 
 ```text
-Ran 242 tests in 3.331s
+Ran 244 tests in 2.315s
 OK
 ```
 
-A segunda correção de frequência adiciona testes específicos para impedir extrapolação de rajadas de segundos e preservar dias realmente high-frequency. O status deve ser atualizado com o CI do novo head antes de classificar essa segunda correção como TESTADA.
+Status da metodologia atual: **TESTADO EM CI LIMPO**.
 
 ## Próximo passo recomendado
 
-Recalcular novamente os fingerprints no SQLite existente sem novo RPC após a segunda correção de frequência. Em seguida escolher seletivamente backfill/forward watch. Não ampliar a coorte indiscriminadamente até a frequência e a cobertura estarem estáveis.
+Recalcular novamente os fingerprints no SQLite existente sem novo RPC com a metodologia final deste checkpoint. Em seguida escolher seletivamente backfill/forward watch. Não ampliar a coorte indiscriminadamente até a frequência e a cobertura estarem estáveis.
