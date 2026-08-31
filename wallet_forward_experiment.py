@@ -7,7 +7,11 @@ from pathlib import Path
 
 from src.config import settings
 from src.database import initialize_database
-from src.wallet_forward_runs import create_wallet_forward_run, finish_wallet_forward_run
+from src.wallet_forward_runs import (
+    CURRENT_RUNTIME_VERSION,
+    create_wallet_forward_run,
+    finish_wallet_forward_run,
+)
 from src.wallet_quote_watch import latest_forward_observation_id
 
 
@@ -76,12 +80,18 @@ def _terminate(process: subprocess.Popen | None) -> None:
         process.wait(timeout=5)
 
 
-def _finish_run(run_key: str, *, status: str) -> None:
+def _finish_run(
+    run_key: str,
+    *,
+    status: str,
+    ended_at: int,
+    end_observation_id: int,
+) -> None:
     finish_wallet_forward_run(
         run_key,
         status=status,
-        ended_at=int(time.time()),
-        end_observation_id=latest_forward_observation_id(),
+        ended_at=ended_at,
+        end_observation_id=end_observation_id,
     )
 
 
@@ -122,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         "proxy" if args.with_jupiter_quotes else
         "none"
     )
+    # Quote process starts before the wallet watcher. Keep its intake open beyond one complete
+    # polling interval so the final wallet cycle cannot fall through a duration race.
+    quote_intake_grace_seconds = (
+        max(5, args.interval_seconds + 5) if args.with_jupiter_quotes else 0
+    )
     create_wallet_forward_run(
         run_key=run_key,
         started_at=started_at,
@@ -132,34 +147,45 @@ def main(argv: list[str] | None = None) -> int:
         with_jupiter_quotes=args.with_jupiter_quotes,
         copy_size_usd=args.copy_size_usd,
         quote_mode=quote_mode,
+        runtime_version=CURRENT_RUNTIME_VERSION,
+        quote_intake_grace_seconds=quote_intake_grace_seconds,
     )
 
     print("Crypto Copy Trader — Wallet Forward Experiment")
     print("Modo: RESEARCH / READ ONLY — nenhum processo assina ou envia transações.")
     print(
-        f"Run key: {run_key} | baseline observation id={baseline_id} | "
-        f"wallets={len(addresses)} | duração={args.hours:.2f}h"
+        f"Run key: {run_key} | runtime {CURRENT_RUNTIME_VERSION} | "
+        f"baseline observation id={baseline_id} | wallets={len(addresses)} | "
+        f"duração={args.hours:.2f}h"
     )
     print(
         "Run manifest: configuração e limites da coleta foram congelados no SQLite para "
         "o checkpoint não misturar observações de execuções diferentes."
     )
+    if args.with_jupiter_quotes:
+        print(
+            f"Quote intake grace: {quote_intake_grace_seconds}s após a duração nominal, "
+            "para capturar o último ciclo RPC antes do drain."
+        )
 
     python = sys.executable
     quote_process: subprocess.Popen | None = None
     wallet_process: subprocess.Popen | None = None
     final_status = "ABORTED"
     return_code = 1
+    collection_ended_at: int | None = None
+    collection_end_observation_id: int | None = None
 
     try:
         if args.with_jupiter_quotes:
+            quote_hours = args.hours + quote_intake_grace_seconds / 3_600
             quote_command = [
                 python,
                 "wallet_quote_watch.py",
                 "--file",
                 str(cohort_path),
                 "--hours",
-                str(args.hours),
+                str(quote_hours),
                 "--after-id",
                 str(baseline_id),
                 "--copy-size-usd",
@@ -205,9 +231,14 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 _terminate(wallet_process)
+                collection_ended_at = int(time.time())
+                collection_end_observation_id = latest_forward_observation_id()
                 return_code = int(quote_process.returncode or 1)
                 return return_code
             time.sleep(0.5)
+
+        collection_ended_at = int(time.time())
+        collection_end_observation_id = latest_forward_observation_id()
 
         if wallet_process.returncode != 0:
             print(
@@ -221,7 +252,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if quote_process is not None:
             print(
-                "Forward Watch terminou. Aguardando o Quote Watch drenar snapshots agendados "
+                "Forward Watch terminou. O limite de observações da run já foi congelado. "
+                "Aguardando o Quote Watch concluir grace + drain dos snapshots agendados "
                 f"até +{max(quote_delays)}s."
             )
             quote_return = quote_process.wait()
@@ -240,14 +272,34 @@ def main(argv: list[str] | None = None) -> int:
         print("\nInterrompido pelo usuário; a run será marcada como ABORTED.")
         _terminate(wallet_process)
         _terminate(quote_process)
+        collection_ended_at = collection_ended_at or int(time.time())
+        collection_end_observation_id = (
+            collection_end_observation_id
+            if collection_end_observation_id is not None
+            else latest_forward_observation_id()
+        )
         return_code = 130
         return 130
     finally:
         _terminate(wallet_process)
         _terminate(quote_process)
+        collection_ended_at = collection_ended_at or int(time.time())
+        collection_end_observation_id = (
+            collection_end_observation_id
+            if collection_end_observation_id is not None
+            else latest_forward_observation_id()
+        )
         try:
-            _finish_run(run_key, status=final_status)
-            print(f"Run {run_key} finalizada com status {final_status}.")
+            _finish_run(
+                run_key,
+                status=final_status,
+                ended_at=collection_ended_at,
+                end_observation_id=collection_end_observation_id,
+            )
+            print(
+                f"Run {run_key} finalizada com status {final_status} | "
+                f"observation end id={collection_end_observation_id}."
+            )
         except Exception as exc:
             print(
                 f"ALERTA: não foi possível finalizar o manifest da run {run_key}: {exc}",
