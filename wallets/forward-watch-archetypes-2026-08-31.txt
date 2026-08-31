@@ -1,0 +1,10 @@
+# Forward Wallet Watch — archetype cohort
+# RESEARCH / READ ONLY
+# 7mPti: one-day / mixed-exit reference
+7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH
+
+# Gf9X: ultra-short / single-exit candidate
+Gf9XgdmvNHt8fUTFsWAccNbKeyDXsgJyZN8iFJKg5Pbd
+
+# 3tc4: ultra-short / staged-exit / frequent-reentry bursty candidate
+3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk
