@@ -13,6 +13,8 @@ class WalletStrategyFingerprint:
     observed_span_days: float
     sample_grade: str
     swaps_per_day: float
+    frequency_rate_per_day: float
+    frequency_basis: str
     holding_bucket: str
     exit_bucket: str
     reentry_bucket: str
@@ -105,16 +107,29 @@ def build_wallet_strategy_fingerprint(
     This is intentionally not a profitability score and does not decide whether a wallet
     should be copied. It is a research abstraction that groups observed execution behavior
     so multiple wallets can be compared without using the Solana Tracker Data API.
+
+    Calendar swaps/day is kept as a descriptive field, but the frequency archetype uses the
+    median inter-swap gap when available. This prevents one distant historical observation or
+    a partial backfill from turning an otherwise active execution pattern into a false
+    ``sparse`` classification.
     """
     profile = build_onchain_wallet_profile(address, swaps)
     sizing_rows = analyze_exit_sizing(swaps)
     sizing = summarize_exit_sizing(sizing_rows)
 
     effective_days = max(profile.observed_span_days, 1.0 / 24.0)
-    swaps_per_day = profile.swap_count / effective_days if profile.swap_count else 0.0
+    calendar_swaps_per_day = (
+        profile.swap_count / effective_days if profile.swap_count else 0.0
+    )
+    if profile.median_swap_gap_seconds is not None and profile.median_swap_gap_seconds > 0:
+        frequency_rate_per_day = 86_400.0 / profile.median_swap_gap_seconds
+        frequency_basis = "median_swap_gap"
+    else:
+        frequency_rate_per_day = calendar_swaps_per_day
+        frequency_basis = "calendar_span"
 
     holding_bucket = _holding_bucket(profile.median_first_exit_seconds)
-    frequency_bucket = _frequency_bucket(swaps_per_day)
+    frequency_bucket = _frequency_bucket(frequency_rate_per_day)
     reentry_bucket = _reentry_bucket(profile.reentry_token_share_pct)
     exit_bucket = _exit_bucket(
         complete_like_count=sizing.complete_like_count,
@@ -139,6 +154,12 @@ def build_wallet_strategy_fingerprint(
         flags.append("exit_sizing_quantity_anomalies")
     if profile.roundtrip_token_share_pct < 50.0:
         flags.append("sequence_coverage_low")
+    if calendar_swaps_per_day > 0 and frequency_rate_per_day > 0:
+        ratio = max(calendar_swaps_per_day, frequency_rate_per_day) / min(
+            calendar_swaps_per_day, frequency_rate_per_day
+        )
+        if ratio >= 3.0:
+            flags.append("calendar_frequency_differs_from_active_intensity")
 
     signature = "|".join(
         [holding_bucket, exit_bucket, reentry_bucket, frequency_bucket]
@@ -150,7 +171,9 @@ def build_wallet_strategy_fingerprint(
         token_count=profile.token_count,
         observed_span_days=profile.observed_span_days,
         sample_grade=profile.sample_grade,
-        swaps_per_day=swaps_per_day,
+        swaps_per_day=calendar_swaps_per_day,
+        frequency_rate_per_day=frequency_rate_per_day,
+        frequency_basis=frequency_basis,
         holding_bucket=holding_bucket,
         exit_bucket=exit_bucket,
         reentry_bucket=reentry_bucket,
