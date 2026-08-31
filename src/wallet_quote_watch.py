@@ -75,9 +75,18 @@ def load_forward_buys_after(
     after_id: int,
     *,
     wallet_addresses: tuple[str, ...] | list[str] | None = None,
+    through_id: int | None = None,
 ) -> list[ForwardBuyEvent]:
+    """Load BUY rows inside an explicit id interval when requested.
+
+    ``through_id`` lets a polling caller first freeze the current MAX(id), then read exactly
+    ``(after_id, through_id]`` before advancing its cursor. This prevents a row inserted during
+    the SELECT from being returned once and then skipped/repeated by a stale cursor boundary.
+    """
     if after_id < 0:
         raise ValueError("after_id must be non-negative")
+    if through_id is not None and through_id < after_id:
+        raise ValueError("through_id cannot precede after_id")
     addresses = tuple(
         dict.fromkeys(item.strip() for item in (wallet_addresses or []) if item.strip())
     )
@@ -86,13 +95,16 @@ def load_forward_buys_after(
         FROM wallet_forward_observations
         WHERE id > ? AND side='buy'"""
     params: list[object] = [after_id]
+    if through_id is not None:
+        query += " AND id <= ?"
+        params.append(through_id)
     if addresses:
         placeholders = ",".join("?" for _ in addresses)
         query += f" AND wallet_address IN ({placeholders})"
         params.extend(addresses)
     query += " ORDER BY id"
     with connection() as conn:
-        rows = conn.execute(query, tuple(params)).fetchall()
+        result = conn.execute(query, tuple(params)).fetchall()
     return [
         ForwardBuyEvent(
             id=int(row["id"]),
@@ -102,7 +114,7 @@ def load_forward_buys_after(
             chain_time=int(row["chain_time"]),
             observed_at=int(row["observed_at"]),
         )
-        for row in rows
+        for row in result
     ]
 
 
