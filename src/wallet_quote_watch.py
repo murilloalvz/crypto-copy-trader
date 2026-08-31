@@ -71,18 +71,28 @@ def latest_forward_observation_id() -> int:
     return int(row["max_id"])
 
 
-def load_forward_buys_after(after_id: int) -> list[ForwardBuyEvent]:
+def load_forward_buys_after(
+    after_id: int,
+    *,
+    wallet_addresses: tuple[str, ...] | list[str] | None = None,
+) -> list[ForwardBuyEvent]:
     if after_id < 0:
         raise ValueError("after_id must be non-negative")
+    addresses = tuple(
+        dict.fromkeys(item.strip() for item in (wallet_addresses or []) if item.strip())
+    )
     ensure_wallet_forward_observation_schema()
+    query = """SELECT id, observation_key, wallet_address, token_mint, chain_time, observed_at
+        FROM wallet_forward_observations
+        WHERE id > ? AND side='buy'"""
+    params: list[object] = [after_id]
+    if addresses:
+        placeholders = ",".join("?" for _ in addresses)
+        query += f" AND wallet_address IN ({placeholders})"
+        params.extend(addresses)
+    query += " ORDER BY id"
     with connection() as conn:
-        rows = conn.execute(
-            """SELECT id, observation_key, wallet_address, token_mint, chain_time, observed_at
-            FROM wallet_forward_observations
-            WHERE id > ? AND side='buy'
-            ORDER BY id""",
-            (after_id,),
-        ).fetchall()
+        rows = conn.execute(query, tuple(params)).fetchall()
     return [
         ForwardBuyEvent(
             id=int(row["id"]),
