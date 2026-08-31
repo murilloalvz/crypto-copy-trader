@@ -13,132 +13,135 @@ Coorte aprofundada:
 - `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
 - `DKgvpfttzmJqZXdavDwTxwSVkajibjzJnN2FA99dyciK`
 
-Comando de backfill:
+Backfill executado sem falhas RPC nas páginas observadas:
 
 ```powershell
 python wallet_strategy_lab.py --file wallets/research-cohort-deep.txt --sync-onchain --pages 10
-python wallet_strategy_compare.py --all-local --min-swaps 20
 ```
 
-Não houve falhas RPC nas páginas observadas.
+Depois das correções metodológicas, o mesmo SQLite foi recalculado sem novo RPC.
 
-## Resultados observados
+## Resultado final do fingerprint neste checkpoint
 
 ### 7mPti
 
-- 94 swaps, 36 tokens, span local 306,3 dias, grau DEVELOPING;
+- 94 swaps / 36 tokens / span local 306,3 dias / DEVELOPING;
+- `one_day|mixed_exit|occasional_reentry|moderate`;
+- intensidade mediana nos dias UTC ativos: 1,0 swap/dia;
+- média calendário observada: 0,3 swap/dia;
 - primeira saída mediana: 18,5h;
-- roundtrip observado: 72,2%;
-- scale-in: 7,7%;
-- múltiplas vendas: 42,3%;
-- reentrada: 19,2%;
-- sizing complete-like: 21;
-- multi-sell complete-like: 6;
-- primeira tranche / runner mediano nos multi-sell complete-like: 50% / 50%;
-- PumpSwap: 52,1% dos swaps observados;
-- `preexisting_inventory_observed`.
+- roundtrip: 72,2%;
+- scale-in: 7,7%; multi-sell: 42,3%; reentrada: 19,2%;
+- 21 ciclos complete-like e seis multi-sell complete-like;
+- primeira tranche / runner mediano nos multi-sell completos: 50% / 50%;
+- PumpSwap: 52,1%;
+- única wallet deste conjunto classificada como `evidence_ready`.
 
-Leitura: o backfill maior manteve a hipótese comportamental principal de posição aproximadamente `one_day`, uso relevante de múltiplas vendas e um modo staged próximo de 50/50 em parte dos ciclos completos. A wallet continua sendo a referência de melhor cobertura local, mas isso ainda não mede edge.
+Leitura: referência comportamental mais madura, consistente com posição de horizonte maior e saída mista. Continua sem edge provado.
 
 ### Gf9X
 
-- 71 swaps, 36 tokens, 21,2 dias, grau DEVELOPING;
+- 71 swaps / 36 tokens / 21,2 dias / DEVELOPING;
+- `ultra_short|single_exit_dominant|rare_reentry|moderate`;
+- intensidade mediana nos dias ativos: 2,0 swaps/dia;
+- média calendário: 3,3 swaps/dia;
 - primeira saída mediana: 5,3min;
-- roundtrip observado: 36,1%;
-- scale-in: 23,1%;
-- múltiplas vendas: 15,4%;
-- reentrada: 7,7%;
-- sizing complete-like: 10;
-- multi-sell complete-like: 1;
-- PumpSwap: 83,1%.
+- roundtrip: 36,1%;
+- scale-in: 23,1%; multi-sell: 15,4%; reentrada: 7,7%;
+- 10 ciclos complete-like;
+- PumpSwap: 83,1%;
+- bloqueio principal: baixa cobertura de sequência/roundtrips.
 
-Leitura: surgiu um candidato de arquétipo `ultra_short` com saída predominantemente única e reentrada rara. É comportamentalmente muito diferente da 7mPti. A cobertura de roundtrips ainda é baixa para promoção de evidência.
+Leitura: melhor candidato atual de arquétipo distinto da 7mPti, mas precisa de cobertura causal melhor.
 
 ### 3tc4
 
-- 93 swaps, 5 tokens, apenas ~0,2 dia observado, grau DEVELOPING;
+- 93 swaps / somente 5 tokens / ~0,2 dia / DEVELOPING;
+- `ultra_short|staged_exit_dominant|frequent_reentry|high_frequency`;
+- intensidade mediana observada nos dias ativos: 46,5 swaps/dia;
+- média calendário do recorte: 428,2 swaps/dia;
 - primeira saída mediana: 1,2min;
-- roundtrip observado: 80%;
-- scale-in: 100%;
-- múltiplas vendas: 50%;
-- reentrada: 50%;
-- sizing complete-like: 4;
-- multi-sell complete-like: 2;
+- roundtrip: 80%;
+- scale-in: 100%; multi-sell: 50%; reentrada: 50%;
+- quatro ciclos complete-like, dois multi-sell;
 - primeira tranche / runner mediano: 12,5% / 87,5%;
 - PumpSwap: 92,5%;
-- alertas: `short_observation_window`, `exit_sizing_sample_too_small`.
+- bloqueios: janela curta, apenas 5 tokens e sizing ainda pequeno.
 
-Leitura: é um caso forte para estudar comportamento ultra-short/high-frequency, com indícios de múltiplas compras, reentrada e runner grande. Porém a janela é curta demais e há poucos ciclos/tokens para chamar o fingerprint de estável.
+Leitura: candidato de comportamento ultra-rápido/bursty, mas ainda pode ser apenas um episódio concentrado. Não é evidência pronta.
 
 ### DKgv
 
-- 53 swaps, 3 tokens, ~0,1 dia observado, grau DEVELOPING;
+- 53 swaps / 3 tokens / ~0,1 dia / DEVELOPING;
+- `intraday|exit_sizing_insufficient|frequent_reentry|high_frequency`;
+- intensidade mediana observada nos dias ativos: 53 swaps/dia;
+- média calendário do recorte: 623,1 swaps/dia;
 - primeira saída mediana: 21,9min;
-- roundtrip observado: 33,3%;
-- scale-in: 100%;
-- múltiplas vendas: 100%;
-- reentrada: 100%;
-- sizing complete-like: 1;
-- primeira tranche / runner observado: 10% / 90%;
+- roundtrip: 33,3%;
+- scale-in/multi-sell/reentrada observados: 100% / 100% / 100%;
+- apenas um ciclo complete-like;
 - PumpSwap: 94,3%;
-- alertas de janela curta, baixa cobertura de sequência e sizing insuficiente.
+- baixa diversidade, baixa cobertura e sizing insuficiente.
 
-Leitura: existe semelhança superficial com o cluster high-frequency/reentry, mas a evidência ainda é fraca. Não deve ser usada como confirmação de arquétipo.
+Leitura: semelhança superficial com o cluster high-frequency/reentry, porém evidência muito fraca. Não foi priorizada para o primeiro forward watch.
 
 ## Correções metodológicas derivadas do scan
 
-### 1. Gate de evidência
+### Gate de evidência
 
-A comparação inicial marcou 7mPti e 3tc4 como `evidence_ready`. A 3tc4 não deveria passar porque a amostra tinha apenas ~0,2 dia e poucos ciclos/tokens.
+A gate cross-wallet passou a exigir:
 
-A gate passou a exigir, além de amostra não insuficiente, >=50% de roundtrips e >=3 ciclos complete-like:
-
-- pelo menos 10 tokens observados;
+- amostra diferente de `INSUFFICIENT`;
+- >=50% de roundtrips;
+- >=3 ciclos complete-like;
+- >=10 tokens;
 - ausência de `short_observation_window`;
 - ausência de `strategy_token_sample_too_small`;
 - ausência de `exit_sizing_sample_too_small`;
 - ausência de `exit_sizing_quantity_anomalies`;
 - ausência de `sequence_coverage_low`.
 
-Na reavaliação do mesmo SQLite, somente a 7mPti permaneceu `evidence_ready`. O corte de 10 tokens é uma gate de generalização cross-token, não um filtro de lucro.
+Somente a 7mPti passa hoje. A gate mede cobertura/generalização descritiva, não lucro.
 
-### 2. Frequência: span calendário era frágil
+### Frequência
 
-A classificação baseada em `swap_count / observed_span` transformou a 7mPti em `sparse` quando um registro histórico distante expandiu o span para 306,3 dias. A métrica passou então a usar mediana de gaps entre swaps.
+Duas metodologias foram rejeitadas durante o scan:
 
-### 3. Frequência: extrapolação por gap também era frágil
+1. `swap_count / observed_span`, sensível demais a um registro histórico distante;
+2. `86400 / median_swap_gap`, que transformava bursts separados por segundos em taxas fictícias de dezenas de milhares de swaps/dia.
 
-A reavaliação com mediana de gap revelou o problema oposto:
+A métrica final usa:
 
-- 3tc4: `86400 swaps/dia` implícitos;
-- DKgv: `24685,7 swaps/dia` implícitos.
+```text
+mediana da quantidade de swaps realmente observados em cada dia UTC ativo
+```
 
-Esses números não representam volume diário observado. Eles aparecem porque rajadas com swaps separados por segundos foram extrapoladas para 24 horas.
+A média calendário permanece separada como diagnóstico. Isso evita extrapolar bursts de segundos para 24 horas.
 
-A metodologia foi corrigida novamente: o bucket de frequência agora usa a **mediana do número de swaps realmente observados por dia UTC ativo**. A média calendário continua separada como diagnóstico.
+## Estado das hipóteses
 
-Isso mantém wallets realmente muito ativas como high-frequency quando dezenas de swaps foram observados no mesmo dia, mas não converte uma distância de 1 segundo entre duas ações em uma taxa fictícia de 86.400 swaps/dia.
+1. **7mPti / one-day mixed-exit** — mais madura, ainda sem edge provado.
+2. **Gf9X / ultra-short single-exit** — distinta e diversificada em tokens, porém baixa cobertura de roundtrips.
+3. **3tc4 / ultra-short staged/reentry bursty** — forte contraste comportamental, mas amostra concentrada em 5 tokens e janela sub-dia.
+4. **DKgv / high-frequency reentry candidate** — evidência insuficiente para prioridade atual.
 
-## Estado das hipóteses após a revisão
+Nenhuma assinatura apareceu ainda em duas wallets `evidence_ready`; portanto não existe arquétipo multi-wallet confirmado neste checkpoint.
 
-1. **7mPti / one-day mixed-exit** — hipótese comportamental mais madura; 72,2% de roundtrips e 21 ciclos complete-like. Ainda sem edge provado.
-2. **Gf9X / ultra-short single-exit** — candidato distinto, porém só 36,1% de roundtrips; precisa de melhor cobertura antes de comparação forte.
-3. **3tc4 / ultra-short staged/reentry bursty** — interessante, mas 5 tokens e janela sub-dia impedem promoção; high-frequency deve ser interpretado como atividade observada, não cadência contínua.
-4. **DKgv / intraday high-frequency reentry candidate** — ainda mais fraco: 3 tokens, baixa cobertura e sizing insuficiente.
-
-Nenhuma hipótese representa estratégia validada ou recomendação de cópia.
+As hipóteses e seus critérios de enfraquecimento foram congelados antes de dados forward adicionais em `docs/wallet-strategy-hypotheses-2026-08-31.md`.
 
 ## Validação técnica
 
-Após as correções de frequência e da gate cross-token, GitHub Actions em Ubuntu / Python 3.11 executou compilação e suíte completa:
+A metodologia de fingerprint/gate anterior a Wallet Strategy Readiness foi validada em GitHub Actions com:
 
 ```text
 Ran 244 tests in 2.315s
 OK
 ```
 
-Status da metodologia atual: **TESTADO EM CI LIMPO**.
+O módulo posterior `wallet_strategy_readiness.py` adiciona diagnóstico explícito de bloqueios e próximos passos; seu status deve acompanhar o CI do head correspondente.
 
-## Próximo passo recomendado
+## Próximo passo
 
-Recalcular novamente os fingerprints no SQLite existente sem novo RPC com a metodologia final deste checkpoint. Em seguida escolher seletivamente backfill/forward watch. Não ampliar a coorte indiscriminadamente até a frequência e a cobertura estarem estáveis.
+Aprofundamento histórico deixa de ser o passo padrão. O próximo experimento prioritário é o Forward Wallet Watch de 7mPti, Gf9X e 3tc4 com polling de 30s, em conexão estável, para medir `chain_time -> observed_at` e descobrir se os arquétipos rápidos são sequer observáveis a tempo.
+
+Durante períodos sem conectividade externa, `wallet_strategy_readiness.py` pode ser executado só sobre o SQLite para auditar os gargalos de cada wallet sem consumir RPC.
