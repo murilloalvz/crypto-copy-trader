@@ -19,6 +19,8 @@ class QuoteAttemptCompletenessSummary:
     delay_count: int
     expected_attempt_count: int
     attempted_expected_count: int
+    successful_expected_count: int
+    failed_expected_count: int
     missing_attempt_count: int
     unexpected_attempt_count: int
     complete_event_count: int
@@ -36,7 +38,8 @@ def summarize_quote_attempt_completeness(
 
     Missing probes are reconstructed from the run's causal BUY events and frozen delay policy.
     They therefore stay in the denominator even though the older quote watcher persisted rows only
-    after an HTTP attempt actually started.
+    after an HTTP attempt actually started. Success/failure counts below are restricted to the
+    *expected* event×delay keys so an accidental extra probe cannot improve or worsen run metrics.
     """
 
     delays = tuple(dict.fromkeys(int(item) for item in delays_seconds))
@@ -65,13 +68,15 @@ def summarize_quote_attempt_completeness(
 
     ensure_quote_attempt_schema()
     actual_expected: set[str] = set()
+    successful_expected: set[str] = set()
+    failed_expected: set[str] = set()
     unexpected = 0
     if event_list:
         source_keys = tuple(event.observation_key for event in event_list)
         placeholders = ",".join("?" for _ in source_keys)
         with connection() as conn:
             rows = conn.execute(
-                f"""SELECT attempt_key, source_event_key
+                f"""SELECT attempt_key, source_event_key, status
                 FROM causal_quote_attempts
                 WHERE source_event_key IN ({placeholders}) AND side='buy'""",
                 source_keys,
@@ -80,6 +85,11 @@ def summarize_quote_attempt_completeness(
             key = str(row["attempt_key"])
             if key in expected_all:
                 actual_expected.add(key)
+                status = str(row["status"])
+                if status == "success":
+                    successful_expected.add(key)
+                elif status == "error":
+                    failed_expected.add(key)
             else:
                 unexpected += 1
 
@@ -114,6 +124,8 @@ def summarize_quote_attempt_completeness(
         delay_count=len(delays),
         expected_attempt_count=expected_count,
         attempted_expected_count=attempted_count,
+        successful_expected_count=len(successful_expected),
+        failed_expected_count=len(failed_expected),
         missing_attempt_count=expected_count - attempted_count,
         unexpected_attempt_count=unexpected,
         complete_event_count=complete_events,
