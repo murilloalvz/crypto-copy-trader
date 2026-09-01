@@ -7,7 +7,7 @@ from src.database import connection
 RUN_STATUSES = {"ACTIVE", "COMPLETED", "ABORTED"}
 QUOTE_MODES = {"none", "proxy", "assembled_candidate"}
 LEGACY_RUNTIME_VERSION = "wallet_forward_runtime_v1_unversioned"
-CURRENT_RUNTIME_VERSION = "wallet_forward_runtime_v2_causal_boundary"
+CURRENT_RUNTIME_VERSION = "wallet_forward_runtime_v3_rotating_poll_order"
 
 
 @dataclass(frozen=True)
