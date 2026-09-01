@@ -247,4 +247,8 @@ def jupiter_order_to_causal_quote(
         input_amount_raw=order.in_amount_raw,
         output_amount_raw=order.out_amount_raw,
         route_id=route_id,
+        provider_router=order.router,
+        provider_slippage_bps=order.slippage_bps,
+        provider_price_impact_pct_points=order.price_impact_pct_points,
+        provider_swap_usd_value=order.swap_usd_value,
     )
