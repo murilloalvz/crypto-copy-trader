@@ -3,10 +3,12 @@ import json
 from dataclasses import asdict
 
 from src.causal_quote_store import ensure_causal_quote_schema, load_causal_quotes
-from src.database import initialize_database
+from src.database import connection, initialize_database
 from src.database import connection
 from src.opportunity_intelligence import WalletActionObservation
 from src.wallet_forward_observations import ensure_wallet_forward_observation_schema
+from src.wallet_forward_runs import get_wallet_forward_run
+from src.wallet_quote_watch import load_successful_quote_keys_by_event
 from src.wallet_economic_replay import EconomicReplayConfig, replay_source_wallet, summarize_economic_replay
 
 
@@ -18,14 +20,25 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     initialize_database(); ensure_causal_quote_schema()
+    if not args.run_key:
+        p.error("--run-key é obrigatório para evitar mistura entre runs")
+    run = get_wallet_forward_run(args.run_key)
+    if run is None:
+        p.error(f"run não encontrada: {args.run_key}")
+    if run.baseline_observation_id < 0 or run.end_observation_id is None:
+        p.error("run precisa ter baseline e end_observation_id")
     ensure_wallet_forward_observation_schema()
     with connection() as conn:
         rows = conn.execute(
-            "SELECT wallet_address, token_mint, side, chain_time, observed_at "
-            "FROM wallet_forward_observations ORDER BY observed_at, id"
+            "SELECT id, observation_key, wallet_address, token_mint, side, chain_time, observed_at "
+            "FROM wallet_forward_observations WHERE id > ? AND id <= ? ORDER BY id",
+            (run.baseline_observation_id, run.end_observation_id),
         ).fetchall()
     actions = [WalletActionObservation(str(r["wallet_address"]), str(r["token_mint"]), str(r["side"]), int(r["chain_time"]), int(r["observed_at"])) for r in rows]
-    quotes = load_causal_quotes(as_of=None)
+    event_keys = [str(r["observation_key"]) for r in rows]
+    grouped = load_successful_quote_keys_by_event(event_keys)
+    quote_keys = tuple(key for values in grouped.values() for key in values)
+    quotes = load_causal_quotes(quote_keys=quote_keys)
     cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable_quote=not args.allow_proxy_quotes)
     reports = []
     buys = sum(a.side == "buy" for a in actions)
