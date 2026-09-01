@@ -61,6 +61,10 @@ class JupiterSwapV2Tests(unittest.TestCase):
         self.assertEqual(quote.output_mint, "TOKEN")
         self.assertEqual(quote.market_time, 100)
         self.assertAlmostEqual(quote.price_usd, 5.0)
+        self.assertEqual(quote.provider_router, "metis")
+        self.assertEqual(quote.provider_slippage_bps, 50)
+        self.assertAlmostEqual(quote.provider_price_impact_pct_points, -0.1)
+        self.assertAlmostEqual(quote.provider_swap_usd_value, 24.9)
 
     def test_assembled_transaction_is_candidate_executable_route(self):
         order = parse_jupiter_order(_payload(transaction="base64tx"), observed_at=100)
@@ -98,6 +102,7 @@ class JupiterSwapV2Tests(unittest.TestCase):
         self.assertAlmostEqual(quote.price_usd, 4.96)
         self.assertEqual(quote.input_mint, "TOKEN")
         self.assertEqual(quote.output_mint, "USDC")
+        self.assertEqual(quote.provider_router, "metis")
 
     def test_wrong_direction_is_rejected(self):
         order = parse_jupiter_order(_payload(), observed_at=100)
