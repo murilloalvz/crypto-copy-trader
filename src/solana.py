@@ -296,6 +296,33 @@ def _wallet_token_changes(meta: dict, wallet: str) -> dict[str, float]:
     return {mint: value for mint, value in changes.items() if abs(value) > 1e-12}
 
 
+def _wallet_token_balance_details(meta: dict, wallet: str) -> dict[str, dict[str, int | None]]:
+    """Aggregate exact raw token balances across all wallet token accounts."""
+    before: dict[str, int] = defaultdict(int)
+    after: dict[str, int] = defaultdict(int)
+    decimals: dict[str, int] = {}
+    for collection, target in ((meta.get("preTokenBalances") or [], before), (meta.get("postTokenBalances") or [], after)):
+        for entry in collection:
+            if entry.get("owner") != wallet or not entry.get("mint"):
+                continue
+            amount = (entry.get("uiTokenAmount") or {}).get("amount")
+            if amount is None:
+                continue
+            target[str(entry["mint"])] += int(amount)
+            raw_decimals = (entry.get("uiTokenAmount") or {}).get("decimals")
+            if raw_decimals is not None:
+                decimals[str(entry["mint"])] = int(raw_decimals)
+    return {
+        mint: {
+            "before_raw": before.get(mint, 0),
+            "after_raw": after.get(mint, 0),
+            "delta_raw": after.get(mint, 0) - before.get(mint, 0),
+            "decimals": decimals.get(mint),
+        }
+        for mint in before.keys() | after.keys()
+    }
+
+
 def _opposite_directions(first: float, second: float) -> bool:
     return (first > 0 > second) or (first < 0 < second)
 
@@ -377,6 +404,7 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
     wallet_is_fee_payer = wallet_index == 0
     economic_sol_change = sol_change + fee_sol if wallet_is_fee_payer else sol_change
     changes = _wallet_token_changes(meta, wallet)
+    balance_details = _wallet_token_balance_details(meta, wallet)
     token_mint, token_change = _display_token(changes)
 
     program_ids = transaction_program_ids(tx)
@@ -404,5 +432,24 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
         "fee_sol": fee_sol,
         "token_mint": token_mint,
         "token_change": token_change,
+        "token_delta_raw": (
+            str(balance_details[token_mint]["delta_raw"])
+            if token_mint in balance_details else None
+        ),
+        "token_decimals": (
+            balance_details[token_mint]["decimals"] if token_mint in balance_details else None
+        ),
+        "token_balance_before_raw": (
+            str(balance_details[token_mint]["before_raw"])
+            if token_mint in balance_details else None
+        ),
+        "token_balance_after_raw": (
+            str(balance_details[token_mint]["after_raw"])
+            if token_mint in balance_details else None
+        ),
+        "token_quantity_flags": (
+            ("SIDE_DELTA_MISMATCH" if ((token_change or 0) > 0 and balance_details[token_mint]["delta_raw"] <= 0) or ((token_change or 0) < 0 and balance_details[token_mint]["delta_raw"] >= 0) else "")
+            if token_mint in balance_details else "SOURCE_QUANTITY_UNKNOWN"
+        ),
         "raw_json": json.dumps(tx, separators=(",", ":")),
     }

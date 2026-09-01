@@ -1,9 +1,11 @@
+import json
 from dataclasses import dataclass
 
 from src.assets import STABLECOIN_MINTS
 from src.database import rows
 from src.opportunity_intelligence import WalletActionObservation
 from src.wallet_forward_observations import record_wallet_forward_observation
+from src.solana import parse_wallet_transaction
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ def capture_new_wallet_actions(
         raise ValueError("not_before_chain_time cannot be after observed_at")
 
     txs = rows(
-        """SELECT signature, block_time, status, kind, dex, token_mint, token_change
+        """SELECT signature, block_time, status, kind, dex, token_mint, token_change, raw_json
         FROM transactions WHERE wallet_address=? ORDER BY block_time, signature""",
         (address,),
     )
@@ -83,6 +85,12 @@ def capture_new_wallet_actions(
 
         side = "buy" if float(token_change) > 0 else "sell"
         signature = str(item["signature"])
+        raw_fields = {}
+        if item.get("raw_json"):
+            try:
+                raw_fields = parse_wallet_transaction(address, signature, json.loads(item["raw_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_fields = {}
         observation = WalletActionObservation(
             address=address,
             token_mint=str(token_mint),
@@ -96,6 +104,11 @@ def capture_new_wallet_actions(
             signature=signature,
             dex=str(item["dex"]),
             run_key=run_key,
+            token_delta_raw=raw_fields.get("token_delta_raw"),
+            token_decimals=raw_fields.get("token_decimals"),
+            token_balance_before_raw=raw_fields.get("token_balance_before_raw"),
+            token_balance_after_raw=raw_fields.get("token_balance_after_raw"),
+            token_quantity_flags=raw_fields.get("token_quantity_flags"),
         )
         if inserted:
             recorded += 1

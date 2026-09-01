@@ -54,6 +54,21 @@ def _transaction(
 
 
 class ParserTests(unittest.TestCase):
+    def test_parser_preserves_exact_aggregated_raw_balances(self):
+        def raw(mint, amount, decimals=2):
+            return {"owner": WALLET, "mint": mint, "uiTokenAmount": {"amount": str(amount), "decimals": decimals, "uiAmountString": str(int(amount) / (10 ** decimals))}}
+        tx = _transaction(
+            program_id=RAYDIUM_CPMM,
+            pre_tokens=[raw(USDC_MINT, 10000), raw(MEME, 1000), raw(MEME, 2000)],
+            post_tokens=[raw(USDC_MINT, 0), raw(MEME, 2500), raw(MEME, 3500)],
+            post_lamports=1_999_995_000,
+        )
+        result = parse_wallet_transaction(WALLET, "raw", tx)
+        self.assertEqual(result["token_delta_raw"], "3000")
+        self.assertEqual(result["token_balance_before_raw"], "3000")
+        self.assertEqual(result["token_balance_after_raw"], "6000")
+        self.assertEqual(result["token_decimals"], 2)
+
     def test_current_dex_programs_are_recognized(self):
         programs = {
             METEORA_DLMM: "Meteora DLMM",

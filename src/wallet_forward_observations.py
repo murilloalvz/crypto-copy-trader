@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS wallet_forward_observations (
     dex TEXT,
     source TEXT NOT NULL DEFAULT 'solana_rpc_forward',
     run_key TEXT,
+    token_delta_raw TEXT,
+    token_decimals INTEGER,
+    token_balance_before_raw TEXT,
+    token_balance_after_raw TEXT,
+    token_quantity_flags TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -33,6 +38,9 @@ def ensure_wallet_forward_observation_schema() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(wallet_forward_observations)")}
         if "run_key" not in columns:
             conn.execute("ALTER TABLE wallet_forward_observations ADD COLUMN run_key TEXT")
+        for name, sql_type in (("token_delta_raw", "TEXT"), ("token_decimals", "INTEGER"), ("token_balance_before_raw", "TEXT"), ("token_balance_after_raw", "TEXT"), ("token_quantity_flags", "TEXT")):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE wallet_forward_observations ADD COLUMN {name} {sql_type}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_forward_run_id ON wallet_forward_observations(run_key, id)")
 
 
@@ -59,6 +67,11 @@ def record_wallet_forward_observation(
     dex: str | None = None,
     source: str = "solana_rpc_forward",
     run_key: str | None = None,
+    token_delta_raw: str | None = None,
+    token_decimals: int | None = None,
+    token_balance_before_raw: str | None = None,
+    token_balance_after_raw: str | None = None,
+    token_quantity_flags: str | None = None,
 ) -> bool:
     """Persist one action exactly once and return whether a new row was inserted."""
     _validate(observation, observation_key)
@@ -69,8 +82,10 @@ def record_wallet_forward_observation(
         cursor = conn.execute(
             """INSERT OR IGNORE INTO wallet_forward_observations(
                 observation_key, wallet_address, token_mint, side,
-                chain_time, observed_at, signature, dex, source, run_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chain_time, observed_at, signature, dex, source, run_key,
+                token_delta_raw, token_decimals, token_balance_before_raw, token_balance_after_raw
+                , token_quantity_flags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 observation_key.strip(),
                 observation.address.strip(),
@@ -82,6 +97,11 @@ def record_wallet_forward_observation(
                 dex,
                 source.strip(),
                 run_key.strip() if run_key else None,
+                str(token_delta_raw) if token_delta_raw is not None else None,
+                token_decimals,
+                str(token_balance_before_raw) if token_balance_before_raw is not None else None,
+                str(token_balance_after_raw) if token_balance_after_raw is not None else None,
+                token_quantity_flags,
             ),
         )
         return cursor.rowcount == 1

@@ -178,6 +178,13 @@ class WalletForwardCollectorTests(unittest.TestCase):
                 not_before_chain_time=101,
             )
 
+    def test_run_key_is_forwarded_to_persisted_observation(self):
+        txs = [{"signature": "new", "block_time": 200, "status": "success", "kind": "swap", "dex": "PumpSwap", "token_mint": "TOKEN", "token_change": 5}]
+        recorder = Mock(return_value=True)
+        with patch("src.wallet_forward_collector.rows", return_value=txs), patch("src.wallet_forward_collector.record_wallet_forward_observation", recorder):
+            capture_new_wallet_actions("wallet", known_signatures=set(), observed_at=250, run_key="run-x")
+        self.assertEqual(recorder.call_args.kwargs["run_key"], "run-x")
+
 
 if __name__ == "__main__":
     unittest.main()
