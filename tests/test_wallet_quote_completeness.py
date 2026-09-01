@@ -42,6 +42,8 @@ class WalletQuoteCompletenessTests(unittest.TestCase):
 
         self.assertEqual(summary.expected_attempt_count, 3)
         self.assertEqual(summary.attempted_expected_count, 2)
+        self.assertEqual(summary.successful_expected_count, 0)
+        self.assertEqual(summary.failed_expected_count, 2)
         self.assertEqual(summary.missing_attempt_count, 1)
         self.assertEqual(summary.complete_event_count, 0)
         self.assertEqual(summary.incomplete_event_count, 1)
@@ -74,6 +76,8 @@ class WalletQuoteCompletenessTests(unittest.TestCase):
         self.assertEqual(summary.complete_event_count, 1)
         self.assertEqual(summary.complete_event_share_pct, 100.0)
         self.assertEqual(summary.missing_attempt_count, 0)
+        self.assertEqual(summary.successful_expected_count, 0)
+        self.assertEqual(summary.failed_expected_count, 2)
 
     def test_unexpected_delay_is_reported_not_counted_as_expected_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -99,12 +103,16 @@ class WalletQuoteCompletenessTests(unittest.TestCase):
 
         self.assertEqual(summary.unexpected_attempt_count, 1)
         self.assertEqual(summary.attempted_expected_count, 0)
+        self.assertEqual(summary.successful_expected_count, 0)
+        self.assertEqual(summary.failed_expected_count, 0)
         self.assertEqual(summary.missing_attempt_count, 2)
 
     def test_empty_event_set_has_zero_coverage_without_fake_completeness(self):
         summary = summarize_quote_attempt_completeness([], delays_seconds=[0, 15])
 
         self.assertEqual(summary.expected_attempt_count, 0)
+        self.assertEqual(summary.successful_expected_count, 0)
+        self.assertEqual(summary.failed_expected_count, 0)
         self.assertEqual(summary.complete_event_count, 0)
         self.assertEqual(summary.complete_event_share_pct, 0.0)
 
