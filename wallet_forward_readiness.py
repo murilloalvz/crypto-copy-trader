@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         buys,
         delays_seconds=run.quote_delays_seconds if run.with_jupiter_quotes else (),
     )
+    # Keep the richer provider/timing report for inspection, but the readiness gate below uses
+    # expected-key-scoped success/failure counts from completeness. Extra probes can therefore
+    # never improve or worsen the frozen run's readiness classification.
     quote_metrics = summarize_wallet_quote_metrics(
         wallet_addresses=list(run.cohort),
         source_event_keys=event_keys,
@@ -94,8 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         successful_quote_event_count=successful_quote_events,
         expected_attempt_count=completeness.expected_attempt_count,
         attempted_expected_count=completeness.attempted_expected_count,
-        successful_attempt_count=quote_metrics.success_count,
-        failed_attempt_count=quote_metrics.failure_count,
+        successful_attempt_count=completeness.successful_expected_count,
+        failed_attempt_count=completeness.failed_expected_count,
         missing_attempt_count=completeness.missing_attempt_count,
         unexpected_attempt_count=completeness.unexpected_attempt_count,
     )
@@ -132,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Probes esperados/tentados {readiness.expected_attempt_count}/"
         f"{readiness.attempted_expected_count} ({readiness.attempt_coverage_pct:.1f}%) | "
-        f"sucesso/falha {readiness.successful_attempt_count}/{readiness.failed_attempt_count} | "
+        f"sucesso/falha esperados {readiness.successful_attempt_count}/"
+        f"{readiness.failed_attempt_count} | "
         f"sucesso entre tentados {readiness.attempt_success_pct:.1f}%"
     )
     print(
