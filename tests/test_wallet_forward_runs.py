@@ -13,6 +13,7 @@ from src.wallet_forward_runs import (
     finish_wallet_forward_run,
     get_wallet_forward_run,
     latest_wallet_forward_run,
+    list_wallet_forward_runs,
 )
 
 
@@ -91,6 +92,70 @@ class WalletForwardRunTests(unittest.TestCase):
 
         self.assertEqual(latest_any.run_key, "aborted")
         self.assertEqual(latest_completed.run_key, "completed")
+
+    def test_list_runs_is_newest_first_and_can_filter_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "list-runs.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                create_wallet_forward_run(
+                    run_key="old-completed",
+                    started_at=100,
+                    baseline_observation_id=0,
+                    cohort=["A"],
+                    interval_seconds=30,
+                    quote_delays_seconds=[],
+                    with_jupiter_quotes=False,
+                    copy_size_usd=25.0,
+                    quote_mode="none",
+                )
+                finish_wallet_forward_run(
+                    "old-completed", status="COMPLETED", ended_at=150, end_observation_id=0
+                )
+                create_wallet_forward_run(
+                    run_key="middle-aborted",
+                    started_at=200,
+                    baseline_observation_id=0,
+                    cohort=["A"],
+                    interval_seconds=30,
+                    quote_delays_seconds=[],
+                    with_jupiter_quotes=False,
+                    copy_size_usd=25.0,
+                    quote_mode="none",
+                )
+                finish_wallet_forward_run(
+                    "middle-aborted", status="ABORTED", ended_at=250, end_observation_id=0
+                )
+                create_wallet_forward_run(
+                    run_key="new-completed",
+                    started_at=300,
+                    baseline_observation_id=0,
+                    cohort=["A"],
+                    interval_seconds=30,
+                    quote_delays_seconds=[],
+                    with_jupiter_quotes=False,
+                    copy_size_usd=25.0,
+                    quote_mode="none",
+                )
+                finish_wallet_forward_run(
+                    "new-completed", status="COMPLETED", ended_at=350, end_observation_id=0
+                )
+
+                all_runs = list_wallet_forward_runs(limit=10)
+                completed = list_wallet_forward_runs(status="COMPLETED", limit=10)
+                latest_two = list_wallet_forward_runs(limit=2)
+
+        self.assertEqual(
+            [item.run_key for item in all_runs],
+            ["new-completed", "middle-aborted", "old-completed"],
+        )
+        self.assertEqual(
+            [item.run_key for item in completed],
+            ["new-completed", "old-completed"],
+        )
+        self.assertEqual(
+            [item.run_key for item in latest_two],
+            ["new-completed", "middle-aborted"],
+        )
 
     def test_invalid_quote_mode_combinations_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
