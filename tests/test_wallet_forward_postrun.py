@@ -41,6 +41,7 @@ class WalletForwardPostRunTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("CAUSAL REPLAY READINESS", text)
         self.assertIn("NO_CAUSAL_SAMPLE", text)
+        self.assertIn("SAMPLE QUALITY / END-TO-END LATENCY", text)
         self.assertIn("PER-WALLET TECHNICAL PROFILES", text)
         self.assertIn("non-zero: 0", text)
         self.assertIn("AUDIT PIPELINE COMPLETED", text)
