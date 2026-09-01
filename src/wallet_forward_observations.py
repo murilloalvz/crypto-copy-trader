@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS wallet_forward_observations (
     signature TEXT,
     dex TEXT,
     source TEXT NOT NULL DEFAULT 'solana_rpc_forward',
+    run_key TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -22,12 +23,17 @@ ON wallet_forward_observations(token_mint, observed_at);
 
 CREATE INDEX IF NOT EXISTS idx_wallet_forward_wallet_time
 ON wallet_forward_observations(wallet_address, observed_at);
+
 """
 
 
 def ensure_wallet_forward_observation_schema() -> None:
     with connection() as conn:
         conn.executescript(_SCHEMA)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(wallet_forward_observations)")}
+        if "run_key" not in columns:
+            conn.execute("ALTER TABLE wallet_forward_observations ADD COLUMN run_key TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_forward_run_id ON wallet_forward_observations(run_key, id)")
 
 
 def _validate(observation: WalletActionObservation, observation_key: str) -> None:
@@ -52,6 +58,7 @@ def record_wallet_forward_observation(
     signature: str | None = None,
     dex: str | None = None,
     source: str = "solana_rpc_forward",
+    run_key: str | None = None,
 ) -> bool:
     """Persist one action exactly once and return whether a new row was inserted."""
     _validate(observation, observation_key)
@@ -62,8 +69,8 @@ def record_wallet_forward_observation(
         cursor = conn.execute(
             """INSERT OR IGNORE INTO wallet_forward_observations(
                 observation_key, wallet_address, token_mint, side,
-                chain_time, observed_at, signature, dex, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chain_time, observed_at, signature, dex, source, run_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 observation_key.strip(),
                 observation.address.strip(),
@@ -74,6 +81,7 @@ def record_wallet_forward_observation(
                 signature,
                 dex,
                 source.strip(),
+                run_key.strip() if run_key else None,
             ),
         )
         return cursor.rowcount == 1

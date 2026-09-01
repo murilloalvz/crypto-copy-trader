@@ -32,6 +32,7 @@ def capture_new_wallet_actions(
     known_signatures: set[str] | frozenset[str],
     observed_at: int,
     not_before_chain_time: int | None = None,
+    run_key: str | None = None,
 ) -> ForwardWalletCaptureSummary:
     """Persist newly observed swaps while keeping historical backfill out of forward data.
 
@@ -94,6 +95,7 @@ def capture_new_wallet_actions(
             observation_key=f"{address}:{signature}:{token_mint}:{side}",
             signature=signature,
             dex=str(item["dex"]),
+            run_key=run_key,
         )
         if inserted:
             recorded += 1

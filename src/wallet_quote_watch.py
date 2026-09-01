@@ -5,13 +5,21 @@ from src.wallet_forward_observations import ensure_wallet_forward_observation_sc
 
 
 @dataclass(frozen=True)
-class ForwardBuyEvent:
+class ForwardTradeEvent:
     id: int
     observation_key: str
     wallet_address: str
     token_mint: str
     chain_time: int
     observed_at: int
+    side: str = "buy"
+
+    def __post_init__(self):
+        if self.side not in {"buy", "sell"}:
+            raise ValueError("side must be buy or sell")
+
+
+ForwardBuyEvent = ForwardTradeEvent
 
 
 @dataclass(frozen=True)
@@ -24,10 +32,17 @@ class ScheduledQuoteProbe:
     wallet_observed_at: int
     delay_seconds: int
     target_at: int
+    side: str = "buy"
+    amount_raw: int | None = None
+    entry_event_key: str | None = None
+    entry_delay_seconds: int | None = None
 
     @property
     def attempt_key(self) -> str:
-        return f"wallet-forward:{self.event_id}:buy:+{self.delay_seconds}s:jupiter-v2"
+        lineage = ""
+        if self.entry_event_key is not None and self.entry_delay_seconds is not None:
+            lineage = f":entry:{self.entry_event_key}:+{self.entry_delay_seconds}s"
+        return f"wallet-forward:{self.event_id}:{self.side}:+{self.delay_seconds}s:jupiter-v2{lineage}"
 
     @property
     def quote_key(self) -> str:
@@ -90,11 +105,26 @@ def load_forward_buys_after(
     addresses = tuple(
         dict.fromkeys(item.strip() for item in (wallet_addresses or []) if item.strip())
     )
+    return load_forward_events_after(after_id, side="buy", wallet_addresses=wallet_addresses, through_id=through_id)
+
+
+def load_forward_events_after(
+    after_id: int,
+    *,
+    side: str | None = None,
+    wallet_addresses: tuple[str, ...] | list[str] | None = None,
+    through_id: int | None = None,
+) -> list[ForwardTradeEvent]:
+    if side is not None and side not in {"buy", "sell"}:
+        raise ValueError("side must be buy or sell")
+    addresses = tuple(dict.fromkeys(item.strip() for item in (wallet_addresses or []) if item.strip()))
     ensure_wallet_forward_observation_schema()
-    query = """SELECT id, observation_key, wallet_address, token_mint, chain_time, observed_at
-        FROM wallet_forward_observations
-        WHERE id > ? AND side='buy'"""
+    query = """SELECT id, observation_key, wallet_address, token_mint, side, chain_time, observed_at
+        FROM wallet_forward_observations WHERE id > ?"""
     params: list[object] = [after_id]
+    if side is not None:
+        query += " AND side=?"
+        params.append(side)
     if through_id is not None:
         query += " AND id <= ?"
         params.append(through_id)
@@ -106,13 +136,14 @@ def load_forward_buys_after(
     with connection() as conn:
         result = conn.execute(query, tuple(params)).fetchall()
     return [
-        ForwardBuyEvent(
+        ForwardTradeEvent(
             id=int(row["id"]),
             observation_key=str(row["observation_key"]),
             wallet_address=str(row["wallet_address"]),
             token_mint=str(row["token_mint"]),
             chain_time=int(row["chain_time"]),
             observed_at=int(row["observed_at"]),
+            side=str(row["side"]),
         )
         for row in result
     ]
@@ -120,6 +151,14 @@ def load_forward_buys_after(
 
 def schedule_buy_quotes(
     events: list[ForwardBuyEvent] | tuple[ForwardBuyEvent, ...],
+    *,
+    delays_seconds: tuple[int, ...] | list[int],
+) -> list[ScheduledQuoteProbe]:
+    return schedule_trade_quotes(events, delays_seconds=delays_seconds)
+
+
+def schedule_trade_quotes(
+    events: list[ForwardTradeEvent] | tuple[ForwardTradeEvent, ...],
     *,
     delays_seconds: tuple[int, ...] | list[int],
 ) -> list[ScheduledQuoteProbe]:
@@ -135,6 +174,7 @@ def schedule_buy_quotes(
             observation_key=event.observation_key,
             wallet_address=event.wallet_address,
             token_mint=event.token_mint,
+            side=event.side,
             wallet_chain_time=event.chain_time,
             wallet_observed_at=event.observed_at,
             delay_seconds=delay,
@@ -144,6 +184,28 @@ def schedule_buy_quotes(
         for delay in delays
     ]
     return sorted(probes, key=lambda item: (item.target_at, item.event_id, item.delay_seconds))
+
+
+def schedule_sell_quote(
+    event: ForwardTradeEvent,
+    *,
+    input_amount_raw: int,
+    entry_event_key: str,
+    entry_delay_seconds: int,
+) -> ScheduledQuoteProbe:
+    """Schedule a causal TOKEN→USDC quote for one known hypothetical entry lot."""
+    if event.side != "sell":
+        raise ValueError("schedule_sell_quote requires a sell event")
+    if input_amount_raw <= 0:
+        raise ValueError("input_amount_raw must be positive")
+    return ScheduledQuoteProbe(
+        event_id=event.id, observation_key=event.observation_key,
+        wallet_address=event.wallet_address, token_mint=event.token_mint,
+        wallet_chain_time=event.chain_time, wallet_observed_at=event.observed_at,
+        delay_seconds=0, target_at=event.observed_at, side="sell",
+        amount_raw=input_amount_raw, entry_event_key=entry_event_key,
+        entry_delay_seconds=entry_delay_seconds,
+    )
 
 
 def record_quote_attempt(
@@ -171,12 +233,13 @@ def record_quote_attempt(
                 attempt_key, source_event_key, wallet_address, token_mint, side,
                 target_at, requested_at, completed_at, status, quote_key,
                 error_class, error_message
-            ) VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 probe.attempt_key,
                 probe.observation_key,
                 probe.wallet_address,
                 probe.token_mint,
+                probe.side,
                 probe.target_at,
                 requested_at,
                 completed_at,
@@ -203,6 +266,8 @@ def quote_attempt_exists(attempt_key: str) -> bool:
 
 def load_successful_quote_keys_by_event(
     source_event_keys: tuple[str, ...] | list[str],
+    *,
+    side: str = "buy",
 ) -> dict[str, tuple[str, ...]]:
     """Return only successful persisted quote keys linked to the exact forward events.
 
@@ -212,6 +277,8 @@ def load_successful_quote_keys_by_event(
     event_keys = tuple(
         dict.fromkeys(str(item).strip() for item in source_event_keys if str(item).strip())
     )
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy or sell")
     if not event_keys:
         return {}
 
@@ -222,11 +289,11 @@ def load_successful_quote_keys_by_event(
             f"""SELECT source_event_key, quote_key
             FROM causal_quote_attempts
             WHERE source_event_key IN ({placeholders})
-              AND side='buy'
+              AND side=?
               AND status='success'
               AND quote_key IS NOT NULL
             ORDER BY target_at, id""",
-            event_keys,
+            (*event_keys, side),
         ).fetchall()
 
     grouped: dict[str, list[str]] = {key: [] for key in event_keys}

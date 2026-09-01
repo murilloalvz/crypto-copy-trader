@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="proteção contra carga acidental (padrão: 20 wallets)",
     )
+    parser.add_argument("--run-key", help="run manifest para lineage direta das observações")
     return parser
 
 
@@ -175,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                         known_signatures=previous,
                         observed_at=observed_at,
                         not_before_chain_time=forward_started_at,
+                        run_key=args.run_key,
                     )
                 except ValueError as exc:
                     sync_failures += 1

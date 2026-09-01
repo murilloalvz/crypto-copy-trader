@@ -257,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
             str(args.interval_seconds),
             "--rpc-commitment",
             args.rpc_commitment,
+            "--run-key",
+            run_key,
         ]
         print("Iniciando Forward Wallet Watch.")
         wallet_process = subprocess.Popen(wallet_command)

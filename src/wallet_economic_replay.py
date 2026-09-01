@@ -71,6 +71,8 @@ def replay_source_wallet(
     actions: list[WalletActionObservation] | tuple[WalletActionObservation, ...],
     quotes: list[CausalQuoteObservation] | tuple[CausalQuoteObservation, ...],
     *, config: EconomicReplayConfig = EconomicReplayConfig(), delay_seconds: int = 0,
+    quotes_by_event: dict[str, tuple[CausalQuoteObservation, ...]] | None = None,
+    run_completed: bool = False,
 ) -> tuple[EconomicTrade, ...]:
     """Match causal BUY lots to later SELLs for the same wallet/token.
 
@@ -87,7 +89,8 @@ def replay_source_wallet(
     slip = config.slippage_bps / 10000
     for action in ordered:
         if action.side == "buy":
-            quote, reason = _quote(action, quotes, config, delay_seconds)
+            event_quotes = (quotes_by_event or {}).get(getattr(action, "observation_key", ""), tuple(quotes))
+            quote, reason = _quote(action, event_quotes, config, delay_seconds)
             key = (action.address, action.token_mint)
             if quote is None:
                 out.append(EconomicTrade(action.address, action.token_mint, action.chain_time, action.observed_at, None, None, None, None, None, None, None, "OPEN", reason or "missing_entry_quote", ("missing_entry_quote",)))
@@ -98,7 +101,9 @@ def replay_source_wallet(
             if not open_lots.get(key):
                 continue
             entry, eq = open_lots[key].pop(0)
-            quote, reason = _quote(action, quotes, config, delay_seconds)
+            event_quotes = ((quotes_by_event or {}).get(getattr(action, "observation_key", ""), tuple(quotes))
+                            if quotes_by_event is not None else tuple(quotes))
+            quote, reason = _quote(action, event_quotes, config, delay_seconds)
             if quote is None:
                 out.append(EconomicTrade(action.address, action.token_mint, entry.chain_time, entry.observed_at, action.chain_time, action.observed_at, eq.price_usd, None, None, None, None, "CENSORED", reason or "missing_exit_quote", ("exit_unobserved",)))
                 continue
@@ -108,7 +113,9 @@ def replay_source_wallet(
             out.append(EconomicTrade(action.address, action.token_mint, entry.chain_time, entry.observed_at, action.chain_time, action.observed_at, eq.price_usd, quote.price_usd, gross, net, config.notional_usd * net / 100, "CLOSED", "source_sell", ()))
     for (wallet, token), lots in open_lots.items():
         for entry, eq in lots:
-            out.append(EconomicTrade(wallet, token, entry.chain_time, entry.observed_at, None, None, eq.price_usd, None, None, None, None, "OPEN", "right_censored_no_source_sell", ("censored",)))
+            status = "RIGHT_CENSORED" if run_completed else "OPEN"
+            reason = "right_censored_no_source_sell" if run_completed else "open_no_source_sell"
+            out.append(EconomicTrade(wallet, token, entry.chain_time, entry.observed_at, None, None, eq.price_usd, None, None, None, None, status, reason, ("censored",)))
     return tuple(out)
 
 
@@ -120,7 +127,7 @@ def summarize_economic_replay(trades, *, buy_count: int, actions=()):
     keys = {(r.wallet_address, r.token_mint) for r in rows}
     return EconomicReplaySummary(
         buy_count=buy_count, closed_count=len(closed), open_count=sum(r.status == "OPEN" for r in rows),
-        censored_count=sum(r.status == "CENSORED" for r in rows), missing_quote_count=sum("missing" in r.reason for r in rows),
+        censored_count=sum(r.status in {"CENSORED", "RIGHT_CENSORED"} for r in rows), missing_quote_count=sum("missing" in r.reason for r in rows),
         repeated_buy_count=max(0, buy_count-len(keys)), wallet_count=len({r.wallet_address for r in rows}),
         token_count=len({r.token_mint for r in rows}), cluster_count=len(keys),
         mean_net_return_pct=(sum(returns)/len(returns) if returns else None), median_net_return_pct=(median(returns) if returns else None),

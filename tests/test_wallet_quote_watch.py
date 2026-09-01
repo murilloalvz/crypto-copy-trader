@@ -8,12 +8,15 @@ from src import database
 from src.opportunity_intelligence import WalletActionObservation
 from src.wallet_forward_observations import record_wallet_forward_observation
 from src.wallet_quote_watch import (
+    ForwardBuyEvent,
     latest_forward_observation_id,
     load_forward_buys_after,
     load_successful_quote_keys_by_event,
     quote_attempt_exists,
     record_quote_attempt,
     schedule_buy_quotes,
+    schedule_sell_quote,
+    load_forward_events_after,
 )
 
 
@@ -173,6 +176,23 @@ class WalletQuoteWatchTests(unittest.TestCase):
     def test_negative_delay_is_rejected(self):
         with self.assertRaises(ValueError):
             schedule_buy_quotes([], delays_seconds=[0, -1])
+
+    def test_sell_probe_is_side_aware_and_lineage_scoped(self):
+        event = ForwardBuyEvent(7, "sell-event", "W", "TOKEN", 100, 120, "sell")
+        probe = schedule_sell_quote(event, input_amount_raw=1234, entry_event_key="buy-event", entry_delay_seconds=15)
+        self.assertEqual(probe.side, "sell")
+        self.assertEqual(probe.amount_raw, 1234)
+        self.assertIn(":sell:+0s:jupiter-v2:entry:buy-event:+15s", probe.attempt_key)
+
+    def test_forward_event_loader_preserves_sell_side(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_wallet_forward_observation(
+                    WalletActionObservation("W", "T", "sell", 100, 110), observation_key="sell-x", run_key="run-x"
+                )
+                events = load_forward_events_after(0, side="sell")
+        self.assertEqual(events[0].side, "sell")
 
 
 if __name__ == "__main__":

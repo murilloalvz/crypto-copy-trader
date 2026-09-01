@@ -317,6 +317,15 @@ Controles mínimos: limite por trade, exposição total, concorrência, perda di
 9. Avançar anti-manipulação para microestrutura/grafo apenas quando houver dados que suportem isso.
 10. Promover a primeira candidata para shadow somente com critério pré-declarado; execução real/risk controls vêm depois do gate de evidência.
 
+### SELL causal quote capture v1 (implementado/testado)
+
+- `ForwardTradeEvent` e `schedule_trade_quotes` agora suportam BUY e SELL; `ForwardBuyEvent` permanece alias compatível.
+- Observações forward aceitam `run_key` nullable e índice `(run_key,id)`; linhas históricas não são backfilled.
+- SELL candidates usam rota real TOKEN→USDC e só podem usar `output_amount_raw` de uma BUY quote anterior como quantidade hipotética; não inferem inventário da wallet.
+- Quotes/attempts permanecem event-scoped e idempotentes; replay usa mapa por `observation_key` quando fornecido.
+- Run concluída classifica BUY sem SELL como `RIGHT_CENSORED`; run ativa permanece `OPEN`.
+- Ainda não há evidência econômica SELL real; a captura prospectiva precisa ser validada em nova run após revisão.
+
 ## Regra para handoffs
 
 Todo handoff deve informar:

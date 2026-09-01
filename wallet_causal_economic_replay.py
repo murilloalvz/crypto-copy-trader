@@ -5,7 +5,7 @@ from dataclasses import asdict
 from src.causal_quote_store import ensure_causal_quote_schema, load_causal_quotes
 from src.database import connection, initialize_database
 from src.database import connection
-from src.opportunity_intelligence import WalletActionObservation
+from types import SimpleNamespace
 from src.wallet_forward_observations import ensure_wallet_forward_observation_schema
 from src.wallet_forward_runs import get_wallet_forward_run
 from src.wallet_quote_watch import load_successful_quote_keys_by_event
@@ -34,16 +34,20 @@ def main(argv=None):
             "FROM wallet_forward_observations WHERE id > ? AND id <= ? ORDER BY id",
             (run.baseline_observation_id, run.end_observation_id),
         ).fetchall()
-    actions = [WalletActionObservation(str(r["wallet_address"]), str(r["token_mint"]), str(r["side"]), int(r["chain_time"]), int(r["observed_at"])) for r in rows]
+    actions = [SimpleNamespace(address=str(r["wallet_address"]), token_mint=str(r["token_mint"]), side=str(r["side"]), chain_time=int(r["chain_time"]), observed_at=int(r["observed_at"]), observation_key=str(r["observation_key"])) for r in rows]
     event_keys = [str(r["observation_key"]) for r in rows]
-    grouped = load_successful_quote_keys_by_event(event_keys)
+    grouped_buy = load_successful_quote_keys_by_event(event_keys, side="buy")
+    grouped_sell = load_successful_quote_keys_by_event(event_keys, side="sell")
+    grouped = {event: tuple(dict.fromkeys(grouped_buy.get(event, ()) + grouped_sell.get(event, ()))) for event in event_keys}
     quote_keys = tuple(key for values in grouped.values() for key in values)
     quotes = load_causal_quotes(quote_keys=quote_keys)
+    quotes_by_key = {quote_key: quote for quote_key, quote in zip(quote_keys, quotes)}
+    quotes_by_event = {event: tuple(quotes_by_key[key] for key in keys if key in quotes_by_key) for event, keys in grouped.items()}
     cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable_quote=not args.allow_proxy_quotes)
     reports = []
     buys = sum(a.side == "buy" for a in actions)
     for delay in cfg.delays:
-        trades = replay_source_wallet(actions, quotes, config=cfg, delay_seconds=delay)
+        trades = replay_source_wallet(actions, quotes, config=cfg, delay_seconds=delay, quotes_by_event=quotes_by_event, run_completed=run.status != "ACTIVE")
         reports.append({"delay_seconds": delay, "summary": asdict(summarize_economic_replay(trades, buy_count=buys))})
     payload = {"mode": "RESEARCH_READ_ONLY", "economic_sample": "INSUFFICIENT" if not any(r["summary"]["closed_count"] for r in reports) else "DESCRIPTIVE", "action_count": len(actions), "quote_count": len(quotes), "reports": reports}
     if args.json:
