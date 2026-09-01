@@ -27,6 +27,16 @@ def _load_addresses(positional: list[str], file_path: str | None) -> list[str]:
     return list(dict.fromkeys(addresses))
 
 
+def _rotated_poll_order(addresses: list[str], cycle_number: int) -> list[str]:
+    """Rotate which wallet is polled first so sequential RPC latency is not permanently biased."""
+    if cycle_number < 1:
+        raise ValueError("cycle_number must be >= 1")
+    if not addresses:
+        return []
+    offset = (cycle_number - 1) % len(addresses)
+    return addresses[offset:] + addresses[:offset]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -84,11 +94,15 @@ def main(argv: list[str] | None = None) -> int:
     for address in addresses:
         add_wallet(address, "Forward Wallet Watch")
 
-    print("Crypto Copy Trader — Forward Wallet Watch v2")
+    print("Crypto Copy Trader — Forward Wallet Watch v3")
     print("Modo: RESEARCH / READ ONLY — Solana RPC, sem ordens e sem Tracker Data API.")
     print(
         f"Wallets: {len(addresses)} | polling {args.interval_seconds}s | "
         f"duração {args.hours:.2f}h"
+    )
+    print(
+        "Polling order: rotação por ciclo para reduzir vantagem sistemática da primeira wallet "
+        "em um coletor RPC sequencial."
     )
     print()
     print("BOOTSTRAP")
@@ -125,7 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         while time.monotonic() < deadline:
             cycle_started = time.monotonic()
             cycles += 1
-            for address in addresses:
+            poll_order = _rotated_poll_order(addresses, cycles)
+            for address in poll_order:
                 previous = known[address]
                 try:
                     result = sync_wallet(address)
