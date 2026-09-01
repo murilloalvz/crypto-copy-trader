@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS causal_quote_observations (
     input_amount_raw TEXT,
     output_amount_raw TEXT,
     route_id TEXT,
+    provider_router TEXT,
+    provider_slippage_bps INTEGER,
+    provider_price_impact_pct_points REAL,
+    provider_swap_usd_value REAL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -28,9 +32,28 @@ ON causal_quote_observations(token_mint, side, observed_at);
 """
 
 
+_PROVIDER_COLUMNS = {
+    "provider_router": "TEXT",
+    "provider_slippage_bps": "INTEGER",
+    "provider_price_impact_pct_points": "REAL",
+    "provider_swap_usd_value": "REAL",
+}
+
+
 def ensure_causal_quote_schema() -> None:
     with connection() as conn:
         conn.executescript(_SCHEMA)
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(causal_quote_observations)").fetchall()
+        }
+        # Migrate existing research databases in place. Historical quotes keep NULL metadata;
+        # we never synthesize provider impact for observations that did not persist it causally.
+        for name, sql_type in _PROVIDER_COLUMNS.items():
+            if name not in existing:
+                conn.execute(
+                    f"ALTER TABLE causal_quote_observations ADD COLUMN {name} {sql_type}"
+                )
 
 
 def record_causal_quote(
@@ -48,8 +71,10 @@ def record_causal_quote(
             """INSERT OR IGNORE INTO causal_quote_observations(
                 quote_key, token_mint, side, market_time, observed_at, price_usd,
                 liquidity_usd, executable, resolution_seconds, source,
-                input_mint, output_mint, input_amount_raw, output_amount_raw, route_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                input_mint, output_mint, input_amount_raw, output_amount_raw, route_id,
+                provider_router, provider_slippage_bps, provider_price_impact_pct_points,
+                provider_swap_usd_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 quote_key.strip(),
                 quote.token_mint.strip(),
@@ -66,6 +91,10 @@ def record_causal_quote(
                 quote.input_amount_raw,
                 quote.output_amount_raw,
                 quote.route_id,
+                quote.provider_router,
+                quote.provider_slippage_bps,
+                quote.provider_price_impact_pct_points,
+                quote.provider_swap_usd_value,
             ),
         )
         return cursor.rowcount == 1
@@ -114,7 +143,9 @@ def load_causal_quotes(
 
     query = """SELECT token_mint, side, market_time, observed_at, price_usd,
         liquidity_usd, executable, resolution_seconds, source,
-        input_mint, output_mint, input_amount_raw, output_amount_raw, route_id
+        input_mint, output_mint, input_amount_raw, output_amount_raw, route_id,
+        provider_router, provider_slippage_bps, provider_price_impact_pct_points,
+        provider_swap_usd_value
         FROM causal_quote_observations"""
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -142,6 +173,22 @@ def load_causal_quotes(
             input_amount_raw=row["input_amount_raw"],
             output_amount_raw=row["output_amount_raw"],
             route_id=row["route_id"],
+            provider_router=row["provider_router"],
+            provider_slippage_bps=(
+                int(row["provider_slippage_bps"])
+                if row["provider_slippage_bps"] is not None
+                else None
+            ),
+            provider_price_impact_pct_points=(
+                float(row["provider_price_impact_pct_points"])
+                if row["provider_price_impact_pct_points"] is not None
+                else None
+            ),
+            provider_swap_usd_value=(
+                float(row["provider_swap_usd_value"])
+                if row["provider_swap_usd_value"] is not None
+                else None
+            ),
         )
         for row in rows
     ]
