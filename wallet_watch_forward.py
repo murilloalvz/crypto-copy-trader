@@ -11,6 +11,10 @@ from src.wallet_forward_collector import (
     load_known_wallet_signatures,
 )
 from src.wallet_forward_observations import ensure_wallet_forward_observation_schema
+from src.wallet_forward_rpc import (
+    VALID_WALLET_FORWARD_COMMITMENTS,
+    WalletForwardSolanaClient,
+)
 
 
 def _load_addresses(positional: list[str], file_path: str | None) -> list[str]:
@@ -54,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="intervalo de polling por coorte (padrão: 60s)",
     )
     parser.add_argument(
+        "--rpc-commitment",
+        choices=sorted(VALID_WALLET_FORWARD_COMMITMENTS),
+        default="finalized",
+        help=(
+            "nível de confirmação RPC explícito. finalized preserva o comportamento histórico; "
+            "confirmed reduz espera para experimentos de latência e exige auditoria de finality."
+        ),
+    )
+    parser.add_argument(
         "--max-wallets",
         type=int,
         default=20,
@@ -93,17 +106,23 @@ def main(argv: list[str] | None = None) -> int:
     ensure_wallet_forward_observation_schema()
     for address in addresses:
         add_wallet(address, "Forward Wallet Watch")
+    client = WalletForwardSolanaClient(commitment=args.rpc_commitment)
 
-    print("Crypto Copy Trader — Forward Wallet Watch v3")
+    print("Crypto Copy Trader — Forward Wallet Watch v4")
     print("Modo: RESEARCH / READ ONLY — Solana RPC, sem ordens e sem Tracker Data API.")
     print(
         f"Wallets: {len(addresses)} | polling {args.interval_seconds}s | "
-        f"duração {args.hours:.2f}h"
+        f"duração {args.hours:.2f}h | RPC commitment {args.rpc_commitment}"
     )
     print(
         "Polling order: rotação por ciclo para reduzir vantagem sistemática da primeira wallet "
         "em um coletor RPC sequencial."
     )
+    if args.rpc_commitment == "confirmed":
+        print(
+            "Commitment confirmed: observação chega antes de finalized. A run deve ser auditada "
+            "depois para verificar se as assinaturas observadas chegaram à finalização."
+        )
     print()
     print("BOOTSTRAP")
     print(
@@ -115,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_failures = 0
     for address in addresses:
         try:
-            result = sync_wallet(address)
+            result = sync_wallet(address, client=client)
             print(
                 f"[bootstrap] {address[:10]}… encontrados {result['found']} | "
                 f"novos SQLite {result['inserted']} | falhas {result['failed']} | "
@@ -143,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             for address in poll_order:
                 previous = known[address]
                 try:
-                    result = sync_wallet(address)
+                    result = sync_wallet(address, client=client)
                 except (SolanaRPCError, ValueError) as exc:
                     sync_failures += 1
                     print(f"[rpc] {address[:10]}… falhou: {exc}", file=sys.stderr)
