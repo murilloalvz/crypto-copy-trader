@@ -8,6 +8,7 @@ import evaluate_wallet_quotes
 import wallet_forward_checkpoint
 import wallet_forward_integrity
 import wallet_forward_readiness
+import wallet_forward_wallet_profiles
 import wallet_quote_completeness
 from src.database import initialize_database
 from src.wallet_forward_runs import get_wallet_forward_run, latest_wallet_forward_run
@@ -20,6 +21,7 @@ AUDIT_STEPS = (
     ("RUN-SCOPED WALLET LATENCY", evaluate_wallet_forward.main),
     ("RUN-SCOPED QUOTE ATTEMPTS", evaluate_wallet_quotes.main),
     ("CAUSAL REPLAY READINESS", wallet_forward_readiness.main),
+    ("PER-WALLET TECHNICAL PROFILES", wallet_forward_wallet_profiles.main),
 )
 
 
