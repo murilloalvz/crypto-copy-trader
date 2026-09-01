@@ -7,6 +7,7 @@ import evaluate_wallet_forward
 import evaluate_wallet_quotes
 import wallet_forward_checkpoint
 import wallet_forward_integrity
+import wallet_forward_readiness
 import wallet_quote_completeness
 from src.database import initialize_database
 from src.wallet_forward_runs import get_wallet_forward_run, latest_wallet_forward_run
@@ -18,6 +19,7 @@ AUDIT_STEPS = (
     ("UNIFIED FORWARD CHECKPOINT", wallet_forward_checkpoint.main),
     ("RUN-SCOPED WALLET LATENCY", evaluate_wallet_forward.main),
     ("RUN-SCOPED QUOTE ATTEMPTS", evaluate_wallet_quotes.main),
+    ("CAUSAL REPLAY READINESS", wallet_forward_readiness.main),
 )
 
 
@@ -100,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             "=" * 88,
             f"Steps: {len(AUDIT_STEPS)} | non-zero: {failed_steps}",
             (
-                "AUDIT PIPELINE COMPLETED — interpretar causalidade/missingness antes de edge."
+                "AUDIT PIPELINE COMPLETED — interpretar causalidade/missingness/readiness antes de edge."
                 if failed_steps == 0
                 else "AUDIT PIPELINE INCOMPLETE — corrigir/entender steps non-zero antes de promoção."
             ),
