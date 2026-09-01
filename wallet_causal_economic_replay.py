@@ -4,7 +4,9 @@ from dataclasses import asdict
 
 from src.causal_quote_store import ensure_causal_quote_schema, load_causal_quotes
 from src.database import initialize_database
-from src.wallet_causal_replay import _load_forward_actions
+from src.database import connection
+from src.opportunity_intelligence import WalletActionObservation
+from src.wallet_forward_observations import ensure_wallet_forward_observation_schema
 from src.wallet_economic_replay import EconomicReplayConfig, replay_source_wallet, summarize_economic_replay
 
 
@@ -16,7 +18,13 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     initialize_database(); ensure_causal_quote_schema()
-    actions = _load_forward_actions(addresses=[], as_of=None)
+    ensure_wallet_forward_observation_schema()
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT wallet_address, token_mint, side, chain_time, observed_at "
+            "FROM wallet_forward_observations ORDER BY observed_at, id"
+        ).fetchall()
+    actions = [WalletActionObservation(str(r["wallet_address"]), str(r["token_mint"]), str(r["side"]), int(r["chain_time"]), int(r["observed_at"])) for r in rows]
     quotes = load_causal_quotes(as_of=None)
     cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable=not args.allow_proxy_quotes)
     reports = []
