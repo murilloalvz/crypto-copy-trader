@@ -308,6 +308,9 @@ Controles mínimos: limite por trade, exposição total, concorrência, perda di
 3. Projetar **intake window + follow-up tail** para Wallet Strategy Intelligence, para que todo BUY matriculado possa receber 15m/1h/6h/24h de acompanhamento sem confundir fim da run com hold longo.
 4. Manter H1/H2/H3 congeladas; não retunar por causa desta pequena run.
 5. Fazer causal replay/cost stress somente com quotes event-scoped e sempre reportar proxy vs assembled candidate separadamente.
+   A primeira infraestrutura econômica v1 agora está disponível em `src/wallet_economic_replay.py`
+   e `wallet_causal_economic_replay.py`; ela permanece diagnóstica, usa lotes por evento por falta
+   de quantidades e não cria PnL sem SELL/quote causal.
 6. Quando Tracker voltar, continuar Wave v3 congelada + Rejection Intelligence prospectivo.
 7. Ampliar Wallet Strategy Intelligence e formar target/placebos usando somente pré-período.
 8. Quando houver universo suficiente, pré-registrar Wallet Confirmation antes de outcomes.
