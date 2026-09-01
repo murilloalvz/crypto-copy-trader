@@ -181,6 +181,10 @@ def finish_wallet_forward_run(
     current = get_wallet_forward_run(key)
     if current is None:
         raise ValueError(f"wallet forward run not found: {key}")
+    if current.status != "ACTIVE":
+        raise ValueError(
+            f"wallet forward run already finalized as {current.status}: {key}"
+        )
     if ended_at < current.started_at:
         raise ValueError("ended_at cannot precede started_at")
     if end_observation_id < current.baseline_observation_id:
@@ -188,12 +192,16 @@ def finish_wallet_forward_run(
 
     ensure_wallet_forward_run_schema()
     with connection() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE wallet_forward_runs
             SET status=?, ended_at=?, end_observation_id=?, updated_at=CURRENT_TIMESTAMP
-            WHERE run_key=?""",
+            WHERE run_key=? AND status='ACTIVE'""",
             (status, ended_at, end_observation_id, key),
         )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "wallet forward run finalization lost ACTIVE-state race; inspect manifest"
+            )
     finished = get_wallet_forward_run(key)
     if finished is None:
         raise RuntimeError("wallet forward run disappeared after update")
