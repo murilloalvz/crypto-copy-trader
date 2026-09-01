@@ -323,6 +323,24 @@ def _wallet_token_balance_details(meta: dict, wallet: str) -> dict[str, dict[str
     }
 
 
+def describe_source_quantity(side: str, before_raw: int | None, after_raw: int | None, delta_raw: int | None, *, forward_buy_raw: int = 0) -> tuple[float | None, tuple[str, ...]]:
+    """Return descriptive source reduction metadata; never infers a copy fill."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy or sell")
+    if None in (before_raw, after_raw, delta_raw):
+        return None, ("SOURCE_QUANTITY_UNKNOWN",)
+    mismatch = (side == "buy" and delta_raw <= 0) or (side == "sell" and delta_raw >= 0)
+    if mismatch:
+        return None, ("SIDE_DELTA_MISMATCH",)
+    if side != "sell" or before_raw <= 0 or delta_raw >= 0:
+        return None, ()
+    fraction = abs(delta_raw) / before_raw
+    flags = ("PREEXISTING_INVENTORY_OBSERVED",) if before_raw > forward_buy_raw else ()
+    if fraction >= 1:
+        return fraction, flags + ("SOURCE_COMPLETE_LIKE_REDUCTION",)
+    return fraction, flags + ("SOURCE_PARTIAL_REDUCTION",)
+
+
 def _opposite_directions(first: float, second: float) -> bool:
     return (first > 0 > second) or (first < 0 < second)
 
@@ -406,6 +424,14 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
     changes = _wallet_token_changes(meta, wallet)
     balance_details = _wallet_token_balance_details(meta, wallet)
     token_mint, token_change = _display_token(changes)
+    quantity_fraction, quantity_flags = (
+        describe_source_quantity(
+            "sell" if (token_change or 0) < 0 else "buy",
+            int(balance_details[token_mint]["before_raw"]) if token_mint in balance_details else None,
+            int(balance_details[token_mint]["after_raw"]) if token_mint in balance_details else None,
+            int(balance_details[token_mint]["delta_raw"]) if token_mint in balance_details else None,
+        ) if token_mint is not None else (None, ("SOURCE_QUANTITY_UNKNOWN",))
+    )
 
     program_ids = transaction_program_ids(tx)
     dex = _detected_dex(program_ids)
@@ -447,9 +473,7 @@ def parse_wallet_transaction(wallet: str, signature: str, tx: dict) -> dict:
             str(balance_details[token_mint]["after_raw"])
             if token_mint in balance_details else None
         ),
-        "token_quantity_flags": (
-            ("SIDE_DELTA_MISMATCH" if ((token_change or 0) > 0 and balance_details[token_mint]["delta_raw"] <= 0) or ((token_change or 0) < 0 and balance_details[token_mint]["delta_raw"] >= 0) else "")
-            if token_mint in balance_details else "SOURCE_QUANTITY_UNKNOWN"
-        ),
+        "source_reduction_fraction": quantity_fraction,
+        "token_quantity_flags": ",".join(quantity_flags),
         "raw_json": json.dumps(tx, separators=(",", ":")),
     }

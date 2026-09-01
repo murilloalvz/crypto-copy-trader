@@ -1,7 +1,7 @@
 import unittest
 
 from src.assets import USDC_MINT, WRAPPED_SOL_MINT
-from src.solana import parse_wallet_transaction
+from src.solana import describe_source_quantity, parse_wallet_transaction
 
 WALLET = "Wallet1111111111111111111111111111111111"
 JUPITER_V6 = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
@@ -54,6 +54,19 @@ def _transaction(
 
 
 class ParserTests(unittest.TestCase):
+    def test_source_quantity_semantics_are_descriptive(self):
+        self.assertEqual(describe_source_quantity("buy", 0, 1000, 1000), (None, ()))
+        self.assertEqual(describe_source_quantity("buy", 1000, 1500, 500), (None, ()))
+        fraction, flags = describe_source_quantity("sell", 1000, 600, -400)
+        self.assertAlmostEqual(fraction, 0.4)
+        self.assertIn("SOURCE_PARTIAL_REDUCTION", flags)
+        fraction, flags = describe_source_quantity("sell", 1000, 0, -1000)
+        self.assertAlmostEqual(fraction, 1.0)
+        self.assertIn("SOURCE_COMPLETE_LIKE_REDUCTION", flags)
+        fraction, flags = describe_source_quantity("sell", 1000, 700, -300, forward_buy_raw=0)
+        self.assertIn("PREEXISTING_INVENTORY_OBSERVED", flags)
+        self.assertEqual(describe_source_quantity("buy", 1000, 700, -300)[1], ("SIDE_DELTA_MISMATCH",))
+        self.assertEqual(describe_source_quantity("sell", None, None, None)[1], ("SOURCE_QUANTITY_UNKNOWN",))
     def test_parser_preserves_exact_aggregated_raw_balances(self):
         def raw(mint, amount, decimals=2):
             return {"owner": WALLET, "mint": mint, "uiTokenAmount": {"amount": str(amount), "decimals": decimals, "uiAmountString": str(int(amount) / (10 ** decimals))}}

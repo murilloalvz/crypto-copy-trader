@@ -109,6 +109,7 @@ def capture_new_wallet_actions(
             token_balance_before_raw=raw_fields.get("token_balance_before_raw"),
             token_balance_after_raw=raw_fields.get("token_balance_after_raw"),
             token_quantity_flags=raw_fields.get("token_quantity_flags"),
+            source_reduction_fraction=raw_fields.get("source_reduction_fraction"),
         )
         if inserted:
             recorded += 1
