@@ -7,8 +7,8 @@ from pathlib import Path
 
 from src.config import settings
 from src.database import initialize_database
+from src.wallet_forward_rpc import VALID_WALLET_FORWARD_COMMITMENTS
 from src.wallet_forward_runs import (
-    CURRENT_RUNTIME_VERSION,
     create_wallet_forward_run,
     finish_wallet_forward_run,
     list_wallet_forward_runs,
@@ -21,7 +21,7 @@ DEFAULT_QUOTE_DELAYS = (0, 15, 30, 60, 120)
 
 def _load_cohort(path: Path) -> list[str]:
     if not path.exists():
-        raise ValueError(f"arquivo de wallets não encontrado: {path}")
+        raise ValueError(f"arquivo da coorte não encontrado: {path}")
     addresses = [
         line.strip()
         for line in path.read_text(encoding="utf-8").splitlines()
@@ -31,6 +31,10 @@ def _load_cohort(path: Path) -> list[str]:
     if not addresses:
         raise ValueError("arquivo da coorte está vazio")
     return addresses
+
+
+def _runtime_version(rpc_commitment: str) -> str:
+    return f"wallet_forward_runtime_v4_rotating_poll_{rpc_commitment}_commitment"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +47,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file", required=True, help="arquivo da coorte de wallets")
     parser.add_argument("--hours", type=float, default=6.0)
     parser.add_argument("--interval-seconds", type=int, default=30)
+    parser.add_argument(
+        "--rpc-commitment",
+        choices=sorted(VALID_WALLET_FORWARD_COMMITMENTS),
+        default="confirmed",
+        help=(
+            "commitment Solana usado para detectar as wallets. confirmed é o padrão do runtime "
+            "v4 de latência; finalized preserva maior certeza com maior atraso."
+        ),
+    )
     parser.add_argument(
         "--with-jupiter-quotes",
         action="store_true",
@@ -153,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         "proxy" if args.with_jupiter_quotes else
         "none"
     )
+    runtime_version = _runtime_version(args.rpc_commitment)
     # Quote process starts before the wallet watcher. Keep its intake open beyond one complete
     # polling interval so the final wallet cycle cannot fall through a duration race.
     quote_intake_grace_seconds = (
@@ -168,21 +182,26 @@ def main(argv: list[str] | None = None) -> int:
         with_jupiter_quotes=args.with_jupiter_quotes,
         copy_size_usd=args.copy_size_usd,
         quote_mode=quote_mode,
-        runtime_version=CURRENT_RUNTIME_VERSION,
+        runtime_version=runtime_version,
         quote_intake_grace_seconds=quote_intake_grace_seconds,
     )
 
     print("Crypto Copy Trader — Wallet Forward Experiment")
     print("Modo: RESEARCH / READ ONLY — nenhum processo assina ou envia transações.")
     print(
-        f"Run key: {run_key} | runtime {CURRENT_RUNTIME_VERSION} | "
-        f"baseline observation id={baseline_id} | wallets={len(addresses)} | "
-        f"duração={args.hours:.2f}h"
+        f"Run key: {run_key} | runtime {runtime_version} | "
+        f"RPC commitment {args.rpc_commitment} | baseline observation id={baseline_id} | "
+        f"wallets={len(addresses)} | duração={args.hours:.2f}h"
     )
     print(
         "Run manifest: configuração e limites da coleta foram congelados no SQLite para "
         "o checkpoint não misturar observações de execuções diferentes."
     )
+    if args.rpc_commitment == "confirmed":
+        print(
+            "ATENÇÃO METODOLÓGICA: confirmed reduz espera de detecção, mas a finalização das "
+            "assinaturas deve ser verificada depois da run antes de tratar a amostra como definitiva."
+        )
     if args.with_jupiter_quotes:
         print(
             f"Quote intake grace: {quote_intake_grace_seconds}s após a duração nominal, "
@@ -236,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
             str(args.hours),
             "--interval-seconds",
             str(args.interval_seconds),
+            "--rpc-commitment",
+            args.rpc_commitment,
         ]
         print("Iniciando Forward Wallet Watch.")
         wallet_process = subprocess.Popen(wallet_command)
