@@ -11,6 +11,7 @@ from src.wallet_forward_runs import (
     CURRENT_RUNTIME_VERSION,
     create_wallet_forward_run,
     finish_wallet_forward_run,
+    list_wallet_forward_runs,
 )
 from src.wallet_quote_watch import latest_forward_observation_id
 
@@ -124,6 +125,26 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     initialize_database()
+    active_runs = list_wallet_forward_runs(status="ACTIVE", limit=20)
+    if active_runs:
+        print(
+            "Erro: já existe Wallet Forward Run ACTIVE neste banco. "
+            "Execuções sobrepostas podem misturar observações e quebrar o isolamento por manifest.",
+            file=sys.stderr,
+        )
+        for item in active_runs:
+            print(
+                f"- {item.run_key} | runtime {item.runtime_version} | "
+                f"started_at={item.started_at}",
+                file=sys.stderr,
+            )
+        print(
+            "Não inicie outra run até confirmar se a ACTIVE ainda está rodando ou deve ser "
+            "reconciliada como ABORTED.",
+            file=sys.stderr,
+        )
+        return 2
+
     baseline_id = latest_forward_observation_id()
     started_at = int(time.time())
     run_key = f"wallet-forward-{started_at}-{uuid.uuid4().hex[:8]}"
