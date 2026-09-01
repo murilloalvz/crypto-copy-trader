@@ -26,7 +26,7 @@ def main(argv=None):
         ).fetchall()
     actions = [WalletActionObservation(str(r["wallet_address"]), str(r["token_mint"]), str(r["side"]), int(r["chain_time"]), int(r["observed_at"])) for r in rows]
     quotes = load_causal_quotes(as_of=None)
-    cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable=not args.allow_proxy_quotes)
+    cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable_quote=not args.allow_proxy_quotes)
     reports = []
     buys = sum(a.side == "buy" for a in actions)
     for delay in cfg.delays:
