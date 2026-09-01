@@ -20,8 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fmt(value: float | None, suffix: str = "") -> str:
-    return "n/a" if value is None else f"{value:.4f}{suffix}"
+def _fmt(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
+
+
+def _fmt_usd(value: float | None) -> str:
+    return "n/a" if value is None else f"${value:.4f}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{_fmt(item.median_price_impact_pct_points)} | p95 |impact| "
             f"{_fmt(item.p95_abs_price_impact_pct_points)} | slippage bps med "
             f"{_fmt(item.median_slippage_bps)} | swap USD med "
-            f"{_fmt(item.median_swap_usd_value, '$')} | routers {routers}"
+            f"{_fmt_usd(item.median_swap_usd_value)} | routers {routers}"
         )
 
     print()
