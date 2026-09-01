@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"Esperadas {summary.expected_attempt_count} | tentadas {summary.attempted_expected_count} | "
+        f"sucesso {summary.successful_expected_count} | falha {summary.failed_expected_count} | "
         f"não tentadas {summary.missing_attempt_count} | inesperadas {summary.unexpected_attempt_count}"
     )
     print(
@@ -79,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     print()
     print("INTERPRETAÇÃO")
-    print("- Sucesso HTTP é outra métrica; aqui perguntamos primeiro se o probe sequer foi tentado.")
+    print("- Sucesso HTTP é outra dimensão; aqui o denominador nasce de BUYs×delays congelados.")
+    print("- Success/failure acima contam apenas probes esperados; extras ficam separados.")
     print("- Runs legacy podem revelar gaps de intake/drain que a tabela de attempts sozinha esconderia.")
     print("- Missing probe nunca é convertido em sucesso, falha de preço ou fill inventado.")
     return 0
