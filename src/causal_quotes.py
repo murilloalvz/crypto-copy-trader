@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 
@@ -8,6 +9,10 @@ class CausalQuoteObservation:
     ``token_mint`` is the researched asset. ``side`` is from our perspective: a buy quote
     acquires the researched token and a sell quote disposes of it. Executable quotes must
     retain route direction so a sell route can never satisfy a buy replay (or vice versa).
+
+    Provider metadata is optional and observational. For Jupiter, price impact/slippage/router
+    help characterize whether the route itself degrades as copy latency grows. They are not a
+    substitute for landing/fill telemetry.
     """
 
     token_mint: str
@@ -24,6 +29,10 @@ class CausalQuoteObservation:
     input_amount_raw: str | None = None
     output_amount_raw: str | None = None
     route_id: str | None = None
+    provider_router: str | None = None
+    provider_slippage_bps: int | None = None
+    provider_price_impact_pct_points: float | None = None
+    provider_swap_usd_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -43,12 +52,27 @@ def validate_causal_quote(quote: CausalQuoteObservation) -> None:
         raise ValueError("quote timestamps must be non-negative")
     if quote.observed_at < quote.market_time:
         raise ValueError("quote observed_at cannot be earlier than market_time")
-    if quote.price_usd <= 0:
-        raise ValueError("quote price_usd must be positive")
+    if quote.price_usd <= 0 or not math.isfinite(quote.price_usd):
+        raise ValueError("quote price_usd must be positive and finite")
     if quote.resolution_seconds < 1:
         raise ValueError("quote resolution_seconds must be >= 1")
-    if quote.liquidity_usd is not None and quote.liquidity_usd < 0:
-        raise ValueError("quote liquidity_usd cannot be negative")
+    if quote.liquidity_usd is not None and (
+        quote.liquidity_usd < 0 or not math.isfinite(quote.liquidity_usd)
+    ):
+        raise ValueError("quote liquidity_usd must be non-negative and finite")
+    if quote.provider_router is not None and not quote.provider_router.strip():
+        raise ValueError("provider_router cannot be blank")
+    if quote.provider_slippage_bps is not None and not 0 <= quote.provider_slippage_bps <= 10_000:
+        raise ValueError("provider_slippage_bps must be between 0 and 10000")
+    if quote.provider_price_impact_pct_points is not None and not math.isfinite(
+        quote.provider_price_impact_pct_points
+    ):
+        raise ValueError("provider_price_impact_pct_points must be finite")
+    if quote.provider_swap_usd_value is not None and (
+        quote.provider_swap_usd_value <= 0
+        or not math.isfinite(quote.provider_swap_usd_value)
+    ):
+        raise ValueError("provider_swap_usd_value must be positive and finite")
 
     if quote.executable:
         if not quote.input_mint or not quote.input_mint.strip():
