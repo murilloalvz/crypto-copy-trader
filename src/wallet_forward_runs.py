@@ -232,6 +232,34 @@ def latest_wallet_forward_run(*, completed_only: bool = False) -> WalletForwardR
     return _row_to_run(row) if row is not None else None
 
 
+def list_wallet_forward_runs(
+    *,
+    status: str | None = None,
+    limit: int = 20,
+) -> tuple[WalletForwardRun, ...]:
+    """Return run manifests newest-first without merging their data.
+
+    This exists primarily for cross-run audit tooling. Different runtime/configuration regimes
+    should remain separate unless an explicit compatibility check says they match.
+    """
+    if status is not None and status not in RUN_STATUSES:
+        raise ValueError("invalid run status")
+    if not 1 <= limit <= 500:
+        raise ValueError("limit must be between 1 and 500")
+
+    ensure_wallet_forward_run_schema()
+    query = f"SELECT {_select_columns()} FROM wallet_forward_runs"
+    params: list[object] = []
+    if status is not None:
+        query += " WHERE status=?"
+        params.append(status)
+    query += " ORDER BY started_at DESC, id DESC LIMIT ?"
+    params.append(limit)
+    with connection() as conn:
+        result = conn.execute(query, tuple(params)).fetchall()
+    return tuple(_row_to_run(row) for row in result)
+
+
 def _row_to_run(row) -> WalletForwardRun:
     cohort = tuple(str(item) for item in json.loads(str(row["cohort_json"])))
     delays = tuple(int(item) for item in json.loads(str(row["quote_delays_json"])))
