@@ -1,3 +1,5 @@
+from urllib.error import URLError
+
 from src.solana import SolanaClient
 
 
@@ -11,6 +13,12 @@ class WalletForwardSolanaClient(SolanaClient):
     latency experiments cannot leave that implicit because Solana defaults to ``finalized``
     when commitment is omitted. This client keeps the chosen commitment explicit in every
     signatures/transaction request so runs can be interpreted against the runtime label.
+
+    Forward runs are long-lived collectors, so abrupt TCP disconnects must be normalized into
+    the same transport-error path already handled by ``SolanaClient.call``. In particular,
+    ``http.client.RemoteDisconnected`` inherits from ``ConnectionError`` but is not wrapped by
+    urllib as ``URLError`` in every failure path. Converting it here preserves the existing
+    retry/fallback policy without catching arbitrary programming errors.
     """
 
     def __init__(
@@ -26,6 +34,12 @@ class WalletForwardSolanaClient(SolanaClient):
             raise ValueError("wallet forward commitment must be confirmed or finalized")
         super().__init__(rpc_url=rpc_url, timeout=timeout, fallback_urls=fallback_urls)
         self.commitment = normalized
+
+    def _read_payload(self, request, context=None) -> dict:
+        try:
+            return super()._read_payload(request, context)
+        except ConnectionError as exc:
+            raise URLError(exc) from exc
 
     def signatures(self, address: str, limit: int, before: str | None = None) -> list[dict]:
         options: dict[str, object] = {
