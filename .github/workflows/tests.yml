@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - feat/exit-engine-v1
+      - 'fix/**'
   pull_request:
     branches:
       - main
