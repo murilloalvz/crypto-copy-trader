@@ -12,6 +12,8 @@ REGIME_FIELDS = (
     "copy_size_usd",
     "quote_mode",
     "quote_intake_grace_seconds",
+    "enrollment_duration_seconds",
+    "follow_up_duration_seconds",
 )
 
 
@@ -24,6 +26,18 @@ class WalletForwardRunCompatibility:
     pooling_allowed_automatically: bool
 
 
+def _regime_value(run: WalletForwardRun, field: str):
+    if field == "enrollment_duration_seconds":
+        if run.enrollment_ends_at is None:
+            return None
+        return run.enrollment_ends_at - run.started_at
+    if field == "follow_up_duration_seconds":
+        if run.enrollment_ends_at is None or run.follow_up_ends_at is None:
+            return None
+        return run.follow_up_ends_at - run.enrollment_ends_at
+    return getattr(run, field)
+
+
 def compare_wallet_forward_run_regimes(
     runs: list[WalletForwardRun] | tuple[WalletForwardRun, ...],
 ) -> WalletForwardRunCompatibility:
@@ -32,7 +46,9 @@ def compare_wallet_forward_run_regimes(
     Even identical manifests remain separate experimental runs. This helper only answers whether
     the technical configuration is comparable; it never decides that economic samples should be
     merged. Runtime version and cohort order are intentionally part of the regime because parser /
-    causal-boundary behavior and sequential polling order can affect observability.
+    causal-boundary behavior and sequential polling order can affect observability. Enrollment and
+    follow-up are compared by duration rather than absolute timestamps so equivalent protocols run
+    on different calendar dates remain comparable while different censoring designs do not.
     """
 
     items = list(runs)
@@ -50,8 +66,8 @@ def compare_wallet_forward_run_regimes(
     reference = items[0]
     differing: list[str] = []
     for field in REGIME_FIELDS:
-        reference_value = getattr(reference, field)
-        if any(getattr(item, field) != reference_value for item in items[1:]):
+        reference_value = _regime_value(reference, field)
+        if any(_regime_value(item, field) != reference_value for item in items[1:]):
             differing.append(field)
 
     if len(items) == 1:
