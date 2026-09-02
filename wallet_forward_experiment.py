@@ -7,10 +7,12 @@ from pathlib import Path
 
 from src.config import settings
 from src.database import initialize_database
+from src.wallet_forward_enrollments import freeze_wallet_forward_enrollment
 from src.wallet_forward_rpc import VALID_WALLET_FORWARD_COMMITMENTS
 from src.wallet_forward_runs import (
     create_wallet_forward_run,
     finish_wallet_forward_run,
+    get_wallet_forward_run,
     list_wallet_forward_runs,
 )
 from src.wallet_quote_watch import latest_forward_observation_id
@@ -45,7 +47,21 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--file", required=True, help="arquivo da coorte de wallets")
-    parser.add_argument("--hours", type=float, default=6.0)
+    parser.add_argument(
+        "--hours",
+        type=float,
+        help="modo legado: duração única sem enrollment/follow-up",
+    )
+    parser.add_argument(
+        "--enrollment-hours",
+        type=float,
+        help="janela em que novos BUYs podem entrar na amostra econômica",
+    )
+    parser.add_argument(
+        "--follow-up-hours",
+        type=float,
+        help="janela adicional apenas para observar SELLs/saídas dos BUYs enrolled",
+    )
     parser.add_argument("--interval-seconds", type=int, default=30)
     parser.add_argument(
         "--rpc-commitment",
@@ -59,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--with-jupiter-quotes",
         action="store_true",
-        help="captura também snapshots de rota Jupiter para novas compras forward",
+        help="captura também snapshots de rota Jupiter para novas ações forward",
     )
     parser.add_argument(
         "--quote-delays-seconds",
@@ -81,6 +97,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=settings.copy_size_usd,
     )
     return parser
+
+
+def _resolve_duration(args: argparse.Namespace) -> tuple[float, float | None, float | None]:
+    using_protocol = args.enrollment_hours is not None or args.follow_up_hours is not None
+    if using_protocol:
+        if args.hours is not None:
+            raise ValueError("não combine --hours com --enrollment-hours/--follow-up-hours")
+        if args.enrollment_hours is None or args.follow_up_hours is None:
+            raise ValueError("use --enrollment-hours e --follow-up-hours juntos")
+        if not 0 < args.enrollment_hours <= 24:
+            raise ValueError("--enrollment-hours precisa ficar entre >0 e 24")
+        if not 0 <= args.follow_up_hours <= 24:
+            raise ValueError("--follow-up-hours precisa ficar entre 0 e 24")
+        total = args.enrollment_hours + args.follow_up_hours
+        if total > 24:
+            raise ValueError("enrollment + follow-up não pode exceder 24h")
+        return total, args.enrollment_hours, args.follow_up_hours
+
+    hours = 6.0 if args.hours is None else args.hours
+    if not 0 < hours <= 24:
+        raise ValueError("--hours precisa ficar entre >0 e 24")
+    return hours, None, None
 
 
 def _terminate(process: subprocess.Popen | None) -> None:
@@ -114,11 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     cohort_path = Path(args.file)
     try:
         addresses = _load_cohort(cohort_path)
+        total_hours, enrollment_hours, follow_up_hours = _resolve_duration(args)
     except ValueError as exc:
         print(f"Erro: {exc}", file=sys.stderr)
-        return 2
-    if not 0 < args.hours <= 24:
-        print("Erro: --hours precisa ficar entre >0 e 24.", file=sys.stderr)
         return 2
     if args.interval_seconds < 10:
         print("Erro: --interval-seconds precisa ser >= 10.", file=sys.stderr)
@@ -167,10 +203,18 @@ def main(argv: list[str] | None = None) -> int:
         "none"
     )
     runtime_version = _runtime_version(args.rpc_commitment)
-    # Quote process starts before the wallet watcher. Keep its intake open beyond one complete
-    # polling interval so the final wallet cycle cannot fall through a duration race.
     quote_intake_grace_seconds = (
         max(5, args.interval_seconds + 5) if args.with_jupiter_quotes else 0
+    )
+    enrollment_ends_at = (
+        started_at + int(enrollment_hours * 3_600)
+        if enrollment_hours is not None
+        else None
+    )
+    follow_up_ends_at = (
+        started_at + int(total_hours * 3_600)
+        if enrollment_hours is not None
+        else None
     )
     create_wallet_forward_run(
         run_key=run_key,
@@ -184,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         quote_mode=quote_mode,
         runtime_version=runtime_version,
         quote_intake_grace_seconds=quote_intake_grace_seconds,
+        enrollment_ends_at=enrollment_ends_at,
+        follow_up_ends_at=follow_up_ends_at,
     )
 
     print("Crypto Copy Trader — Wallet Forward Experiment")
@@ -191,8 +237,14 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Run key: {run_key} | runtime {runtime_version} | "
         f"RPC commitment {args.rpc_commitment} | baseline observation id={baseline_id} | "
-        f"wallets={len(addresses)} | duração={args.hours:.2f}h"
+        f"wallets={len(addresses)} | duração={total_hours:.2f}h"
     )
+    if enrollment_hours is not None:
+        print(
+            f"Enrollment econômico: {enrollment_hours:.2f}h | "
+            f"follow-up observacional: {follow_up_hours:.2f}h | "
+            "BUYs após o cutoff não entram no denominador econômico."
+        )
     print(
         "Run manifest: configuração e limites da coleta foram congelados no SQLite para "
         "o checkpoint não misturar observações de execuções diferentes."
@@ -215,10 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     return_code = 1
     collection_ended_at: int | None = None
     collection_end_observation_id: int | None = None
+    enrollment_frozen = enrollment_ends_at is None
 
     try:
         if args.with_jupiter_quotes:
-            quote_hours = args.hours + quote_intake_grace_seconds / 3_600
+            quote_hours = total_hours + quote_intake_grace_seconds / 3_600
             quote_command = [
                 python,
                 "wallet_quote_watch.py",
@@ -252,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             "--file",
             str(cohort_path),
             "--hours",
-            str(args.hours),
+            str(total_hours),
             "--interval-seconds",
             str(args.interval_seconds),
             "--rpc-commitment",
@@ -264,6 +317,21 @@ def main(argv: list[str] | None = None) -> int:
         wallet_process = subprocess.Popen(wallet_command)
 
         while wallet_process.poll() is None:
+            if (
+                not enrollment_frozen
+                and enrollment_ends_at is not None
+                and time.time() >= enrollment_ends_at
+            ):
+                cutoff_id = latest_forward_observation_id()
+                enrolled = freeze_wallet_forward_enrollment(
+                    run_key,
+                    cutoff_observation_id=cutoff_id,
+                )
+                enrollment_frozen = True
+                print(
+                    f"Enrollment congelado em observation id={cutoff_id} | "
+                    f"BUYs enrolled={len(enrolled)}. Follow-up continua sem novas entradas econômicas."
+                )
             if (
                 quote_process is not None
                 and quote_process.poll() is not None
@@ -283,6 +351,18 @@ def main(argv: list[str] | None = None) -> int:
 
         collection_ended_at = int(time.time())
         collection_end_observation_id = latest_forward_observation_id()
+
+        if (
+            not enrollment_frozen
+            and enrollment_ends_at is not None
+            and collection_ended_at >= enrollment_ends_at
+        ):
+            enrolled = freeze_wallet_forward_enrollment(
+                run_key,
+                cutoff_observation_id=latest_forward_observation_id(),
+            )
+            enrollment_frozen = True
+            print(f"Enrollment congelado no encerramento | BUYs enrolled={len(enrolled)}.")
 
         if wallet_process.returncode != 0:
             print(
@@ -308,6 +388,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return_code = int(quote_return or 1)
                 return return_code
+
+        if enrollment_ends_at is not None:
+            persisted = get_wallet_forward_run(run_key)
+            if persisted is None or persisted.enrollment_cutoff_observation_id is None:
+                print(
+                    "Erro: enrollment-aware run terminou sem cutoff econômico congelado.",
+                    file=sys.stderr,
+                )
+                return_code = 1
+                return 1
 
         final_status = "COMPLETED"
         return_code = 0
