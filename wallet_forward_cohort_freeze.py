@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Não usa PnL, retorno ou resultados forward futuros."
         )
     )
+    parser.add_argument(
+        "--protocol-version",
+        default=PROTOCOL_VERSION,
+        help="identificador auditável do protocolo de aquisição",
+    )
     parser.add_argument("--file", required=True, help="universo candidato, uma wallet por linha")
     parser.add_argument(
         "--sync-onchain",
@@ -90,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.protocol_version.strip():
+        print("Erro: --protocol-version não pode ser vazio.", file=sys.stderr)
+        return 2
     if not 1 <= args.pages <= 20:
         print("Erro: --pages precisa ficar entre 1 e 20.", file=sys.stderr)
         return 2
@@ -112,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     sync_status_by_address: dict[str, str] = {}
 
     for index, address in enumerate(addresses, start=1):
-        add_wallet(address, "Wallet Forward Acquisition v1")
+        add_wallet(address, args.protocol_version)
         note = {"address": address, "sync": "existing_only", "pages": []}
         if args.sync_onchain:
             note["sync"] = "ok"
@@ -157,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "mode": "RESEARCH_READ_ONLY",
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": args.protocol_version,
         "cutoff_at": cutoff_at,
         "git_head": _git_head(),
         "database_path": str(settings.database_path),
@@ -181,8 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print()
-    print("Crypto Copy Trader — Wallet Forward Cohort Freeze v1")
+    print("Crypto Copy Trader — Wallet Forward Cohort Freeze")
     print("Modo: RESEARCH / READ ONLY — seleção exclusivamente pré-T0.")
+    print(f"Protocolo: {args.protocol_version}")
     print(
         f"Candidatas: {len(addresses)} | elegíveis: {sum(item.eligible for item in profiles)} | "
         f"selecionadas: {len(selected_addresses)} | cutoff_at={cutoff_at}"
@@ -215,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     output_wallets = Path(args.output_wallets)
     output_wallets.parent.mkdir(parents=True, exist_ok=True)
     output_wallets.write_text(
-        "# Wallet Forward Acquisition v1 — frozen pre-T0 cohort\n"
+        f"# {args.protocol_version} — frozen pre-T0 cohort\n"
         f"# cutoff_at={cutoff_at}\n"
         f"# git_head={payload['git_head']}\n"
         f"# database_path={payload['database_path']}\n"
