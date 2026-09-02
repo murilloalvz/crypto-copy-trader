@@ -1,25 +1,33 @@
 import argparse
 import json
 from dataclasses import asdict
+from types import SimpleNamespace
 
 from src.causal_quote_store import ensure_causal_quote_schema, load_causal_quotes
 from src.database import connection, initialize_database
-from src.database import connection
-from types import SimpleNamespace
+from src.wallet_forward_enrollments import load_wallet_forward_enrollments
 from src.wallet_forward_observations import ensure_wallet_forward_observation_schema
 from src.wallet_forward_runs import get_wallet_forward_run
 from src.wallet_quote_watch import load_successful_quote_keys_by_event
-from src.wallet_economic_replay import EconomicReplayConfig, replay_source_wallet, summarize_economic_replay
+from src.wallet_economic_replay import (
+    EconomicReplayConfig,
+    replay_source_wallet,
+    summarize_economic_replay,
+)
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Replay econômico causal de wallets (RESEARCH/READ ONLY).")
-    p.add_argument("--run-key", help="reservado para escopo futuro; ações atuais devem ser run-scoped")
+    p = argparse.ArgumentParser(
+        description="Replay econômico causal de wallets (RESEARCH/READ ONLY)."
+    )
+    p.add_argument("--run-key", help="run COMPLETED/ACTIVE com enrollment econômico congelado")
     p.add_argument("--delays", type=int, nargs="*", default=[0, 15, 30, 60, 120])
     p.add_argument("--allow-proxy-quotes", action="store_true")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
-    initialize_database(); ensure_causal_quote_schema()
+
+    initialize_database()
+    ensure_causal_quote_schema()
     if not args.run_key:
         p.error("--run-key é obrigatório para evitar mistura entre runs")
     run = get_wallet_forward_run(args.run_key)
@@ -27,38 +35,118 @@ def main(argv=None):
         p.error(f"run não encontrada: {args.run_key}")
     if run.baseline_observation_id < 0 or run.end_observation_id is None:
         p.error("run precisa ter baseline e end_observation_id")
+    if run.enrollment_ends_at is None or run.follow_up_ends_at is None:
+        p.error(
+            "run não possui protocolo de enrollment/follow-up congelado; "
+            "replay econômico legado é bloqueado por segurança"
+        )
+    if run.enrollment_cutoff_observation_id is None:
+        p.error("run ainda não possui enrollment_cutoff_observation_id congelado")
+
+    enrolled = load_wallet_forward_enrollments(run.run_key)
+    enrolled_keys = {item.observation_key for item in enrolled}
+
     ensure_wallet_forward_observation_schema()
     with connection() as conn:
         rows = conn.execute(
-            "SELECT id, observation_key, wallet_address, token_mint, side, chain_time, observed_at "
-            "FROM wallet_forward_observations WHERE id > ? AND id <= ? ORDER BY id",
-            (run.baseline_observation_id, run.end_observation_id),
+            """SELECT id, observation_key, wallet_address, token_mint, side,
+                chain_time, observed_at
+            FROM wallet_forward_observations
+            WHERE run_key=? AND id>? AND id<=?
+            ORDER BY id""",
+            (run.run_key, run.baseline_observation_id, run.end_observation_id),
         ).fetchall()
-    actions = [SimpleNamespace(address=str(r["wallet_address"]), token_mint=str(r["token_mint"]), side=str(r["side"]), chain_time=int(r["chain_time"]), observed_at=int(r["observed_at"]), observation_key=str(r["observation_key"])) for r in rows]
-    event_keys = [str(r["observation_key"]) for r in rows]
+
+    economic_rows = []
+    followup_only_buy_count = 0
+    for row in rows:
+        side = str(row["side"])
+        observation_key = str(row["observation_key"])
+        if side == "buy" and observation_key not in enrolled_keys:
+            followup_only_buy_count += 1
+            continue
+        economic_rows.append(row)
+
+    actions = [
+        SimpleNamespace(
+            address=str(row["wallet_address"]),
+            token_mint=str(row["token_mint"]),
+            side=str(row["side"]),
+            chain_time=int(row["chain_time"]),
+            observed_at=int(row["observed_at"]),
+            observation_key=str(row["observation_key"]),
+        )
+        for row in economic_rows
+    ]
+    event_keys = [str(row["observation_key"]) for row in economic_rows]
     grouped_buy = load_successful_quote_keys_by_event(event_keys, side="buy")
     grouped_sell = load_successful_quote_keys_by_event(event_keys, side="sell")
-    grouped = {event: tuple(dict.fromkeys(grouped_buy.get(event, ()) + grouped_sell.get(event, ()))) for event in event_keys}
+    grouped = {
+        event: tuple(dict.fromkeys(grouped_buy.get(event, ()) + grouped_sell.get(event, ())))
+        for event in event_keys
+    }
     quote_keys = tuple(key for values in grouped.values() for key in values)
     quotes = load_causal_quotes(quote_keys=quote_keys)
     quotes_by_key = {quote_key: quote for quote_key, quote in zip(quote_keys, quotes)}
-    quotes_by_event = {event: tuple(quotes_by_key[key] for key in keys if key in quotes_by_key) for event, keys in grouped.items()}
-    cfg = EconomicReplayConfig(delays=tuple(dict.fromkeys(args.delays)), require_executable_quote=not args.allow_proxy_quotes)
+    quotes_by_event = {
+        event: tuple(quotes_by_key[key] for key in keys if key in quotes_by_key)
+        for event, keys in grouped.items()
+    }
+    cfg = EconomicReplayConfig(
+        delays=tuple(dict.fromkeys(args.delays)),
+        require_executable_quote=not args.allow_proxy_quotes,
+    )
     reports = []
-    buys = sum(a.side == "buy" for a in actions)
+    buys = len(enrolled)
     for delay in cfg.delays:
-        trades = replay_source_wallet(actions, quotes, config=cfg, delay_seconds=delay, quotes_by_event=quotes_by_event, run_completed=run.status != "ACTIVE")
-        reports.append({"delay_seconds": delay, "summary": asdict(summarize_economic_replay(trades, buy_count=buys))})
-    payload = {"mode": "RESEARCH_READ_ONLY", "economic_sample": "INSUFFICIENT" if not any(r["summary"]["closed_count"] for r in reports) else "DESCRIPTIVE", "action_count": len(actions), "quote_count": len(quotes), "reports": reports}
+        trades = replay_source_wallet(
+            actions,
+            quotes,
+            config=cfg,
+            delay_seconds=delay,
+            quotes_by_event=quotes_by_event,
+            run_completed=run.status != "ACTIVE",
+        )
+        reports.append(
+            {
+                "delay_seconds": delay,
+                "summary": asdict(summarize_economic_replay(trades, buy_count=buys)),
+            }
+        )
+
+    payload = {
+        "mode": "RESEARCH_READ_ONLY",
+        "economic_sample": (
+            "INSUFFICIENT"
+            if not any(row["summary"]["closed_count"] for row in reports)
+            else "DESCRIPTIVE"
+        ),
+        "full_run_action_count": len(rows),
+        "economic_action_count": len(actions),
+        "enrolled_buy_count": buys,
+        "followup_only_buy_count": followup_only_buy_count,
+        "quote_count": len(quotes),
+        "reports": reports,
+    }
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2)); return 0
-    print("Crypto Copy Trader — Causal Economic Replay v1")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print("Crypto Copy Trader — Causal Economic Replay v1.1")
     print("Modo: RESEARCH / READ ONLY — nenhum trade é inventado.")
-    print(f"Ações: {len(actions)} | BUYs: {buys} | quotes: {len(quotes)}")
+    print(
+        f"Ações full-run: {len(rows)} | ações econômicas: {len(actions)} | "
+        f"BUYs enrolled: {buys} | BUYs follow-up-only: {followup_only_buy_count} | "
+        f"quotes: {len(quotes)}"
+    )
     print(f"Amostra econômica: {payload['economic_sample']}")
     for row in reports:
-        s=row["summary"]
-        print(f"DELAY +{row['delay_seconds']}s | fechados {s['closed_count']} | open {s['open_count']} | censurados {s['censored_count']} | média líquida {s['mean_net_return_pct']}")
+        summary = row["summary"]
+        print(
+            f"DELAY +{row['delay_seconds']}s | fechados {summary['closed_count']} | "
+            f"open {summary['open_count']} | censurados {summary['censored_count']} | "
+            f"média líquida {summary['mean_net_return_pct']}"
+        )
     return 0
 
 
