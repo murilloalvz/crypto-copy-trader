@@ -70,7 +70,7 @@ GitHub Actions validated the integrated patch on Python 3.11 / Ubuntu 24.04:
 
 - Python compilation: PASS
 - complete unit-test suite: PASS
-- 427 tests run
+- 428 tests run
 - result: `OK`
 
 Specific new coverage includes:
@@ -79,17 +79,24 @@ Specific new coverage includes:
 - fallback after primary disconnect;
 - total endpoint disconnect -> `SolanaRPCError`, not raw `RemoteDisconnected`;
 - persistence and ordering of RPC `FAILURE` / `RECOVERED` events;
-- run-key isolation of RPC health telemetry.
+- run-key isolation of RPC health telemetry;
+- direct wallet-watcher loop validation: a poll fails with `SolanaRPCError`, the failure is recorded, a later poll recovers, recovery is recorded, and the process completes normally instead of crashing.
+
+The direct loop test produced the expected sequence in CI: one RPC failure, one recovery, two cycles, return code 0, and the full suite remained green.
 
 ## Integrated repository state
 
 The patch was developed on `fix/wallet-forward-network-resilience` from `aad893f1d1c6e7f2c1278b68010924368c282831` and then fast-forwarded into `feat/exit-engine-v1` after CI passed.
 
-Integrated head before this documentation commit:
+Core integration head:
 
 `cf86ef9f8e74791e3c338d881e1ac8c267ebbbeb`
 
-The integration was a non-forced fast-forward.
+The integration was a non-forced fast-forward. Additional documentation and direct-loop regression coverage were then committed directly on `feat/exit-engine-v1`.
+
+Latest validated code/test head before this documentation refresh:
+
+`4b6654ed7c5f3202661245b3b54a67dc696b4cd0`
 
 ## Methodological interpretation
 
