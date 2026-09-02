@@ -26,6 +26,9 @@ class WalletForwardRun:
     status: str
     runtime_version: str
     quote_intake_grace_seconds: int
+    enrollment_ends_at: int | None
+    follow_up_ends_at: int | None
+    enrollment_cutoff_observation_id: int | None
 
 
 _SCHEMA = f"""
@@ -45,6 +48,9 @@ CREATE TABLE IF NOT EXISTS wallet_forward_runs (
     status TEXT NOT NULL,
     runtime_version TEXT NOT NULL DEFAULT '{CURRENT_RUNTIME_VERSION}',
     quote_intake_grace_seconds INTEGER NOT NULL DEFAULT 0,
+    enrollment_ends_at INTEGER,
+    follow_up_ends_at INTEGER,
+    enrollment_cutoff_observation_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -61,8 +67,6 @@ def ensure_wallet_forward_run_schema() -> None:
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(wallet_forward_runs)").fetchall()
         }
-        # Existing run manifests were created before runtime versioning. Mark them explicitly
-        # as legacy rather than pretending they used the new causal-boundary collector.
         if "runtime_version" not in existing:
             conn.execute(
                 "ALTER TABLE wallet_forward_runs ADD COLUMN runtime_version "
@@ -72,6 +76,19 @@ def ensure_wallet_forward_run_schema() -> None:
             conn.execute(
                 "ALTER TABLE wallet_forward_runs ADD COLUMN quote_intake_grace_seconds "
                 "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "enrollment_ends_at" not in existing:
+            conn.execute(
+                "ALTER TABLE wallet_forward_runs ADD COLUMN enrollment_ends_at INTEGER"
+            )
+        if "follow_up_ends_at" not in existing:
+            conn.execute(
+                "ALTER TABLE wallet_forward_runs ADD COLUMN follow_up_ends_at INTEGER"
+            )
+        if "enrollment_cutoff_observation_id" not in existing:
+            conn.execute(
+                "ALTER TABLE wallet_forward_runs ADD COLUMN "
+                "enrollment_cutoff_observation_id INTEGER"
             )
 
 
@@ -102,6 +119,8 @@ def create_wallet_forward_run(
     quote_mode: str,
     runtime_version: str = CURRENT_RUNTIME_VERSION,
     quote_intake_grace_seconds: int = 0,
+    enrollment_ends_at: int | None = None,
+    follow_up_ends_at: int | None = None,
 ) -> WalletForwardRun:
     key = run_key.strip()
     if not key:
@@ -123,6 +142,13 @@ def create_wallet_forward_run(
         raise ValueError("runtime_version cannot be empty")
     if quote_intake_grace_seconds < 0:
         raise ValueError("quote_intake_grace_seconds must be non-negative")
+    if (enrollment_ends_at is None) != (follow_up_ends_at is None):
+        raise ValueError("enrollment and follow-up boundaries must be provided together")
+    if enrollment_ends_at is not None:
+        if enrollment_ends_at < started_at:
+            raise ValueError("enrollment_ends_at cannot precede started_at")
+        if follow_up_ends_at is None or follow_up_ends_at < enrollment_ends_at:
+            raise ValueError("follow_up_ends_at cannot precede enrollment_ends_at")
 
     addresses = _normalize_cohort(cohort)
     delays = _normalize_delays(quote_delays_seconds)
@@ -137,8 +163,8 @@ def create_wallet_forward_run(
                     run_key, started_at, baseline_observation_id, cohort_json,
                     interval_seconds, quote_delays_json, with_jupiter_quotes,
                     copy_size_usd, quote_mode, status, runtime_version,
-                    quote_intake_grace_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)""",
+                    quote_intake_grace_seconds, enrollment_ends_at, follow_up_ends_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?)""",
                 (
                     key,
                     started_at,
@@ -151,6 +177,8 @@ def create_wallet_forward_run(
                     quote_mode,
                     normalized_runtime,
                     quote_intake_grace_seconds,
+                    enrollment_ends_at,
+                    follow_up_ends_at,
                 ),
             )
         except Exception as exc:
@@ -161,6 +189,44 @@ def create_wallet_forward_run(
     if run is None:
         raise RuntimeError("failed to persist wallet forward run")
     return run
+
+
+def freeze_wallet_forward_enrollment_cutoff(
+    run_key: str,
+    *,
+    cutoff_observation_id: int,
+) -> WalletForwardRun:
+    key = run_key.strip()
+    if not key:
+        raise ValueError("run_key cannot be empty")
+    current = get_wallet_forward_run(key)
+    if current is None:
+        raise ValueError(f"wallet forward run not found: {key}")
+    if current.enrollment_ends_at is None or current.follow_up_ends_at is None:
+        raise ValueError("run has no enrollment/follow-up protocol")
+    if cutoff_observation_id < current.baseline_observation_id:
+        raise ValueError("enrollment cutoff cannot precede baseline observation id")
+    if current.enrollment_cutoff_observation_id is not None:
+        if current.enrollment_cutoff_observation_id != cutoff_observation_id:
+            raise ValueError(
+                "wallet forward enrollment cutoff already frozen with a different observation id"
+            )
+        return current
+
+    ensure_wallet_forward_run_schema()
+    with connection() as conn:
+        cursor = conn.execute(
+            """UPDATE wallet_forward_runs
+            SET enrollment_cutoff_observation_id=?, updated_at=CURRENT_TIMESTAMP
+            WHERE run_key=? AND enrollment_cutoff_observation_id IS NULL""",
+            (cutoff_observation_id, key),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("failed to freeze wallet forward enrollment cutoff")
+    frozen = get_wallet_forward_run(key)
+    if frozen is None:
+        raise RuntimeError("wallet forward run disappeared after enrollment freeze")
+    return frozen
 
 
 def finish_wallet_forward_run(
@@ -182,13 +248,17 @@ def finish_wallet_forward_run(
     if current is None:
         raise ValueError(f"wallet forward run not found: {key}")
     if current.status != "ACTIVE":
-        raise ValueError(
-            f"wallet forward run already finalized as {current.status}: {key}"
-        )
+        raise ValueError(f"wallet forward run already finalized as {current.status}: {key}")
     if ended_at < current.started_at:
         raise ValueError("ended_at cannot precede started_at")
     if end_observation_id < current.baseline_observation_id:
         raise ValueError("end_observation_id cannot precede baseline")
+    if (
+        status == "COMPLETED"
+        and current.enrollment_ends_at is not None
+        and current.enrollment_cutoff_observation_id is None
+    ):
+        raise ValueError("completed enrollment-aware run requires frozen enrollment cutoff")
 
     ensure_wallet_forward_run_schema()
     with connection() as conn:
@@ -212,7 +282,8 @@ def _select_columns() -> str:
     return """run_key, started_at, ended_at, baseline_observation_id,
         end_observation_id, cohort_json, interval_seconds, quote_delays_json,
         with_jupiter_quotes, copy_size_usd, quote_mode, status,
-        runtime_version, quote_intake_grace_seconds"""
+        runtime_version, quote_intake_grace_seconds, enrollment_ends_at,
+        follow_up_ends_at, enrollment_cutoff_observation_id"""
 
 
 def get_wallet_forward_run(run_key: str) -> WalletForwardRun | None:
@@ -245,11 +316,7 @@ def list_wallet_forward_runs(
     status: str | None = None,
     limit: int = 20,
 ) -> tuple[WalletForwardRun, ...]:
-    """Return run manifests newest-first without merging their data.
-
-    This exists primarily for cross-run audit tooling. Different runtime/configuration regimes
-    should remain separate unless an explicit compatibility check says they match.
-    """
+    """Return run manifests newest-first without merging their data."""
     if status is not None and status not in RUN_STATUSES:
         raise ValueError("invalid run status")
     if not 1 <= limit <= 500:
@@ -302,4 +369,19 @@ def _row_to_run(row) -> WalletForwardRun:
         status=status,
         runtime_version=runtime_version,
         quote_intake_grace_seconds=grace,
+        enrollment_ends_at=(
+            int(row["enrollment_ends_at"])
+            if row["enrollment_ends_at"] is not None
+            else None
+        ),
+        follow_up_ends_at=(
+            int(row["follow_up_ends_at"])
+            if row["follow_up_ends_at"] is not None
+            else None
+        ),
+        enrollment_cutoff_observation_id=(
+            int(row["enrollment_cutoff_observation_id"])
+            if row["enrollment_cutoff_observation_id"] is not None
+            else None
+        ),
     )
