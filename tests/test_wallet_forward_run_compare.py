@@ -29,6 +29,9 @@ def _run(
         status="COMPLETED",
         runtime_version=runtime,
         quote_intake_grace_seconds=grace,
+        enrollment_ends_at=None,
+        follow_up_ends_at=None,
+        enrollment_cutoff_observation_id=None,
     )
 
 
