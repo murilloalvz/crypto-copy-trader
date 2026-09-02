@@ -64,7 +64,11 @@ class WalletWatchForwardNetworkResilienceTests(unittest.TestCase):
                 recovery_recorder,
             ),
             patch.object(wallet_watch_forward.time, "monotonic", side_effect=monotonic_side_effect),
-            patch.object(wallet_watch_forward.time, "time", side_effect=[1000, 1010, 1020]),
+            patch.object(
+                wallet_watch_forward.time,
+                "time",
+                side_effect=[1000, 1010, 1020, 1030],
+            ),
             patch.object(wallet_watch_forward.time, "sleep"),
         ):
             result = wallet_watch_forward.main(
