@@ -1,7 +1,24 @@
+import json
 import unittest
+from http.client import RemoteDisconnected
 from unittest.mock import patch
 
+from src.solana import SolanaRPCError
 from src.wallet_forward_rpc import WalletForwardSolanaClient
+
+
+class FakeResponse:
+    def __init__(self, result):
+        self.body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.body
 
 
 class WalletForwardRpcTests(unittest.TestCase):
@@ -56,6 +73,63 @@ class WalletForwardRpcTests(unittest.TestCase):
         client = WalletForwardSolanaClient(commitment="confirmed")
         with self.assertRaises(ValueError):
             client.signature_statuses([str(index) for index in range(257)])
+
+    @patch("src.solana.urlopen")
+    def test_remote_disconnected_retries_same_endpoint(self, mocked_urlopen):
+        mocked_urlopen.side_effect = [
+            RemoteDisconnected("remote closed without response"),
+            FakeResponse("ok"),
+        ]
+        client = WalletForwardSolanaClient(
+            commitment="confirmed",
+            rpc_url="https://primary.invalid",
+            fallback_urls=[],
+        )
+
+        result = client.call("getHealth", [], max_attempts=2)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(client.rpc_host, "primary.invalid")
+        self.assertEqual(mocked_urlopen.call_count, 2)
+
+    @patch("src.solana.urlopen")
+    def test_remote_disconnected_uses_fallback(self, mocked_urlopen):
+        mocked_urlopen.side_effect = [
+            RemoteDisconnected("primary disconnected"),
+            FakeResponse("ok"),
+        ]
+        client = WalletForwardSolanaClient(
+            commitment="confirmed",
+            rpc_url="https://primary.invalid",
+            fallback_urls=["https://fallback.invalid"],
+        )
+
+        result = client.call("getHealth", [], max_attempts=1)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(client.rpc_host, "fallback.invalid")
+        self.assertEqual(mocked_urlopen.call_count, 2)
+
+    @patch("src.solana.urlopen")
+    def test_all_endpoints_disconnected_raise_solana_rpc_error(self, mocked_urlopen):
+        mocked_urlopen.side_effect = [
+            RemoteDisconnected("primary disconnected"),
+            RemoteDisconnected("fallback disconnected"),
+        ]
+        client = WalletForwardSolanaClient(
+            commitment="confirmed",
+            rpc_url="https://primary.invalid",
+            fallback_urls=["https://fallback.invalid"],
+        )
+
+        with self.assertRaises(SolanaRPCError) as raised:
+            client.call("getHealth", [], max_attempts=1)
+
+        message = str(raised.exception)
+        self.assertIn("Todos os RPCs falharam", message)
+        self.assertIn("primary.invalid", message)
+        self.assertIn("fallback.invalid", message)
+        self.assertEqual(mocked_urlopen.call_count, 2)
 
 
 if __name__ == "__main__":
