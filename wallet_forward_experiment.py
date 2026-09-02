@@ -35,7 +35,12 @@ def _load_cohort(path: Path) -> list[str]:
     return addresses
 
 
-def _runtime_version(rpc_commitment: str) -> str:
+def _runtime_version(rpc_commitment: str, *, enrollment_aware: bool) -> str:
+    if enrollment_aware:
+        return (
+            "wallet_forward_runtime_v5_enrollment_followup_rotating_poll_"
+            f"{rpc_commitment}_commitment"
+        )
     return f"wallet_forward_runtime_v4_rotating_poll_{rpc_commitment}_commitment"
 
 
@@ -68,8 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(VALID_WALLET_FORWARD_COMMITMENTS),
         default="confirmed",
         help=(
-            "commitment Solana usado para detectar as wallets. confirmed é o padrão do runtime "
-            "v4 de latência; finalized preserva maior certeza com maior atraso."
+            "commitment Solana usado para detectar as wallets. confirmed reduz a espera de "
+            "detecção; finalized preserva maior certeza com maior atraso."
         ),
     )
     parser.add_argument(
@@ -202,7 +207,11 @@ def main(argv: list[str] | None = None) -> int:
         "proxy" if args.with_jupiter_quotes else
         "none"
     )
-    runtime_version = _runtime_version(args.rpc_commitment)
+    enrollment_aware = enrollment_hours is not None
+    runtime_version = _runtime_version(
+        args.rpc_commitment,
+        enrollment_aware=enrollment_aware,
+    )
     quote_intake_grace_seconds = (
         max(5, args.interval_seconds + 5) if args.with_jupiter_quotes else 0
     )
