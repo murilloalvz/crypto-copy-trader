@@ -15,6 +15,11 @@ from src.wallet_forward_rpc import (
     VALID_WALLET_FORWARD_COMMITMENTS,
     WalletForwardSolanaClient,
 )
+from src.wallet_forward_rpc_health import (
+    ensure_wallet_forward_rpc_health_schema,
+    record_wallet_forward_rpc_failure,
+    record_wallet_forward_rpc_recovery,
+)
 
 
 def _load_addresses(positional: list[str], file_path: str | None) -> list[str]:
@@ -39,6 +44,10 @@ def _rotated_poll_order(addresses: list[str], cycle_number: int) -> list[str]:
         return []
     offset = (cycle_number - 1) % len(addresses)
     return addresses[offset:] + addresses[:offset]
+
+
+def _utc_label(epoch: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
 
     initialize_database()
     ensure_wallet_forward_observation_schema()
+    ensure_wallet_forward_rpc_health_schema()
     for address in addresses:
         add_wallet(address, "Forward Wallet Watch")
     client = WalletForwardSolanaClient(commitment=args.rpc_commitment)
@@ -133,9 +143,27 @@ def main(argv: list[str] | None = None) -> int:
 
     known: dict[str, set[str]] = {}
     bootstrap_failures = 0
+    rpc_degraded = False
+    rpc_recoveries = 0
     for address in addresses:
         try:
             result = sync_wallet(address, client=client)
+            if rpc_degraded:
+                recovered_at = int(time.time())
+                rpc_recoveries += 1
+                if args.run_key:
+                    record_wallet_forward_rpc_recovery(
+                        run_key=args.run_key,
+                        observed_at=recovered_at,
+                        wallet_address=address,
+                        phase="bootstrap",
+                        rpc_endpoint=result.get("rpc_endpoint"),
+                    )
+                print(
+                    f"[rpc-recovered {_utc_label(recovered_at)}] {address[:10]}… "
+                    f"endpoint {result.get('rpc_endpoint')}"
+                )
+                rpc_degraded = False
             print(
                 f"[bootstrap] {address[:10]}… encontrados {result['found']} | "
                 f"novos SQLite {result['inserted']} | falhas {result['failed']} | "
@@ -143,7 +171,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (SolanaRPCError, ValueError) as exc:
             bootstrap_failures += 1
-            print(f"[bootstrap] {address[:10]}… RPC falhou: {exc}", file=sys.stderr)
+            failed_at = int(time.time())
+            rpc_degraded = True
+            if args.run_key:
+                record_wallet_forward_rpc_failure(
+                    run_key=args.run_key,
+                    observed_at=failed_at,
+                    wallet_address=address,
+                    phase="bootstrap",
+                    error=exc,
+                )
+            print(
+                f"[bootstrap {_utc_label(failed_at)}] {address[:10]}… RPC falhou: {exc}",
+                file=sys.stderr,
+            )
         known[address] = load_known_wallet_signatures(address)
 
     # Strict causal boundary independent from signature hydration. If an old transaction failed
@@ -166,8 +207,38 @@ def main(argv: list[str] | None = None) -> int:
                     result = sync_wallet(address, client=client)
                 except (SolanaRPCError, ValueError) as exc:
                     sync_failures += 1
-                    print(f"[rpc] {address[:10]}… falhou: {exc}", file=sys.stderr)
+                    failed_at = int(time.time())
+                    rpc_degraded = True
+                    if args.run_key:
+                        record_wallet_forward_rpc_failure(
+                            run_key=args.run_key,
+                            observed_at=failed_at,
+                            wallet_address=address,
+                            phase="poll",
+                            error=exc,
+                        )
+                    print(
+                        f"[rpc {_utc_label(failed_at)}] {address[:10]}… falhou: {exc}",
+                        file=sys.stderr,
+                    )
                     continue
+
+                if rpc_degraded:
+                    recovered_at = int(time.time())
+                    rpc_recoveries += 1
+                    if args.run_key:
+                        record_wallet_forward_rpc_recovery(
+                            run_key=args.run_key,
+                            observed_at=recovered_at,
+                            wallet_address=address,
+                            phase="poll",
+                            rpc_endpoint=result.get("rpc_endpoint"),
+                        )
+                    print(
+                        f"[rpc-recovered {_utc_label(recovered_at)}] {address[:10]}… "
+                        f"endpoint {result.get('rpc_endpoint')}"
+                    )
+                    rpc_degraded = False
 
                 observed_at = int(time.time())
                 try:
@@ -181,7 +252,8 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as exc:
                     sync_failures += 1
                     print(
-                        f"[capture] {address[:10]}… observação rejeitada: {exc}",
+                        f"[capture {_utc_label(observed_at)}] {address[:10]}… "
+                        f"observação rejeitada: {exc}",
                         file=sys.stderr,
                     )
                     known[address] = load_known_wallet_signatures(address)
@@ -216,8 +288,14 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Ciclos: {cycles} | ações forward persistidas: {recorded_actions} | "
         f"linhas novas ignoradas: {ignored_rows} | pré-início bloqueadas: {prestart_ignored} | "
-        f"falhas de sync/capture: {sync_failures} | falhas no bootstrap: {bootstrap_failures}"
+        f"falhas de sync/capture: {sync_failures} | falhas no bootstrap: {bootstrap_failures} | "
+        f"recuperações RPC: {rpc_recoveries}"
     )
+    if args.run_key:
+        print(
+            "Falhas e recuperações RPC desta run foram persistidas por run_key para auditoria "
+            "de cobertura observacional."
+        )
     print(
         "Estas observações podem alimentar Opportunity Intelligence porque preservam chain_time "
         "e o observed_at real do coletor. Elas ainda não são sinal de compra nem prova de edge."
