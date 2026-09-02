@@ -35,7 +35,7 @@ def _load_cohort(path: Path) -> list[str]:
     return addresses
 
 
-def _runtime_version(rpc_commitment: str, *, enrollment_aware: bool) -> str:
+def _runtime_version(rpc_commitment: str, *, enrollment_aware: bool = False) -> str:
     if enrollment_aware:
         return (
             "wallet_forward_runtime_v5_enrollment_followup_rotating_poll_"
