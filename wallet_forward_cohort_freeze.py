@@ -1,10 +1,12 @@
 import argparse
 import json
+import subprocess
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 
+from src.config import settings
 from src.database import add_wallet, initialize_database, rows
 from src.services import sync_wallet
 from src.solana import SolanaRPCError
@@ -27,6 +29,20 @@ def _load_addresses(path: Path) -> list[str]:
     if not addresses:
         raise ValueError("arquivo de wallets está vazio")
     return addresses
+
+
+def _git_head() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    value = result.stdout.strip()
+    return value or None
 
 
 def _local_swaps(address: str, cutoff_at: int) -> list[dict]:
@@ -143,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         "mode": "RESEARCH_READ_ONLY",
         "protocol_version": PROTOCOL_VERSION,
         "cutoff_at": cutoff_at,
+        "git_head": _git_head(),
+        "database_path": str(settings.database_path),
         "candidate_file": str(candidate_path),
         "candidate_count": len(addresses),
         "min_wallets": args.min_wallets,
@@ -199,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
     output_wallets.write_text(
         "# Wallet Forward Acquisition v1 — frozen pre-T0 cohort\n"
         f"# cutoff_at={cutoff_at}\n"
+        f"# git_head={payload['git_head']}\n"
+        f"# database_path={payload['database_path']}\n"
         + "\n".join(selected_addresses)
         + "\n",
         encoding="utf-8",
