@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS pumpswap_pool_mappings (
 
 CREATE INDEX IF NOT EXISTS idx_pumpswap_pool_mappings_run_pool_time
 ON pumpswap_pool_mappings(acquisition_run_key, pool_address, observed_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_pumpswap_pool_mappings_pool_time
+ON pumpswap_pool_mappings(pool_address, observed_at, id);
 """
 
 
@@ -36,6 +39,17 @@ def _required(value: str, name: str) -> str:
     if not normalized:
         raise ValueError(f"{name} cannot be empty")
     return normalized
+
+
+def _row_to_mapping(row) -> PumpSwapPoolMapping:
+    return PumpSwapPoolMapping(
+        acquisition_run_key=str(row["acquisition_run_key"]),
+        pool_address=str(row["pool_address"]),
+        base_mint=str(row["base_mint"]),
+        quote_mint=str(row["quote_mint"]),
+        observed_at=int(row["observed_at"]),
+        source_provider=str(row["source_provider"]),
+    )
 
 
 def ensure_pumpswap_pool_schema() -> None:
@@ -79,8 +93,6 @@ def record_pumpswap_pool_mapping(
             first_seen = int(existing["observed_at"])
             if learned_at < first_seen:
                 raise ValueError("PumpSwap pool replay cannot backdate observed_at")
-            # The first source/clock remains authoritative. A later independent source may
-            # corroborate the same mapping without rewriting causal first-seen metadata.
             return False
 
         conn.execute(
@@ -117,13 +129,41 @@ def load_pumpswap_pool_mapping(
 
     with connection() as conn:
         row = conn.execute(query, tuple(params)).fetchone()
-    if row is None:
+    return _row_to_mapping(row) if row is not None else None
+
+
+def load_known_pumpswap_pool_mapping(
+    *,
+    pool_address: str,
+    as_of: int,
+) -> PumpSwapPoolMapping | None:
+    """Load an identity learned in any earlier run, but only if it was known by ``as_of``.
+
+    Pool base/quote mint identity is immutable chain state for this purpose, so reusing a mapping
+    learned in a previous acquisition run avoids needless getAccountInfo calls. Availability is
+    still causal: a mapping first learned after the current T0 is invisible. Conflicting historical
+    identities are surfaced instead of silently choosing one.
+    """
+
+    pool = _required(pool_address, "pool_address")
+    decision_time = int(as_of)
+    if decision_time < 0:
+        raise ValueError("as_of must be non-negative")
+    ensure_pumpswap_pool_schema()
+
+    with connection() as conn:
+        rows = conn.execute(
+            """SELECT acquisition_run_key, pool_address, base_mint, quote_mint,
+                observed_at, source_provider
+            FROM pumpswap_pool_mappings
+            WHERE pool_address=? AND observed_at<=?
+            ORDER BY observed_at ASC, id ASC""",
+            (pool, decision_time),
+        ).fetchall()
+    if not rows:
         return None
-    return PumpSwapPoolMapping(
-        acquisition_run_key=str(row["acquisition_run_key"]),
-        pool_address=str(row["pool_address"]),
-        base_mint=str(row["base_mint"]),
-        quote_mint=str(row["quote_mint"]),
-        observed_at=int(row["observed_at"]),
-        source_provider=str(row["source_provider"]),
-    )
+
+    identities = {(str(row["base_mint"]), str(row["quote_mint"])) for row in rows}
+    if len(identities) != 1:
+        raise ValueError("conflicting historical PumpSwap pool identities")
+    return _row_to_mapping(rows[0])
