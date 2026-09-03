@@ -11,6 +11,7 @@ from src.opportunity_enrichment_store import admit_opportunity_episode
 from src.opportunity_episode_enrichment import build_episode_enrichment_bundle
 from src.pump_batch_persistence import PumpBatchPersistResult, persist_pump_notification_batch
 from src.pump_bonding_stream import iter_pump_log_notifications
+from src.pump_microbatch_persistence import persist_pump_notifications_microbatch
 from src.pump_radar_bridge_v4 import evaluate_persisted_pump_notification_for_radar_v4
 from src.pumpswap_asset_role import REFERENCE_ASSET_MINTS_V1
 from src.pumpswap_concurrent_resolver import ConcurrentReusablePumpSwapPoolResolver
@@ -120,7 +121,14 @@ async def run_smoke(
     pumpswap_workers: int,
     max_concurrent_resolutions: int,
     queue_size: int,
+    pump_microbatch_size: int = 1,
+    pump_microbatch_max_wait_ms: int = 0,
 ) -> None:
+    if pump_microbatch_size <= 0:
+        raise ValueError("pump_microbatch_size must be positive")
+    if pump_microbatch_max_wait_ms < 0:
+        raise ValueError("pump_microbatch_max_wait_ms cannot be negative")
+
     started = time.monotonic()
     deadline = started + duration_seconds
 
@@ -157,6 +165,7 @@ async def run_smoke(
     pump_radar_wait_seconds: list[float] = []
     pumpswap_persist_wait_seconds: list[float] = []
     pumpswap_radar_wait_seconds: list[float] = []
+    pump_microbatch_sizes: list[int] = []
     enrichment_admitted = 0
     flow30_total = 0
     wallets_total = 0
@@ -260,6 +269,66 @@ async def run_smoke(
             finally:
                 pump_queue.task_done()
 
+    async def pump_microbatch_persist_worker() -> None:
+        max_wait_seconds = pump_microbatch_max_wait_ms / 1000.0
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                first = await asyncio.wait_for(pump_queue.get(), timeout=min(0.5, remaining))
+            except asyncio.TimeoutError:
+                continue
+
+            batch = [first]
+            collect_started = time.monotonic()
+            try:
+                while len(batch) < pump_microbatch_size and time.monotonic() < deadline:
+                    try:
+                        batch.append(pump_queue.get_nowait())
+                        continue
+                    except asyncio.QueueEmpty:
+                        pass
+
+                    wait_left = max_wait_seconds - (time.monotonic() - collect_started)
+                    deadline_left = deadline - time.monotonic()
+                    timeout = min(wait_left, deadline_left)
+                    if timeout <= 0:
+                        break
+                    try:
+                        batch.append(await asyncio.wait_for(pump_queue.get(), timeout=timeout))
+                    except asyncio.TimeoutError:
+                        break
+
+                dispatch_at = time.monotonic()
+                for item in batch:
+                    pump_persist_wait_seconds.append(dispatch_at - item.enqueued_monotonic)
+
+                persist_results = await asyncio.to_thread(
+                    persist_pump_notifications_microbatch,
+                    tuple(item.notification for item in batch),
+                    acquisition_run_key=run_key,
+                )
+                if len(persist_results) != len(batch):
+                    raise RuntimeError("Pump microbatch result count does not match input count")
+
+                pump_microbatch_sizes.append(len(batch))
+                for item, persist_result in zip(batch, persist_results):
+                    persistence_completed["pump"] += 1
+                    persisted_trades["pump"] += persist_result.newly_persisted_trades
+                    await pump_completed.put(
+                        CompletedPumpNotification(
+                            item.sequence,
+                            item.notification,
+                            persist_result,
+                            item.enqueued_monotonic,
+                        )
+                    )
+            except Exception:
+                worker_errors["pump_microbatch_persist"] += 1
+                raise
+            finally:
+                for _ in batch:
+                    pump_queue.task_done()
+
     async def pump_radar_coordinator() -> None:
         next_sequence = 0
         while time.monotonic() < deadline:
@@ -346,10 +415,15 @@ async def run_smoke(
         asyncio.create_task(pump_radar_coordinator(), name="radar-pump"),
         asyncio.create_task(pumpswap_radar_coordinator(), name="radar-pumpswap"),
     ]
-    tasks.extend(
-        asyncio.create_task(pump_persist_worker(), name=f"persist-pump-{index}")
-        for index in range(pump_workers)
-    )
+    if pump_microbatch_size > 1:
+        tasks.append(
+            asyncio.create_task(pump_microbatch_persist_worker(), name="persist-pump-microbatch")
+        )
+    else:
+        tasks.extend(
+            asyncio.create_task(pump_persist_worker(), name=f"persist-pump-{index}")
+            for index in range(pump_workers)
+        )
     tasks.extend(
         asyncio.create_task(pumpswap_persist_worker(), name=f"persist-pumpswap-{index}")
         for index in range(pumpswap_workers)
@@ -398,7 +472,7 @@ async def run_smoke(
         "backlog_at_deadline={"
         f"'pump_ingress': {pump_ingress_backlog}, 'pump_inflight': {pump_inflight}, "
         f"'pump_reorder': {pump_reorder_backlog}, 'pumpswap_ingress': {pumpswap_ingress_backlog}, "
-        f"'pumpswap_inflight': {pumpswap_inflight}, 'pumpswap_reorder': {pumpswap_reorder_backlog}" 
+        f"'pumpswap_inflight': {pumpswap_inflight}, 'pumpswap_reorder': {pumpswap_reorder_backlog}"
         "} "
         f"queue_high_water={dict(queue_high_water)} queue_size={queue_size}"
     )
@@ -416,6 +490,14 @@ async def run_smoke(
     )
     print(f"pump_persist_queue_wait_ms {_latency_summary_ms(pump_persist_wait_seconds)}")
     print(f"pump_radar_end_to_end_wait_ms {_latency_summary_ms(pump_radar_wait_seconds)}")
+    if pump_microbatch_size > 1:
+        avg_batch = sum(pump_microbatch_sizes) / len(pump_microbatch_sizes) if pump_microbatch_sizes else 0.0
+        max_batch = max(pump_microbatch_sizes) if pump_microbatch_sizes else 0
+        print(
+            f"pump_microbatch batches={len(pump_microbatch_sizes)} avg_size={avg_batch:.2f} "
+            f"max_size={max_batch} configured_size={pump_microbatch_size} "
+            f"max_wait_ms={pump_microbatch_max_wait_ms}"
+        )
     print(f"pumpswap_persist_queue_wait_ms {_latency_summary_ms(pumpswap_persist_wait_seconds)}")
     print(f"pumpswap_radar_end_to_end_wait_ms {_latency_summary_ms(pumpswap_radar_wait_seconds)}")
     print(
@@ -425,10 +507,17 @@ async def run_smoke(
         f"hydration_successes={resolver.hydration_successes} rpc_failures={resolver_rpc_failures} "
         f"budget_skips={resolver.hydration_budget_skips} negative_cache_skips={resolver.negative_cache_skips}"
     )
-    print(
-        "v4 preserves websocket ingress ordering for both Pump and PumpSwap radar while allowing "
-        "bounded concurrent persistence. Execution/risk providers are not called."
-    )
+    if pump_microbatch_size > 1:
+        print(
+            "Pump persistence uses one ordered SQLite microbatch writer; PumpSwap keeps bounded "
+            "concurrent resolution/persistence. Radar ordering and detector semantics are unchanged. "
+            "Execution/risk providers are not called."
+        )
+    else:
+        print(
+            "v4 preserves websocket ingress ordering for both Pump and PumpSwap radar while allowing "
+            "bounded concurrent persistence. Execution/risk providers are not called."
+        )
 
 
 def _parse_args() -> argparse.Namespace:
