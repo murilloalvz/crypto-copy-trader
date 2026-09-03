@@ -12,8 +12,9 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - Classificação final pré-registrada: **OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**.
 - Wallet Forward v2 Run 3 **não deve ser iniciado**.
 - O protocolo wallet-triggered `Causal Opportunity Acquisition v1` foi **SUPERSEDED BEFORE RUN**.
-- Gate ativo: **Market Opportunity Radar v1 + Opportunity Wallet Intelligence v1 + native Pump market acquisition**.
-- Última suíte confirmada: **508 testes, zero falhas**, com `compileall` aprovado.
+- Gate ativo: **Market Opportunity Radar v1.1 transaction-aware + Opportunity Wallet Intelligence v1 + native Pump market acquisition**.
+- Native Pump bonding-curve acquisition teve **live smoke operacional aprovado** na máquina local real em 2026-09-03.
+- Última suíte confirmada: **519 testes, zero falhas**, com `compileall` aprovado.
 
 ## Regra central de validação
 
@@ -160,15 +161,19 @@ Contrato causal dual-clock:
 
 Nenhum score ou BUY decision automático existe no Core.
 
-## Market Opportunity Radar v1
+## Market Opportunity Radar v1.1 — transaction-aware
 
-Protocolo ativo:
+Protocolo base:
 
 `docs/market-opportunity-radar-v1-protocol-2026-09-03.md`
 
 Design:
 
 `docs/market-opportunity-radar-v1-design-2026-09-03.md`
+
+Amendment pós-smoke, pré-econômico:
+
+`docs/market-opportunity-radar-v1-1-transaction-awareness-amendment-2026-09-03.md`
 
 Antes:
 
@@ -178,9 +183,13 @@ Agora:
 
 `market activity changes state -> episode`
 
-### Detector v1
+### Detector
 
 `src/market_opportunity_radar.py`
+
+Versão atual:
+
+`market_opportunity_radar_v1_1_tx_aware`
 
 Established market:
 
@@ -190,25 +199,46 @@ Established market:
 - >=6 eventos fast;
 - >=4 wallets únicas conhecidas;
 - >=3 eventos baseline;
-- aceleração >=3x.
+- aceleração >=3x;
+- quando transaction identity possui 100% de cobertura, >=4 transações únicas fast.
 
 Fresh market:
 
 - market age causal <=120s;
 - >=6 eventos/30s;
-- >=4 wallets únicas conhecidas.
+- >=4 wallets únicas conhecidas;
+- quando transaction identity possui 100% de cobertura, >=4 transações únicas fast.
 
-Esses thresholds são mecânica de aquisição, não regra de trading.
+Esses thresholds são mecânica de aquisição/integridade, não regra de trading e não foram ajustados com P&L.
 
 Direction (`upward_pressure`, `downward_pressure`, `mixed_pressure`) é descritiva. Grande alta de preço não é exigida para disparar o radar.
+
+### Transaction-awareness
+
+O live smoke mostrou transações com múltiplos `TradeEvent`s, inclusive assinaturas com quatro eventos.
+
+Por isso `MarketTradeObservation` agora pode preservar `transaction_key`. No adapter Pump a chave é a assinatura Solana.
+
+O radar separa:
+
+- raw event count;
+- unique wallet breadth;
+- unique transaction breadth;
+- transaction-identity coverage.
+
+Raw events continuam persistidos; a proteção existe apenas para impedir que um único tx/bundle seja confundido com várias transações independentes.
+
+Sources legadas/provider sem transaction identity continuam utilizáveis com missingness explícita; ausência de identidade não é silenciosamente tratada como zero atividade independente.
 
 ### Market observation store
 
 `src/market_observation_store.py`
 
-Persiste, por acquisition run, raw trades/lifecycle com source, side, token, `chain_time`, `observed_at`, wallet, notional, preço e venue quando disponíveis.
+Persiste, por acquisition run, raw trades/lifecycle com source, side, token, `chain_time`, `observed_at`, wallet, notional, preço, venue e `transaction_key` quando disponíveis.
 
 O store é idempotente, run-scoped e suporta leitura causal por `as_of` e market-time window.
+
+A migração de SQLite adiciona `transaction_key` de forma compatível com bancos locais já existentes. Linhas legadas permanecem com `NULL`, sem apagar ou reclassificar evidência histórica.
 
 ### Market opportunity episodes
 
@@ -262,21 +292,24 @@ Arquivos:
 
 - `src/pump_bonding_stream.py`
 - `tests/test_pump_bonding_stream.py`
+- `tests/test_pump_lifecycle_capture.py`
 - `pump_market_stream_smoke.py`
 - `docs/pump-market-stream-v1-design-2026-09-03.md`
+- `docs/pump-market-stream-v1-smoke-2026-09-03.md`
 
 Primeiro adapter real-time implementado:
 
-`Solana logsSubscribe -> Pump bonding-curve TradeEvent -> MarketTradeObservation -> SQLite`
+`Solana logsSubscribe -> Pump bonding-curve events -> MarketTradeObservation/MarketLifecycleObservation -> SQLite`
 
 Fonte canônica:
 
 - Pump program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
 - filtro `logsSubscribe` por `mentions`;
 - commitment explícito;
-- Anchor TradeEvent discriminator `[189, 219, 127, 211, 78, 230, 97, 238]`.
+- Anchor TradeEvent discriminator `[189, 219, 127, 211, 78, 230, 97, 238]`;
+- Anchor CreateEvent discriminator `[27, 114, 169, 77, 222, 235, 99, 118]`.
 
-O decoder usa somente o prefixo estável necessário do evento oficial:
+TradeEvent decoder usa somente o prefixo estável necessário:
 
 - mint;
 - `sol_amount`;
@@ -285,14 +318,31 @@ O decoder usa somente o prefixo estável necessário do evento oficial:
 - user;
 - timestamp.
 
+CreateEvent decoder preserva o prefixo causal necessário para lifecycle:
+
+- name/symbol/uri são atravessados como Borsh strings;
+- mint;
+- bonding curve;
+- user;
+- creator;
+- timestamp.
+
+Campos posteriores do evento são ignorados quando não necessários para o contrato causal atual.
+
 Clocks:
 
 - `chain_time` = timestamp emitido pelo Pump;
 - `observed_at` = instante local em que o WebSocket entregou a notificação.
 
-O adapter rejeita `observed_at < chain_time` e transações com erro. Persistência usa chave idempotente por acquisition run:
+O adapter rejeita `observed_at < chain_time` e transações com erro. Persistência de trades usa chave idempotente por acquisition run:
 
 `pump:<signature>:<event-index>`
+
+Cada trade Pump agora também preserva `transaction_key=<signature>`.
+
+Lifecycle usa chave:
+
+`pump-create:<signature>:<event-index>`
 
 O stream possui reconnect com backoff exponencial limitado, ping/pong e confirmação explícita da subscription.
 
@@ -305,19 +355,92 @@ Pump passou a suportar quote assets além de SOL. O v1 não tenta adivinhar o `q
 - USD price fica missing;
 - eventos não-SOL ficam unsupported em vez de serem classificados incorretamente.
 
-### Smoke operacional
+### Live smoke operacional — PASS
 
-`pump_market_stream_smoke.py` é limitado deliberadamente a 1–900s.
+Em 2026-09-03 o usuário executou na máquina local real:
 
-Primeiro smoke recomendado: **120s, confirmed**.
+```text
+python pump_market_stream_smoke.py --run-key pump-smoke-20260903-01 --duration-seconds 120 --commitment confirmed
+```
 
-O smoke mede apenas plumbing operacional: aceitação do WebSocket, quantidade de eventos decodificados/persistidos, tokens/wallets únicas e comportamento do RPC sob burst.
+Resultado observado:
 
-**Ainda não foi validado na máquina local real do usuário.** Portanto o adapter está implementado + testado, mas ainda não validado operacionalmente.
+```text
+elapsed=120.2s
+notifications=3476
+decoded_events=3688
+persisted=3600
+unique_tokens=223
+unique_wallets=1984
+```
+
+Taxas descritivas aproximadas:
+
+- 28.92 notifications/s;
+- 30.68 decoded TradeEvents/s;
+- 29.95 persisted observations/s;
+- 1.86 unique tokens/s;
+- 16.51 unique wallets/s;
+- 97.61% decoded events persisted.
+
+Os 88 decoded-but-not-persisted **não devem ser classificados retrospectivamente sem auditoria**. O próximo smoke separa explicitamente non-SOL-prefix de eligible duplicate/replayed observations.
+
+Decisão operacional:
+
+**NATIVE PUMP ACQUISITION PLUMBING: LIVE SMOKE PASS.**
+
+Isso valida WebSocket, decoding, clocks e persistência sob atividade real. Não valida edge, rentabilidade, finality de cada assinatura, detector precision ou execução.
+
+A escassez de raw acquisition candidates deixou de ser o gargalo imediato no Pump bonding curve. O novo problema de pesquisa é reduzir milhares de eventos para oportunidades independentes e economicamente relevantes sem introduzir selection/leakage bias.
 
 ### PumpSwap
 
 PumpSwap usa programa e schemas próprios (`BuyEvent`, `SellEvent`, `CreatePoolEvent`). O adapter Pump bonding não pode ser reutilizado por inferência. PumpSwap permanece próximo adapter a implementar/validar, incluindo mapeamento causal pool -> base mint.
+
+## Live Market Radar Bridge
+
+Arquivos:
+
+- `src/market_radar_bridge.py`
+- `tests/test_market_radar_bridge.py`
+- `tests/test_market_radar_tx_awareness.py`
+- `tests/test_market_observation_transaction_identity.py`
+- `market_radar_smoke.py`
+
+Pipeline implementado/testado:
+
+`Pump notification -> raw trade/lifecycle persistence -> causal 300s token state -> transaction-aware radar -> market opportunity episode`
+
+Regras:
+
+- cada token afetado numa notificação é avaliado uma vez;
+- todos os raw events continuam persistidos;
+- assinatura Solana preserva transaction breadth;
+- um tx com vários eventos não pode sozinho satisfazer o gate quando identity coverage é completa;
+- trigger id é determinístico e idempotente;
+- `decision_as_of` **não é congelado pelo radar bridge**.
+
+O freeze de `decision_as_of` permanece reservado à camada de enrichment, depois que as tentativas obrigatórias de execution/risk/regime/wallet evidence terminarem. O relógio final deve refletir quando a informação realmente ficou disponível.
+
+### Próximo live smoke
+
+`market_radar_smoke.py` é limitado a no máximo 900s e mede:
+
+- notifications;
+- decoded trades;
+- lifecycle events;
+- SOL-eligible trades;
+- persisted trades;
+- filtered non-SOL-prefix;
+- duplicate/replayed eligible rows;
+- evaluated tokens;
+- radar hits;
+- unique hit tokens;
+- unique episodes;
+- trigger-kind distribution;
+- direction distribution.
+
+Ele ainda não mede edge ou profitability.
 
 ## Cruzamento das análises
 
@@ -359,12 +482,12 @@ Ainda **não iniciar 12h**.
 
 Ordem atual:
 
-1. rodar smoke nativo Pump de 120s na máquina local real;
-2. validar websocket endpoint, clocks, dedup e volume/burst;
+1. rodar `market_radar_smoke.py` por 120s na máquina local real;
+2. validar quantidade/diversidade dos episodes, transaction breadth, lifecycle coverage, idempotência e burst behavior;
 3. implementar/validar adapter PumpSwap separado;
-4. ligar market stream -> radar -> episode;
-5. ligar dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime;
-6. smoke end-to-end curto;
+4. ligar `episode -> dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime`;
+5. smoke end-to-end curto incluindo verdadeiro `decision_as_of`;
+6. auditar provider/RPC cost, missingness e finality quando aplicável;
 7. somente depois congelar e iniciar primeira janela de 12h.
 
 Meta DATA-READY futura:
@@ -394,16 +517,19 @@ Ablations mínimas:
 - all Core families;
 - risk/regime quando cobertura suportar comparação justa.
 
-Usar avaliação separada no tempo e cluster-aware por token/wallet.
+Usar avaliação separada no tempo e cluster-aware por token/wallet/transaction quando aplicável.
 
 ## Shadow / live
 
 - causal forward infrastructure: validada;
 - quantity-aware accounting: validado;
 - wallet-only edge: não estabelecido;
-- Market Opportunity Radar: núcleo implementado/testado, stream real ainda não validado end-to-end;
-- Opportunity Wallet Intelligence: contrato causal implementado/testado, integração live-read-only ainda não validada;
-- Native Pump bonding stream: implementado/testado, **smoke operacional pendente**;
+- Market Opportunity Radar v1.1: implementado/testado, live radar smoke pendente;
+- Opportunity Wallet Intelligence: contrato causal implementado/testado, integração live-read-only ainda não validada end-to-end;
+- Native Pump bonding stream: implementado/testado e **live smoke operacional aprovado**;
+- Pump lifecycle CreateEvent capture: implementado/testado, live coverage será medida no radar smoke;
+- stream -> radar -> episode bridge: implementado/testado, live smoke pendente;
+- PumpSwap coverage: pendente;
 - executable landing/fill: não validado;
 - shadow executável: não liberado;
 - live: não liberado.
