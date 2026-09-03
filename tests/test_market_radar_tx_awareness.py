@@ -49,7 +49,7 @@ class MarketRadarTransactionAwarenessTests(unittest.TestCase):
         features = build_market_movement_features(rows, token_mint="T", as_of=1000, lifecycle=lifecycle)
         self.assertIn("transaction_identity_missing", features.data_quality_flags)
         self.assertIsNone(features.fast_unique_transaction_count)
-        self.assertIsNone(features.transaction_identity_coverage_pct)
+        self.assertEqual(features.transaction_identity_coverage_pct, 0.0)
         self.assertIsNotNone(detect_market_movement(rows, token_mint="T", as_of=1000, lifecycle=lifecycle))
 
 
