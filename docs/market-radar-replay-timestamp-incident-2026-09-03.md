@@ -64,14 +64,15 @@ Tests now cover:
 - preservation of the original first-seen timestamp;
 - rejection of a replay that would backdate availability;
 - identical lifecycle replay at a later `observed_at`;
-- existing mutation-conflict behavior.
+- existing mutation-conflict behavior;
+- the exact Pump path: the same signature/event replayed by a later WebSocket delivery persists once, returns duplicate on replay and keeps the original first-seen clock.
 
-Validation on the fix branch:
+Validation on the final fix branch:
 
 ```text
 python -m compileall -q .
 python -m unittest discover -s tests -q
-Ran 522 tests
+Ran 523 tests
 OK
 ```
 
