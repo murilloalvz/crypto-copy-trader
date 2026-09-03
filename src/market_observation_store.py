@@ -137,12 +137,11 @@ def record_market_trade(
     _validate_trade(observation)
     ensure_market_observation_schema()
 
-    values = (
+    identity_values = (
         provider,
         observation.token_mint,
         observation.side,
         observation.chain_time,
-        observation.observed_at,
         observation.wallet_address,
         observation.notional_usd,
         observation.price_usd,
@@ -158,20 +157,42 @@ def record_market_trade(
             (run_key, raw_key),
         ).fetchone()
         if existing is not None:
-            actual = tuple(existing[key] for key in (
-                "source_provider", "token_mint", "side", "chain_time", "observed_at",
+            existing_identity = tuple(existing[key] for key in (
+                "source_provider", "token_mint", "side", "chain_time",
                 "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"
             ))
-            if actual != values:
+            if existing_identity != identity_values:
                 raise ValueError("market trade event already exists with different data")
+
+            # `observed_at` is the collector's first-seen availability boundary, not part of
+            # immutable chain identity. Providers may replay the same exact event later. Preserve
+            # the first stored timestamp and treat only same-or-later identical deliveries as
+            # idempotent; never backdate availability after the fact.
+            first_observed_at = int(existing["observed_at"])
+            if observation.observed_at < first_observed_at:
+                raise ValueError("market trade replay observed_at precedes first observation")
             return False
+
         conn.execute(
             """INSERT INTO market_trade_observations(
                 acquisition_run_key, event_key, source_provider, token_mint, side,
                 chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
                 transaction_key
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run_key, raw_key, *values),
+            (
+                run_key,
+                raw_key,
+                provider,
+                observation.token_mint,
+                observation.side,
+                observation.chain_time,
+                observation.observed_at,
+                observation.wallet_address,
+                observation.notional_usd,
+                observation.price_usd,
+                observation.venue,
+                observation.transaction_key,
+            ),
         )
         return True
 
@@ -189,11 +210,10 @@ def record_market_lifecycle(
     _validate_lifecycle(observation)
     ensure_market_observation_schema()
 
-    values = (
+    identity_values = (
         provider,
         observation.token_mint,
         observation.market_started_at,
-        observation.observed_at,
         observation.venue,
     )
     with connection() as conn:
@@ -204,18 +224,31 @@ def record_market_lifecycle(
             (run_key, raw_key),
         ).fetchone()
         if existing is not None:
-            actual = tuple(existing[key] for key in (
-                "source_provider", "token_mint", "market_started_at", "observed_at", "venue"
+            existing_identity = tuple(existing[key] for key in (
+                "source_provider", "token_mint", "market_started_at", "venue"
             ))
-            if actual != values:
+            if existing_identity != identity_values:
                 raise ValueError("market lifecycle event already exists with different data")
+
+            first_observed_at = int(existing["observed_at"])
+            if observation.observed_at < first_observed_at:
+                raise ValueError("market lifecycle replay observed_at precedes first observation")
             return False
+
         conn.execute(
             """INSERT INTO market_lifecycle_observations(
                 acquisition_run_key, event_key, source_provider, token_mint,
                 market_started_at, observed_at, venue
             ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (run_key, raw_key, *values),
+            (
+                run_key,
+                raw_key,
+                provider,
+                observation.token_mint,
+                observation.market_started_at,
+                observation.observed_at,
+                observation.venue,
+            ),
         )
         return True
 
