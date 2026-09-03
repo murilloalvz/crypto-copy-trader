@@ -1,11 +1,9 @@
 import base64
-import json
-import os
-import sqlite3
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.market_observation_store import load_market_trades
@@ -50,6 +48,9 @@ def payload(*, mint: str, user: str, is_buy: bool = True, timestamp: int = 1000,
 class PumpBondingStreamTests(unittest.TestCase):
     MINT = "11111111111111111111111111111111"
     USER = "4Nd1mYjK3uAq8J6X9pKf5mYjDqvVb7zY4wH1xT6nQ2sE"
+
+    def _db_settings(self, path: Path):
+        return SimpleNamespace(database_path=path)
 
     def test_rpc_url_conversion_preserves_path_and_query(self):
         self.assertEqual(
@@ -114,7 +115,7 @@ class PumpBondingStreamTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "copytrader.db"
-            with patch("src.database.settings.database_path", db):
+            with patch("src.database.settings", self._db_settings(db)):
                 self.assertEqual(
                     persist_pump_notification(notification, acquisition_run_key="run-1"),
                     1,
@@ -178,7 +179,7 @@ class PumpBondingStreamTests(unittest.TestCase):
         notification = parse_logs_notification(message, observed_at=1001)
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "copytrader.db"
-            with patch("src.database.settings.database_path", db):
+            with patch("src.database.settings", self._db_settings(db)):
                 self.assertEqual(
                     persist_pump_notification(notification, acquisition_run_key="run-1"),
                     0,
