@@ -58,4 +58,19 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
             self.singleflight_waits += 1
         async with lock:
             async with self._resolution_semaphore:
-                return await super().resolve(pool, as_of=as_of)
+                resolved = await super().resolve(pool, as_of=as_of)
+            if resolved is None:
+                return None
+
+            # A CreatePoolEvent can race an RPC hydration because create learning is synchronous
+            # while trade resolution is async. The store owns the canonical earliest-observed
+            # mapping, so reload it before normalization/cache use instead of returning a stale
+            # object assembled by whichever worker completed first.
+            canonical = load_pumpswap_pool_mapping(
+                acquisition_run_key=self.acquisition_run_key,
+                pool_address=pool,
+            )
+            if canonical is None:
+                raise RuntimeError("resolved PumpSwap pool mapping disappeared after persistence")
+            self._cache[pool] = canonical
+            return canonical
