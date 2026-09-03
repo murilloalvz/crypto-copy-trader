@@ -10,13 +10,12 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - Persistência principal: SQLite via `DATABASE_PATH` (padrão `data/copytrader.db`).
 - Wallet Forward v2 encerrou a replicação Run 1 × Run 2.
 - Classificação final pré-registrada: **OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**.
-- **Não iniciar Run 3 automaticamente.**
-- Próximo gate selecionado: **Causal Opportunity Acquisition v1**.
-- Opportunity Snapshot Core v1 existe em branch de validação, com causalidade dual-clock e anti-leakage.
-- Opportunity Episode Store v1 persiste raw triggers, episódios de 60s e `decision_as_of` imutável, isolados por acquisition run.
-- Última suíte confirmada após os fixes pós-Run2 e Episode Store: **466 testes, zero falhas**, com `compileall` aprovado.
+- Wallet Forward v2 Run 3 **não deve ser iniciado**.
+- O protocolo wallet-triggered `Causal Opportunity Acquisition v1` foi **SUPERSEDED BEFORE RUN**.
+- Próximo gate ativo: **Market Opportunity Radar v1**.
+- Última suíte confirmada após o pivot: **491 testes, zero falhas**, com `compileall` aprovado.
 
-## Regra central
+## Regra central de validação
 
 ```text
 IMPLEMENTADO
@@ -27,31 +26,39 @@ IMPLEMENTADO
 -> LIVE CANARY
 ```
 
-Código funcionando não prova edge. Quote não prova fill. Backtest positivo não libera live. Nenhum score, wallet ou feature é promovido sem causalidade, cobertura, missingness, dependência, custos e validação forward adequados.
+Código funcionando não prova edge. Quote não prova fill. Backtest positivo não libera live. Nenhuma feature, wallet, score ou detector é promovido sem causalidade, cobertura, missingness, dependência, custos e validação forward adequados.
 
-## Tese de pesquisa atual
+## Tese atual
 
-O projeto não está mais preso à hipótese de que `wallet -> copiar` seja suficiente.
+O projeto evoluiu de um CopyTrader estrito para um **Solana Opportunity Intelligence / Opportunity Engine**.
 
-A direção atual é construir um **Solana Opportunity Intelligence / Opportunity Engine**, em que wallets são um canal de informação entre vários:
+Arquitetura alvo:
 
-1. execução / liquidez / tradability;
-2. order flow / microestrutura;
-3. token-risk / manipulação / hazard rejection;
-4. wallet action intelligence + independência;
-5. market/regime context;
-6. price/momentum/reversal;
-7. launch/lifecycle intelligence venue-agnostic;
-8. graph/relationship intelligence;
-9. social/attention apenas se provar valor incremental.
+`mercado começa a mudar de estado -> radar detecta causalmente -> opportunity episode -> execução + order flow + risco + wallet context + regime -> decision_as_of -> outcome forward`
 
-Pump.fun, X/social, wallets e Wave não são pilares obrigatórios. Cada canal deve provar utilidade incremental.
+Wallets continuam importantes, mas agora são **features / confirmação / contexto**, não a única porta de entrada da amostra.
+
+Pump.fun/PumpSwap é o primeiro laboratório de alta atividade, não um pilar obrigatório. A interface do radar deve permanecer venue-agnostic para permitir Raydium, Meteora e outros venues depois.
 
 North star:
 
-> identificar oportunidades cujo resultado forward, ajustado por risco, custos e executabilidade realista, permaneça favorável em janelas independentes.
+> identificar movimentos precoces cujo resultado forward, ajustado por risco, custos e executabilidade realista, permaneça favorável fora da amostra.
 
-## Evidência externa registrada
+## Evidência externa que orienta o desenho
+
+A pesquisa registrada prioriza:
+
+1. execução / liquidez / tradability;
+2. order flow / microestrutura;
+3. token-risk / hazard rejection;
+4. wallet intelligence + independência;
+5. market/network regime;
+6. preço/momentum/reversal;
+7. lifecycle/launch intelligence;
+8. graph/relationship intelligence;
+9. social/attention apenas se provar valor incremental.
+
+Modelos simples continuam candidatos fortes. Complexidade/ML não é objetivo por si só.
 
 Documentos principais:
 
@@ -59,276 +66,220 @@ Documentos principais:
 - `docs/research-evidence-registry-v1-2026-09-02.md`
 - `docs/post-run2-evidence-decision-framework-2026-09-02.md`
 
-A literatura pesquisada favorece priorizar order flow, liquidez, microestrutura, risco, regime e execução antes de adicionar social/NLP complexo. Modelos simples continuam candidatos fortes; deep learning não é objetivo por si só.
-
-## Wallet Forward runtime atual
+## Wallet Forward v2 — estado encerrado
 
 Runtime validado:
 
 `wallet_forward_runtime_v5_enrollment_followup_rotating_poll_confirmed_commitment`
 
-Características:
-
-- bootstrap causal;
-- polling rotativo;
-- commitment `confirmed` com auditoria posterior de finality;
-- resiliência RPC e fallback;
-- telemetry persistida de failures/recovery;
-- run manifest imutável;
-- bloqueio de runs ACTIVE sobrepostas;
-- enrollment econômico congelado;
-- follow-up observacional separado;
-- quote child + wallet child alinhados;
-- grace/drain para quotes agendadas;
-- Jupiter read-only;
-- sem private key / assinatura / `/execute`.
-
-Network Resilience Gate: **APPROVED**.
-
-## Wallet Forward acquisition v2
-
-Universo público congelado:
-
-`wallets/research-cohort-public-v2-2026-09-02.txt`
-
-- 27 endereços candidatos.
-- Sync uniforme de 6 páginas.
-- Sem uso de PnL/win rate/return/profit factor para eligibility/ranking.
-
-Coorte forward v2 congelada:
+Coorte congelada:
 
 1. `7mPtiLMhn9SsconVw8LZtrF7vL7LvLEwJv75yMLcsxTH`
 2. `3tc4BVAdzjr1JpeZu6NAjLHyp4kK3iic7TexMBYGJ4Xk`
 3. `2RssnB7hcrnBEx55hXMKT1E7gN27g9ecQFbbCc5Zjajq`
 
-Acquisition v2 gate: **PASSED**.
-
-## Wallet Forward v2 — Run 1
-
-Run key:
+### Run 1
 
 `wallet-forward-1788360461-8a3986f9`
 
-Protocol:
-
-- COMPLETED;
-- 10h00m04s;
-- enrollment 4h;
-- follow-up 6h;
-- polling 10s;
-- confirmed;
-- Jupiter proxy quotes;
-- delays 0/15/30/60/120s;
-- notional US$25.
-
-Observed:
-
-- 15 actions;
-- 9 BUY / 6 SELL;
-- 4 enrolled BUYs;
-- 5 follow-up-only BUYs corretamente excluídos do denominador;
+- COMPLETED, ~10h;
+- 15 ações: 9 BUY / 6 SELL;
+- 4 BUYs enrolled;
+- 3/4 enrolled BUYs no mesmo wallet×token cluster;
 - finality 15/15;
-- causal boundary clean;
-- BUY quote readiness 45/45 attempts successful;
-- 2/3 wallets ativas;
-- forte dependência: 3/4 enrolled BUYs no mesmo wallet×token cluster.
+- BUY quote readiness 45/45;
+- causal boundary clean.
 
-### Quantity-aware replay
+Quantity-aware replay descritivo:
 
-A persistência de quantidade revelou que três BUYs `5TVs...` da mesma wallet foram liquidados por um único SELL completo. O replay antigo de um SELL por lote era economicamente incorreto.
+- +0s mean net: -28.76%;
+- +15s: -30.37%;
+- +60s: -25.36%;
+- +30s/+120s: censurados sem saída causal adequada.
 
-Replay corrigido:
+Esses valores **não** provam que a estratégia perde ~30%; a amostra é pequena e altamente dependente.
 
-| Delay | Closed | Censored | Mean net | Median net | Win rate | PF |
-|---|---:|---:|---:|---:|---:|---:|
-| +0s | 3 | 1 | -28.76% | -40.40% | 33.3% | 0.0060 |
-| +15s | 3 | 1 | -30.37% | -45.76% | 33.3% | 0.0148 |
-| +30s | 0 | 4 | n/a | n/a | n/a | n/a |
-| +60s | 3 | 1 | -25.36% | -33.61% | 33.3% | 0.0376 |
-| +120s | 0 | 4 | n/a | n/a | n/a | n/a |
-
-Interpretação obrigatória: isto é **DESCRIPTIVE**, não “estratégia perde 30%”. A amostra é pequena e altamente dependente.
-
-Quantity-Aware Accounting Gate: **PASSED**.
-
-## Wallet Forward v2 — Run 2
-
-Run key:
+### Run 2
 
 `wallet-forward-1788400735-5cbe70af`
 
-Protocol idêntico ao Run 1.
+- COMPLETED, ~10h;
+- 3 ações: 0 BUY / 3 SELL;
+- 0 BUYs enrolled;
+- 0 RPC failures;
+- finality 3/3 finalized success.
 
-Observed:
+Run 2 não possui amostra econômica.
 
-- COMPLETED;
-- 10h00m07s;
-- 3 forward actions;
-- 0 BUY / 3 SELL;
-- enrollment cutoff com **0 BUYs enrolled**;
-- 0 RPC sync/capture failures;
-- 0 bootstrap failures;
-- 0 RPC recoveries;
-- finality **3/3 finalized success**, 0 missing/error.
+### Decisão final
 
-Run 2 não tem amostra econômica. Ele não confirma nem refuta os retornos descritivos do Run 1.
+As duas runs somam ~20h, mas apenas quatro BUYs econômicos, todos no Run 1.
 
-Documento final:
-
-`docs/wallet-forward-v2-run1-run2-final-decision-2026-09-03.md`
-
-## Decisão Run 1 × Run 2
-
-As duas runs somam 20h nominais de observação, mas apenas 4 BUYs enrolled, todos no Run 1, e 75% deles no mesmo wallet×token cluster.
-
-Classificação pré-registrada final:
-
-**OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**
+**OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**.
 
 Consequências:
 
-- não afirmar edge wallet-only;
-- não afirmar falha definitiva wallet-only com base no P&L pequeno;
-- não retunar delays/coorte usando o resultado;
-- não lançar Run 3 automaticamente;
+- edge wallet-only não estabelecido;
+- não retunar coorte/delays com base nesse P&L;
+- não iniciar Run 3;
 - não promover shadow/live;
-- qualquer redesign de aquisição precisa de protocolo novo pré-registrado.
+- redesenhar aquisição antes de coletar mais evidência.
 
-## J8PS — horizonte maior que a janela
+Documento:
 
-Um BUY `J8PS...` da `7mP...` ficou right-censored no endpoint do Run 1.
+`docs/wallet-forward-v2-run1-run2-final-decision-2026-09-03.md`
 
-Run 2 observou posteriormente a liquidação integral da quantidade exata, aproximadamente 19h depois da detecção original.
+## Fixes pós-Run2
 
-Esse SELL não é adicionado retroativamente ao P&L do Run 1. Ele apenas mostra que uma janela de 10h pode censurar estratégias/arquétipos de holding mais longos.
+- replay resolve quote pela identidade exata de `quote_key`;
+- SELL quote lineage bloqueia reutilização cross-run;
+- logs BUY/SELL são side-aware;
+- quantity-aware accounting permanece obrigatório.
 
-## Fixes descobertos no closeout
+## Opportunity Snapshot Core
 
-### 1. Exact quote identity
+`src/opportunity_snapshot_core.py`
 
-O CLI antigo de replay poderia associar `quote_key` e quote pela posição de duas listas com ordenações diferentes.
+Contrato causal dual-clock:
 
-O caminho novo resolve cada quote pela identidade exata da chave.
+- `chain_time/event_time`: quando o mercado aconteceu;
+- `observed_at`: quando o bot ficou sabendo;
+- market window exige tempo de mercado correto;
+- T0 exige disponibilidade `observed_at <= decision_as_of`;
+- missingness não é imputada;
+- quote freshness fica explícita;
+- `decision_as_of` inclui o tempo gasto para obter features.
 
-A correção não alterou os números consolidados do Run 1, mas remove uma fonte real de associação incorreta.
+Nenhum score ou BUY decision automático existe no Core.
 
-### 2. Cross-run SELL quote lineage
+## Market Opportunity Radar v1
 
-O quote watcher podia usar BUY quotes de uma run antiga para criar SELL probes em uma run posterior da mesma wallet/token.
+Protocolo ativo:
 
-Regra corrigida:
+`docs/market-opportunity-radar-v1-protocol-2026-09-03.md`
 
-> SELL lineage só pode reutilizar BUY quote cujo source observation possua a mesma `run_key`.
+Design:
 
-Isso impede consumo de provider e logs cross-run enganosos.
+`docs/market-opportunity-radar-v1-design-2026-09-03.md`
 
-### 3. Logging side-aware
+### Mudança principal
 
-O watcher imprimia `[wallet buy]` até para eventos SELL. O log agora imprime o side persistido explicitamente.
+Antes:
 
-## Opportunity Snapshot Core v1
+`tracked wallet BUY -> episode`
 
-Arquivos principais:
+Agora:
 
-- `src/opportunity_snapshot_core.py`
-- `tests/test_opportunity_snapshot_core.py`
-- `docs/opportunity-snapshot-core-v1-design-2026-09-02.md`
-- `docs/opportunity-core-review-2026-09-03.md`
+`market activity changes state -> episode`
 
-Contrato causal:
+Tracked wallet participation é apenas feature/contexto.
 
-- `chain_time/event_time` representa quando o mercado aconteceu;
-- `observed_at` representa quando o bot ficou sabendo;
-- uma row só entra em uma feature se pertence à janela de mercado **e** estava disponível até o cutoff;
-- quotes preservam freshness/age;
-- missingness fica explícita;
-- `decision_as_of` deve incluir o tempo gasto para obter as próprias features.
+### Detector v1
 
-Nenhum score automático de trading foi implementado.
+`src/market_opportunity_radar.py`
 
-## Opportunity Episode Store v1
+Detector de aquisição simples, causal e auditável.
 
-Arquivos principais:
+Established-market candidate:
 
-- `src/opportunity_episode_store.py`
-- `tests/test_opportunity_episode_store.py`
+- fast window = 30s;
+- baseline horizon = 300s;
+- segmento baseline = 270s anteriores, excluindo fast window;
+- >=6 eventos no fast window;
+- >=4 wallets únicas conhecidas;
+- >=3 eventos baseline;
+- aceleração de event-rate >=3x.
 
-Contrato:
+Fresh-market burst:
 
-- cada raw BUY trigger pertence a uma `acquisition_run_key`;
-- primeiro trigger abre um episode de 60s;
-- novo trigger do mesmo token antes do fechamento entra no mesmo episode;
-- trigger exatamente no fechamento abre novo episode;
+- market age causal <=120s;
+- >=6 eventos/30s;
+- >=4 wallets únicas conhecidas.
+
+Esses thresholds são **mecânica de aquisição**, não regra de trading e não foram escolhidos como thresholds de P&L.
+
+Direction (`upward_pressure`, `downward_pressure`, `mixed_pressure`) é descritiva. Grande alta de preço não é exigida para disparar o radar, evitando detectar apenas depois do pump.
+
+### Market observation store
+
+`src/market_observation_store.py`
+
+Persiste por acquisition run:
+
+- raw market trades;
+- source provider;
+- side;
+- token;
+- `chain_time`;
+- `observed_at`;
+- wallet quando disponível;
+- notional/preço quando disponíveis;
+- venue;
+- lifecycle/market-start observations.
+
+O store é idempotente, run-scoped e suporta leitura causal por `as_of` e janela de market time.
+
+### Market opportunity episodes
+
+`src/market_opportunity_episode_store.py`
+
+- market trigger não exige tracked wallet;
+- mesmo token + mesma run em <60s reutiliza episode;
+- exatamente +60s abre novo episode;
 - runs diferentes nunca compartilham episode;
-- replay/idempotência por observation key;
-- `decision_as_of` só pode ser congelado uma vez;
-- loaders com `as_of` escondem triggers observados depois do cutoff.
+- raw triggers permanecem persistidos;
+- `decision_as_of` é imutável;
+- loader causal esconde triggers não disponíveis no cutoff.
 
-## Data-source feasibility
+## Fonte de dados planejada
 
-Documento atual:
+Preferência arquitetural:
 
-`docs/opportunity-data-source-feasibility-v2-2026-09-03.md`
+1. **Solana on-chain stream** como fonte canônica;
+2. Pump bonding-curve program + PumpSwap como primeiros venue adapters;
+3. Birdeye/PumpPortal como enrichment/cross-check quando custo/entitlement permitirem;
+4. Jupiter como execution proxy;
+5. wallet intelligence anexada depois do market trigger.
 
-Stack inicial preferida para pesquisa:
+Pump public program IDs congelados no protocolo:
 
-- Wallet/on-chain trigger: infraestrutura RPC existente;
-- execution proxy: Jupiter;
-- short-window flow: Birdeye, se cobertura/custo forem validados;
-- raw microstructure: Solana Tracker se créditos estiverem operacionais, com fallback de desenho para outras fontes;
-- network regime: Solana RPC priority-fee context.
+- Pump: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
+- PumpSwap: `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`.
 
-Nova integração paga não deve ser adicionada sem necessidade comprovada.
+Não depender de scraping da UI Pump.fun.
 
-## Próximo gate — Causal Opportunity Acquisition v1
+## Próximo gate operacional
 
-Protocolo pré-registrado:
+Ainda **não iniciar 12h**.
 
-`docs/causal-opportunity-acquisition-v1-protocol-2026-09-03.md`
+Ordem:
 
-Objetivo: resolver a escassez de amostra sem transformar as 3 wallets anteriores em parâmetros ajustados por resultado.
+1. implementar adapter de stream nativo/provider;
+2. fazer smoke curto de eventos reais;
+3. validar reconnect, dedup, clocks e burst handling;
+4. medir custo/rate-limit/provider coverage;
+5. ligar radar -> episode -> Opportunity Core -> Jupiter;
+6. smoke end-to-end curto;
+7. somente depois congelar e iniciar primeira janela de 12h.
 
-Desenho inicial:
-
-- trigger universe: 27 wallets públicas já existentes no universo v2;
-- todas servem como fontes observacionais, não como portfólio de cópia;
-- cada novo BUY vira raw trigger;
-- mesmo token dentro de 60s pertence ao mesmo opportunity episode para evitar enrichment duplicado, mas raw events continuam preservados;
-- Opportunity Core captura wallet state + execution + flow + regime + basic risk quando causalmente disponível;
-- `decision_as_of` é congelado depois da disponibilidade das features obrigatórias;
-- outcomes ficam separados das features;
-- labels exploratórios: +5m/+15m/+60m;
-- primeira janela: 12h;
-- se insuficiente, uma única segunda janela idêntica antes de novo redesign.
-
-Data-readiness targets do primeiro gate:
+Meta DATA-READY futura:
 
 - zero look-ahead;
 - >=30 opportunity episodes;
 - >=15 tokens;
-- >=5 source wallets;
-- maior wallet <=50% dos episodes;
-- maior token <=20%;
-- >=90% dos episodes com identity/timing + execution proxy utilizável.
+- diversidade real de participantes;
+- largest token share <=20%;
+- >=90% episodes com timing/identity e ao menos um execution proxy utilizável.
 
-Passar este gate valida aquisição de dados, não edge.
-
-## Social / Pump / graph
-
-- Social/X não é prioridade Core v1.
-- Pump.fun/PumpSwap permanece integrado como venue/on-chain source, mas não recebe privilégio metodológico.
-- Graph/funding lineage pode subir de prioridade se convergência multi-wallet se tornar central.
-- Nenhuma feature social, narrativa ou graph deve virar regra de BUY sem ablation incremental.
+Passar o gate valida aquisição, não edge.
 
 ## Shadow / live
 
-Estado atual:
-
-- causal forward infrastructure: forte;
+- causal forward infrastructure: validada;
 - quantity-aware accounting: validado;
-- wallet-only edge: **não estabelecido**;
-- multissignal Opportunity Intelligence: em construção;
-- executable fill/landing: não validado;
+- wallet-only edge: não estabelecido;
+- Market Opportunity Radar: núcleo implementado/testado, stream real ainda não validado;
+- executable landing/fill: não validado;
 - shadow executável: não liberado;
 - live: não liberado.
 
