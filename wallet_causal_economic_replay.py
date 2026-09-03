@@ -16,6 +16,18 @@ from src.wallet_economic_replay import (
 )
 
 
+def _load_quotes_by_exact_key(quote_keys):
+    """Load each unique quote by identity instead of relying on SELECT row order."""
+    quotes_by_key = {}
+    for quote_key in dict.fromkeys(quote_keys):
+        loaded = load_causal_quotes(quote_keys=(quote_key,))
+        if len(loaded) > 1:
+            raise RuntimeError(f"quote_key resolved to multiple rows: {quote_key}")
+        if loaded:
+            quotes_by_key[quote_key] = loaded[0]
+    return quotes_by_key
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="Replay econômico causal de wallets (RESEARCH/READ ONLY)."
@@ -101,8 +113,8 @@ def main(argv=None):
         for event in economic_event_keys
     }
     quote_keys = tuple(key for values in grouped.values() for key in values)
-    quotes = load_causal_quotes(quote_keys=quote_keys)
-    quotes_by_key = {quote_key: quote for quote_key, quote in zip(quote_keys, quotes)}
+    quotes_by_key = _load_quotes_by_exact_key(quote_keys)
+    quotes = tuple(quotes_by_key[key] for key in quote_keys if key in quotes_by_key)
     quotes_by_event = {
         event: tuple(quotes_by_key[key] for key in keys if key in quotes_by_key)
         for event, keys in grouped.items()
@@ -148,7 +160,7 @@ def main(argv=None):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    print("Crypto Copy Trader — Causal Economic Replay v1.2 quantity-aware")
+    print("Crypto Copy Trader — Causal Economic Replay v1.3 exact-quote quantity-aware")
     print("Modo: RESEARCH / READ ONLY — nenhum trade é inventado.")
     print(
         f"Ações full-run: {len(rows)} | ações econômicas: {economic_action_count} | "
