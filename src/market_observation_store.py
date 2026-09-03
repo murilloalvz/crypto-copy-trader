@@ -73,7 +73,6 @@ def _column_names(conn, table_name: str) -> set[str]:
 
 def ensure_market_observation_schema() -> None:
     with connection() as conn:
-        # Existing local research DBs predate transaction_key. Add it before creating its index.
         base_schema = _SCHEMA.replace(
             "\nCREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction\nON market_trade_observations(acquisition_run_key, transaction_key, id);\n",
             "\n",
@@ -124,142 +123,67 @@ def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
         raise ValueError("venue cannot be blank")
 
 
-def record_market_trade(
-    *,
-    acquisition_run_key: str,
-    event_key: str,
-    source_provider: str,
-    observation: MarketTradeObservation,
-) -> bool:
+def record_market_trade(*, acquisition_run_key: str, event_key: str, source_provider: str, observation: MarketTradeObservation) -> bool:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     raw_key = _required(event_key, "event_key")
     provider = _required(source_provider, "source_provider")
     _validate_trade(observation)
     ensure_market_observation_schema()
-
-    identity_values = (
-        provider,
-        observation.token_mint,
-        observation.side,
-        observation.chain_time,
-        observation.wallet_address,
-        observation.notional_usd,
-        observation.price_usd,
-        observation.venue,
-        observation.transaction_key,
-    )
+    identity_values = (provider, observation.token_mint, observation.side, observation.chain_time, observation.wallet_address, observation.notional_usd, observation.price_usd, observation.venue, observation.transaction_key)
     with connection() as conn:
         existing = conn.execute(
             """SELECT source_provider, token_mint, side, chain_time, observed_at,
                 wallet_address, notional_usd, price_usd, venue, transaction_key
             FROM market_trade_observations
-            WHERE acquisition_run_key=? AND event_key=?""",
-            (run_key, raw_key),
-        ).fetchone()
+            WHERE acquisition_run_key=? AND event_key=?""", (run_key, raw_key)).fetchone()
         if existing is not None:
-            existing_identity = tuple(existing[key] for key in (
-                "source_provider", "token_mint", "side", "chain_time",
-                "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"
-            ))
+            existing_identity = tuple(existing[key] for key in ("source_provider", "token_mint", "side", "chain_time", "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"))
             if existing_identity != identity_values:
                 raise ValueError("market trade event already exists with different data")
-
-            # `observed_at` is the collector's first-seen availability boundary, not part of
-            # immutable chain identity. Providers may replay the same exact event later. Preserve
-            # the first stored timestamp and treat only same-or-later identical deliveries as
-            # idempotent; never backdate availability after the fact.
             first_observed_at = int(existing["observed_at"])
             if observation.observed_at < first_observed_at:
                 raise ValueError("market trade replay observed_at precedes first observation")
             return False
-
         conn.execute(
             """INSERT INTO market_trade_observations(
                 acquisition_run_key, event_key, source_provider, token_mint, side,
                 chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
                 transaction_key
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_key,
-                raw_key,
-                provider,
-                observation.token_mint,
-                observation.side,
-                observation.chain_time,
-                observation.observed_at,
-                observation.wallet_address,
-                observation.notional_usd,
-                observation.price_usd,
-                observation.venue,
-                observation.transaction_key,
-            ),
-        )
+            (run_key, raw_key, provider, observation.token_mint, observation.side, observation.chain_time, observation.observed_at, observation.wallet_address, observation.notional_usd, observation.price_usd, observation.venue, observation.transaction_key))
         return True
 
 
-def record_market_lifecycle(
-    *,
-    acquisition_run_key: str,
-    event_key: str,
-    source_provider: str,
-    observation: MarketLifecycleObservation,
-) -> bool:
+def record_market_lifecycle(*, acquisition_run_key: str, event_key: str, source_provider: str, observation: MarketLifecycleObservation) -> bool:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     raw_key = _required(event_key, "event_key")
     provider = _required(source_provider, "source_provider")
     _validate_lifecycle(observation)
     ensure_market_observation_schema()
-
-    identity_values = (
-        provider,
-        observation.token_mint,
-        observation.market_started_at,
-        observation.venue,
-    )
+    identity_values = (provider, observation.token_mint, observation.market_started_at, observation.venue)
     with connection() as conn:
         existing = conn.execute(
             """SELECT source_provider, token_mint, market_started_at, observed_at, venue
             FROM market_lifecycle_observations
-            WHERE acquisition_run_key=? AND event_key=?""",
-            (run_key, raw_key),
-        ).fetchone()
+            WHERE acquisition_run_key=? AND event_key=?""", (run_key, raw_key)).fetchone()
         if existing is not None:
-            existing_identity = tuple(existing[key] for key in (
-                "source_provider", "token_mint", "market_started_at", "venue"
-            ))
+            existing_identity = tuple(existing[key] for key in ("source_provider", "token_mint", "market_started_at", "venue"))
             if existing_identity != identity_values:
                 raise ValueError("market lifecycle event already exists with different data")
-
             first_observed_at = int(existing["observed_at"])
             if observation.observed_at < first_observed_at:
                 raise ValueError("market lifecycle replay observed_at precedes first observation")
             return False
-
         conn.execute(
             """INSERT INTO market_lifecycle_observations(
                 acquisition_run_key, event_key, source_provider, token_mint,
                 market_started_at, observed_at, venue
             ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_key,
-                raw_key,
-                provider,
-                observation.token_mint,
-                observation.market_started_at,
-                observation.observed_at,
-                observation.venue,
-            ),
-        )
+            (run_key, raw_key, provider, observation.token_mint, observation.market_started_at, observation.observed_at, observation.venue))
         return True
 
 
-def load_market_trades(
-    *,
-    acquisition_run_key: str,
-    token_mint: str,
-    as_of: int | None = None,
-    chain_time_after: int | None = None,
-) -> tuple[StoredMarketTrade, ...]:
+def load_market_trades(*, acquisition_run_key: str, token_mint: str, as_of: int | None = None, chain_time_after: int | None = None) -> tuple[StoredMarketTrade, ...]:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     if as_of is not None and as_of < 0:
@@ -269,72 +193,43 @@ def load_market_trades(
     ensure_market_observation_schema()
     query = """SELECT acquisition_run_key, event_key, source_provider, token_mint, side,
         chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
-        transaction_key
-        FROM market_trade_observations
+        transaction_key FROM market_trade_observations
         WHERE acquisition_run_key=? AND token_mint=?"""
     params: list[object] = [run_key, mint]
     if as_of is not None:
-        query += " AND observed_at<=?"
-        params.append(as_of)
+        query += " AND observed_at<=?"; params.append(as_of)
     if chain_time_after is not None:
-        query += " AND chain_time>?"
-        params.append(chain_time_after)
+        query += " AND chain_time>?"; params.append(chain_time_after)
     query += " ORDER BY chain_time, observed_at, id"
     with connection() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
-    return tuple(
-        StoredMarketTrade(
-            acquisition_run_key=str(row["acquisition_run_key"]),
-            event_key=str(row["event_key"]),
-            source_provider=str(row["source_provider"]),
-            observation=MarketTradeObservation(
-                token_mint=str(row["token_mint"]),
-                side=str(row["side"]),
-                chain_time=int(row["chain_time"]),
-                observed_at=int(row["observed_at"]),
-                wallet_address=(str(row["wallet_address"]) if row["wallet_address"] is not None else None),
-                notional_usd=(float(row["notional_usd"]) if row["notional_usd"] is not None else None),
-                price_usd=(float(row["price_usd"]) if row["price_usd"] is not None else None),
-                venue=(str(row["venue"]) if row["venue"] is not None else None),
-                transaction_key=(str(row["transaction_key"]) if row["transaction_key"] is not None else None),
-            ),
-        )
-        for row in rows
-    )
+    return tuple(StoredMarketTrade(acquisition_run_key=str(row["acquisition_run_key"]), event_key=str(row["event_key"]), source_provider=str(row["source_provider"]), observation=MarketTradeObservation(token_mint=str(row["token_mint"]), side=str(row["side"]), chain_time=int(row["chain_time"]), observed_at=int(row["observed_at"]), wallet_address=(str(row["wallet_address"]) if row["wallet_address"] is not None else None), notional_usd=(float(row["notional_usd"]) if row["notional_usd"] is not None else None), price_usd=(float(row["price_usd"]) if row["price_usd"] is not None else None), venue=(str(row["venue"]) if row["venue"] is not None else None), transaction_key=(str(row["transaction_key"]) if row["transaction_key"] is not None else None))) for row in rows)
 
 
-def load_latest_market_lifecycle(
-    *,
-    acquisition_run_key: str,
-    token_mint: str,
-    as_of: int | None = None,
-) -> StoredMarketLifecycle | None:
+def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, as_of: int | None = None, venue: str | None = None) -> StoredMarketLifecycle | None:
+    """Load the latest causally available lifecycle row, optionally restricted to one venue.
+
+    Venue filtering is important in a unified stream: Pump bonding ``CreateEvent`` represents token
+    birth for the fresh-market branch, while PumpSwap ``CreatePoolEvent`` represents pool/venue
+    lifecycle and must not redefine token age.
+    """
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     if as_of is not None and as_of < 0:
         raise ValueError("as_of must be non-negative")
+    normalized_venue = _required(venue, "venue") if venue is not None else None
     ensure_market_observation_schema()
     query = """SELECT acquisition_run_key, event_key, source_provider, token_mint,
-        market_started_at, observed_at, venue
-        FROM market_lifecycle_observations
+        market_started_at, observed_at, venue FROM market_lifecycle_observations
         WHERE acquisition_run_key=? AND token_mint=?"""
     params: list[object] = [run_key, mint]
     if as_of is not None:
-        query += " AND observed_at<=?"
-        params.append(as_of)
+        query += " AND observed_at<=?"; params.append(as_of)
+    if normalized_venue is not None:
+        query += " AND venue=?"; params.append(normalized_venue)
     query += " ORDER BY observed_at DESC, id DESC LIMIT 1"
     with connection() as conn:
         row = conn.execute(query, tuple(params)).fetchone()
     if row is None:
         return None
-    return StoredMarketLifecycle(
-        acquisition_run_key=str(row["acquisition_run_key"]),
-        event_key=str(row["event_key"]),
-        source_provider=str(row["source_provider"]),
-        observation=MarketLifecycleObservation(
-            token_mint=str(row["token_mint"]),
-            market_started_at=int(row["market_started_at"]),
-            observed_at=int(row["observed_at"]),
-            venue=(str(row["venue"]) if row["venue"] is not None else None),
-        ),
-    )
+    return StoredMarketLifecycle(acquisition_run_key=str(row["acquisition_run_key"]), event_key=str(row["event_key"]), source_provider=str(row["source_provider"]), observation=MarketLifecycleObservation(token_mint=str(row["token_mint"]), market_started_at=int(row["market_started_at"]), observed_at=int(row["observed_at"]), venue=(str(row["venue"]) if row["venue"] is not None else None)))
