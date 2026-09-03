@@ -1,5 +1,8 @@
 from dataclasses import dataclass
+import json
+import threading
 
+from src import database
 from src.database import connection
 
 
@@ -31,7 +34,27 @@ ON pumpswap_pool_mappings(acquisition_run_key, pool_address, observed_at, id);
 
 CREATE INDEX IF NOT EXISTS idx_pumpswap_pool_mappings_pool_time
 ON pumpswap_pool_mappings(pool_address, observed_at, id);
+
+CREATE TABLE IF NOT EXISTS pumpswap_pool_mapping_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    acquisition_run_key TEXT NOT NULL,
+    pool_address TEXT NOT NULL,
+    stored_observed_at INTEGER NOT NULL,
+    incoming_observed_at INTEGER NOT NULL,
+    stored_identity_json TEXT NOT NULL,
+    incoming_identity_json TEXT NOT NULL,
+    stored_source_provider TEXT NOT NULL,
+    incoming_source_provider TEXT NOT NULL,
+    canonical_action TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pumpswap_pool_mapping_conflicts_run
+ON pumpswap_pool_mapping_conflicts(acquisition_run_key, pool_address, id);
 """
+
+_SCHEMA_READY_PATHS: set[str] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
 
 
 def _required(value: str, name: str) -> str:
@@ -39,6 +62,14 @@ def _required(value: str, name: str) -> str:
     if not normalized:
         raise ValueError(f"{name} cannot be empty")
     return normalized
+
+
+def _database_cache_key() -> str:
+    path = database.settings.database_path
+    try:
+        return str(path.resolve())
+    except AttributeError:
+        return str(path)
 
 
 def _row_to_mapping(row) -> PumpSwapPoolMapping:
@@ -53,8 +84,53 @@ def _row_to_mapping(row) -> PumpSwapPoolMapping:
 
 
 def ensure_pumpswap_pool_schema() -> None:
-    with connection() as conn:
-        conn.executescript(_SCHEMA)
+    cache_key = _database_cache_key()
+    if cache_key in _SCHEMA_READY_PATHS:
+        return
+    with _SCHEMA_READY_LOCK:
+        if cache_key in _SCHEMA_READY_PATHS:
+            return
+        with connection() as conn:
+            conn.executescript(_SCHEMA)
+        _SCHEMA_READY_PATHS.add(cache_key)
+
+
+def _identity_key(base_mint: str, quote_mint: str) -> str:
+    return json.dumps((base_mint, quote_mint), separators=(",", ":"))
+
+
+def _record_conflict(
+    conn,
+    *,
+    acquisition_run_key: str,
+    pool_address: str,
+    stored_observed_at: int,
+    incoming_observed_at: int,
+    stored_identity: tuple[str, str],
+    incoming_identity: tuple[str, str],
+    stored_source_provider: str,
+    incoming_source_provider: str,
+    canonical_action: str,
+) -> None:
+    conn.execute(
+        """INSERT INTO pumpswap_pool_mapping_conflicts(
+            acquisition_run_key, pool_address,
+            stored_observed_at, incoming_observed_at,
+            stored_identity_json, incoming_identity_json,
+            stored_source_provider, incoming_source_provider, canonical_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            acquisition_run_key,
+            pool_address,
+            int(stored_observed_at),
+            int(incoming_observed_at),
+            _identity_key(*stored_identity),
+            _identity_key(*incoming_identity),
+            stored_source_provider,
+            incoming_source_provider,
+            canonical_action,
+        ),
+    )
 
 
 def record_pumpswap_pool_mapping(
@@ -66,6 +142,13 @@ def record_pumpswap_pool_mapping(
     observed_at: int,
     source_provider: str,
 ) -> bool:
+    """Persist immutable PumpSwap pool identity with causal replay semantics.
+
+    Concurrent workers can learn the same pool through RPC and CreatePoolEvent in a different
+    completion order. The earliest observation wins; equal-time identity conflicts use a stable
+    lexical tie-break. Conflicts remain auditable instead of aborting the whole acquisition run.
+    """
+
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     pool = _required(pool_address, "pool_address")
     base = _required(base_mint, "base_mint")
@@ -76,6 +159,7 @@ def record_pumpswap_pool_mapping(
         raise ValueError("observed_at must be non-negative")
     ensure_pumpswap_pool_schema()
 
+    incoming_identity = (base, quote)
     with connection() as conn:
         existing = conn.execute(
             """SELECT base_mint, quote_mint, observed_at, source_provider
@@ -84,15 +168,47 @@ def record_pumpswap_pool_mapping(
             (run_key, pool),
         ).fetchone()
         if existing is not None:
-            actual_identity = (
-                str(existing["base_mint"]),
-                str(existing["quote_mint"]),
+            stored_identity = (str(existing["base_mint"]), str(existing["quote_mint"]))
+            stored_observed_at = int(existing["observed_at"])
+            stored_provider = str(existing["source_provider"])
+
+            if stored_identity == incoming_identity:
+                if learned_at < stored_observed_at:
+                    conn.execute(
+                        """UPDATE pumpswap_pool_mappings
+                        SET observed_at=?, source_provider=?
+                        WHERE acquisition_run_key=? AND pool_address=?""",
+                        (learned_at, provider, run_key, pool),
+                    )
+                return False
+
+            incoming_wins = (
+                learned_at < stored_observed_at
+                or (
+                    learned_at == stored_observed_at
+                    and _identity_key(*incoming_identity) < _identity_key(*stored_identity)
+                )
             )
-            if actual_identity != (base, quote):
-                raise ValueError("PumpSwap pool mapping already exists with different data")
-            first_seen = int(existing["observed_at"])
-            if learned_at < first_seen:
-                raise ValueError("PumpSwap pool replay cannot backdate observed_at")
+            action = "replace_with_canonical_mapping" if incoming_wins else "retain_canonical_mapping"
+            _record_conflict(
+                conn,
+                acquisition_run_key=run_key,
+                pool_address=pool,
+                stored_observed_at=stored_observed_at,
+                incoming_observed_at=learned_at,
+                stored_identity=stored_identity,
+                incoming_identity=incoming_identity,
+                stored_source_provider=stored_provider,
+                incoming_source_provider=provider,
+                canonical_action=action,
+            )
+            if incoming_wins:
+                conn.execute(
+                    """UPDATE pumpswap_pool_mappings
+                    SET base_mint=?, quote_mint=?, observed_at=?, source_provider=?
+                    WHERE acquisition_run_key=? AND pool_address=?""",
+                    (base, quote, learned_at, provider, run_key, pool),
+                )
             return False
 
         conn.execute(
@@ -137,12 +253,10 @@ def load_known_pumpswap_pool_mapping(
     pool_address: str,
     as_of: int,
 ) -> PumpSwapPoolMapping | None:
-    """Load an identity learned in any earlier run, but only if it was known by ``as_of``.
+    """Load a causally known historical pool identity.
 
-    Pool base/quote mint identity is immutable chain state for this purpose, so reusing a mapping
-    learned in a previous acquisition run avoids needless getAccountInfo calls. Availability is
-    still causal: a mapping first learned after the current T0 is invisible. Conflicting historical
-    identities are surfaced instead of silently choosing one.
+    Legacy/history rows with more than one identity are not trusted for reuse; returning ``None``
+    forces a fresh RPC resolution instead of crashing or silently choosing an ambiguous identity.
     """
 
     pool = _required(pool_address, "pool_address")
@@ -165,5 +279,17 @@ def load_known_pumpswap_pool_mapping(
 
     identities = {(str(row["base_mint"]), str(row["quote_mint"])) for row in rows}
     if len(identities) != 1:
-        raise ValueError("conflicting historical PumpSwap pool identities")
+        return None
     return _row_to_mapping(rows[0])
+
+
+def count_pumpswap_pool_mapping_conflicts(*, acquisition_run_key: str) -> int:
+    run_key = _required(acquisition_run_key, "acquisition_run_key")
+    ensure_pumpswap_pool_schema()
+    with connection() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n FROM pumpswap_pool_mapping_conflicts
+            WHERE acquisition_run_key=?""",
+            (run_key,),
+        ).fetchone()
+    return int(row["n"])
