@@ -55,12 +55,16 @@ Pool mappings are cached after successful resolution to prevent one RPC request 
 Trade:
 
 - `chain_time` = PumpSwap event `timestamp`;
-- `observed_at` = local WebSocket delivery time.
+- WebSocket delivery time records when the raw trade event became visible;
+- the persisted resolved `MarketTradeObservation.observed_at` is `max(websocket_observed_at, pool_mapping_observed_at)`.
+
+That final rule is mandatory because a trade whose pool identity was hydrated later was not fully usable as a token-specific observation at the earlier WebSocket timestamp. Persisting it at the earlier time would backdate information availability.
 
 Pool mapping:
 
 - CreatePool mapping `observed_at` = local WebSocket delivery time;
-- hydrated mapping `observed_at` = local time after the RPC response is obtained.
+- hydrated mapping `observed_at` = local time after the RPC response is obtained;
+- first-seen mapping time/provenance remains authoritative even if a later independent source corroborates the same pool identity.
 
 Lifecycle:
 
@@ -110,7 +114,7 @@ Unit/regression tests must cover:
 - Pool account decoding;
 - clock rejection for impossible observations;
 - CreatePool mapping without RPC;
-- hydrated mapping availability semantics;
+- hydrated mapping availability semantics, including effective trade `observed_at`;
 - cache reuse;
 - unresolved pool behavior;
 - transaction identity preservation;
