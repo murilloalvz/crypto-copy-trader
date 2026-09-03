@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from src.market_opportunity_radar import MarketRadarConfig
 from src.market_transaction_view import load_market_trades_by_transaction
 from src.pumpswap_normalized_persistence import (
     PumpSwapNormalizedPersistResult,
@@ -7,7 +8,6 @@ from src.pumpswap_normalized_persistence import (
 )
 from src.pumpswap_radar_bridge_v2 import PumpSwapRadarBridgeV2Hit, _evaluate_token
 from src.pumpswap_stream import PumpSwapLogNotification, PumpSwapPoolResolver
-from src.market_opportunity_radar import MarketRadarConfig
 
 
 @dataclass(frozen=True)
@@ -19,31 +19,28 @@ class PumpSwapRadarBridgeV3Result:
     hits: tuple[PumpSwapRadarBridgeV2Hit, ...]
 
 
-async def process_pumpswap_notification_for_radar_v3(
+def evaluate_persisted_pumpswap_notification_for_radar_v3(
     notification: PumpSwapLogNotification,
     *,
     acquisition_run_key: str,
-    resolver: PumpSwapPoolResolver,
+    persist_result: PumpSwapNormalizedPersistResult,
     config: MarketRadarConfig = MarketRadarConfig(),
 ) -> PumpSwapRadarBridgeV3Result:
-    """Normalize asset role once, persist once, then evaluate persisted transaction rows."""
+    """Evaluate one already-persisted PumpSwap notification without identity I/O.
+
+    This split lets pool resolution/persistence run concurrently while a coordinator preserves
+    notification ingress order for radar/episode assignment. As-of filtering in the market store
+    keeps later-persisted observations invisible to an earlier causal evaluation boundary.
+    """
 
     run_key = str(acquisition_run_key).strip()
     if not run_key:
         raise ValueError("acquisition_run_key cannot be empty")
-    if resolver.acquisition_run_key != run_key:
-        raise ValueError("resolver acquisition_run_key must match bridge run")
 
-    persist_result = await persist_pumpswap_notification_normalized(
-        notification,
-        acquisition_run_key=run_key,
-        resolver=resolver,
-    )
     transaction_rows = load_market_trades_by_transaction(
         acquisition_run_key=run_key,
         transaction_key=notification.signature,
     )
-
     by_token: dict[str, list[tuple[int, int]]] = {}
     for item in transaction_rows:
         observation = item.observation
@@ -76,4 +73,32 @@ async def process_pumpswap_notification_for_radar_v3(
         persist_result=persist_result,
         affected_tokens=tuple(sorted(by_token)),
         hits=tuple(hits),
+    )
+
+
+async def process_pumpswap_notification_for_radar_v3(
+    notification: PumpSwapLogNotification,
+    *,
+    acquisition_run_key: str,
+    resolver: PumpSwapPoolResolver,
+    config: MarketRadarConfig = MarketRadarConfig(),
+) -> PumpSwapRadarBridgeV3Result:
+    """Compatibility path: normalize/persist once and immediately evaluate that transaction."""
+
+    run_key = str(acquisition_run_key).strip()
+    if not run_key:
+        raise ValueError("acquisition_run_key cannot be empty")
+    if resolver.acquisition_run_key != run_key:
+        raise ValueError("resolver acquisition_run_key must match bridge run")
+
+    persist_result = await persist_pumpswap_notification_normalized(
+        notification,
+        acquisition_run_key=run_key,
+        resolver=resolver,
+    )
+    return evaluate_persisted_pumpswap_notification_for_radar_v3(
+        notification,
+        acquisition_run_key=run_key,
+        persist_result=persist_result,
+        config=config,
     )
