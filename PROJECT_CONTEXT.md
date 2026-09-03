@@ -17,14 +17,12 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Unified throughput v2: FAIL.
 - Unified throughput v3: semantic fixes PASS / capacity FAIL.
 - Unified throughput v4: coverage/capacity PASS / latency FAIL.
-- Unified latency v5: **FAIL sob burst — Pump melhorou, PumpSwap sofreu head-of-line/capacity pressure**.
-- Primeiro v5b: **ABORTED BEFORE SUMMARY** por conflito Pump `signature:index`; não é resultado de throughput/latência.
-- Reuso acidental do namespace `05b`: inválido/contaminado; preservar como evidência, não usar para métricas.
-- v5c limpo: **ABORTED BEFORE SUMMARY** por conflito PumpSwap no shared `market_observation_store`.
-- v5d limpo: **ABORTED BEFORE SUMMARY — TRIGGER REPLAY INTEGRITY FAILURE** no `market_opportunity_episode_store`; não é resultado de throughput/latência.
-- End-to-end replay hardening de observation → pool mapping → trigger/episode: **CODE/CI PASS / LIVE REVALIDATION PENDING**.
-- PumpSwap pool schema hot path agora tem cache por DB path; impacto em latência ainda precisa de validação live.
-- Gate atual: fresh capacity/latency stress com `run_key` novo e a mesma configuração congelada; não alterar detector/estratégia.
+- Unified latency v5 inicial: **FAIL sob burst — PumpSwap head-of-line/capacity pressure**.
+- v5b/v5c/v5d: três replay-integrity incidents sucessivos; todos preservados como evidência, não como throughput results.
+- End-to-end replay hardening de observation → pool mapping → trigger/episode: **CODE/CI PASS + LIVE REVALIDATION PASS** em v5e; todos os replay-conflict counters ficaram zero.
+- v5e: **INTEGRITY PASS / COVERAGE PASS / PUMPSWAP LATENCY PASS / PUMP LATENCY FAIL**.
+- PumpSwap pool schema hot-path cache + canonical resolver: live v5e p95 4.854s, sem RPC failures/budget skips.
+- Gate atual: **Unified latency v6 — Pump ordered SQLite microbatch**. Não aumentar writer concurrency cegamente.
 - Jupiter, hazard provider, historical wallet outcomes no unified path, final `decision_as_of` e forward outcomes ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -71,12 +69,12 @@ Shared market observation replay semantics:
 - o menor collector `observed_at` vence, mesmo se persistir depois;
 - replay conflitante no mesmo run+event_key é auditado em `market_replay_conflicts`;
 - identidade conflitante posterior não sobrescreve observação causalmente anterior;
-- se `observed_at` empata na resolução de segundos, identidade serializada estável é apenas tie-break determinístico e a ambiguidade continua auditada;
+- se `observed_at` empata na resolução de segundos, identidade serializada estável é tie-break determinístico e a ambiguidade continua auditada;
 - conflito não vira evento adicional de flow e não derruba a aquisição.
 
 No adapter Pump batch, `pump_replay_conflicts` permanece como telemetria específica do incidente anterior.
 
-`src/market_opportunity_episode_store.py` deduplica raw hits por run+token em 60s. O `trigger_key` representa uma única avaliação de uma notification/token e agora também tem replay semantics explícitas:
+`src/market_opportunity_episode_store.py` deduplica raw hits por run+token em 60s. O `trigger_key` representa uma única avaliação de uma notification/token e tem replay semantics explícitas:
 - exact replay posterior é idempotente;
 - replay posterior que recomputa kind/direction/identity diferente é auditado em `market_trigger_replay_conflicts`;
 - o primeiro trigger-to-episode persistido permanece canônico;
@@ -131,100 +129,121 @@ Pool identity no caminho concorrente:
 ### Unified v4
 `unified-market-smoke-20260903-04`: 2,949 received; coverage 99.2%; backlog ~0.85%; Pump p95 38.3s; PumpSwap p95 7.8s; zero drops/errors/reference episodes/budget skips. **CAPACITY PASS / LATENCY FAIL**.
 
-### Unified latency v5
+### Unified latency v5 inicial
 `unified-market-smoke-20260903-05`, 120s:
 - received 4,945 = PumpSwap 3,606 + Pump 1,339;
 - dropped 0; worker errors 0;
-- radar coverage **79.6%**;
-- Pump radar p50 2.19s / p95 **8.52s**;
-- PumpSwap persistence p50 48.11s / p95 55.80s;
-- PumpSwap radar p50 53.37s / p95 **71.15s**;
+- radar coverage 79.6%;
+- Pump p95 8.52s;
+- PumpSwap p95 71.15s;
 - PumpSwap hydrations 350, successes 348, RPC failures 0, budget skips 0;
-- 68 episodes/enrichments; reference-asset episodes 0;
-- bundle totals flow30 1,818 / wallets 1,292.
+- 68 episodes/enrichments; reference-asset episodes 0.
 
-Decision: **FAIL — burst capacity/latency**. v4/v5 não são controlled A/B porque PumpSwap ingress subiu de 1,517 para 3,606. PumpSwap failure foi queue/head-of-line pressure, não RPC failure ou budget exhaustion.
-
-Canonical report: `docs/unified-market-latency-v5-live-smoke-2026-09-03.md`.
+Decision: **FAIL — burst capacity/latency**. v4/v5 não são controlled A/B porque o ingress mudou muito.
 
 ### v5b / v5c / v5d replay integrity incidents
 
-Primeiro `unified-market-smoke-20260903-05b` abortou no Pump antes de SUMMARY por conflito no mesmo `signature:index`. O adapter Pump foi corrigido para earliest-observed canonical semantics e auditoria em `pump_replay_conflicts`.
+- `05b`: Pump `signature:index` replay conflict antes de SUMMARY;
+- reutilização acidental do namespace `05b`: INVALID / CONTAMINATED;
+- `05c`: shared `market_observation_store` PumpSwap replay conflict antes de SUMMARY;
+- `05d`: `market_opportunity_episode_store` trigger replay conflict antes de SUMMARY.
 
-A repetição acidental usando o mesmo `05b` foi classificada como **INVALID / CONTAMINATED RUN** porque o namespace já continha dados parciais.
-
-A run limpa `unified-market-smoke-20260903-05c` reproduziu o mesmo tipo de falha no PumpSwap dentro de `record_market_trade()`:
-
-```text
-ValueError: market trade event already exists with different data
-```
-
-Decision: **ABORTED BEFORE SUMMARY — SHARED REPLAY INTEGRITY FAILURE**. Não usar para throughput/latência.
-
-A correção foi movida para o shared `market_observation_store` com `market_replay_conflicts`, earliest-observed canonicalization e tie-break auditável.
-
-A run limpa `unified-market-smoke-20260903-05d` progrediu além da persistência e abortou no Pump radar coordinator:
-
-```text
-ValueError: market trigger already exists with different data
-```
-
-Decision: **ABORTED BEFORE SUMMARY — TRIGGER REPLAY INTEGRITY FAILURE**. Não usar para throughput/latência.
-
-Root cause: `market_opportunity_episode_store` exigia igualdade exata de campos derivados para o mesmo `trigger_key`. Um replay posterior da mesma notification pode ser reavaliado quando mais market observations já existem e produzir direction/kind descritivos diferentes sem representar novo raw evidence.
-
-End-to-end hardening após v5d:
-- trigger replay idempotente/auditável sem episódio duplicado;
-- pool mapping replay/conflict auditável;
-- PumpSwap pool schema cacheado fora do hot path;
+Esses incidents produziram o end-to-end hardening atual:
+- observation replay canonicalization + audit;
+- trigger replay idempotent/auditável sem episode duplicado;
+- PumpSwap pool mapping replay/conflict auditável;
+- PumpSwap pool schema fora do hot path;
 - ambiguous historical pool identity não reutilizada;
 - concurrent resolver sempre devolve mapping canônico persistido;
-- wrapper v5 imprime replay diagnostics em `finally`, inclusive se uma future failure ocorrer antes de SUMMARY.
-
-Telemetry atual:
-```text
-pump_replay_conflicts=...
-market_replay_conflicts=...
-market_trigger_replay_conflicts=...
-pumpswap_pool_mapping_conflicts=...
-```
+- wrapper de latency imprime replay diagnostics em `finally`.
 
 Canonical docs:
 - `docs/pump-replay-integrity-v5b-incident-2026-09-03.md`;
 - `docs/shared-market-replay-integrity-v5c-incident-2026-09-03.md`;
 - `docs/end-to-end-replay-integrity-v5d-incident-2026-09-03.md`.
 
-Final validation do end-to-end hardening: `compileall` PASS; **571 tests / 0 failures**; CI PASS. Live revalidation ainda pendente.
+### Unified latency v5e — clean end-to-end revalidation
+
+Run: `unified-market-smoke-20260903-05e`, 120s.
+
+- received 4,256 = Pump 1,878 + PumpSwap 2,378;
+- dropped 0; worker errors 0;
+- persistence completed: Pump 1,856 / PumpSwap 2,378;
+- radar processed: Pump 1,751 / PumpSwap 2,378;
+- radar coverage: **97.0%**;
+- deadline backlog: 127 = Pump ingress 21 + Pump inflight 1 + Pump reorder 105;
+- backlog / received: **2.98%**;
+- Pump persistence queue p95: **23.901s**;
+- Pump radar end-to-end p95: **24.504s**;
+- PumpSwap persistence queue p95: **0.698s**;
+- PumpSwap radar end-to-end p95: **4.854s**;
+- PumpSwap network hydrations 74 / successes 74 / RPC failures 0 / budget skips 0;
+- 62 unique episodes / 62 enrichments;
+- reference-asset episodes 0;
+- bundle flow30 total 908 / wallets total 787;
+- all four replay-conflict counters: **0**.
+
+Frozen v5 gate:
+- errors PASS;
+- drops PASS;
+- reference assets PASS;
+- coverage PASS;
+- backlog PASS;
+- **Pump latency FAIL**;
+- PumpSwap latency PASS;
+- budget PASS;
+- bundle population PASS.
+
+Classification: **INTEGRITY PASS / COVERAGE PASS / PUMPSWAP LATENCY PASS / PUMP LATENCY FAIL**.
+
+The near-equality of Pump persistence queue p95 (23.901s) and Pump radar p95 (24.504s) localizes the dominant delay to Pump persistence admission, not detector computation. Eight SQLite writers complete out of ingress order while SQLite still serializes actual writes; this also creates the 105-item Pump reorder backlog.
+
+Canonical report/design: `docs/unified-market-latency-v5e-and-v6-design-2026-09-03.md`.
 
 ## Throughput / latency architecture
 
-Current v5 runner: `unified_market_latency_smoke_v5.py` over the v4 pipeline.
-
-Pump:
+Historical v5 Pump path:
 ```text
-websocket -> queue -> concurrent batch persistence -> completed queue -> ingress-order radar
+websocket -> queue -> 8 concurrent per-notification SQLite transactions -> completed queue -> ingress-order radar
 ```
 
-PumpSwap:
+Current v6 Pump path under test:
 ```text
-websocket -> queue -> concurrent pool resolution/persistence -> completed queue -> ingress-order radar
+websocket
+-> FIFO queue
+-> ONE ordered microbatch writer
+-> one SQLite transaction for up to N notifications
+-> completed queue in ingress order
+-> ingress-order radar
 ```
 
-Persistence may complete out of order, but radar assignment remains globally ingress-ordered per venue. This is causally conservative but can create cross-pool head-of-line blocking.
+Implementation:
+- `src/pump_microbatch_persistence.py`;
+- optional microbatch mode in `unified_market_throughput_smoke_v4.run_smoke` with legacy defaults unchanged;
+- `unified_market_latency_smoke_v6.py` as the dedicated live runner.
 
-v5 caches schema readiness per active SQLite DB path for market observation/episode stores; after v5d the PumpSwap pool store also uses this pattern. Detector, T0 and frozen acquisition thresholds are unchanged.
+PumpSwap remains:
+```text
+websocket -> concurrent pool resolution/persistence -> completed queue -> ingress-order radar
+```
 
-## Gate atual — fresh capacity stress after end-to-end replay hardening
+v6 changes only Pump write scheduling. Detector, T0, raw event identity, replay semantics, episode semantics and PumpSwap configuration remain unchanged.
 
-Repeat the exact operational stress with a never-used run key. No threshold/strategy change.
+## Gate atual — Unified latency v6 Pump microbatch
+
+Frozen before any v6 live result.
 
 Configuration:
-- Pump workers 8;
+- duration 120s;
+- commitment confirmed;
+- Pump writer: one ordered SQLite microbatch writer;
+- Pump batch size ceiling: 32 notifications;
+- Pump maximum batch dwell: 25ms;
 - PumpSwap workers 24;
 - max concurrent PumpSwap resolutions 18;
 - max hydrations 1500;
-- queue size 5000;
-- duration 120s.
+- RPC timeout 3s;
+- queue size 5000.
 
 PASS only if:
 1. no worker errors / traceback;
@@ -235,11 +254,10 @@ PASS only if:
 6. Pump radar p95 <=5s;
 7. PumpSwap radar p95 <=5s;
 8. budget skips == 0;
-9. admitted bundles are not systematically empty.
+9. admitted bundles are not systematically empty;
+10. replay-conflict telemetry is inspected; unexplained non-zero conflicts block long acquisition.
 
-Replay-conflict counters are audit telemetry, not automatic FAIL by themselves. Any non-zero count must be inspected before long acquisition.
-
-If the fresh stress reaches SUMMARY but still fails latency/capacity, **do not keep increasing concurrency blindly**. Redesign PumpSwap to remove global cross-pool head-of-line blocking while preserving causal ordering at the opportunity-asset level.
+If Pump still fails, **do not increase SQLite writer concurrency**. Profile transaction time versus radar read/enrichment time and consider a dedicated append-only ingestion DB / WAL-oriented writer or staged causal in-memory window only with explicit crash/recovery invariants.
 
 ## Depois do latency PASS
 
@@ -264,12 +282,10 @@ Ablations: movement, flow, execution, wallet e risk. Métricas mínimas: mean/me
 - native acquisition: Pump PASS / PumpSwap PASS;
 - causal unified local bundle: PASS;
 - v4: capacity PASS / latency FAIL;
-- v5: burst capacity/latency FAIL;
-- first v5b: aborted on Pump replay integrity; no throughput conclusion;
-- repeated same-key 05b: invalid/contaminated;
-- v5c: clean shared PumpSwap replay conflict; aborted before summary;
-- v5d: clean market trigger replay conflict; aborted before summary;
-- end-to-end replay hardening: code/CI PASS, live revalidation pending;
+- v5 inicial: burst capacity/latency FAIL;
+- v5b/v5c/v5d: replay integrity incidents, todos resolvidos em código;
+- v5e: replay integrity LIVE PASS, coverage/backlog PASS, PumpSwap latency PASS, Pump latency FAIL;
+- v6 Pump microbatch: code/CI validation em andamento, live pending;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
 - shadow/live: não liberado.
