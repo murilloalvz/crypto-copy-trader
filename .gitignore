@@ -3,6 +3,23 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-data/*.db
-data/*.db-*
+
+# Local runtime state and logs
+data/
 logs/*.log
+
+# Local research artifacts / exports
+*.zip
+*.bundle
+backtest-concurrent*.txt
+full-orchestrator-smoke.txt
+network-resilience-validation.txt
+resultado.txt
+cohort.txt
+wallet-forward-acquisition-v*.json
+wallet-forward-acquisition-v*.txt
+wallet-forward-v*-*.json
+wallet-forward-v*-*.txt
+wallet-forward-v*-*.db
+wallets/forward-cohort-v2.txt
+wallets/research-cohort-deep.txt
