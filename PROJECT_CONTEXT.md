@@ -12,8 +12,8 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - Classificação final pré-registrada: **OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**.
 - Wallet Forward v2 Run 3 **não deve ser iniciado**.
 - O protocolo wallet-triggered `Causal Opportunity Acquisition v1` foi **SUPERSEDED BEFORE RUN**.
-- Próximo gate ativo: **Market Opportunity Radar v1**.
-- Última suíte confirmada após o pivot: **491 testes, zero falhas**, com `compileall` aprovado.
+- Gate ativo: **Market Opportunity Radar v1 + Opportunity Wallet Intelligence v1**.
+- Última suíte confirmada: **499 testes, zero falhas**, com `compileall` aprovado.
 
 ## Regra central de validação
 
@@ -34,11 +34,19 @@ O projeto evoluiu de um CopyTrader estrito para um **Solana Opportunity Intellig
 
 Arquitetura alvo:
 
-`mercado começa a mudar de estado -> radar detecta causalmente -> opportunity episode -> execução + order flow + risco + wallet context + regime -> decision_as_of -> outcome forward`
+`mercado muda de estado -> radar detecta -> opportunity episode -> identifica as wallets realmente presentes -> cruza wallet evidence + flow + execução + risco + regime -> decision_as_of -> outcome forward`
 
-Wallets continuam importantes, mas agora são **features / confirmação / contexto**, não a única porta de entrada da amostra.
+### Regra de wallet
 
-Pump.fun/PumpSwap é o primeiro laboratório de alta atividade, não um pilar obrigatório. A interface do radar deve permanecer venue-agnostic para permitir Raydium, Meteora e outros venues depois.
+**Não existe whitelist de “wallets boas” no caminho do radar.**
+
+Wallets são descobertas dinamicamente dentro de cada oportunidade. O bot deve avaliar se aquelas wallets demonstravam comportamento competente com base apenas em histórico já resolvido antes do T0 atual.
+
+Uma wallet desconhecida continua válida. Uma wallet historicamente forte não recebe passe livre. Uma wallet sem histórico não invalida o episódio.
+
+O antigo `Copyability Score` permanece infraestrutura histórica de Discovery e não pode ser usado como filtro oculto de admissão do Market Opportunity Radar.
+
+Pump.fun/PumpSwap é o primeiro laboratório de alta atividade, não um pilar obrigatório. A interface permanece venue-agnostic para Raydium, Meteora e outros venues.
 
 North star:
 
@@ -46,7 +54,7 @@ North star:
 
 ## Evidência externa que orienta o desenho
 
-A pesquisa registrada prioriza:
+Prioridade atual:
 
 1. execução / liquidez / tradability;
 2. order flow / microestrutura;
@@ -66,7 +74,7 @@ Documentos principais:
 - `docs/research-evidence-registry-v1-2026-09-02.md`
 - `docs/post-run2-evidence-decision-framework-2026-09-02.md`
 
-## Wallet Forward v2 — estado encerrado
+## Wallet Forward v2 — encerrado
 
 Runtime validado:
 
@@ -97,7 +105,7 @@ Quantity-aware replay descritivo:
 - +60s: -25.36%;
 - +30s/+120s: censurados sem saída causal adequada.
 
-Esses valores **não** provam que a estratégia perde ~30%; a amostra é pequena e altamente dependente.
+Esses valores não provam que a estratégia perde ~30%; a amostra é pequena e altamente dependente.
 
 ### Run 2
 
@@ -145,7 +153,7 @@ Contrato causal dual-clock:
 - `chain_time/event_time`: quando o mercado aconteceu;
 - `observed_at`: quando o bot ficou sabendo;
 - market window exige tempo de mercado correto;
-- T0 exige disponibilidade `observed_at <= decision_as_of`;
+- T0 exige `observed_at <= decision_as_of`;
 - missingness não é imputada;
 - quote freshness fica explícita;
 - `decision_as_of` inclui o tempo gasto para obter features.
@@ -162,8 +170,6 @@ Design:
 
 `docs/market-opportunity-radar-v1-design-2026-09-03.md`
 
-### Mudança principal
-
 Antes:
 
 `tracked wallet BUY -> episode`
@@ -172,76 +178,112 @@ Agora:
 
 `market activity changes state -> episode`
 
-Tracked wallet participation é apenas feature/contexto.
-
 ### Detector v1
 
 `src/market_opportunity_radar.py`
 
-Detector de aquisição simples, causal e auditável.
-
-Established-market candidate:
+Established market:
 
 - fast window = 30s;
 - baseline horizon = 300s;
-- segmento baseline = 270s anteriores, excluindo fast window;
-- >=6 eventos no fast window;
+- baseline = 270s anteriores;
+- >=6 eventos fast;
 - >=4 wallets únicas conhecidas;
 - >=3 eventos baseline;
-- aceleração de event-rate >=3x.
+- aceleração >=3x.
 
-Fresh-market burst:
+Fresh market:
 
 - market age causal <=120s;
 - >=6 eventos/30s;
 - >=4 wallets únicas conhecidas.
 
-Esses thresholds são **mecânica de aquisição**, não regra de trading e não foram escolhidos como thresholds de P&L.
+Esses thresholds são mecânica de aquisição, não regra de trading.
 
-Direction (`upward_pressure`, `downward_pressure`, `mixed_pressure`) é descritiva. Grande alta de preço não é exigida para disparar o radar, evitando detectar apenas depois do pump.
+Direction (`upward_pressure`, `downward_pressure`, `mixed_pressure`) é descritiva. Grande alta de preço não é exigida para disparar o radar.
 
 ### Market observation store
 
 `src/market_observation_store.py`
 
-Persiste por acquisition run:
+Persiste, por acquisition run, raw trades/lifecycle com source, side, token, `chain_time`, `observed_at`, wallet, notional, preço e venue quando disponíveis.
 
-- raw market trades;
-- source provider;
-- side;
-- token;
-- `chain_time`;
-- `observed_at`;
-- wallet quando disponível;
-- notional/preço quando disponíveis;
-- venue;
-- lifecycle/market-start observations.
-
-O store é idempotente, run-scoped e suporta leitura causal por `as_of` e janela de market time.
+O store é idempotente, run-scoped e suporta leitura causal por `as_of` e market-time window.
 
 ### Market opportunity episodes
 
 `src/market_opportunity_episode_store.py`
 
-- market trigger não exige tracked wallet;
-- mesmo token + mesma run em <60s reutiliza episode;
+- trigger de mercado não exige wallet previamente rastreada;
+- mesmo token + run em <60s reutiliza episode;
 - exatamente +60s abre novo episode;
 - runs diferentes nunca compartilham episode;
 - raw triggers permanecem persistidos;
 - `decision_as_of` é imutável;
-- loader causal esconde triggers não disponíveis no cutoff.
+- loader causal esconde triggers futuros.
+
+## Opportunity Wallet Intelligence v1
+
+Arquivos:
+
+- `src/opportunity_wallet_intelligence.py`
+- `tests/test_opportunity_wallet_intelligence.py`
+- `docs/opportunity-wallet-intelligence-v1-design-2026-09-03.md`
+
+Fluxo obrigatório:
+
+`market episode -> wallets presentes -> histórico causal já resolvido -> wallet evidence`
+
+Para cada participante do episódio, a camada pode descrever:
+
+- BUY/SELL/repetição atual;
+- participação de notional quando cobertura é completa;
+- quantidade de episódios passados já resolvidos;
+- diversidade de tokens no histórico;
+- histórico anterior no mesmo token;
+- positive-outcome share;
+- retorno médio/mediano quando coberto;
+- holding time mediano quando coberto;
+- flags de missingness e amostra pequena.
+
+Regras anti-leakage:
+
+- resultado histórico só entra se já estava observado antes do `decision_as_of` atual;
+- episódio atual nunca entra como “histórico passado”;
+- evento atual observado depois de T0 é excluído;
+- histórico não resolvido permanece missing, não vira loss;
+- notional incompleto não gera concentração falsa.
+
+O contrato não possui `wallet_score`, `passed`, `recommended`, whitelist ou BUY decision.
+
+## Cruzamento das análises
+
+O futuro snapshot/evidence bundle da oportunidade deve reunir no mesmo T0:
+
+1. **market movement/lifecycle**;
+2. **execution/liquidity** via Jupiter e superfícies causais;
+3. **order flow/microstructure**;
+4. **wallet intelligence das wallets realmente presentes**;
+5. **token/hazard risk**;
+6. **network/market regime**.
+
+A hipótese é que as interações possam ser mais informativas do que qualquer família isolada, por exemplo:
+
+`activity acceleration + broad independent buying + participantes com bom histórico resolvido + liquidez saudável + execução aceitável + hazard baixo`
+
+Isso é hipótese de pesquisa, não regra de BUY. Ablations futuras devem provar valor incremental.
 
 ## Fonte de dados planejada
 
-Preferência arquitetural:
+Preferência:
 
-1. **Solana on-chain stream** como fonte canônica;
-2. Pump bonding-curve program + PumpSwap como primeiros venue adapters;
-3. Birdeye/PumpPortal como enrichment/cross-check quando custo/entitlement permitirem;
+1. Solana on-chain stream como fonte canônica;
+2. Pump bonding curve + PumpSwap como primeiros adapters;
+3. Birdeye/PumpPortal como enrichment/cross-check quando custo permitir;
 4. Jupiter como execution proxy;
-5. wallet intelligence anexada depois do market trigger.
+5. wallet history/enrichment somente depois que o mercado criou o episódio.
 
-Pump public program IDs congelados no protocolo:
+Pump program IDs:
 
 - Pump: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
 - PumpSwap: `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`.
@@ -255,10 +297,10 @@ Ainda **não iniciar 12h**.
 Ordem:
 
 1. implementar adapter de stream nativo/provider;
-2. fazer smoke curto de eventos reais;
+2. smoke curto com eventos reais;
 3. validar reconnect, dedup, clocks e burst handling;
-4. medir custo/rate-limit/provider coverage;
-5. ligar radar -> episode -> Opportunity Core -> Jupiter;
+4. medir custo/rate-limit/coverage;
+5. ligar `radar -> episode -> dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime`;
 6. smoke end-to-end curto;
 7. somente depois congelar e iniciar primeira janela de 12h.
 
@@ -269,9 +311,27 @@ Meta DATA-READY futura:
 - >=15 tokens;
 - diversidade real de participantes;
 - largest token share <=20%;
-- >=90% episodes com timing/identity e ao menos um execution proxy utilizável.
+- >=90% episodes com timing/identity e ao menos um execution proxy utilizável;
+- zero uso de whitelist de wallet para criar/suprimir episódio.
 
 Passar o gate valida aquisição, não edge.
+
+## Avaliação futura
+
+Ablations mínimas:
+
+- market movement only;
+- wallet evidence only;
+- execution only;
+- flow only;
+- market + wallet;
+- market + flow;
+- wallet + flow;
+- market + wallet + execution;
+- all Core families;
+- risk/regime quando cobertura suportar comparação justa.
+
+Usar avaliação separada no tempo e cluster-aware por token/wallet.
 
 ## Shadow / live
 
@@ -279,6 +339,7 @@ Passar o gate valida aquisição, não edge.
 - quantity-aware accounting: validado;
 - wallet-only edge: não estabelecido;
 - Market Opportunity Radar: núcleo implementado/testado, stream real ainda não validado;
+- Opportunity Wallet Intelligence: contrato causal implementado/testado, integração live-read-only ainda não validada;
 - executable landing/fill: não validado;
 - shadow executável: não liberado;
 - live: não liberado.
