@@ -18,7 +18,8 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Unified local causal bundle: live PASS para flow/wallet semantics.
 - Unified throughput v2: FAIL.
 - Unified throughput v3: **semantic fixes PASS / capacity FAIL**.
-- Throughput v4: implementado + CI green; **short live smoke é o próximo gate**.
+- Unified throughput v4: **coverage/capacity PASS / latency FAIL**.
+- Latency v5: hot-path schema-readiness cache implementado; CI + short live smoke são o gate atual.
 - Jupiter, hazard provider, historical wallet outcomes no unified path, final `decision_as_of` e forward outcomes ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -146,27 +147,40 @@ Decisão: **CAUSAL BUNDLE PASS / THROUGHPUT FAIL**.
 ### Unified throughput v3
 
 `unified-market-smoke-20260903-03`, 120s:
-- received: Pump 2,181 / PumpSwap 2,484 = 4,665;
-- dropped: 0;
-- worker errors: 0;
-- radar processed: Pump 1,270 / PumpSwap 2,468;
-- total radar coverage: **80.1%**;
-- Pump backlog: 910;
-- Pump queue wait p95: **52.6s**;
-- PumpSwap radar end-to-end p95: **29.0s**;
-- reference-asset episodes: 0;
-- unique episodes: 77;
-- enrichment admitted: 77;
-- populated bundle totals: flow30 896 / wallets 754;
-- PumpSwap hydrations: 300/300 successful;
-- real RPC failures: 0;
-- hydration budget skips: 41.
+- received 4,665;
+- total radar coverage 80.1%;
+- Pump backlog 910;
+- Pump queue wait p95 52.6s;
+- PumpSwap radar p95 29.0s;
+- reference-asset episodes 0;
+- 77 populated episode bundles;
+- real RPC failures 0;
+- hydration budget skips 41.
 
 Decisão: **SEMANTIC FIXES PASS / THROUGHPUT CAPACITY FAIL**.
 
 Canonical report: `docs/unified-market-throughput-v3-live-smoke-2026-09-03.md`.
 
-Não retunar radar. Jupiter continua bloqueado até throughput PASS.
+### Unified throughput v4
+
+`unified-market-smoke-20260903-04`, 120s:
+- received 2,949;
+- dropped 0;
+- worker errors 0;
+- radar coverage **99.2%**;
+- remaining backlog 25 (~0.85%);
+- reference-asset episodes 0;
+- 52 unique episodes / 52 enrichments;
+- bundle totals: flow30 918 / wallets 649;
+- PumpSwap network hydrations 74, RPC failures 0, budget skips 0;
+- Pump radar end-to-end p95 **38.3s**;
+- PumpSwap radar end-to-end p95 **7.8s**.
+
+Decisão: **COVERAGE/CAPACITY PASS / LATENCY FAIL**.
+
+Canonical report: `docs/unified-market-throughput-v4-live-smoke-2026-09-03.md`.
+
+Não retunar radar. Jupiter continua bloqueado até latency PASS.
 
 ## PumpSwap asset-role normalization
 
@@ -186,39 +200,36 @@ Rules:
 - two-reference or two-unknown pairs are explicit `role_filtered`, never guessed;
 - WSOL/USDC cannot become opportunity episodes.
 
-## Throughput v4
+## Throughput / latency architecture
 
-Design freeze: `docs/unified-market-throughput-v4-design-2026-09-03.md`.
+v4 runner: `unified_market_throughput_smoke_v4.py`.
 
-Runner: `unified_market_throughput_smoke_v4.py`.
-
-New Pump path:
-
+Pump:
 ```text
-Pump websocket
--> dedicated ingress queue
--> bounded concurrent batch-persistence workers
--> one SQLite transaction per notification
--> completed queue
--> ingress-order radar coordinator
+websocket -> queue -> concurrent batch persistence -> completed queue -> ingress-order radar
 ```
 
-PumpSwap keeps bounded concurrent persistence/pool resolution plus ingress-order radar coordination.
+PumpSwap:
+```text
+websocket -> queue -> concurrent pool resolution/persistence -> completed queue -> ingress-order radar
+```
 
-The important causal invariant is unchanged: persistence may finish out of order, but **radar/episode assignment is released in websocket ingress order**, and loaders still enforce `observed_at <= as_of`.
+Persistence may complete out of order, but radar/episode assignment remains in ingress order. Loaders enforce `observed_at <= as_of`.
 
-New files:
-- `src/pump_batch_persistence.py`;
-- `src/pump_radar_bridge_v4.py`;
-- `unified_market_throughput_smoke_v4.py`.
+v4 fixed capacity but exposed storage/radar hot-path latency. Inspection found `ensure_market_observation_schema()` was re-running table/index DDL on every write/read. v5 adds a thread-safe **schema-ready cache keyed by active SQLite database path**, so switching DBs in tests/research still gets a full schema check while hot paths avoid repeated DDL.
 
-CI at v4 code state:
-- `python -m compileall -q .`: PASS;
-- `python -m unittest discover -s tests -q`: **557 tests, 0 failures**.
+v5 runner: `unified_market_latency_smoke_v5.py`.
 
-## Throughput v4 live PASS gate
+The v5 change is intentionally operational only:
+- detector thresholds unchanged;
+- queue/worker architecture unchanged from v4;
+- causal ordering unchanged;
+- no Jupiter/risk provider added;
+- same latency gate retained.
 
-The next 120s smoke is PASS only if:
+## Live PASS gate atual
+
+Short live latency smoke is PASS only if:
 1. no traceback / worker errors;
 2. zero dropped notifications;
 3. `reference_asset_episodes == 0`;
@@ -230,20 +241,11 @@ The next 120s smoke is PASS only if:
 9. short-smoke `budget_skips == 0`;
 10. admitted bundles are not systematically empty.
 
-These are capture/capacity gates, not trading thresholds, and are frozen before the live run.
-
-Initial v4 short-smoke configuration:
-- Pump workers: 4;
-- PumpSwap workers: 8;
-- max concurrent PumpSwap resolutions: 6;
-- queue size: 5,000;
-- PumpSwap hydration ceiling: 1,000 **only as a non-binding short-smoke ceiling**.
-
-A v4 PASS permits Jupiter episode-scoped work, but **does not permit 12h yet**. Long-run hydration/rate/cost policy remains mandatory before 12h.
+These are capture/capacity gates, not trading thresholds.
 
 ## Próximo gate obrigatório
 
-Run short live throughput v4. **Não adicionar Jupiter antes do PASS.**
+CI green no latency v5, depois short live v5. **Não adicionar Jupiter antes do PASS.**
 
 Depois do PASS:
 1. Jupiter executable quote somente para novo episode admitido;
@@ -270,7 +272,8 @@ Métricas mínimas: mean/median, win rate, profit factor, drawdown, coverage, to
 - causal unified local bundle: PASS;
 - unified throughput v2: FAIL;
 - throughput v3: semantic PASS / capacity FAIL;
-- throughput v4: CI PASS / live pending;
+- throughput v4: coverage PASS / latency FAIL;
+- latency v5: implementation pending CI/live validation;
 - economic edge market-first: não estabelecido;
 - executable fill/landing: não validado;
 - shadow: não liberado;
