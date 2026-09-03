@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import threading
 
+from src import database
 from src.database import connection
 
 
@@ -77,10 +79,28 @@ CREATE INDEX IF NOT EXISTS idx_market_opportunity_episode_triggers_episode
 ON market_opportunity_episode_triggers(episode_key, observed_at, id);
 """
 
+_SCHEMA_READY_PATHS: set[str] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
+
+
+def _database_cache_key() -> str:
+    path = database.settings.database_path
+    try:
+        return str(path.resolve())
+    except AttributeError:
+        return str(path)
+
 
 def ensure_market_opportunity_episode_schema() -> None:
-    with connection() as conn:
-        conn.executescript(_SCHEMA)
+    cache_key = _database_cache_key()
+    if cache_key in _SCHEMA_READY_PATHS:
+        return
+    with _SCHEMA_READY_LOCK:
+        if cache_key in _SCHEMA_READY_PATHS:
+            return
+        with connection() as conn:
+            conn.executescript(_SCHEMA)
+        _SCHEMA_READY_PATHS.add(cache_key)
 
 
 def _required(value: str, name: str) -> str:
@@ -101,11 +121,7 @@ def _row_to_episode(row) -> MarketOpportunityEpisode:
         first_trigger_chain_time=int(row["first_trigger_chain_time"]),
         first_trigger_observed_at=int(row["first_trigger_observed_at"]),
         episode_closes_at=int(row["episode_closes_at"]),
-        decision_as_of=(
-            int(row["decision_as_of"])
-            if row["decision_as_of"] is not None
-            else None
-        ),
+        decision_as_of=(int(row["decision_as_of"]) if row["decision_as_of"] is not None else None),
     )
 
 
@@ -137,12 +153,7 @@ def assign_market_opportunity_trigger(
     venue: str | None = None,
     episode_window_seconds: int = DEFAULT_MARKET_EPISODE_WINDOW_SECONDS,
 ) -> MarketOpportunityEpisode:
-    """Persist a raw market trigger and attach it to a causal token episode.
-
-    Market triggers do not require a tracked wallet. Episode membership is determined only by
-    acquisition run, token and the real local availability clock. A trigger at exactly the close
-    boundary opens a new episode.
-    """
+    """Persist a raw market trigger and attach it to a causal token episode."""
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     raw_key = _required(trigger_key, "trigger_key")
@@ -175,8 +186,7 @@ def assign_market_opportunity_trigger(
                 or int(existing["chain_time"]) != chain_time
                 or int(existing["observed_at"]) != observed_at
                 or str(existing["method_version"]) != version
-                or (existing["venue"] if existing["venue"] is None else str(existing["venue"]))
-                != normalized_venue
+                or (existing["venue"] if existing["venue"] is None else str(existing["venue"])) != normalized_venue
             ):
                 raise ValueError("market trigger already exists with different data")
             row = conn.execute(
@@ -214,17 +224,7 @@ def assign_market_opportunity_trigger(
                     first_trigger_key, first_trigger_kind, first_trigger_direction,
                     first_trigger_chain_time, first_trigger_observed_at, episode_closes_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    episode_key,
-                    run_key,
-                    mint,
-                    raw_key,
-                    kind,
-                    pressure,
-                    chain_time,
-                    observed_at,
-                    closes_at,
-                ),
+                (episode_key, run_key, mint, raw_key, kind, pressure, chain_time, observed_at, closes_at),
             )
             row = conn.execute(
                 """SELECT episode_key, acquisition_run_key, token_mint,
@@ -244,18 +244,7 @@ def assign_market_opportunity_trigger(
                 trigger_kind, direction, chain_time, observed_at,
                 method_version, venue
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_key,
-                episode.episode_key,
-                raw_key,
-                mint,
-                kind,
-                pressure,
-                chain_time,
-                observed_at,
-                version,
-                normalized_venue,
-            ),
+            (run_key, episode.episode_key, raw_key, mint, kind, pressure, chain_time, observed_at, version, normalized_venue),
         )
         return episode
 
