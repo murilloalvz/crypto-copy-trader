@@ -2,6 +2,7 @@ import argparse
 import asyncio
 
 from src.database import connection
+from src.market_observation_store import count_market_replay_conflicts
 from unified_market_throughput_smoke_v4 import MAX_SMOKE_SECONDS, run_smoke
 
 
@@ -24,6 +25,24 @@ def _print_pump_replay_conflicts(run_key: str) -> None:
         ).fetchall()
     actions = {str(row["canonical_action"]): int(row["count"]) for row in rows}
     print(f"pump_replay_conflicts={sum(actions.values())} actions={actions}")
+
+
+def _print_shared_market_replay_conflicts(run_key: str) -> None:
+    total = count_market_replay_conflicts(acquisition_run_key=run_key)
+    with connection() as conn:
+        rows = conn.execute(
+            """SELECT event_type, canonical_action, COUNT(*) AS count
+            FROM market_replay_conflicts
+            WHERE acquisition_run_key=?
+            GROUP BY event_type, canonical_action
+            ORDER BY event_type, canonical_action""",
+            (run_key,),
+        ).fetchall()
+    breakdown = {
+        f"{row['event_type']}:{row['canonical_action']}": int(row["count"])
+        for row in rows
+    }
+    print(f"market_replay_conflicts={total} breakdown={breakdown}")
 
 
 def main() -> None:
@@ -65,9 +84,10 @@ def main() -> None:
         )
     )
     _print_pump_replay_conflicts(args.run_key)
+    _print_shared_market_replay_conflicts(args.run_key)
     print(
         "v5 keeps v4 causal ordering/gates and hot-path schema readiness caching. "
-        "Pump replay conflicts are audited with earliest-observed canonical semantics. "
+        "Replay conflicts are audited with earliest-observed canonical semantics. "
         "Execution/risk providers are not called."
     )
 
