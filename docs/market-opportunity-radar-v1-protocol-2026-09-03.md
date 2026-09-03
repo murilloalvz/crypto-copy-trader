@@ -4,15 +4,13 @@ Date: 2026-09-03
 
 Mode: **PRE-REGISTERED / PAPER / RESEARCH / READ ONLY / NO LIVE EXECUTION**
 
-Status: supersedes `docs/causal-opportunity-acquisition-v1-protocol-2026-09-03.md` **before any acquisition run was started**.
+Status: supersedes the wallet-triggered `Causal Opportunity Acquisition v1` **before any acquisition run was started**.
 
-## Why the trigger is changing
+## Why the trigger changed
 
-Wallet Forward v2 established that the collector, causal boundary, Jupiter quote path, finality audit and quantity-aware replay can work prospectively. It did not establish a wallet-only edge: across two 10h windows only four BUYs entered the frozen economic sample, with three of four in one wallet×token cluster.
+Wallet Forward v2 proved that the causal collector, Jupiter quote path, finality audit and quantity-aware replay can work prospectively, but it produced only four enrolled BUYs across two 10h windows, with three of the four in one wallet×token cluster.
 
-The failure mode is therefore not merely model quality. The old design waits for a small wallet set while the Solana token market continues producing many independent movements.
-
-The next acquisition gate changes the trigger from:
+The acquisition gate therefore moved from:
 
 `selected wallet BUY -> token`
 
@@ -20,190 +18,185 @@ into:
 
 `market activity changes state -> token -> opportunity episode`
 
-Wallet activity remains an important feature and possible confirmation channel, but **wallet identity is no longer required to create an opportunity**.
+Wallet identity is not required to create an opportunity.
 
 ## Research question
 
-> Can the project detect early, causally observable changes in token-market activity, persist them as independent opportunity episodes, and enrich them with execution, flow, wallet, risk and regime context without look-ahead?
+> Can the project detect early, causally observable changes in token-market activity, persist them as independent opportunity episodes, and enrich them with execution, flow, dynamic wallet intelligence, risk and regime context without look-ahead?
 
 Passing this gate validates data acquisition. It does not establish profitability.
 
 ## Venue policy
 
-The radar is **venue-agnostic at the interface level**.
+The radar is venue-agnostic at the interface level.
 
-Pump.fun/PumpSwap is the first high-activity laboratory, but the data model must also be able to represent Raydium, Meteora and other Solana venues later.
+Pump.fun/PumpSwap is the first high-activity laboratory, but the data model must support Raydium, Meteora and other Solana venues later. Pump origin is never evidence of attractiveness by itself.
 
-No rule may assume that a token is attractive merely because it originated on Pump.fun.
+Primary discovery preference:
 
-## Canonical discovery surface
+1. Solana on-chain stream as canonical market-event source;
+2. Pump bonding-curve and PumpSwap as first venue adapters;
+3. provider WebSockets/APIs only as accelerators, enrichment or cross-checks;
+4. no required scraping of the Pump.fun UI.
 
-Primary design preference:
+Protocol-freeze program IDs:
 
-1. **Solana on-chain stream** as the canonical source of market events;
-2. official Pump program activity and PumpSwap activity as the first venue adapters;
-3. provider WebSockets/APIs only as accelerators, enrichment or cross-checks.
-
-Relevant public Pump program IDs at protocol-freeze time:
-
-- Pump bonding-curve program: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
-- PumpSwap AMM program: `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`.
-
-The implementation must not scrape the Pump.fun user interface as a required data source.
+- Pump: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
+- PumpSwap: `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`.
 
 ## Provider policy
 
-Provider use must remain replaceable.
+Provider use must remain replaceable and bounded.
 
-### Birdeye
+Potential Birdeye use: meme lifecycle/trading stats, new listings and event-driven trade enrichment when entitlement supports it.
 
-Potential uses:
+Potential PumpPortal use: new-token/migration streams and controlled per-token trade comparison. Metered trade subscriptions must not become unbounded fan-out.
 
-- `SUBSCRIBE_MEME` for real-time meme lifecycle/trading stats;
-- new pair / new listing streams;
-- token transaction streams;
-- REST trade data for event-driven enrichment.
-
-Because WebSocket access depends on package entitlement, Birdeye cannot be the only acquisition path until the user's actual entitlement is verified.
-
-### PumpPortal
-
-Potential uses:
-
-- new-token stream;
-- migration stream;
-- per-token trade streams for controlled comparison.
-
-Its trade streams are third-party and metered. They must not become an unbounded subscription fan-out.
-
-### Solana RPC
-
-Native WebSocket/RPC remains the preferred canonical fallback because it observes on-chain program activity directly. `confirmed` may be used for early observation only when the run retains a later finality audit.
+Native Solana WebSocket/RPC remains the canonical fallback. `confirmed` may be used for early observation only with later finality audit.
 
 ## Two-clock causal rule
 
-Every market observation must retain:
+Every market observation retains:
 
-- `chain_time`: when the event happened in the market;
-- `observed_at`: when our collector actually knew the event.
+- `chain_time`: when the market event happened;
+- `observed_at`: when our collector actually knew it.
 
 A row can contribute to a T0 feature only when:
 
-1. its `chain_time` belongs to the relevant market window; and
-2. its `observed_at <= decision_as_of`.
+1. its market time belongs to the requested market window; and
+2. `observed_at <= decision_as_of`.
 
-Backfilled old transactions discovered later are not allowed to masquerade as fresh flow.
+Backfilled old transactions discovered later cannot masquerade as fresh flow.
 
 ## Market movement candidate v1
 
-The first detector is deliberately simple and auditable. It is a **data-acquisition trigger**, not a trading model.
+The detector is intentionally simple and auditable. It is an acquisition trigger, not a trading model.
 
 ### Established-market activity acceleration
 
-Default windows:
+Frozen acquisition windows:
 
-- fast window: **30 seconds**;
-- baseline horizon: **300 seconds** total;
-- baseline comparison segment: the preceding **270 seconds**, excluding the fast 30s window.
+- fast window: 30s;
+- total baseline horizon: 300s;
+- comparison baseline: preceding 270s excluding the fast window.
 
-A token becomes an `activity_acceleration` candidate when all are true:
+Candidate requirements:
 
-- at least **6** causally available trade events in the fast 30s window;
-- at least **4** unique known participant wallets in that fast window;
-- at least **3** events in the preceding 270s baseline segment;
-- fast event-rate / prior baseline event-rate >= **3.0x**.
+- >=6 causally available trades in the fast 30s;
+- >=4 unique known participant wallets in the fast window;
+- >=3 events in the preceding 270s baseline;
+- fast/prior event-rate >=3.0x.
 
-These are frozen acquisition thresholds. They are not claims of optimal profitability and must not be tuned after seeing forward returns from the first acquisition window.
+These thresholds are acquisition mechanics, not claims of optimal profitability.
 
 ### Fresh-market burst
 
-New markets often do not have a valid 270s baseline. When a causal market-start timestamp is available, a token may instead become a `fresh_market_burst` candidate when:
+If a causal market-start timestamp exists and a 270s baseline does not yet make sense, a token may become a candidate when:
 
-- market age at T0 is <= **120 seconds**;
-- at least 6 fast-window events are observed;
-- at least 4 unique participant wallets are observed.
-
-This branch prevents new launches from being excluded solely because a historical baseline cannot yet exist.
+- market age at T0 <=120s;
+- >=6 fast-window events;
+- >=4 unique participant wallets.
 
 ### Direction is descriptive
 
-The radar records direction but does not use price appreciation as a mandatory trigger.
+The radar records pressure but does not require a large price appreciation before firing.
 
 Preferred direction statistic:
 
-- signed notional imbalance when notional coverage is complete;
+- signed notional imbalance when coverage is complete;
 - otherwise count imbalance.
 
 Labels:
 
-- `upward_pressure` when imbalance >= +20%;
-- `downward_pressure` when imbalance <= -20%;
+- `upward_pressure` at >=+20%;
+- `downward_pressure` at <=-20%;
 - `mixed_pressure` otherwise.
 
-Price change is descriptive only in v1. This is intentional: requiring a large price move before triggering would systematically detect tokens after the move has already occurred.
+Price movement is descriptive in v1 so the detector is not structurally forced to arrive after a pump already happened.
 
 ## Missingness policy
 
 No imputation.
 
-Persist explicit coverage for:
-
-- wallet/participant identity;
-- notional;
-- price;
-- source/venue;
-- observation latency.
-
-If wallet identity coverage is incomplete, participant concentration metrics that require complete identity must remain missing rather than being calculated on a selected subset.
+Persist explicit coverage for wallet identity, notional, price, source/venue and observation latency. Metrics that require complete identity/notional coverage stay missing when coverage is incomplete.
 
 ## Opportunity episodes
 
-Every market movement candidate is persisted as a raw radar trigger.
+Every market movement candidate is retained as a raw radar trigger.
 
-The first trigger for a token opens an opportunity episode.
+The first trigger for a token opens an opportunity episode. For 60s after the first trigger's observed time:
 
-For **60 seconds after the first trigger's observed time**:
-
-- additional movement triggers for the same token and acquisition run join the same episode;
+- additional movement triggers for the same token/run join the same episode;
 - raw triggers remain individually persisted;
-- provider enrichment is not duplicated solely because the detector fired repeatedly;
-- at exactly +60s, a new trigger opens a new episode.
+- enrichment is not duplicated only because the detector fired again;
+- a trigger at exactly +60s opens a new episode.
 
-Different acquisition runs can never share an episode.
+Different acquisition runs never share an episode.
 
-## Wallet intelligence after the trigger
+## Opportunity-native wallet intelligence
 
-Wallets are now context, not prerequisites.
+There is **no whitelist or frozen set of "good wallets" in the Market Opportunity Radar path**.
 
-At or before `decision_as_of`, the episode may attach:
+The causal order is:
 
-- whether one of the previously researched wallets participated;
-- number of researched wallets participating;
-- broader unique-wallet participation;
-- known wallet fingerprint metadata computed only from information available before T0;
-- repeated-wallet/concentration features.
+`market movement -> episode -> discover every wallet participating in that episode -> evaluate those wallets with history already resolved before decision_as_of`
 
-A market episode with zero tracked-wallet participation remains a valid observation.
+The old Discovery/Copyability pipeline remains historical research infrastructure. Its `Copyability Score`, Candidate Score or prior eligibility must not become a hidden admission filter for radar episodes.
 
-## Core T0 enrichment
+For every causally observed participant wallet, Opportunity Wallet Intelligence v1 may attach:
 
-Priorities:
+- current BUY/SELL/repetition behavior;
+- current notional participation when coverage is complete;
+- count of prior episodes already resolved before T0;
+- prior unique-token breadth;
+- same-token prior episode count;
+- prior positive-outcome share where return coverage exists;
+- prior mean/median realized return where available;
+- prior median holding time where available;
+- history coverage and sample-size quality flags.
 
-1. **execution / tradability** — Jupiter causal quote for the research notional;
-2. **order flow / microstructure** — counts, rates, imbalance, breadth, repeated participants;
-3. **basic token/lifecycle risk** — causal authority/liquidity/lifecycle fields when available;
-4. **wallet context** — tracked-wallet participation and independence;
-5. **network regime** — recent Solana priority-fee/congestion context.
+Critical rules:
 
-Initial research notional remains **US$25** for continuity with Wallet Forward v2.
+- a previously unknown wallet is still a valid participant;
+- unresolved history remains missing, not negative;
+- a historical outcome that only resolves after current T0 cannot be used;
+- the current episode itself cannot leak into "prior competence" evidence;
+- no `wallet_score`, `passed`, `recommended` or BUY decision exists in wallet intelligence v1;
+- a wallet that looked strong historically can still be contradicted by current flow/risk/execution evidence;
+- a wallet with no history does not invalidate the opportunity.
 
-`decision_as_of` must include the time spent obtaining mandatory features. The model is never allowed to pretend that provider responses were available at the original detection instant.
+The research question is not "is this a good wallet?" but:
+
+> Given that this wallet is participating in this specific market opportunity, what evidence about its behavior was already knowable, and does that evidence add incremental value when crossed with the rest of the T0 state?
+
+Implementation contract:
+
+- `src/opportunity_wallet_intelligence.py`
+- `tests/test_opportunity_wallet_intelligence.py`
+- `docs/opportunity-wallet-intelligence-v1-design-2026-09-03.md`
+
+## T0 evidence families
+
+Each episode should eventually freeze one evidence bundle at `decision_as_of` containing the evidence that was actually available by that time.
+
+Priority families:
+
+1. **market movement/lifecycle** — acceleration, pressure, market age;
+2. **execution/tradability** — Jupiter causal quote, route, price impact, latency, liquidity metadata;
+3. **order flow/microstructure** — buy/sell counts, rates, imbalance, breadth, repeated participants, price response;
+4. **dynamic wallet intelligence** — behavior/history of the wallets actually inside this episode;
+5. **basic token/hazard risk** — causal authority/liquidity/concentration/route-deterioration signals where available;
+6. **network/market regime** — Solana priority-fee/congestion and later broader regime context.
+
+Initial research notional remains US$25 for continuity with Wallet Forward v2.
+
+`decision_as_of` must include the time spent obtaining mandatory features. The system may never pretend provider responses were known at the original radar-detection instant.
 
 ## Outcomes
 
-Outcomes are stored separately and never enter T0 features.
+Outcomes are separate labels and never enter T0 features.
 
-Initial forward horizons:
+Initial horizons:
 
 - +5m;
 - +15m;
@@ -211,84 +204,87 @@ Initial forward horizons:
 
 Where possible use the same route-aware execution-proxy semantics as T0. Missing quotes remain missing.
 
-## First run length
+## Run gate
 
-Do **not** start a long run until:
+Do **not** start the 12h acquisition run until:
 
-- pure detector tests pass;
-- episode-store tests pass;
-- at least one provider/native stream smoke test demonstrates real timestamps and reconnect behavior;
-- provider cost/burst behavior is bounded.
+- detector tests pass;
+- market observation/episode stores pass;
+- Opportunity Wallet Intelligence causal tests pass;
+- at least one native/provider stream smoke demonstrates real timestamps and reconnect behavior;
+- provider cost/burst behavior is bounded;
+- a short end-to-end smoke proves `stream -> radar -> episode -> evidence -> decision_as_of` without look-ahead.
 
-After those gates, the first acquisition window remains **12 hours**.
+Only after those gates may the first 12h acquisition window start.
 
-## Data-readiness targets
+## DATA-READY targets
 
-The first 12h window is DATA-READY only if integrity passes and sample diversity is adequate.
+Hard integrity requirements:
 
-Integrity:
-
-- zero look-ahead violations;
-- immutable episode IDs;
-- immutable `decision_as_of`;
+- zero look-ahead;
+- immutable episode IDs and `decision_as_of`;
 - raw triggers retained;
 - cross-run isolation;
 - provider failures/missingness persisted;
-- outcomes excluded from features.
+- outcomes excluded from features;
+- no wallet allowlist used to create/suppress episodes;
+- historical wallet evidence only from outcomes already known before T0.
 
 Diversity targets:
 
-- >= **30 opportunity episodes**;
-- >= **15 unique tokens**;
-- >= **5 distinct participant/source-wallet identities** where identity coverage exists;
-- largest token share <= **20%**;
-- >=90% episodes with identity/timing fields plus at least one usable execution proxy.
+- >=30 opportunity episodes;
+- >=15 unique tokens;
+- broad participant-wallet diversity where identity coverage exists;
+- largest token share <=20%;
+- >=90% episodes with mandatory timing/identity fields plus at least one usable execution proxy.
 
-The old `largest tracked source-wallet <=50%` gate is removed because a tracked wallet is no longer required to create an episode.
-
-## What is explicitly NOT frozen as an economic rule
-
-The following are not BUY rules:
-
-- 3x activity acceleration;
-- 6 trades/30s;
-- 4 wallets/30s;
-- Pump.fun origin;
-- bonding-curve progress;
-- tracked-wallet participation;
-- social attention.
-
-They are acquisition mechanics/features whose predictive value must be tested later.
+Passing DATA-READY validates acquisition quality, not edge.
 
 ## Post-acquisition ablations
 
 Once sample quality is adequate, compare at minimum:
 
 1. movement detector only;
-2. execution/liquidity only;
-3. order flow only;
-4. wallet context only;
-5. movement + execution;
-6. movement + order flow;
-7. movement + wallet context;
-8. execution + order flow;
-9. all Core families;
-10. risk/regime added only when coverage supports them.
+2. dynamic wallet evidence only;
+3. execution/liquidity only;
+4. order flow only;
+5. market + wallet;
+6. market + flow;
+7. wallet + flow;
+8. market + execution;
+9. market + wallet + execution;
+10. all available Core evidence families;
+11. risk/regime only when coverage supports fair comparison.
 
 Use time-separated and token/wallet-cluster-aware evaluation.
+
+The purpose is to learn whether wallet competence evidence adds incremental predictive value **inside market-detected opportunities**. It is not to recreate a wallet-copy whitelist.
+
+## Explicit non-rules
+
+The following are not BUY rules:
+
+- 3x acceleration;
+- 6 trades/30s;
+- 4 wallets/30s;
+- Pump.fun origin;
+- bonding-curve progress;
+- participation by a historically strong wallet;
+- absence of a known wallet;
+- social attention.
 
 ## Stop rules
 
 - no Wallet Forward v2 Run 3;
 - no live/shadow promotion from acquisition volume;
-- no tuning detector thresholds using the first run's P&L;
-- no unbounded paid provider subscriptions;
+- no tuning detector thresholds from first-run P&L;
+- no pre-selecting "good wallets" to filter market episodes;
+- no unbounded paid subscriptions;
 - no social/NLP complexity before Core ablations;
-- no proxy quote treated as fill;
-- no Pump.fun-specific success metric treated as executable return.
+- no proxy quote treated as a fill.
 
 ## North star
 
-`market begins to move -> detect causally -> explain the movement with flow/execution/risk/wallet/regime -> freeze decision_as_of -> measure forward capturable outcome`
+`market begins to move -> detect causally -> inspect who is actually participating -> cross participant evidence with flow/execution/risk/regime -> freeze decision_as_of -> measure forward capturable outcome`
 
 The project succeeds only if that pipeline eventually demonstrates an out-of-sample, cost-adjusted and realistically executable edge.
