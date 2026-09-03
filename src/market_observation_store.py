@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import threading
 
+from src import database
 from src.database import connection
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
@@ -66,25 +68,52 @@ ON market_lifecycle_observations(
 );
 """
 
+_SCHEMA_READY_PATHS: set[str] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
+
 
 def _column_names(conn, table_name: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
+def _database_cache_key() -> str:
+    path = database.settings.database_path
+    try:
+        return str(path.resolve())
+    except AttributeError:
+        return str(path)
+
+
 def ensure_market_observation_schema() -> None:
-    with connection() as conn:
-        # Existing local research DBs predate transaction_key. Add it before creating its index.
-        base_schema = _SCHEMA.replace(
-            "\nCREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction\nON market_trade_observations(acquisition_run_key, transaction_key, id);\n",
-            "\n",
-        )
-        conn.executescript(base_schema)
-        if "transaction_key" not in _column_names(conn, "market_trade_observations"):
-            conn.execute("ALTER TABLE market_trade_observations ADD COLUMN transaction_key TEXT")
-        conn.execute(
-            """CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
-            ON market_trade_observations(acquisition_run_key, transaction_key, id)"""
-        )
+    """Ensure schema once per active SQLite path in this process.
+
+    Radar/acquisition hot paths call this helper frequently. Re-running CREATE TABLE/INDEX DDL for
+    every observation/read creates avoidable SQLite lock and filesystem overhead. The cache is
+    keyed by the currently configured database path so tests and research runs that switch to a
+    different database still receive a full schema check. The lock keeps first-use initialization
+    safe when multiple persistence workers start concurrently.
+    """
+
+    cache_key = _database_cache_key()
+    if cache_key in _SCHEMA_READY_PATHS:
+        return
+    with _SCHEMA_READY_LOCK:
+        if cache_key in _SCHEMA_READY_PATHS:
+            return
+        with connection() as conn:
+            # Existing local research DBs predate transaction_key. Add it before creating its index.
+            base_schema = _SCHEMA.replace(
+                "\nCREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction\nON market_trade_observations(acquisition_run_key, transaction_key, id);\n",
+                "\n",
+            )
+            conn.executescript(base_schema)
+            if "transaction_key" not in _column_names(conn, "market_trade_observations"):
+                conn.execute("ALTER TABLE market_trade_observations ADD COLUMN transaction_key TEXT")
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
+                ON market_trade_observations(acquisition_run_key, transaction_key, id)"""
+            )
+        _SCHEMA_READY_PATHS.add(cache_key)
 
 
 def _required(value: str, name: str) -> str:
@@ -164,10 +193,6 @@ def record_market_trade(
             if existing_identity != identity_values:
                 raise ValueError("market trade event already exists with different data")
 
-            # `observed_at` is the collector's first-seen availability boundary, not part of
-            # immutable chain identity. Providers may replay the same exact event later. Preserve
-            # the first stored timestamp and treat only same-or-later identical deliveries as
-            # idempotent; never backdate availability after the fact.
             first_observed_at = int(existing["observed_at"])
             if observation.observed_at < first_observed_at:
                 raise ValueError("market trade replay observed_at precedes first observation")
