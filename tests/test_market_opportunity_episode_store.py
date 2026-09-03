@@ -7,19 +7,30 @@ from unittest.mock import patch
 from src import database
 from src.market_opportunity_episode_store import (
     assign_market_opportunity_trigger,
+    count_market_trigger_replay_conflicts,
     freeze_market_opportunity_decision_as_of,
     load_market_opportunity_episode_triggers,
 )
 
 
 class MarketOpportunityEpisodeStoreTests(unittest.TestCase):
-    def _assign(self, *, run="run-a", key="t1", token="T", observed=100, chain=95):
+    def _assign(
+        self,
+        *,
+        run="run-a",
+        key="t1",
+        token="T",
+        observed=100,
+        chain=95,
+        direction="upward_pressure",
+        kind="activity_acceleration",
+    ):
         return assign_market_opportunity_trigger(
             acquisition_run_key=run,
             trigger_key=key,
             token_mint=token,
-            trigger_kind="activity_acceleration",
-            direction="upward_pressure",
+            trigger_kind=kind,
+            direction=direction,
             chain_time=chain,
             observed_at=observed,
             method_version="market_opportunity_radar_v1",
@@ -92,15 +103,50 @@ class MarketOpportunityEpisodeStoreTests(unittest.TestCase):
         self.assertEqual([item.trigger_key for item in early], ["t1"])
         self.assertEqual([item.trigger_key for item in all_rows], ["t1", "t2"])
 
-    def test_repeated_trigger_is_idempotent_but_conflict_is_rejected(self):
+    def test_later_exact_trigger_replay_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 first = self._assign(key="same", observed=100, chain=95)
-                repeated = self._assign(key="same", observed=100, chain=95)
-                with self.assertRaises(ValueError):
-                    self._assign(key="same", token="OTHER", observed=100, chain=95)
+                repeated = self._assign(key="same", observed=120, chain=95)
+                triggers = load_market_opportunity_episode_triggers(first.episode_key)
+                conflicts = count_market_trigger_replay_conflicts(acquisition_run_key="run-a")
         self.assertEqual(first.episode_key, repeated.episode_key)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].observed_at, 100)
+        self.assertEqual(conflicts, 0)
+
+    def test_later_conflicting_trigger_replay_is_audited_and_first_trigger_wins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "episodes.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                first = self._assign(key="same", observed=100, chain=95)
+                repeated = self._assign(
+                    key="same",
+                    token="OTHER",
+                    observed=120,
+                    chain=95,
+                    direction="downward_pressure",
+                )
+                triggers = load_market_opportunity_episode_triggers(first.episode_key)
+                conflicts = count_market_trigger_replay_conflicts(acquisition_run_key="run-a")
+        self.assertEqual(first.episode_key, repeated.episode_key)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].token_mint, "T")
+        self.assertEqual(triggers[0].direction, "upward_pressure")
+        self.assertEqual(conflicts, 1)
+
+    def test_earlier_same_key_replay_does_not_retroactively_backdate_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "episodes.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                first = self._assign(key="same", observed=120, chain=95)
+                repeated = self._assign(key="same", observed=110, chain=95)
+                triggers = load_market_opportunity_episode_triggers(first.episode_key)
+                conflicts = count_market_trigger_replay_conflicts(acquisition_run_key="run-a")
+        self.assertEqual(first.episode_key, repeated.episode_key)
+        self.assertEqual(triggers[0].observed_at, 120)
+        self.assertEqual(conflicts, 1)
 
     def test_impossible_trigger_clock_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
