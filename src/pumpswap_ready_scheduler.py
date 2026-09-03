@@ -35,16 +35,7 @@ class SchedulerSnapshot:
 
 
 class ReadyAssetScheduler(Generic[T]):
-    """Ingress-ordered per-asset FIFO scheduler that never spends execution slots waiting.
-
-    `reserve()` is called by one dispatcher in websocket ingress order. `submit()` creates a waiter
-    task for the reservation. The waiter consumes no execution semaphore capacity while earlier
-    tickets for one of its assets remain outstanding. Only once every predecessor has completed is
-    the payload placed on the ready queue, where bounded radar workers can execute it.
-
-    Multi-asset reservations are safe because all ticket relations are induced by one global
-    ingress order, so the dependency graph is acyclic.
-    """
+    """Ingress-ordered per-asset FIFO scheduler that never spends execution slots waiting."""
 
     def __init__(self) -> None:
         self._issued: dict[str, int] = {}
@@ -97,9 +88,13 @@ class ReadyAssetScheduler(Generic[T]):
             self._condition.notify_all()
 
     def ready_backlog(self) -> int:
+        if self._pre_cancel_snapshot is not None:
+            return self._pre_cancel_snapshot.ready_backlog
         return self._ready.qsize()
 
     def waiting_backlog(self) -> int:
+        if self._pre_cancel_snapshot is not None:
+            return self._pre_cancel_snapshot.waiting_backlog
         return sum(1 for task in self._waiters if not task.done())
 
     def snapshot(self) -> SchedulerSnapshot:
@@ -114,8 +109,8 @@ class ReadyAssetScheduler(Generic[T]):
             )
         )
         return SchedulerSnapshot(
-            ready_backlog=self.ready_backlog(),
-            waiting_backlog=self.waiting_backlog(),
+            ready_backlog=self._ready.qsize(),
+            waiting_backlog=sum(1 for task in self._waiters if not task.done()),
             outstanding_by_asset=outstanding,
         )
 
