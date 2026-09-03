@@ -137,6 +137,43 @@ class PumpBondingStreamTests(unittest.TestCase):
                 self.assertIsNone(obs.notional_usd)
                 self.assertIsNone(obs.price_usd)
 
+    def test_later_rpc_replay_of_same_signature_is_idempotent(self):
+        raw = payload(mint=self.MINT, user=self.USER, is_buy=True, timestamp=1000)
+        message = {
+            "method": "logsNotification",
+            "params": {
+                "result": {
+                    "context": {"slot": 99},
+                    "value": {
+                        "signature": "signature-replayed",
+                        "err": None,
+                        "logs": ["Program data: " + base64.b64encode(raw).decode()],
+                    },
+                }
+            },
+        }
+        first = parse_logs_notification(message, observed_at=1005)
+        replay = parse_logs_notification(message, observed_at=1012)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(replay)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "copytrader.db"
+            with patch("src.database.settings", self._db_settings(db)):
+                self.assertEqual(
+                    persist_pump_notification(first, acquisition_run_key="run-replay"),
+                    1,
+                )
+                self.assertEqual(
+                    persist_pump_notification(replay, acquisition_run_key="run-replay"),
+                    0,
+                )
+                rows = load_market_trades(
+                    acquisition_run_key="run-replay", token_mint=self.MINT
+                )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].observation.observed_at, 1005)
+
     def test_future_event_relative_to_observation_is_rejected(self):
         raw = payload(mint=self.MINT, user=self.USER, timestamp=1001)
         message = {
