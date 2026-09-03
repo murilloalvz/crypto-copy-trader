@@ -54,7 +54,16 @@ class PumpRadarBridgeV4Tests(unittest.TestCase):
 
     def test_signature_mismatch_is_rejected(self):
         notification = PumpLogNotification("sig", 1, 1000, (), ())
-        mismatched = PumpBatchPersistResult("other", 0, 0, 0, 0, ())
+        mismatched = PumpBatchPersistResult(
+            signature="other",
+            newly_persisted_trades=0,
+            duplicate_or_replayed_trades=0,
+            conflicting_trades=0,
+            newly_persisted_lifecycle=0,
+            duplicate_or_replayed_lifecycle=0,
+            conflicting_lifecycle=0,
+            affected_tokens=(),
+        )
         with self.assertRaises(ValueError):
             evaluate_persisted_pump_notification_for_radar_v4(
                 notification,
