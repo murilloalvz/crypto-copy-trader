@@ -19,8 +19,10 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Unified throughput v4: coverage/capacity PASS / latency FAIL.
 - Unified latency v5: **FAIL sob burst — Pump melhorou, PumpSwap sofreu head-of-line/capacity pressure**.
 - Primeiro v5b: **ABORTED BEFORE SUMMARY** por conflito Pump `signature:index`; não é resultado de throughput/latência.
-- Pump replay integrity: **RESOLVED IN CODE / LIVE REVALIDATION PENDING**.
-- Gate atual: repetir **v5b capacity stress** com a mesma configuração, sem alteração de detector/estratégia.
+- Reuso acidental do namespace `05b`: inválido/contaminado; preservar como evidência, não usar para métricas.
+- v5c limpo: **ABORTED BEFORE SUMMARY** por conflito PumpSwap no shared `market_observation_store`; confirmou bug compartilhado de replay/concurrency.
+- Shared market replay integrity: **RESOLVED IN CODE / LIVE REVALIDATION PENDING**.
+- Gate atual: repetir capacity stress com `run_key` novo e a mesma configuração congelada; não alterar detector/estratégia.
 - Jupiter, hazard provider, historical wallet outcomes no unified path, final `decision_as_of` e forward outcomes ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -61,13 +63,16 @@ Acquisition mechanics congeladas, não regras de trading:
 
 `src/market_observation_store.py` separa `chain_time` de `observed_at`.
 
-No caminho Pump batch concorrente, SQLite completion order não define causalidade. A regra congelada é:
+Shared replay semantics agora são:
 - exact replay é idempotente;
-- o menor collector `observed_at` vence mesmo se persistir depois;
-- replay conflitante no mesmo `signature:index` é auditado em `pump_replay_conflicts`;
-- entre identidades conflitantes, a observada primeiro pelo coletor é canônica;
-- replay conflitante posterior nunca sobrescreve uma observação causalmente anterior;
+- SQLite completion order não define causalidade;
+- o menor collector `observed_at` vence, mesmo se persistir depois;
+- replay conflitante no mesmo run+event_key é auditado em `market_replay_conflicts`;
+- identidade conflitante posterior não sobrescreve observação causalmente anterior;
+- se `observed_at` empata na resolução de segundos, identidade serializada estável é apenas tie-break determinístico e a ambiguidade continua auditada;
 - conflito não vira evento adicional de flow e não derruba a aquisição.
+
+No adapter Pump batch, `pump_replay_conflicts` permanece como telemetria específica do incidente anterior.
 
 `src/market_opportunity_episode_store.py` deduplica raw hits por run+token em 60s. `decision_as_of` é imutável depois do freeze e não é congelado pelo radar.
 
@@ -124,29 +129,33 @@ Decision: **FAIL — burst capacity/latency**. The Pump path improved materially
 
 Canonical report: `docs/unified-market-latency-v5-live-smoke-2026-09-03.md`.
 
-### Primeiro v5b — replay integrity incident
+### v5b / v5c replay integrity incidents
 
-`unified-market-smoke-20260903-05b` com Pump workers 8 / PumpSwap workers 24 / resolutions 18 abortou antes de SUMMARY:
+Primeiro `unified-market-smoke-20260903-05b` abortou no Pump antes de SUMMARY por conflito no mesmo `signature:index`. O adapter Pump foi corrigido para earliest-observed canonical semantics e auditoria em `pump_replay_conflicts`.
+
+A repetição acidental usando o mesmo `05b` foi classificada como **INVALID / CONTAMINATED RUN** porque o namespace já continha dados parciais.
+
+A run limpa `unified-market-smoke-20260903-05c` reproduziu o mesmo tipo de falha no PumpSwap, agora dentro de `record_market_trade()`:
 
 ```text
 ValueError: market trade event already exists with different data
 ```
 
-Decision: **ABORTED — NOT A THROUGHPUT/LATENCY RESULT**.
+Decision: **ABORTED BEFORE SUMMARY — SHARED REPLAY INTEGRITY FAILURE**. Não usar para throughput/latência.
 
-Causa operacional: workers Pump concorrentes podem concluir fora da ordem de observação; além disso o mesmo `signature:index` pode reaparecer com identidade causal diferente sob o stream `confirmed`. O código anterior confundia conclusão SQLite com ordem causal e tratava qualquer identidade conflitante como fatal.
+A correção foi movida para o shared `market_observation_store`:
+- exact replay idempotente;
+- earliest collector `observed_at` canônico;
+- conflicting identity auditada em `market_replay_conflicts`;
+- same-second conflict recebe tie-break determinístico explícito;
+- conflict não cria flow extra nem derruba a run;
+- wrapper v5 reporta `pump_replay_conflicts` e `market_replay_conflicts` uma vez no final.
 
-Correção:
-- earliest collector `observed_at` é canônico independentemente da ordem de completion;
-- exact replay continua idempotente;
-- identidade conflitante é persistida em `pump_replay_conflicts` com stored/incoming identity e canonical action;
-- conflito posterior não sobrescreve first-seen causal data;
-- conflito não cria flow extra;
-- acquisition continua e o wrapper reporta `pump_replay_conflicts` ao fim da run.
+Canonical docs:
+- `docs/pump-replay-integrity-v5b-incident-2026-09-03.md`;
+- `docs/shared-market-replay-integrity-v5c-incident-2026-09-03.md`.
 
-Canonical incident doc: `docs/pump-replay-integrity-v5b-incident-2026-09-03.md`.
-
-Validation após correção: `compileall` PASS; **563 tests, 0 failures**.
+Validation da correção compartilhada: `compileall` PASS; **565 tests / 0 failures** antes do tie-break final; CI do tie-break final também PASS. Live revalidation ainda pendente.
 
 ## Throughput / latency architecture
 
@@ -166,9 +175,9 @@ Persistence may complete out of order, but radar assignment remains globally ing
 
 v5 caches schema readiness per active SQLite DB path, avoiding repeated DDL in observation/episode hot paths. Detector, T0, ordering and episode semantics are unchanged.
 
-## Gate atual — repetir v5b capacity stress
+## Gate atual — fresh capacity stress after shared replay fix
 
-Repeat the same operational stress after the replay-integrity fix. No threshold/strategy change.
+Repeat the exact operational stress after the shared replay-integrity fix. No threshold/strategy change.
 
 Configuration:
 - Pump workers 8;
@@ -189,9 +198,9 @@ PASS only if:
 8. budget skips == 0;
 9. admitted bundles are not systematically empty.
 
-`pump_replay_conflicts` is audit telemetry, not an automatic FAIL by itself. Any non-zero count must be inspected before long acquisition.
+Replay-conflict counters are audit telemetry, not automatic FAIL by themselves. Any non-zero count must be inspected before long acquisition.
 
-If repeated v5b still fails latency/capacity, **do not keep increasing concurrency blindly**. Redesign PumpSwap to remove global cross-pool head-of-line blocking while preserving causal ordering at the opportunity-asset level.
+If the fresh stress still fails latency/capacity, **do not keep increasing concurrency blindly**. Redesign PumpSwap to remove global cross-pool head-of-line blocking while preserving causal ordering at the opportunity-asset level.
 
 ## Depois do latency PASS
 
@@ -217,8 +226,10 @@ Ablations: movement, flow, execution, wallet e risk. Métricas mínimas: mean/me
 - causal unified local bundle: PASS;
 - v4: capacity PASS / latency FAIL;
 - v5: burst capacity/latency FAIL;
-- first v5b: aborted on replay integrity; no throughput conclusion;
-- replay integrity fix: CI PASS / live revalidation pending;
+- first v5b: aborted on Pump replay integrity; no throughput conclusion;
+- repeated same-key 05b: invalid/contaminated;
+- v5c: clean reproduction of shared PumpSwap replay conflict; aborted before summary;
+- shared replay integrity fix: CI PASS / live revalidation pending;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
 - shadow/live: não liberado.
