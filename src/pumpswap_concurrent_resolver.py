@@ -1,6 +1,10 @@
 import asyncio
 
-from src.pumpswap_pool_store import PumpSwapPoolMapping
+from src.pumpswap_pool_store import (
+    PumpSwapPoolMapping,
+    load_pumpswap_pool_mapping,
+    record_pumpswap_pool_mapping,
+)
 from src.pumpswap_reusable_resolver import ReusablePumpSwapPoolResolver
 
 
@@ -8,7 +12,9 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
     """Bound concurrent pool resolution and single-flight each pool address.
 
     Different unknown pools may hydrate concurrently, while repeated trades for the same pool wait
-    behind one resolution path and then reuse the resulting cache/store mapping.
+    behind one resolution path and then reuse the resulting cache/store mapping. CreatePoolEvent
+    learning uses the same causal replay policy as the shared pool store so an earlier on-chain
+    observation can safely supersede a later RPC completion without aborting acquisition.
     """
 
     def __init__(self, *args, max_concurrent_resolutions: int = 8, **kwargs):
@@ -19,6 +25,28 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
         self._resolution_semaphore = asyncio.Semaphore(self.max_concurrent_resolutions)
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self.singleflight_waits = 0
+
+    def learn_from_create(self, event, *, observed_at: int) -> PumpSwapPoolMapping:
+        learned_at = int(observed_at)
+        if learned_at < int(event.timestamp):
+            raise ValueError("pool mapping observed_at cannot precede CreatePoolEvent timestamp")
+
+        record_pumpswap_pool_mapping(
+            acquisition_run_key=self.acquisition_run_key,
+            pool_address=event.pool,
+            base_mint=event.base_mint,
+            quote_mint=event.quote_mint,
+            observed_at=learned_at,
+            source_provider="solana_logs_subscribe_create_pool",
+        )
+        canonical = load_pumpswap_pool_mapping(
+            acquisition_run_key=self.acquisition_run_key,
+            pool_address=event.pool,
+        )
+        if canonical is None:
+            raise RuntimeError("PumpSwap CreatePoolEvent mapping disappeared after persistence")
+        self._cache[event.pool] = canonical
+        return canonical
 
     async def resolve(self, pool_address: str, *, as_of: int) -> PumpSwapPoolMapping | None:
         pool = str(pool_address).strip()
