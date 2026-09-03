@@ -40,10 +40,10 @@ class PumpSwapReplayIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 first = PumpSwapLogNotification("sig", 1, 110, (event,), ())
                 second = PumpSwapLogNotification("sig", 1, 115, (event,), ())
 
-                await persist_pumpswap_notification_normalized(
+                first_result = await persist_pumpswap_notification_normalized(
                     first, acquisition_run_key="run", resolver=resolver
                 )
-                await persist_pumpswap_notification_normalized(
+                conflict_result = await persist_pumpswap_notification_normalized(
                     second, acquisition_run_key="run", resolver=resolver
                 )
 
@@ -54,6 +54,8 @@ class PumpSwapReplayIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows_a), 1)
         self.assertEqual(rows_b, ())
         self.assertEqual(conflicts, 1)
+        self.assertEqual(first_result.affected_tokens, ("TOKEN_A",))
+        self.assertEqual(conflict_result.affected_tokens, ("TOKEN_A",))
 
 
 if __name__ == "__main__":
