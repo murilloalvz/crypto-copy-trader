@@ -14,7 +14,10 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - O protocolo wallet-triggered `Causal Opportunity Acquisition v1` foi **SUPERSEDED BEFORE RUN**.
 - Gate ativo: **Market Opportunity Radar v1.1 transaction-aware + Opportunity Wallet Intelligence v1 + native Pump market acquisition**.
 - Native Pump bonding-curve acquisition teve **live smoke operacional aprovado** na máquina local real em 2026-09-03.
-- Última suíte confirmada: **519 testes, zero falhas**, com `compileall` aprovado.
+- `Pump -> Market Radar -> Opportunity Episode` teve **live smoke operacional aprovado** em `market-radar-smoke-20260903-03`.
+- O incidente de replay timestamp da run `market-radar-smoke-20260903-02` está **RESOLVED**; a run permanece FAILED/PARTIAL como evidência preservada.
+- Última suíte executável confirmada: **523 testes, zero falhas**, com `compileall` aprovado.
+- Próximo bloqueador técnico: **PumpSwap adapter + episode-scoped enrichment end-to-end**.
 
 ## Regra central de validação
 
@@ -240,6 +243,17 @@ O store é idempotente, run-scoped e suporta leitura causal por `as_of` e market
 
 A migração de SQLite adiciona `transaction_key` de forma compatível com bancos locais já existentes. Linhas legadas permanecem com `NULL`, sem apagar ou reclassificar evidência histórica.
 
+Replay semantics corrigidas e regression-tested:
+
+- primeira observação preserva o causal first-seen `observed_at`;
+- replay idêntico posterior retorna duplicate sem regravar o relógio;
+- replay que tentaria backdatear disponibilidade é rejeitado;
+- mutação real de payload continua conflito visível.
+
+Documento do incidente:
+
+`docs/market-radar-replay-timestamp-incident-2026-09-03.md`
+
 ### Market opportunity episodes
 
 `src/market_opportunity_episode_store.py`
@@ -383,7 +397,7 @@ Taxas descritivas aproximadas:
 - 16.51 unique wallets/s;
 - 97.61% decoded events persisted.
 
-Os 88 decoded-but-not-persisted **não devem ser classificados retrospectivamente sem auditoria**. O próximo smoke separa explicitamente non-SOL-prefix de eligible duplicate/replayed observations.
+Os 88 decoded-but-not-persisted foram depois separados pelo smoke do radar em non-SOL-prefix versus replay/duplicate, sem inferência silenciosa.
 
 Decisão operacional:
 
@@ -395,7 +409,16 @@ A escassez de raw acquisition candidates deixou de ser o gargalo imediato no Pum
 
 ### PumpSwap
 
-PumpSwap usa programa e schemas próprios (`BuyEvent`, `SellEvent`, `CreatePoolEvent`). O adapter Pump bonding não pode ser reutilizado por inferência. PumpSwap permanece próximo adapter a implementar/validar, incluindo mapeamento causal pool -> base mint.
+PumpSwap usa programa e schemas próprios (`BuyEvent`, `SellEvent`, `CreatePoolEvent`). O adapter Pump bonding não pode ser reutilizado por inferência.
+
+A documentação/IDL oficial atual mostra:
+
+- programa `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`;
+- `BuyEvent` e `SellEvent` carregam `pool` e `user`, mas não carregam diretamente `base_mint`;
+- `CreatePoolEvent` carrega `base_mint`, `quote_mint` e `pool`;
+- a conta `Pool` também carrega `base_mint` e `quote_mint`.
+
+Consequência de arquitetura: o adapter PumpSwap precisa de resolução causal `pool -> base_mint`, usando CreatePoolEvent quando disponível e hidratação/cache de Pool account para pools pré-existentes. Não é aceitável inferir mint pelo evento de trade.
 
 ## Live Market Radar Bridge
 
@@ -422,25 +445,54 @@ Regras:
 
 O freeze de `decision_as_of` permanece reservado à camada de enrichment, depois que as tentativas obrigatórias de execution/risk/regime/wallet evidence terminarem. O relógio final deve refletir quando a informação realmente ficou disponível.
 
-### Próximo live smoke
+### Live radar smoke — PASS
 
-`market_radar_smoke.py` é limitado a no máximo 900s e mede:
+Run canônica pós-fix:
 
-- notifications;
-- decoded trades;
-- lifecycle events;
-- SOL-eligible trades;
-- persisted trades;
-- filtered non-SOL-prefix;
-- duplicate/replayed eligible rows;
-- evaluated tokens;
-- radar hits;
-- unique hit tokens;
-- unique episodes;
-- trigger-kind distribution;
-- direction distribution.
+`market-radar-smoke-20260903-03`
 
-Ele ainda não mede edge ou profitability.
+Resumo:
+
+```text
+elapsed=120.0s
+notifications=2034
+decoded_trades=2111
+lifecycle_events=27
+sol_eligible=2037
+persisted=2037
+filtered_non_sol_prefix=74
+duplicate_or_replayed_eligible=0
+evaluated_tokens=156
+raw_radar_hits=738
+continuation_hits=707
+continuation_share=95.8%
+unique_hit_tokens=29
+unique_episodes=31
+repeated_episode_tokens=2
+opened_trigger_kinds={'activity_acceleration': 24, 'fresh_market_burst': 7}
+opened_directions={'downward_pressure': 7, 'upward_pressure': 12, 'mixed_pressure': 12}
+```
+
+Interpretação operacional:
+
+- 738 raw hits **não** são 738 oportunidades independentes;
+- 707 eram continuações de episode já aberto;
+- só 31 opportunity episodes independentes foram abertos;
+- 31 episodes cobriram 29 tokens;
+- os dois tokens repetidos abriram duas vezes cada na saída observada, então maior share de token = 2/31 ~= 6.5%;
+- expensive enrichment deve ser **episode-scoped**, nunca raw-hit-scoped;
+- direction permaneceu diversa: 12 upward, 12 mixed, 7 downward;
+- nenhum threshold foi retunado.
+
+Documento:
+
+`docs/market-radar-live-smoke-2026-09-03-v2.md`
+
+Decisão:
+
+**PUMP BONDING STREAM -> MARKET RADAR -> OPPORTUNITY EPISODE: LIVE OPERATIONAL PASS.**
+
+Isso ainda não mede edge ou profitability.
 
 ## Cruzamento das análises
 
@@ -480,15 +532,15 @@ Não depender de scraping da UI Pump.fun.
 
 Ainda **não iniciar 12h**.
 
-Ordem atual:
+Pump bonding stream + radar + episode accounting já passaram o short live gate. Ordem atual:
 
-1. rodar `market_radar_smoke.py` por 120s na máquina local real;
-2. validar quantidade/diversidade dos episodes, transaction breadth, lifecycle coverage, idempotência e burst behavior;
-3. implementar/validar adapter PumpSwap separado;
-4. ligar `episode -> dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime`;
-5. smoke end-to-end curto incluindo verdadeiro `decision_as_of`;
-6. auditar provider/RPC cost, missingness e finality quando aplicável;
-7. somente depois congelar e iniciar primeira janela de 12h.
+1. implementar/validar adapter PumpSwap separado com resolução causal `pool -> base_mint`;
+2. definir scheduler de enrichment limitado a **new episode only** e com budgets explícitos de concorrência/timeout;
+3. ligar `episode -> dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime`;
+4. smoke end-to-end curto incluindo verdadeiro `decision_as_of`;
+5. auditar provider/RPC cost, missingness, latency e finality quando aplicável;
+6. congelar o protocolo runnable;
+7. somente depois iniciar primeira janela de 12h.
 
 Meta DATA-READY futura:
 
@@ -499,6 +551,8 @@ Meta DATA-READY futura:
 - largest token share <=20%;
 - >=90% episodes com timing/identity e ao menos um execution proxy utilizável;
 - zero uso de whitelist de wallet para criar/suprimir episódio.
+
+O smoke `-03` já mostra que volume/diversidade de aquisição conseguem atingir numericamente >=30 episodes e >=15 tokens em uma janela curta, mas **não conta como DATA-READY econômico**, pois ainda faltam execution proxy, enrichment e outcomes forward preregistrados.
 
 Passar o gate valida aquisição, não edge.
 
@@ -524,12 +578,14 @@ Usar avaliação separada no tempo e cluster-aware por token/wallet/transaction 
 - causal forward infrastructure: validada;
 - quantity-aware accounting: validado;
 - wallet-only edge: não estabelecido;
-- Market Opportunity Radar v1.1: implementado/testado, live radar smoke pendente;
+- Market Opportunity Radar v1.1: implementado/testado e **live radar smoke aprovado**;
 - Opportunity Wallet Intelligence: contrato causal implementado/testado, integração live-read-only ainda não validada end-to-end;
 - Native Pump bonding stream: implementado/testado e **live smoke operacional aprovado**;
-- Pump lifecycle CreateEvent capture: implementado/testado, live coverage será medida no radar smoke;
-- stream -> radar -> episode bridge: implementado/testado, live smoke pendente;
+- Pump lifecycle CreateEvent capture: implementado/testado e observado em live radar smoke;
+- stream -> radar -> episode bridge: implementado/testado e **live smoke aprovado**;
+- replay timestamp incident: **RESOLVED / regression-tested / local re-smoke pass**;
 - PumpSwap coverage: pendente;
+- episode-scoped Jupiter/risk/regime enrichment: pendente;
 - executable landing/fill: não validado;
 - shadow executável: não liberado;
 - live: não liberado.
