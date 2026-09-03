@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 
 
-MARKET_OPPORTUNITY_RADAR_VERSION = "market_opportunity_radar_v1"
+MARKET_OPPORTUNITY_RADAR_VERSION = "market_opportunity_radar_v1_1_tx_aware"
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,7 @@ class MarketRadarConfig:
     baseline_horizon_seconds: int = 300
     min_fast_events: int = 6
     min_unique_wallets: int = 4
+    min_unique_transactions: int = 4
     min_baseline_events: int = 3
     min_activity_acceleration_ratio: float = 3.0
     fresh_market_max_age_seconds: int = 120
@@ -27,6 +28,7 @@ class MarketTradeObservation:
     notional_usd: float | None = None
     price_usd: float | None = None
     venue: str | None = None
+    transaction_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,9 @@ class MarketMovementFeatures:
     fast_buy_count: int
     fast_sell_count: int
     fast_unique_wallet_count: int
+    fast_unique_transaction_count: int | None
     wallet_identity_coverage_pct: float | None
+    transaction_identity_coverage_pct: float | None
     notional_coverage_pct: float | None
     price_coverage_pct: float | None
     fast_event_rate_per_second: float
@@ -93,6 +97,8 @@ def _validate_config(config: MarketRadarConfig) -> None:
         raise ValueError("min_fast_events must be positive")
     if config.min_unique_wallets <= 0:
         raise ValueError("min_unique_wallets must be positive")
+    if config.min_unique_transactions <= 0:
+        raise ValueError("min_unique_transactions must be positive")
     if config.min_baseline_events <= 0:
         raise ValueError("min_baseline_events must be positive")
     if config.min_activity_acceleration_ratio <= 0:
@@ -115,6 +121,8 @@ def _validate_trade(item: MarketTradeObservation) -> None:
         raise ValueError("wallet_address cannot be blank")
     if item.venue is not None and not item.venue.strip():
         raise ValueError("venue cannot be blank")
+    if item.transaction_key is not None and not item.transaction_key.strip():
+        raise ValueError("transaction_key cannot be blank")
     if item.notional_usd is not None and (
         item.notional_usd < 0 or not math.isfinite(item.notional_usd)
     ):
@@ -163,7 +171,8 @@ def build_market_movement_features(
 
     `chain_time` decides whether a trade belongs to the market window. `observed_at` proves that
     the collector knew the trade by `as_of`. Late hydration therefore never turns an old trade
-    into fresh flow.
+    into fresh flow. `transaction_key`, when completely covered, separately measures transaction
+    breadth so a multi-event transaction/bundle cannot masquerade as independent activity.
     """
 
     _validate_config(config)
@@ -197,6 +206,11 @@ def build_market_movement_features(
     wallet_rows = [item for item in fast if item.wallet_address is not None]
     unique_wallets = {str(item.wallet_address) for item in wallet_rows}
     wallet_coverage = _coverage_pct(len(wallet_rows), len(fast))
+
+    transaction_rows = [item for item in fast if item.transaction_key is not None]
+    unique_transactions = {str(item.transaction_key) for item in transaction_rows}
+    transaction_coverage = _coverage_pct(len(transaction_rows), len(fast))
+    unique_transaction_count = len(unique_transactions) if transaction_rows else None
 
     notional_rows = [item for item in fast if item.notional_usd is not None]
     notional_coverage = _coverage_pct(len(notional_rows), len(fast))
@@ -253,6 +267,10 @@ def build_market_movement_features(
 
     if fast and len(wallet_rows) < len(fast):
         quality.append("partial_wallet_identity_coverage")
+    if fast and not transaction_rows:
+        quality.append("transaction_identity_missing")
+    elif fast and len(transaction_rows) < len(fast):
+        quality.append("partial_transaction_identity_coverage")
     if fast and not notionals_complete:
         quality.append("partial_notional_coverage")
     if fast and not prices_complete:
@@ -275,7 +293,9 @@ def build_market_movement_features(
         fast_buy_count=len(buys),
         fast_sell_count=len(sells),
         fast_unique_wallet_count=len(unique_wallets),
+        fast_unique_transaction_count=unique_transaction_count,
         wallet_identity_coverage_pct=wallet_coverage,
+        transaction_identity_coverage_pct=transaction_coverage,
         notional_coverage_pct=notional_coverage,
         price_coverage_pct=price_coverage,
         fast_event_rate_per_second=fast_rate,
@@ -316,9 +336,17 @@ def detect_market_movement(
     breadth_ready = features.fast_unique_wallet_count >= config.min_unique_wallets
     fast_ready = features.fast_event_count >= config.min_fast_events
 
+    transaction_breadth_ready = True
+    if features.transaction_identity_coverage_pct == 100.0:
+        transaction_breadth_ready = (
+            features.fast_unique_transaction_count is not None
+            and features.fast_unique_transaction_count >= config.min_unique_transactions
+        )
+
     established_ready = (
         fast_ready
         and breadth_ready
+        and transaction_breadth_ready
         and features.baseline_event_count >= config.min_baseline_events
         and features.activity_acceleration_ratio is not None
         and features.activity_acceleration_ratio >= config.min_activity_acceleration_ratio
@@ -327,6 +355,7 @@ def detect_market_movement(
     fresh_ready = (
         fast_ready
         and breadth_ready
+        and transaction_breadth_ready
         and features.market_age_seconds is not None
         and 0 <= features.market_age_seconds <= config.fresh_market_max_age_seconds
     )
