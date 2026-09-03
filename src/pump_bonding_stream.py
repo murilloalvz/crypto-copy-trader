@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
-from src.market_observation_store import record_market_trade
-from src.market_opportunity_radar import MarketTradeObservation
+from src.market_observation_store import record_market_lifecycle, record_market_trade
+from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
 
 PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_TRADE_EVENT_DISCRIMINATOR = bytes([189, 219, 127, 211, 78, 230, 97, 238])
+PUMP_CREATE_EVENT_DISCRIMINATOR = bytes([27, 114, 169, 77, 222, 235, 99, 118])
 LAMPORTS_PER_SOL = 1_000_000_000
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -28,11 +29,21 @@ class PumpTradeEvent:
 
 
 @dataclass(frozen=True)
+class PumpCreateEvent:
+    mint: str
+    bonding_curve: str
+    user: str
+    creator: str
+    timestamp: int
+
+
+@dataclass(frozen=True)
 class PumpLogNotification:
     signature: str
     slot: int
     observed_at: int
     events: tuple[PumpTradeEvent, ...]
+    lifecycle_events: tuple[PumpCreateEvent, ...] = ()
 
 
 def _required(value: str, name: str) -> str:
@@ -56,6 +67,21 @@ def _b58encode(raw: bytes) -> str:
         number, remainder = divmod(number, 58)
         encoded = _BASE58_ALPHABET[remainder] + encoded
     return "1" * zeros + encoded
+
+
+def _read_borsh_string(payload: bytes, offset: int, *, field_name: str) -> tuple[str, int]:
+    if offset + 4 > len(payload):
+        raise ValueError(f"truncated Pump CreateEvent {field_name} length")
+    length = struct.unpack_from("<I", payload, offset)[0]
+    offset += 4
+    end = offset + length
+    if end > len(payload):
+        raise ValueError(f"truncated Pump CreateEvent {field_name}")
+    try:
+        value = payload[offset:end].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid UTF-8 Pump CreateEvent {field_name}") from exc
+    return value, end
 
 
 def rpc_http_to_ws_url(rpc_url: str) -> str:
@@ -138,7 +164,44 @@ def decode_pump_trade_event_payload(payload: bytes) -> PumpTradeEvent | None:
     )
 
 
-def decode_program_data_log(line: str) -> PumpTradeEvent | None:
+def decode_pump_create_event_payload(payload: bytes) -> PumpCreateEvent | None:
+    """Decode the causal prefix needed from Pump's public Anchor CreateEvent.
+
+    CreateEvent begins with three Borsh strings (name, symbol, uri), followed by mint,
+    bonding_curve, user, creator and timestamp. Later reserve/config fields are intentionally
+    ignored because lifecycle acquisition only needs token identity and market start time.
+    """
+
+    if len(payload) < 8 or payload[:8] != PUMP_CREATE_EVENT_DISCRIMINATOR:
+        return None
+    offset = 8
+    for field_name in ("name", "symbol", "uri"):
+        _, offset = _read_borsh_string(payload, offset, field_name=field_name)
+
+    minimum_tail = 32 * 4 + 8
+    if offset + minimum_tail > len(payload):
+        raise ValueError("truncated Pump CreateEvent identity prefix")
+    mint = _b58encode(payload[offset : offset + 32])
+    offset += 32
+    bonding_curve = _b58encode(payload[offset : offset + 32])
+    offset += 32
+    user = _b58encode(payload[offset : offset + 32])
+    offset += 32
+    creator = _b58encode(payload[offset : offset + 32])
+    offset += 32
+    timestamp = struct.unpack_from("<q", payload, offset)[0]
+    if timestamp < 0:
+        raise ValueError("Pump CreateEvent timestamp cannot be negative")
+    return PumpCreateEvent(
+        mint=mint,
+        bonding_curve=bonding_curve,
+        user=user,
+        creator=creator,
+        timestamp=int(timestamp),
+    )
+
+
+def _decode_program_data_bytes(line: str) -> bytes | None:
     prefix = "Program data: "
     if not str(line).startswith(prefix):
         return None
@@ -146,9 +209,17 @@ def decode_program_data_log(line: str) -> PumpTradeEvent | None:
     if not encoded:
         raise ValueError("empty Program data log")
     try:
-        raw = base64.b64decode(encoded, validate=True)
+        return base64.b64decode(encoded, validate=True)
     except Exception as exc:
         raise ValueError("invalid base64 Program data log") from exc
+
+
+def decode_program_data_log(line: str) -> PumpTradeEvent | None:
+    """Backward-compatible helper that returns only Pump TradeEvents."""
+
+    raw = _decode_program_data_bytes(line)
+    if raw is None:
+        return None
     return decode_pump_trade_event_payload(raw)
 
 
@@ -182,18 +253,29 @@ def parse_logs_notification(
         raise ValueError("observed_at must be non-negative")
 
     events: list[PumpTradeEvent] = []
+    lifecycle_events: list[PumpCreateEvent] = []
     for line in logs:
-        event = decode_program_data_log(str(line))
-        if event is not None:
-            if learned_at < event.timestamp:
+        raw = _decode_program_data_bytes(str(line))
+        if raw is None:
+            continue
+        trade_event = decode_pump_trade_event_payload(raw)
+        if trade_event is not None:
+            if learned_at < trade_event.timestamp:
                 raise ValueError("observed_at cannot precede Pump event timestamp")
-            events.append(event)
+            events.append(trade_event)
+            continue
+        create_event = decode_pump_create_event_payload(raw)
+        if create_event is not None:
+            if learned_at < create_event.timestamp:
+                raise ValueError("observed_at cannot precede Pump create timestamp")
+            lifecycle_events.append(create_event)
 
     return PumpLogNotification(
         signature=signature,
         slot=slot,
         observed_at=learned_at,
         events=tuple(events),
+        lifecycle_events=tuple(lifecycle_events),
     )
 
 
@@ -202,14 +284,30 @@ def persist_pump_notification(
     *,
     acquisition_run_key: str,
 ) -> int:
-    """Persist decoded SOL-paired Pump trades into the market observation store.
+    """Persist decoded Pump lifecycle and SOL-paired trades into the market store.
 
-    Pump now supports non-SOL quote assets. The stable TradeEvent prefix does not expose quote_mint
-    until later in the payload, so this v1 adapter only persists events whose `sol_amount` is
-    positive. It deliberately leaves USD notional and price missing rather than inventing them.
+    The return value remains the count of newly persisted TradeEvents for backward compatibility.
+    CreateEvents are persisted separately as lifecycle observations. Pump now supports non-SOL
+    quote assets; the stable TradeEvent prefix does not expose quote_mint until later in the
+    payload, so this v1 adapter only persists trades whose `sol_amount` is positive. USD notional
+    and price remain missing rather than being invented.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
+
+    for index, event in enumerate(notification.lifecycle_events):
+        record_market_lifecycle(
+            acquisition_run_key=run_key,
+            event_key=f"pump-create:{notification.signature}:{index}",
+            source_provider="solana_logs_subscribe",
+            observation=MarketLifecycleObservation(
+                token_mint=event.mint,
+                market_started_at=event.timestamp,
+                observed_at=notification.observed_at,
+                venue="pump_bonding_curve",
+            ),
+        )
+
     inserted = 0
     for index, event in enumerate(notification.events):
         if event.sol_amount <= 0:
@@ -223,6 +321,7 @@ def persist_pump_notification(
             notional_usd=None,
             price_usd=None,
             venue="pump_bonding_curve",
+            transaction_key=notification.signature,
         )
         if record_market_trade(
             acquisition_run_key=run_key,
@@ -274,7 +373,9 @@ async def iter_pump_log_notifications(
                 async for raw in websocket:
                     decoded = json.loads(raw)
                     notification = parse_logs_notification(decoded)
-                    if notification is not None and notification.events:
+                    if notification is not None and (
+                        notification.events or notification.lifecycle_events
+                    ):
                         yield notification
         except asyncio.CancelledError:
             raise
