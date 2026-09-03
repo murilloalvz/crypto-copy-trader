@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import hashlib
 import time
 from collections import Counter
 
@@ -25,6 +26,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _episode_display_id(episode_key: str) -> str:
+    return hashlib.sha256(episode_key.encode("utf-8")).hexdigest()[:10]
+
+
 async def run_smoke(*, run_key: str, duration_seconds: int, commitment: str) -> None:
     if duration_seconds <= 0 or duration_seconds > MAX_SMOKE_SECONDS:
         raise SystemExit(f"--duration-seconds must be between 1 and {MAX_SMOKE_SECONDS}")
@@ -40,12 +45,20 @@ async def run_smoke(*, run_key: str, duration_seconds: int, commitment: str) -> 
     evaluated_tokens: set[str] = set()
     hit_tokens: set[str] = set()
     episode_keys: set[str] = set()
-    trigger_kinds: Counter[str] = Counter()
-    directions: Counter[str] = Counter()
+    raw_trigger_kinds: Counter[str] = Counter()
+    raw_directions: Counter[str] = Counter()
+    opened_trigger_kinds: Counter[str] = Counter()
+    opened_directions: Counter[str] = Counter()
+    episode_token_counts: Counter[str] = Counter()
+    continuation_hits = 0
 
     print("Crypto Copy Trader — Market Radar Live Smoke")
     print("Mode: PAPER / RESEARCH / READ ONLY — no transaction signing or submission.")
     print(f"run_key={run_key} duration={duration_seconds}s commitment={commitment}")
+    print(
+        "Console policy: only first sighting of each opportunity episode is printed. "
+        "All qualifying raw radar triggers remain persisted."
+    )
 
     iterator = iter_pump_log_notifications(
         rpc_url=settings.rpc_url,
@@ -80,18 +93,31 @@ async def run_smoke(*, run_key: str, duration_seconds: int, commitment: str) -> 
 
         for hit in result.hits:
             hit_tokens.add(hit.token_mint)
+            raw_trigger_kinds[hit.trigger.trigger_kind] += 1
+            raw_directions[hit.trigger.direction] += 1
+
+            if hit.episode.episode_key in episode_keys:
+                continuation_hits += 1
+                continue
+
             episode_keys.add(hit.episode.episode_key)
-            trigger_kinds[hit.trigger.trigger_kind] += 1
-            directions[hit.trigger.direction] += 1
+            episode_token_counts[hit.token_mint] += 1
+            opened_trigger_kinds[hit.trigger.trigger_kind] += 1
+            opened_directions[hit.trigger.direction] += 1
             f = hit.trigger.features
             print(
-                f"[radar] token={hit.token_mint[:10]}… kind={hit.trigger.trigger_kind} "
+                f"[episode-open] id={_episode_display_id(hit.episode.episode_key)} "
+                f"token={hit.token_mint[:10]}… kind={hit.trigger.trigger_kind} "
                 f"dir={hit.trigger.direction} fast={f.fast_event_count} "
                 f"wallets={f.fast_unique_wallet_count} tx={f.fast_unique_transaction_count} "
-                f"accel={f.activity_acceleration_ratio} episode={hit.episode.episode_key[-18:]}"
+                f"accel={f.activity_acceleration_ratio}"
             )
 
     elapsed = time.monotonic() - started
+    raw_hits = sum(raw_trigger_kinds.values())
+    repeated_episode_tokens = sum(max(0, count - 1) for count in episode_token_counts.values())
+    continuation_share = (100.0 * continuation_hits / raw_hits) if raw_hits else 0.0
+
     print("\nSUMMARY")
     print(
         f"elapsed={elapsed:.1f}s notifications={notifications} "
@@ -104,12 +130,20 @@ async def run_smoke(*, run_key: str, duration_seconds: int, commitment: str) -> 
         f"evaluated_tokens={len(evaluated_tokens)}"
     )
     print(
-        f"radar_hits={sum(trigger_kinds.values())} unique_hit_tokens={len(hit_tokens)} "
-        f"unique_episodes={len(episode_keys)} trigger_kinds={dict(trigger_kinds)} "
-        f"directions={dict(directions)}"
+        f"raw_radar_hits={raw_hits} continuation_hits={continuation_hits} "
+        f"continuation_share={continuation_share:.1f}% unique_hit_tokens={len(hit_tokens)}"
     )
     print(
-        "This smoke validates live acquisition and detector plumbing only. "
+        f"unique_episodes={len(episode_keys)} repeated_episode_tokens={repeated_episode_tokens} "
+        f"opened_trigger_kinds={dict(opened_trigger_kinds)} "
+        f"opened_directions={dict(opened_directions)}"
+    )
+    print(
+        f"raw_trigger_kinds={dict(raw_trigger_kinds)} "
+        f"raw_directions={dict(raw_directions)}"
+    )
+    print(
+        "This smoke validates live acquisition and detector/episode plumbing only. "
         "It does not measure edge, profitability or executable fills."
     )
 
