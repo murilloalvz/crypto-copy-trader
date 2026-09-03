@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from src.database import connection
@@ -12,8 +13,10 @@ class PumpBatchPersistResult:
     signature: str
     newly_persisted_trades: int
     duplicate_or_replayed_trades: int
+    conflicting_trades: int
     newly_persisted_lifecycle: int
     duplicate_or_replayed_lifecycle: int
+    conflicting_lifecycle: int
     affected_tokens: tuple[str, ...]
 
 
@@ -24,7 +27,72 @@ def _required(value: str, name: str) -> str:
     return normalized
 
 
-def _persist_lifecycle_row(conn, *, run_key: str, notification: PumpLogNotification, index: int) -> bool:
+def _ensure_conflict_schema(conn) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pump_replay_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            acquisition_run_key TEXT NOT NULL,
+            event_key TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            stored_observed_at INTEGER NOT NULL,
+            incoming_observed_at INTEGER NOT NULL,
+            stored_identity_json TEXT NOT NULL,
+            incoming_identity_json TEXT NOT NULL,
+            canonical_action TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_pump_replay_conflicts_run
+        ON pump_replay_conflicts(acquisition_run_key, signature, event_index, id)"""
+    )
+
+
+def _record_conflict(
+    conn,
+    *,
+    run_key: str,
+    event_key: str,
+    signature: str,
+    event_index: int,
+    event_type: str,
+    stored_observed_at: int,
+    incoming_observed_at: int,
+    stored_identity: tuple,
+    incoming_identity: tuple,
+    canonical_action: str,
+) -> None:
+    _ensure_conflict_schema(conn)
+    conn.execute(
+        """INSERT INTO pump_replay_conflicts(
+            acquisition_run_key, event_key, signature, event_index, event_type,
+            stored_observed_at, incoming_observed_at,
+            stored_identity_json, incoming_identity_json, canonical_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            run_key,
+            event_key,
+            signature,
+            int(event_index),
+            event_type,
+            int(stored_observed_at),
+            int(incoming_observed_at),
+            json.dumps(stored_identity, separators=(",", ":")),
+            json.dumps(incoming_identity, separators=(",", ":")),
+            canonical_action,
+        ),
+    )
+
+
+def _persist_lifecycle_row(
+    conn,
+    *,
+    run_key: str,
+    notification: PumpLogNotification,
+    index: int,
+) -> str:
     event = notification.lifecycle_events[index]
     event_key = f"pump-create:{notification.signature}:{index}"
     existing = conn.execute(
@@ -41,11 +109,43 @@ def _persist_lifecycle_row(conn, *, run_key: str, notification: PumpLogNotificat
             int(existing["market_started_at"]),
             str(existing["venue"]) if existing["venue"] is not None else None,
         )
-        if stored_identity != identity:
-            raise ValueError("market lifecycle event already exists with different data")
-        if int(notification.observed_at) < int(existing["observed_at"]):
-            raise ValueError("market lifecycle replay observed_at precedes first observation")
-        return False
+        stored_observed_at = int(existing["observed_at"])
+        incoming_observed_at = int(notification.observed_at)
+        if stored_identity == identity:
+            if incoming_observed_at < stored_observed_at:
+                conn.execute(
+                    """UPDATE market_lifecycle_observations
+                    SET observed_at=?
+                    WHERE acquisition_run_key=? AND event_key=?""",
+                    (incoming_observed_at, run_key, event_key),
+                )
+            return "replayed"
+
+        canonical_action = "replace_with_earlier_observation" if incoming_observed_at < stored_observed_at else "retain_earlier_observation"
+        _record_conflict(
+            conn,
+            run_key=run_key,
+            event_key=event_key,
+            signature=notification.signature,
+            event_index=index,
+            event_type="lifecycle",
+            stored_observed_at=stored_observed_at,
+            incoming_observed_at=incoming_observed_at,
+            stored_identity=stored_identity,
+            incoming_identity=identity,
+            canonical_action=canonical_action,
+        )
+        if incoming_observed_at < stored_observed_at:
+            conn.execute(
+                """UPDATE market_lifecycle_observations
+                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                WHERE acquisition_run_key=? AND event_key=?""",
+                (
+                    identity[0], identity[1], identity[2], incoming_observed_at, identity[3],
+                    run_key, event_key,
+                ),
+            )
+        return "conflict"
 
     conn.execute(
         """INSERT INTO market_lifecycle_observations(
@@ -62,13 +162,19 @@ def _persist_lifecycle_row(conn, *, run_key: str, notification: PumpLogNotificat
             "pump_bonding_curve",
         ),
     )
-    return True
+    return "inserted"
 
 
-def _persist_trade_row(conn, *, run_key: str, notification: PumpLogNotification, index: int) -> bool:
+def _persist_trade_row(
+    conn,
+    *,
+    run_key: str,
+    notification: PumpLogNotification,
+    index: int,
+) -> str:
     event = notification.events[index]
     if event.sol_amount <= 0:
-        return False
+        return "ignored"
     event_key = f"pump:{notification.signature}:{index}"
     side = "buy" if event.is_buy else "sell"
     identity = (
@@ -101,11 +207,47 @@ def _persist_trade_row(conn, *, run_key: str, notification: PumpLogNotification,
             str(existing["venue"]) if existing["venue"] is not None else None,
             str(existing["transaction_key"]) if existing["transaction_key"] is not None else None,
         )
-        if stored_identity != identity:
-            raise ValueError("market trade event already exists with different data")
-        if int(notification.observed_at) < int(existing["observed_at"]):
-            raise ValueError("market trade replay observed_at precedes first observation")
-        return False
+        stored_observed_at = int(existing["observed_at"])
+        incoming_observed_at = int(notification.observed_at)
+        if stored_identity == identity:
+            # Concurrent workers can persist a later replay before the earlier websocket delivery.
+            # The collector timestamp, not SQLite completion order, defines causal availability.
+            if incoming_observed_at < stored_observed_at:
+                conn.execute(
+                    """UPDATE market_trade_observations
+                    SET observed_at=?
+                    WHERE acquisition_run_key=? AND event_key=?""",
+                    (incoming_observed_at, run_key, event_key),
+                )
+            return "replayed"
+
+        canonical_action = "replace_with_earlier_observation" if incoming_observed_at < stored_observed_at else "retain_earlier_observation"
+        _record_conflict(
+            conn,
+            run_key=run_key,
+            event_key=event_key,
+            signature=notification.signature,
+            event_index=index,
+            event_type="trade",
+            stored_observed_at=stored_observed_at,
+            incoming_observed_at=incoming_observed_at,
+            stored_identity=stored_identity,
+            incoming_identity=identity,
+            canonical_action=canonical_action,
+        )
+        if incoming_observed_at < stored_observed_at:
+            conn.execute(
+                """UPDATE market_trade_observations
+                SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
+                    wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?
+                WHERE acquisition_run_key=? AND event_key=?""",
+                (
+                    identity[0], identity[1], identity[2], identity[3], incoming_observed_at,
+                    identity[4], identity[5], identity[6], identity[7], identity[8],
+                    run_key, event_key,
+                ),
+            )
+        return "conflict"
 
     conn.execute(
         """INSERT INTO market_trade_observations(
@@ -128,7 +270,7 @@ def _persist_trade_row(conn, *, run_key: str, notification: PumpLogNotification,
             notification.signature,
         ),
     )
-    return True
+    return "inserted"
 
 
 def persist_pump_notification_batch(
@@ -138,9 +280,11 @@ def persist_pump_notification_batch(
 ) -> PumpBatchPersistResult:
     """Persist one Pump notification using a single SQLite transaction.
 
-    Semantics intentionally match ``persist_pump_notification``: exact later replays are
-    idempotent, the first observed_at remains authoritative, backdating is rejected, and only
-    SOL-paired TradeEvents (positive sol_amount) enter the normalized market store.
+    Exact replays are idempotent. With concurrent workers, the earliest collector ``observed_at``
+    wins even if a later replay reaches SQLite first. If the same signature/index is replayed with
+    a different causal identity, both identities are audited in ``pump_replay_conflicts`` and the
+    earliest observed notification remains canonical. Conflicting replays never silently mutate a
+    causally earlier observation and no longer crash the acquisition run.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
@@ -148,31 +292,51 @@ def persist_pump_notification_batch(
 
     inserted_lifecycle = 0
     replayed_lifecycle = 0
+    conflicting_lifecycle = 0
     inserted_trades = 0
     replayed_trades = 0
+    conflicting_trades = 0
     affected_tokens: set[str] = set()
 
     with connection() as conn:
         for index in range(len(notification.lifecycle_events)):
-            if _persist_lifecycle_row(conn, run_key=run_key, notification=notification, index=index):
+            outcome = _persist_lifecycle_row(
+                conn,
+                run_key=run_key,
+                notification=notification,
+                index=index,
+            )
+            if outcome == "inserted":
                 inserted_lifecycle += 1
-            else:
+            elif outcome == "replayed":
                 replayed_lifecycle += 1
+            elif outcome == "conflict":
+                conflicting_lifecycle += 1
 
         for index, event in enumerate(notification.events):
             if event.sol_amount <= 0:
                 continue
             affected_tokens.add(event.mint)
-            if _persist_trade_row(conn, run_key=run_key, notification=notification, index=index):
+            outcome = _persist_trade_row(
+                conn,
+                run_key=run_key,
+                notification=notification,
+                index=index,
+            )
+            if outcome == "inserted":
                 inserted_trades += 1
-            else:
+            elif outcome == "replayed":
                 replayed_trades += 1
+            elif outcome == "conflict":
+                conflicting_trades += 1
 
     return PumpBatchPersistResult(
         signature=notification.signature,
         newly_persisted_trades=inserted_trades,
         duplicate_or_replayed_trades=replayed_trades,
+        conflicting_trades=conflicting_trades,
         newly_persisted_lifecycle=inserted_lifecycle,
         duplicate_or_replayed_lifecycle=replayed_lifecycle,
+        conflicting_lifecycle=conflicting_lifecycle,
         affected_tokens=tuple(sorted(affected_tokens)),
     )
