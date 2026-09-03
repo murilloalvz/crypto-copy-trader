@@ -50,40 +50,55 @@ def main(argv=None):
     with connection() as conn:
         rows = conn.execute(
             """SELECT id, observation_key, wallet_address, token_mint, side,
-                chain_time, observed_at
+                chain_time, observed_at, token_delta_raw, token_decimals,
+                token_balance_before_raw, token_balance_after_raw,
+                token_quantity_flags, source_reduction_fraction
             FROM wallet_forward_observations
             WHERE run_key=? AND id>? AND id<=?
             ORDER BY id""",
             (run.run_key, run.baseline_observation_id, run.end_observation_id),
         ).fetchall()
 
-    economic_rows = []
+    # Follow-up-only BUYs remain in the source inventory timeline. They can never
+    # open copy lots, but their quantities must prevent a later SELL from being
+    # misattributed to the enrolled inventory.
     followup_only_buy_count = 0
+    actions = []
+    economic_event_keys = []
     for row in rows:
         side = str(row["side"])
         observation_key = str(row["observation_key"])
-        if side == "buy" and observation_key not in enrolled_keys:
+        economic_eligible = not (side == "buy" and observation_key not in enrolled_keys)
+        if side == "buy" and not economic_eligible:
             followup_only_buy_count += 1
-            continue
-        economic_rows.append(row)
+        else:
+            economic_event_keys.append(observation_key)
 
-    actions = [
-        SimpleNamespace(
-            address=str(row["wallet_address"]),
-            token_mint=str(row["token_mint"]),
-            side=str(row["side"]),
-            chain_time=int(row["chain_time"]),
-            observed_at=int(row["observed_at"]),
-            observation_key=str(row["observation_key"]),
+        actions.append(
+            SimpleNamespace(
+                address=str(row["wallet_address"]),
+                token_mint=str(row["token_mint"]),
+                side=side,
+                chain_time=int(row["chain_time"]),
+                observed_at=int(row["observed_at"]),
+                observation_key=observation_key,
+                economic_eligible=economic_eligible,
+                token_delta_raw=row["token_delta_raw"],
+                token_decimals=row["token_decimals"],
+                token_balance_before_raw=row["token_balance_before_raw"],
+                token_balance_after_raw=row["token_balance_after_raw"],
+                token_quantity_flags=row["token_quantity_flags"],
+                source_reduction_fraction=row["source_reduction_fraction"],
+            )
         )
-        for row in economic_rows
-    ]
-    event_keys = [str(row["observation_key"]) for row in economic_rows]
-    grouped_buy = load_successful_quote_keys_by_event(event_keys, side="buy")
-    grouped_sell = load_successful_quote_keys_by_event(event_keys, side="sell")
+
+    grouped_buy = load_successful_quote_keys_by_event(economic_event_keys, side="buy")
+    grouped_sell = load_successful_quote_keys_by_event(economic_event_keys, side="sell")
     grouped = {
-        event: tuple(dict.fromkeys(grouped_buy.get(event, ()) + grouped_sell.get(event, ())))
-        for event in event_keys
+        event: tuple(
+            dict.fromkeys(grouped_buy.get(event, ()) + grouped_sell.get(event, ()))
+        )
+        for event in economic_event_keys
     }
     quote_keys = tuple(key for values in grouped.values() for key in values)
     quotes = load_causal_quotes(quote_keys=quote_keys)
@@ -114,6 +129,7 @@ def main(argv=None):
             }
         )
 
+    economic_action_count = len(rows) - followup_only_buy_count
     payload = {
         "mode": "RESEARCH_READ_ONLY",
         "economic_sample": (
@@ -122,7 +138,7 @@ def main(argv=None):
             else "DESCRIPTIVE"
         ),
         "full_run_action_count": len(rows),
-        "economic_action_count": len(actions),
+        "economic_action_count": economic_action_count,
         "enrolled_buy_count": buys,
         "followup_only_buy_count": followup_only_buy_count,
         "quote_count": len(quotes),
@@ -132,10 +148,10 @@ def main(argv=None):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    print("Crypto Copy Trader — Causal Economic Replay v1.1")
+    print("Crypto Copy Trader — Causal Economic Replay v1.2 quantity-aware")
     print("Modo: RESEARCH / READ ONLY — nenhum trade é inventado.")
     print(
-        f"Ações full-run: {len(rows)} | ações econômicas: {len(actions)} | "
+        f"Ações full-run: {len(rows)} | ações econômicas: {economic_action_count} | "
         f"BUYs enrolled: {buys} | BUYs follow-up-only: {followup_only_buy_count} | "
         f"quotes: {len(quotes)}"
     )
