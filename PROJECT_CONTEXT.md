@@ -20,9 +20,11 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Unified latency v5: **FAIL sob burst — Pump melhorou, PumpSwap sofreu head-of-line/capacity pressure**.
 - Primeiro v5b: **ABORTED BEFORE SUMMARY** por conflito Pump `signature:index`; não é resultado de throughput/latência.
 - Reuso acidental do namespace `05b`: inválido/contaminado; preservar como evidência, não usar para métricas.
-- v5c limpo: **ABORTED BEFORE SUMMARY** por conflito PumpSwap no shared `market_observation_store`; confirmou bug compartilhado de replay/concurrency.
-- Shared market replay integrity: **RESOLVED IN CODE / LIVE REVALIDATION PENDING**.
-- Gate atual: repetir capacity stress com `run_key` novo e a mesma configuração congelada; não alterar detector/estratégia.
+- v5c limpo: **ABORTED BEFORE SUMMARY** por conflito PumpSwap no shared `market_observation_store`.
+- v5d limpo: **ABORTED BEFORE SUMMARY — TRIGGER REPLAY INTEGRITY FAILURE** no `market_opportunity_episode_store`; não é resultado de throughput/latência.
+- End-to-end replay hardening de observation → pool mapping → trigger/episode: **CODE/CI PASS / LIVE REVALIDATION PENDING**.
+- PumpSwap pool schema hot path agora tem cache por DB path; impacto em latência ainda precisa de validação live.
+- Gate atual: fresh capacity/latency stress com `run_key` novo e a mesma configuração congelada; não alterar detector/estratégia.
 - Jupiter, hazard provider, historical wallet outcomes no unified path, final `decision_as_of` e forward outcomes ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -59,11 +61,11 @@ Acquisition mechanics congeladas, não regras de trading:
 
 **Nenhum threshold foi ajustado por P&L ou pelos live smokes.**
 
-## Causalidade e episodes
+## Causalidade, replay e episodes
 
 `src/market_observation_store.py` separa `chain_time` de `observed_at`.
 
-Shared replay semantics agora são:
+Shared market observation replay semantics:
 - exact replay é idempotente;
 - SQLite completion order não define causalidade;
 - o menor collector `observed_at` vence, mesmo se persistir depois;
@@ -74,7 +76,15 @@ Shared replay semantics agora são:
 
 No adapter Pump batch, `pump_replay_conflicts` permanece como telemetria específica do incidente anterior.
 
-`src/market_opportunity_episode_store.py` deduplica raw hits por run+token em 60s. `decision_as_of` é imutável depois do freeze e não é congelado pelo radar.
+`src/market_opportunity_episode_store.py` deduplica raw hits por run+token em 60s. O `trigger_key` representa uma única avaliação de uma notification/token e agora também tem replay semantics explícitas:
+- exact replay posterior é idempotente;
+- replay posterior que recomputa kind/direction/identity diferente é auditado em `market_trigger_replay_conflicts`;
+- o primeiro trigger-to-episode persistido permanece canônico;
+- replay não cria trigger/episode/enrichment adicional;
+- replay mais cedo recebido depois não retroativamente reparticiona um episode já aberto; é auditado conservadoramente;
+- referential corruption real continua fatal.
+
+`decision_as_of` é imutável depois do freeze e não é congelado pelo radar.
 
 Lifecycle venue-aware:
 - Pump `CreateEvent` = token birth para `fresh_market_burst`;
@@ -82,7 +92,7 @@ Lifecycle venue-aware:
 
 Wallet é evidência pós-episódio, nunca whitelist de aquisição.
 
-## PumpSwap asset-role normalization
+## PumpSwap asset-role e pool identity
 
 V1 reference assets: WSOL e USDC.
 
@@ -92,6 +102,14 @@ V1 reference assets: WSOL e USDC.
 - se é quote, buy/sell é invertido porque PumpSwap events são base-relative;
 - pares two-reference/two-unknown são `role_filtered`;
 - WSOL/USDC não podem virar opportunity episodes.
+
+Pool identity no caminho concorrente:
+- schema readiness é cacheada por active SQLite path; DDL não roda em todo lookup;
+- mesma identidade com observação anterior move first-known time/provenance para trás;
+- conflito de identidade é auditado em `pumpswap_pool_mapping_conflicts`;
+- earliest observed identity vence; empate usa tie-break determinístico e continua auditado;
+- histórico cross-run ambíguo não é reutilizado; força fresh resolution;
+- concurrent resolver recarrega o mapping canônico do store antes de devolver/cachear, fechando race RPC vs `CreatePoolEvent`.
 
 ## Evidência live canônica
 
@@ -125,17 +143,17 @@ V1 reference assets: WSOL e USDC.
 - 68 episodes/enrichments; reference-asset episodes 0;
 - bundle totals flow30 1,818 / wallets 1,292.
 
-Decision: **FAIL — burst capacity/latency**. The Pump path improved materially after schema caching, but v4/v5 are not a controlled A/B because PumpSwap ingress rose from 1,517 to 3,606. PumpSwap failure is queue/head-of-line pressure, not RPC failure or budget exhaustion.
+Decision: **FAIL — burst capacity/latency**. v4/v5 não são controlled A/B porque PumpSwap ingress subiu de 1,517 para 3,606. PumpSwap failure foi queue/head-of-line pressure, não RPC failure ou budget exhaustion.
 
 Canonical report: `docs/unified-market-latency-v5-live-smoke-2026-09-03.md`.
 
-### v5b / v5c replay integrity incidents
+### v5b / v5c / v5d replay integrity incidents
 
 Primeiro `unified-market-smoke-20260903-05b` abortou no Pump antes de SUMMARY por conflito no mesmo `signature:index`. O adapter Pump foi corrigido para earliest-observed canonical semantics e auditoria em `pump_replay_conflicts`.
 
 A repetição acidental usando o mesmo `05b` foi classificada como **INVALID / CONTAMINATED RUN** porque o namespace já continha dados parciais.
 
-A run limpa `unified-market-smoke-20260903-05c` reproduziu o mesmo tipo de falha no PumpSwap, agora dentro de `record_market_trade()`:
+A run limpa `unified-market-smoke-20260903-05c` reproduziu o mesmo tipo de falha no PumpSwap dentro de `record_market_trade()`:
 
 ```text
 ValueError: market trade event already exists with different data
@@ -143,19 +161,40 @@ ValueError: market trade event already exists with different data
 
 Decision: **ABORTED BEFORE SUMMARY — SHARED REPLAY INTEGRITY FAILURE**. Não usar para throughput/latência.
 
-A correção foi movida para o shared `market_observation_store`:
-- exact replay idempotente;
-- earliest collector `observed_at` canônico;
-- conflicting identity auditada em `market_replay_conflicts`;
-- same-second conflict recebe tie-break determinístico explícito;
-- conflict não cria flow extra nem derruba a run;
-- wrapper v5 reporta `pump_replay_conflicts` e `market_replay_conflicts` uma vez no final.
+A correção foi movida para o shared `market_observation_store` com `market_replay_conflicts`, earliest-observed canonicalization e tie-break auditável.
+
+A run limpa `unified-market-smoke-20260903-05d` progrediu além da persistência e abortou no Pump radar coordinator:
+
+```text
+ValueError: market trigger already exists with different data
+```
+
+Decision: **ABORTED BEFORE SUMMARY — TRIGGER REPLAY INTEGRITY FAILURE**. Não usar para throughput/latência.
+
+Root cause: `market_opportunity_episode_store` exigia igualdade exata de campos derivados para o mesmo `trigger_key`. Um replay posterior da mesma notification pode ser reavaliado quando mais market observations já existem e produzir direction/kind descritivos diferentes sem representar novo raw evidence.
+
+End-to-end hardening após v5d:
+- trigger replay idempotente/auditável sem episódio duplicado;
+- pool mapping replay/conflict auditável;
+- PumpSwap pool schema cacheado fora do hot path;
+- ambiguous historical pool identity não reutilizada;
+- concurrent resolver sempre devolve mapping canônico persistido;
+- wrapper v5 imprime replay diagnostics em `finally`, inclusive se uma future failure ocorrer antes de SUMMARY.
+
+Telemetry atual:
+```text
+pump_replay_conflicts=...
+market_replay_conflicts=...
+market_trigger_replay_conflicts=...
+pumpswap_pool_mapping_conflicts=...
+```
 
 Canonical docs:
 - `docs/pump-replay-integrity-v5b-incident-2026-09-03.md`;
-- `docs/shared-market-replay-integrity-v5c-incident-2026-09-03.md`.
+- `docs/shared-market-replay-integrity-v5c-incident-2026-09-03.md`;
+- `docs/end-to-end-replay-integrity-v5d-incident-2026-09-03.md`.
 
-Validation da correção compartilhada: `compileall` PASS; **565 tests / 0 failures** antes do tie-break final; CI do tie-break final também PASS. Live revalidation ainda pendente.
+Final validation do end-to-end hardening: `compileall` PASS; **571 tests / 0 failures**; CI PASS. Live revalidation ainda pendente.
 
 ## Throughput / latency architecture
 
@@ -173,11 +212,11 @@ websocket -> queue -> concurrent pool resolution/persistence -> completed queue 
 
 Persistence may complete out of order, but radar assignment remains globally ingress-ordered per venue. This is causally conservative but can create cross-pool head-of-line blocking.
 
-v5 caches schema readiness per active SQLite DB path, avoiding repeated DDL in observation/episode hot paths. Detector, T0, ordering and episode semantics are unchanged.
+v5 caches schema readiness per active SQLite DB path for market observation/episode stores; after v5d the PumpSwap pool store also uses this pattern. Detector, T0 and frozen acquisition thresholds are unchanged.
 
-## Gate atual — fresh capacity stress after shared replay fix
+## Gate atual — fresh capacity stress after end-to-end replay hardening
 
-Repeat the exact operational stress after the shared replay-integrity fix. No threshold/strategy change.
+Repeat the exact operational stress with a never-used run key. No threshold/strategy change.
 
 Configuration:
 - Pump workers 8;
@@ -200,7 +239,7 @@ PASS only if:
 
 Replay-conflict counters are audit telemetry, not automatic FAIL by themselves. Any non-zero count must be inspected before long acquisition.
 
-If the fresh stress still fails latency/capacity, **do not keep increasing concurrency blindly**. Redesign PumpSwap to remove global cross-pool head-of-line blocking while preserving causal ordering at the opportunity-asset level.
+If the fresh stress reaches SUMMARY but still fails latency/capacity, **do not keep increasing concurrency blindly**. Redesign PumpSwap to remove global cross-pool head-of-line blocking while preserving causal ordering at the opportunity-asset level.
 
 ## Depois do latency PASS
 
@@ -228,8 +267,9 @@ Ablations: movement, flow, execution, wallet e risk. Métricas mínimas: mean/me
 - v5: burst capacity/latency FAIL;
 - first v5b: aborted on Pump replay integrity; no throughput conclusion;
 - repeated same-key 05b: invalid/contaminated;
-- v5c: clean reproduction of shared PumpSwap replay conflict; aborted before summary;
-- shared replay integrity fix: CI PASS / live revalidation pending;
+- v5c: clean shared PumpSwap replay conflict; aborted before summary;
+- v5d: clean market trigger replay conflict; aborted before summary;
+- end-to-end replay hardening: code/CI PASS, live revalidation pending;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
 - shadow/live: não liberado.
