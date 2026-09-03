@@ -13,7 +13,16 @@ from src.pumpswap_stream import PumpSwapLogNotification, PumpSwapPersistResult, 
 
 
 class PumpSwapRadarBridgeV2Tests(unittest.IsolatedAsyncioTestCase):
-    def _record(self, run_key: str, index: int, *, chain_time: int, observed_at: int, wallet: str):
+    def _record(
+        self,
+        run_key: str,
+        index: int,
+        *,
+        chain_time: int,
+        observed_at: int,
+        wallet: str,
+        transaction_key: str,
+    ):
         record_market_trade(
             acquisition_run_key=run_key,
             event_key=f"event-{index}",
@@ -25,7 +34,7 @@ class PumpSwapRadarBridgeV2Tests(unittest.IsolatedAsyncioTestCase):
                 observed_at=observed_at,
                 wallet_address=wallet,
                 venue="pumpswap",
-                transaction_key="trigger-tx" if index >= 10 else f"base-{index}",
+                transaction_key=transaction_key,
             ),
         )
 
@@ -34,17 +43,28 @@ class PumpSwapRadarBridgeV2Tests(unittest.IsolatedAsyncioTestCase):
             path = Path(directory) / "bridge-v2.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 for i in range(3):
-                    self._record("run", i, chain_time=800, observed_at=801, wallet=f"B{i}")
+                    self._record(
+                        "run",
+                        i,
+                        chain_time=800,
+                        observed_at=801,
+                        wallet=f"B{i}",
+                        transaction_key=f"base-{i}",
+                    )
                 for i in range(6):
                     self._record(
-                        "run", 10 + i, chain_time=975 + i * 4, observed_at=976 + i * 4,
-                        wallet=f"F{i}"
+                        "run",
+                        10 + i,
+                        chain_time=975 + i * 4,
+                        observed_at=976 + i * 4,
+                        wallet=f"F{i}",
+                        transaction_key="trigger-tx" if i == 5 else f"fast-{i}",
                     )
 
                 rows = load_market_trades_by_transaction(
                     acquisition_run_key="run", transaction_key="trigger-tx"
                 )
-                self.assertEqual(len(rows), 6)
+                self.assertEqual(len(rows), 1)
 
                 resolver = SimpleNamespace(acquisition_run_key="run")
                 notification = PumpSwapLogNotification(
@@ -53,8 +73,13 @@ class PumpSwapRadarBridgeV2Tests(unittest.IsolatedAsyncioTestCase):
                     observed_at=996,
                     trade_events=(
                         PumpSwapTradeEvent(
-                            side="buy", pool="POOL", user="F5", timestamp=995,
-                            base_amount_raw=1, quote_amount_raw=1, event_index=0
+                            side="buy",
+                            pool="POOL",
+                            user="F5",
+                            timestamp=995,
+                            base_amount_raw=1,
+                            quote_amount_raw=1,
+                            event_index=0,
                         ),
                     ),
                 )
