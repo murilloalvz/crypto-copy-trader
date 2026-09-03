@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from src import database
 from src.market_observation_store import count_market_replay_conflicts, load_market_trades
 from src.pumpswap_normalized_persistence import persist_pumpswap_notification_normalized
-from src.pumpswap_pool_store import PumpSwapPoolIdentity
+from src.pumpswap_pool_store import PumpSwapPoolMapping
 from src.pumpswap_stream import PumpSwapLogNotification, PumpSwapTradeEvent
 
 
@@ -19,17 +19,22 @@ class PumpSwapReplayIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 resolver = AsyncMock()
                 resolver.acquisition_run_key = "run"
                 resolver.resolve.side_effect = [
-                    PumpSwapPoolIdentity("POOL", "So11111111111111111111111111111111111111112", "TOKEN_A", 100),
-                    PumpSwapPoolIdentity("POOL", "So11111111111111111111111111111111111111112", "TOKEN_B", 100),
+                    PumpSwapPoolMapping(
+                        "run", "POOL", "So11111111111111111111111111111111111111112",
+                        "TOKEN_A", 100, "test",
+                    ),
+                    PumpSwapPoolMapping(
+                        "run", "POOL", "So11111111111111111111111111111111111111112",
+                        "TOKEN_B", 100, "test",
+                    ),
                 ]
-                resolver.learn_from_create = AsyncMock()
                 event = PumpSwapTradeEvent(
-                    pool="POOL",
                     side="buy",
-                    base_amount=1,
-                    quote_amount=1,
+                    pool="POOL",
                     user="W",
                     timestamp=100,
+                    base_amount_raw=1,
+                    quote_amount_raw=1,
                     event_index=0,
                 )
                 first = PumpSwapLogNotification("sig", 1, 110, (event,), ())
