@@ -111,8 +111,8 @@ class PumpSwapNormalizedPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.unresolved_trades, 0)
         self.assertEqual(result.role_filtered_trades, 1)
         self.assertEqual(result.newly_persisted_trades, 0)
-        self.assertEqual(rows_a, [])
-        self.assertEqual(rows_b, [])
+        self.assertEqual(rows_a, ())
+        self.assertEqual(rows_b, ())
 
 
 if __name__ == "__main__":
