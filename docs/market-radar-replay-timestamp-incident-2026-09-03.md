@@ -1,6 +1,6 @@
 # Market Radar Replay Timestamp Incident — 2026-09-03
 
-Status: **FIXED IN CODE / AWAITING LOCAL RE-SMOKE**
+Status: **RESOLVED / LOCAL RE-SMOKE PASS**
 
 Mode: **PAPER / RESEARCH / READ ONLY**
 
@@ -18,7 +18,7 @@ the collector opened at least one opportunity episode and then stopped with:
 ValueError: market trade event already exists with different data
 ```
 
-The run did not complete its requested 120-second window and must therefore remain **FAILED / PARTIAL**. Its already-persisted evidence is not deleted, but its counters must not be compared as a completed acquisition sample.
+The run did not complete its requested 120-second window and remains **FAILED / PARTIAL**. Its already-persisted evidence is not deleted, but its counters must not be compared as a completed acquisition sample.
 
 ## Root cause
 
@@ -48,7 +48,7 @@ The same rule applies to lifecycle observations.
 
 ## Fix
 
-`src/market_observation_store.py` now compares immutable event fields separately from `observed_at`.
+`src/market_observation_store.py` compares immutable event fields separately from `observed_at`.
 
 Later identical replays return `False` (duplicate/replay) instead of raising.
 
@@ -58,7 +58,7 @@ Actual event mutations remain errors.
 
 ## Regression coverage
 
-Tests now cover:
+Tests cover:
 
 - identical trade replay at a later `observed_at`;
 - preservation of the original first-seen timestamp;
@@ -67,7 +67,7 @@ Tests now cover:
 - existing mutation-conflict behavior;
 - the exact Pump path: the same signature/event replayed by a later WebSocket delivery persists once, returns duplicate on replay and keeps the original first-seen clock.
 
-Validation on the final fix branch:
+Validation on the final executable fix state:
 
 ```text
 python -m compileall -q .
@@ -76,14 +76,41 @@ Ran 523 tests
 OK
 ```
 
+## Local re-smoke
+
+After promotion and local sync, the user ran a fresh bounded validation with a new run key:
+
+```text
+python market_radar_smoke.py --run-key market-radar-smoke-20260903-03 --duration-seconds 120 --commitment confirmed
+```
+
+The full 120-second window completed without traceback.
+
+Relevant totals:
+
+```text
+notifications=2034
+decoded_trades=2111
+sol_eligible=2037
+persisted=2037
+duplicate_or_replayed_eligible=0
+raw_radar_hits=738
+continuation_hits=707
+unique_episodes=31
+```
+
+This particular live window contained no eligible provider replay, so the runtime did not need to exercise the duplicate branch during the smoke. That does not invalidate the fix: the exact replay behavior is regression-tested. The local smoke establishes that the corrected store semantics do not regress live acquisition and that the radar pipeline now completes normally under real traffic.
+
 ## Methodological consequence
 
-No Market Opportunity Radar thresholds were changed.
+No Market Opportunity Radar threshold was changed.
 
 This was an operational/idempotence bug discovered before economic evaluation. The fix changes replay handling only; it does not use outcomes, P&L, future prices, or any post-T0 economic information.
 
-## Next validation
+## Final disposition
 
-Do not resume the partial `market-radar-smoke-20260903-02` as a completed smoke.
-
-After the fix is promoted and synced locally, run a new bounded smoke with a fresh run key. A successful completion should confirm that provider replays are counted as `duplicate_or_replayed_eligible` instead of terminating the collector.
+- `market-radar-smoke-20260903-02`: retained as **FAILED / PARTIAL** incident evidence;
+- replay semantics: **FIXED + REGRESSION TESTED**;
+- `market-radar-smoke-20260903-03`: **COMPLETED / LIVE OPERATIONAL PASS**;
+- no need to rerun the failed `-02` key;
+- no 12-hour acquisition is authorized yet.
