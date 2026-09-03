@@ -1,9 +1,13 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from src import database
 from src.pumpswap_concurrent_resolver import ConcurrentReusablePumpSwapPoolResolver
+from src.pumpswap_pool_store import PumpSwapPoolMapping, record_pumpswap_pool_mapping
 
 
 class ConcurrentReusableResolverTests(unittest.IsolatedAsyncioTestCase):
@@ -64,6 +68,46 @@ class ConcurrentReusableResolverTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(max_active, 2)
+
+    async def test_resolution_returns_store_canonical_mapping_not_stale_parent_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "resolver.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_pumpswap_pool_mapping(
+                    acquisition_run_key="run",
+                    pool_address="POOL",
+                    base_mint="CANONICAL",
+                    quote_mint="QUOTE",
+                    observed_at=100,
+                    source_provider="create",
+                )
+                resolver = ConcurrentReusablePumpSwapPoolResolver(
+                    acquisition_run_key="run",
+                    client=SimpleNamespace(),
+                    max_concurrent_resolutions=2,
+                )
+
+                async def fake_parent_resolve(_self, pool_address: str, *, as_of: int):
+                    return PumpSwapPoolMapping(
+                        acquisition_run_key="run",
+                        pool_address=pool_address,
+                        base_mint="STALE",
+                        quote_mint="QUOTE",
+                        observed_at=110,
+                        source_provider="rpc",
+                    )
+
+                with patch(
+                    "src.pumpswap_concurrent_resolver.ReusablePumpSwapPoolResolver.resolve",
+                    new=fake_parent_resolve,
+                ):
+                    mapping = await resolver.resolve("POOL", as_of=120)
+
+        self.assertIsNotNone(mapping)
+        assert mapping is not None
+        self.assertEqual(mapping.base_mint, "CANONICAL")
+        self.assertEqual(mapping.observed_at, 100)
+        self.assertEqual(resolver._cache["POOL"].base_mint, "CANONICAL")
 
 
 if __name__ == "__main__":
