@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import json
 from dataclasses import dataclass
 import threading
 
@@ -66,6 +69,23 @@ CREATE INDEX IF NOT EXISTS idx_market_lifecycle_observations_run_token_time
 ON market_lifecycle_observations(
     acquisition_run_key, token_mint, market_started_at, observed_at, id
 );
+
+CREATE TABLE IF NOT EXISTS market_replay_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    acquisition_run_key TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    source_provider TEXT NOT NULL,
+    stored_observed_at INTEGER NOT NULL,
+    incoming_observed_at INTEGER NOT NULL,
+    stored_identity_json TEXT NOT NULL,
+    incoming_identity_json TEXT NOT NULL,
+    canonical_action TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_replay_conflicts_run_event
+ON market_replay_conflicts(acquisition_run_key, event_key, id);
 """
 
 _SCHEMA_READY_PATHS: set[str] = set()
@@ -85,14 +105,7 @@ def _database_cache_key() -> str:
 
 
 def ensure_market_observation_schema() -> None:
-    """Ensure schema once per active SQLite path in this process.
-
-    Radar/acquisition hot paths call this helper frequently. Re-running CREATE TABLE/INDEX DDL for
-    every observation/read creates avoidable SQLite lock and filesystem overhead. The cache is
-    keyed by the currently configured database path so tests and research runs that switch to a
-    different database still receive a full schema check. The lock keeps first-use initialization
-    safe when multiple persistence workers start concurrently.
-    """
+    """Ensure schema once per active SQLite path in this process."""
 
     cache_key = _database_cache_key()
     if cache_key in _SCHEMA_READY_PATHS:
@@ -101,7 +114,6 @@ def ensure_market_observation_schema() -> None:
         if cache_key in _SCHEMA_READY_PATHS:
             return
         with connection() as conn:
-            # Existing local research DBs predate transaction_key. Add it before creating its index.
             base_schema = _SCHEMA.replace(
                 "\nCREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction\nON market_trade_observations(acquisition_run_key, transaction_key, id);\n",
                 "\n",
@@ -153,6 +165,39 @@ def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
         raise ValueError("venue cannot be blank")
 
 
+def _record_replay_conflict(
+    conn,
+    *,
+    acquisition_run_key: str,
+    event_key: str,
+    event_type: str,
+    source_provider: str,
+    stored_observed_at: int,
+    incoming_observed_at: int,
+    stored_identity: tuple,
+    incoming_identity: tuple,
+    canonical_action: str,
+) -> None:
+    conn.execute(
+        """INSERT INTO market_replay_conflicts(
+            acquisition_run_key, event_key, event_type, source_provider,
+            stored_observed_at, incoming_observed_at,
+            stored_identity_json, incoming_identity_json, canonical_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            acquisition_run_key,
+            event_key,
+            event_type,
+            source_provider,
+            int(stored_observed_at),
+            int(incoming_observed_at),
+            json.dumps(stored_identity, separators=(",", ":")),
+            json.dumps(incoming_identity, separators=(",", ":")),
+            canonical_action,
+        ),
+    )
+
+
 def record_market_trade(
     *,
     acquisition_run_key: str,
@@ -190,12 +235,55 @@ def record_market_trade(
                 "source_provider", "token_mint", "side", "chain_time",
                 "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"
             ))
-            if existing_identity != identity_values:
-                raise ValueError("market trade event already exists with different data")
+            stored_observed_at = int(existing["observed_at"])
+            incoming_observed_at = int(observation.observed_at)
+            if existing_identity == identity_values:
+                if incoming_observed_at < stored_observed_at:
+                    conn.execute(
+                        """UPDATE market_trade_observations SET observed_at=?
+                        WHERE acquisition_run_key=? AND event_key=?""",
+                        (incoming_observed_at, run_key, raw_key),
+                    )
+                return False
 
-            first_observed_at = int(existing["observed_at"])
-            if observation.observed_at < first_observed_at:
-                raise ValueError("market trade replay observed_at precedes first observation")
+            action = (
+                "replace_with_earlier_observation"
+                if incoming_observed_at < stored_observed_at
+                else "retain_earlier_observation"
+            )
+            _record_replay_conflict(
+                conn,
+                acquisition_run_key=run_key,
+                event_key=raw_key,
+                event_type="trade",
+                source_provider=provider,
+                stored_observed_at=stored_observed_at,
+                incoming_observed_at=incoming_observed_at,
+                stored_identity=existing_identity,
+                incoming_identity=identity_values,
+                canonical_action=action,
+            )
+            if incoming_observed_at < stored_observed_at:
+                conn.execute(
+                    """UPDATE market_trade_observations
+                    SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
+                        wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?
+                    WHERE acquisition_run_key=? AND event_key=?""",
+                    (
+                        provider,
+                        observation.token_mint,
+                        observation.side,
+                        observation.chain_time,
+                        incoming_observed_at,
+                        observation.wallet_address,
+                        observation.notional_usd,
+                        observation.price_usd,
+                        observation.venue,
+                        observation.transaction_key,
+                        run_key,
+                        raw_key,
+                    ),
+                )
             return False
 
         conn.execute(
@@ -252,12 +340,49 @@ def record_market_lifecycle(
             existing_identity = tuple(existing[key] for key in (
                 "source_provider", "token_mint", "market_started_at", "venue"
             ))
-            if existing_identity != identity_values:
-                raise ValueError("market lifecycle event already exists with different data")
+            stored_observed_at = int(existing["observed_at"])
+            incoming_observed_at = int(observation.observed_at)
+            if existing_identity == identity_values:
+                if incoming_observed_at < stored_observed_at:
+                    conn.execute(
+                        """UPDATE market_lifecycle_observations SET observed_at=?
+                        WHERE acquisition_run_key=? AND event_key=?""",
+                        (incoming_observed_at, run_key, raw_key),
+                    )
+                return False
 
-            first_observed_at = int(existing["observed_at"])
-            if observation.observed_at < first_observed_at:
-                raise ValueError("market lifecycle replay observed_at precedes first observation")
+            action = (
+                "replace_with_earlier_observation"
+                if incoming_observed_at < stored_observed_at
+                else "retain_earlier_observation"
+            )
+            _record_replay_conflict(
+                conn,
+                acquisition_run_key=run_key,
+                event_key=raw_key,
+                event_type="lifecycle",
+                source_provider=provider,
+                stored_observed_at=stored_observed_at,
+                incoming_observed_at=incoming_observed_at,
+                stored_identity=existing_identity,
+                incoming_identity=identity_values,
+                canonical_action=action,
+            )
+            if incoming_observed_at < stored_observed_at:
+                conn.execute(
+                    """UPDATE market_lifecycle_observations
+                    SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                    WHERE acquisition_run_key=? AND event_key=?""",
+                    (
+                        provider,
+                        observation.token_mint,
+                        observation.market_started_at,
+                        incoming_observed_at,
+                        observation.venue,
+                        run_key,
+                        raw_key,
+                    ),
+                )
             return False
 
         conn.execute(
@@ -335,8 +460,6 @@ def load_latest_market_lifecycle(
     as_of: int | None = None,
     venue: str | None = None,
 ) -> StoredMarketLifecycle | None:
-    """Load the latest causally available lifecycle row, optionally restricted by venue."""
-
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     if as_of is not None and as_of < 0:
@@ -370,3 +493,14 @@ def load_latest_market_lifecycle(
             venue=(str(row["venue"]) if row["venue"] is not None else None),
         ),
     )
+
+
+def count_market_replay_conflicts(*, acquisition_run_key: str) -> int:
+    run_key = _required(acquisition_run_key, "acquisition_run_key")
+    ensure_market_observation_schema()
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM market_replay_conflicts WHERE acquisition_run_key=?",
+            (run_key,),
+        ).fetchone()
+    return int(row["n"])
