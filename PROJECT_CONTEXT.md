@@ -12,8 +12,8 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - Classificação final pré-registrada: **OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**.
 - Wallet Forward v2 Run 3 **não deve ser iniciado**.
 - O protocolo wallet-triggered `Causal Opportunity Acquisition v1` foi **SUPERSEDED BEFORE RUN**.
-- Gate ativo: **Market Opportunity Radar v1 + Opportunity Wallet Intelligence v1**.
-- Última suíte confirmada: **499 testes, zero falhas**, com `compileall` aprovado.
+- Gate ativo: **Market Opportunity Radar v1 + Opportunity Wallet Intelligence v1 + native Pump market acquisition**.
+- Última suíte confirmada: **508 testes, zero falhas**, com `compileall` aprovado.
 
 ## Regra central de validação
 
@@ -256,6 +256,69 @@ Regras anti-leakage:
 
 O contrato não possui `wallet_score`, `passed`, `recommended`, whitelist ou BUY decision.
 
+## Native Pump Market Stream v1
+
+Arquivos:
+
+- `src/pump_bonding_stream.py`
+- `tests/test_pump_bonding_stream.py`
+- `pump_market_stream_smoke.py`
+- `docs/pump-market-stream-v1-design-2026-09-03.md`
+
+Primeiro adapter real-time implementado:
+
+`Solana logsSubscribe -> Pump bonding-curve TradeEvent -> MarketTradeObservation -> SQLite`
+
+Fonte canônica:
+
+- Pump program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`;
+- filtro `logsSubscribe` por `mentions`;
+- commitment explícito;
+- Anchor TradeEvent discriminator `[189, 219, 127, 211, 78, 230, 97, 238]`.
+
+O decoder usa somente o prefixo estável necessário do evento oficial:
+
+- mint;
+- `sol_amount`;
+- `token_amount`;
+- `is_buy`;
+- user;
+- timestamp.
+
+Clocks:
+
+- `chain_time` = timestamp emitido pelo Pump;
+- `observed_at` = instante local em que o WebSocket entregou a notificação.
+
+O adapter rejeita `observed_at < chain_time` e transações com erro. Persistência usa chave idempotente por acquisition run:
+
+`pump:<signature>:<event-index>`
+
+O stream possui reconnect com backoff exponencial limitado, ping/pong e confirmação explícita da subscription.
+
+### Missingness / quote assets
+
+Pump passou a suportar quote assets além de SOL. O v1 não tenta adivinhar o `quote_mint` a partir do prefixo parcial. Por isso:
+
+- só persiste TradeEvent com `sol_amount > 0`;
+- USD notional fica missing;
+- USD price fica missing;
+- eventos não-SOL ficam unsupported em vez de serem classificados incorretamente.
+
+### Smoke operacional
+
+`pump_market_stream_smoke.py` é limitado deliberadamente a 1–900s.
+
+Primeiro smoke recomendado: **120s, confirmed**.
+
+O smoke mede apenas plumbing operacional: aceitação do WebSocket, quantidade de eventos decodificados/persistidos, tokens/wallets únicas e comportamento do RPC sob burst.
+
+**Ainda não foi validado na máquina local real do usuário.** Portanto o adapter está implementado + testado, mas ainda não validado operacionalmente.
+
+### PumpSwap
+
+PumpSwap usa programa e schemas próprios (`BuyEvent`, `SellEvent`, `CreatePoolEvent`). O adapter Pump bonding não pode ser reutilizado por inferência. PumpSwap permanece próximo adapter a implementar/validar, incluindo mapeamento causal pool -> base mint.
+
 ## Cruzamento das análises
 
 O futuro snapshot/evidence bundle da oportunidade deve reunir no mesmo T0:
@@ -294,13 +357,13 @@ Não depender de scraping da UI Pump.fun.
 
 Ainda **não iniciar 12h**.
 
-Ordem:
+Ordem atual:
 
-1. implementar adapter de stream nativo/provider;
-2. smoke curto com eventos reais;
-3. validar reconnect, dedup, clocks e burst handling;
-4. medir custo/rate-limit/coverage;
-5. ligar `radar -> episode -> dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime`;
+1. rodar smoke nativo Pump de 120s na máquina local real;
+2. validar websocket endpoint, clocks, dedup e volume/burst;
+3. implementar/validar adapter PumpSwap separado;
+4. ligar market stream -> radar -> episode;
+5. ligar dynamic wallet intelligence -> Opportunity Core -> Jupiter/risk/regime;
 6. smoke end-to-end curto;
 7. somente depois congelar e iniciar primeira janela de 12h.
 
@@ -338,8 +401,9 @@ Usar avaliação separada no tempo e cluster-aware por token/wallet.
 - causal forward infrastructure: validada;
 - quantity-aware accounting: validado;
 - wallet-only edge: não estabelecido;
-- Market Opportunity Radar: núcleo implementado/testado, stream real ainda não validado;
+- Market Opportunity Radar: núcleo implementado/testado, stream real ainda não validado end-to-end;
 - Opportunity Wallet Intelligence: contrato causal implementado/testado, integração live-read-only ainda não validada;
+- Native Pump bonding stream: implementado/testado, **smoke operacional pendente**;
 - executable landing/fill: não validado;
 - shadow executável: não liberado;
 - live: não liberado.
