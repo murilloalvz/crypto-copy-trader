@@ -23,6 +23,17 @@ class ScheduledAssetWork(Generic[T]):
     reservation: AssetReservation
 
 
+@dataclass(frozen=True)
+class SchedulerSnapshot:
+    ready_backlog: int
+    waiting_backlog: int
+    outstanding_by_asset: tuple[tuple[str, int], ...]
+
+    @property
+    def total_outstanding_tickets(self) -> int:
+        return sum(count for _, count in self.outstanding_by_asset)
+
+
 class ReadyAssetScheduler(Generic[T]):
     """Ingress-ordered per-asset FIFO scheduler that never spends execution slots waiting.
 
@@ -41,6 +52,7 @@ class ReadyAssetScheduler(Generic[T]):
         self._condition = asyncio.Condition()
         self._ready: asyncio.Queue[ScheduledAssetWork[T]] = asyncio.Queue()
         self._waiters: set[asyncio.Task[None]] = set()
+        self._pre_cancel_snapshot: SchedulerSnapshot | None = None
 
     def reserve(self, assets: tuple[str, ...] | list[str]) -> AssetReservation:
         unique_assets = tuple(sorted({str(asset).strip() for asset in assets if str(asset).strip()}))
@@ -90,7 +102,28 @@ class ReadyAssetScheduler(Generic[T]):
     def waiting_backlog(self) -> int:
         return sum(1 for task in self._waiters if not task.done())
 
+    def snapshot(self) -> SchedulerSnapshot:
+        outstanding = tuple(
+            sorted(
+                (
+                    (asset, issued - self._completed.get(asset, 0))
+                    for asset, issued in self._issued.items()
+                    if issued - self._completed.get(asset, 0) > 0
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )
+        return SchedulerSnapshot(
+            ready_backlog=self.ready_backlog(),
+            waiting_backlog=self.waiting_backlog(),
+            outstanding_by_asset=outstanding,
+        )
+
+    def pre_cancel_snapshot(self) -> SchedulerSnapshot:
+        return self._pre_cancel_snapshot or self.snapshot()
+
     async def cancel_waiters(self) -> None:
+        self._pre_cancel_snapshot = self.snapshot()
         waiters = tuple(task for task in self._waiters if not task.done())
         for task in waiters:
             task.cancel()
