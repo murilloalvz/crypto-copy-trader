@@ -44,8 +44,9 @@ def evaluate_market_token(
 ) -> MarketRadarBridgeHit | None:
     """Evaluate one token from persisted causal observations and open/reuse an episode.
 
-    This bridge is intentionally acquisition-only. It does not freeze `decision_as_of`, compute a
-    trading score or request any execution. Decision freeze belongs to the later enrichment stage.
+    Pump bonding ``CreateEvent`` is the v1 canonical token-birth lifecycle surface. PumpSwap pool
+    creation is deliberately excluded from the fresh-market age calculation even when both venues
+    share one acquisition run/store.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
@@ -67,6 +68,7 @@ def evaluate_market_token(
         acquisition_run_key=run_key,
         token_mint=mint,
         as_of=as_of,
+        venue="pump_bonding_curve",
     )
     trigger = detect_market_movement(
         [item.observation for item in stored],
@@ -98,18 +100,10 @@ def process_pump_notification_for_radar(
     acquisition_run_key: str,
     config: MarketRadarConfig = MarketRadarConfig(),
 ) -> PumpRadarBridgeResult:
-    """Persist one Pump notification, then evaluate each affected SOL-paired token once.
-
-    Multiple TradeEvents in the same transaction remain raw rows in SQLite, but all carry the same
-    transaction signature. The transaction-aware radar can therefore require transaction breadth
-    and cannot mistake four events from one signature for four independent transactions.
-    """
+    """Persist one Pump notification, then evaluate each affected SOL-paired token once."""
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
-    newly_persisted = persist_pump_notification(
-        notification,
-        acquisition_run_key=run_key,
-    )
+    newly_persisted = persist_pump_notification(notification, acquisition_run_key=run_key)
 
     by_token: dict[str, list[int]] = {}
     for event in notification.events:
