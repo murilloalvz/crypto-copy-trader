@@ -64,7 +64,7 @@ class PumpSwapPoolReuseTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIsNone(load_known_pumpswap_pool_mapping(pool_address="POOL", as_of=299))
 
-    async def test_conflicting_historical_identity_is_visible(self):
+    async def test_conflicting_historical_identity_is_not_reused(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "conflict.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
@@ -84,8 +84,9 @@ class PumpSwapPoolReuseTests(unittest.IsolatedAsyncioTestCase):
                     observed_at=110,
                     source_provider="b",
                 )
-                with self.assertRaises(ValueError):
+                self.assertIsNone(
                     load_known_pumpswap_pool_mapping(pool_address="POOL", as_of=200)
+                )
 
 
 if __name__ == "__main__":
