@@ -13,6 +13,7 @@ from src.pump_batch_persistence import PumpBatchPersistResult, persist_pump_noti
 from src.pump_bonding_stream import iter_pump_log_notifications
 from src.pump_microbatch_persistence import persist_pump_notifications_microbatch
 from src.pump_radar_bridge_v4 import evaluate_persisted_pump_notification_for_radar_v4
+from src.pumpswap_asset_order import AssetOrderGate, AssetOrderReservation
 from src.pumpswap_asset_role import REFERENCE_ASSET_MINTS_V1
 from src.pumpswap_concurrent_resolver import ConcurrentReusablePumpSwapPoolResolver
 from src.pumpswap_normalized_persistence import (
@@ -48,6 +49,12 @@ class CompletedPumpSwapNotification:
     notification: object
     persist_result: PumpSwapNormalizedPersistResult
     enqueued_monotonic: float
+
+
+@dataclass(frozen=True)
+class PumpSwapRadarWorkItem:
+    completed: CompletedPumpSwapNotification
+    reservation: AssetOrderReservation
 
 
 class BoundedConcurrentResolver(ConcurrentReusablePumpSwapPoolResolver):
@@ -123,11 +130,14 @@ async def run_smoke(
     queue_size: int,
     pump_microbatch_size: int = 1,
     pump_microbatch_max_wait_ms: int = 0,
+    pumpswap_radar_workers: int = 0,
 ) -> None:
     if pump_microbatch_size <= 0:
         raise ValueError("pump_microbatch_size must be positive")
     if pump_microbatch_max_wait_ms < 0:
         raise ValueError("pump_microbatch_max_wait_ms cannot be negative")
+    if pumpswap_radar_workers < 0:
+        raise ValueError("pumpswap_radar_workers cannot be negative")
 
     started = time.monotonic()
     deadline = started + duration_seconds
@@ -136,6 +146,8 @@ async def run_smoke(
     pump_completed: asyncio.Queue[CompletedPumpNotification] = asyncio.Queue()
     pumpswap_queue: asyncio.Queue[QueuedNotification] = asyncio.Queue(maxsize=queue_size)
     pumpswap_completed: asyncio.Queue[CompletedPumpSwapNotification] = asyncio.Queue()
+    pumpswap_radar_work: asyncio.Queue[PumpSwapRadarWorkItem] = asyncio.Queue()
+    pumpswap_asset_gate = AssetOrderGate()
 
     resolver = BoundedConcurrentResolver(
         acquisition_run_key=run_key,
@@ -166,6 +178,9 @@ async def run_smoke(
     pumpswap_persist_wait_seconds: list[float] = []
     pumpswap_radar_wait_seconds: list[float] = []
     pump_microbatch_sizes: list[int] = []
+    pumpswap_asset_reservations = 0
+    pumpswap_multi_asset_notifications = 0
+    pumpswap_max_assets_per_notification = 0
     enrichment_admitted = 0
     flow30_total = 0
     wallets_total = 0
@@ -409,12 +424,73 @@ async def run_smoke(
                     raise
                 next_sequence += 1
 
+    async def pumpswap_radar_dispatcher() -> None:
+        nonlocal pumpswap_asset_reservations, pumpswap_multi_asset_notifications
+        nonlocal pumpswap_max_assets_per_notification
+        next_sequence = 0
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                completed = await asyncio.wait_for(pumpswap_completed.get(), timeout=min(0.5, remaining))
+            except asyncio.TimeoutError:
+                continue
+            pending_pumpswap[completed.sequence] = completed
+            pumpswap_completed.task_done()
+            while next_sequence in pending_pumpswap and time.monotonic() < deadline:
+                item = pending_pumpswap.pop(next_sequence)
+                assets = item.persist_result.affected_tokens
+                reservation = pumpswap_asset_gate.reserve(assets)
+                pumpswap_asset_reservations += 1
+                pumpswap_max_assets_per_notification = max(
+                    pumpswap_max_assets_per_notification, len(reservation.assets)
+                )
+                if len(reservation.assets) > 1:
+                    pumpswap_multi_asset_notifications += 1
+                await pumpswap_radar_work.put(PumpSwapRadarWorkItem(item, reservation))
+                next_sequence += 1
+
+    async def pumpswap_asset_radar_worker() -> None:
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                work = await asyncio.wait_for(pumpswap_radar_work.get(), timeout=min(0.5, remaining))
+            except asyncio.TimeoutError:
+                continue
+            acquired = False
+            try:
+                await pumpswap_asset_gate.wait_turn(work.reservation)
+                acquired = True
+                item = work.completed
+                pumpswap_radar_wait_seconds.append(time.monotonic() - item.enqueued_monotonic)
+                result = await asyncio.to_thread(
+                    evaluate_persisted_pumpswap_notification_for_radar_v3,
+                    item.notification,
+                    acquisition_run_key=run_key,
+                    persist_result=item.persist_result,
+                )
+                handle_radar_result("pumpswap", result)
+            except Exception:
+                worker_errors["pumpswap_asset_radar"] += 1
+                raise
+            finally:
+                if acquired:
+                    await pumpswap_asset_gate.complete(work.reservation)
+                pumpswap_radar_work.task_done()
+
     tasks = [
         asyncio.create_task(producer("pump"), name="producer-pump"),
         asyncio.create_task(producer("pumpswap"), name="producer-pumpswap"),
         asyncio.create_task(pump_radar_coordinator(), name="radar-pump"),
-        asyncio.create_task(pumpswap_radar_coordinator(), name="radar-pumpswap"),
     ]
+    if pumpswap_radar_workers > 0:
+        tasks.append(asyncio.create_task(pumpswap_radar_dispatcher(), name="radar-pumpswap-dispatch"))
+        tasks.extend(
+            asyncio.create_task(pumpswap_asset_radar_worker(), name=f"radar-pumpswap-asset-{index}")
+            for index in range(pumpswap_radar_workers)
+        )
+    else:
+        tasks.append(asyncio.create_task(pumpswap_radar_coordinator(), name="radar-pumpswap"))
+
     if pump_microbatch_size > 1:
         tasks.append(
             asyncio.create_task(pump_microbatch_persist_worker(), name="persist-pump-microbatch")
@@ -451,7 +527,12 @@ async def run_smoke(
     pump_reorder_backlog = len(pending_pump) + pump_completed.qsize()
     pump_inflight = max(0, enqueued["pump"] - persistence_completed["pump"] - pump_ingress_backlog)
     pumpswap_ingress_backlog = pumpswap_queue.qsize()
-    pumpswap_reorder_backlog = len(pending_pumpswap) + pumpswap_completed.qsize()
+    if pumpswap_radar_workers > 0:
+        pumpswap_reorder_backlog = max(
+            0, persistence_completed["pumpswap"] - radar_processed["pumpswap"]
+        )
+    else:
+        pumpswap_reorder_backlog = len(pending_pumpswap) + pumpswap_completed.qsize()
     pumpswap_inflight = max(
         0, enqueued["pumpswap"] - persistence_completed["pumpswap"] - pumpswap_ingress_backlog
     )
@@ -500,6 +581,14 @@ async def run_smoke(
         )
     print(f"pumpswap_persist_queue_wait_ms {_latency_summary_ms(pumpswap_persist_wait_seconds)}")
     print(f"pumpswap_radar_end_to_end_wait_ms {_latency_summary_ms(pumpswap_radar_wait_seconds)}")
+    if pumpswap_radar_workers > 0:
+        print(
+            f"pumpswap_asset_order radar_workers={pumpswap_radar_workers} "
+            f"reservations={pumpswap_asset_reservations} "
+            f"multi_asset_notifications={pumpswap_multi_asset_notifications} "
+            f"max_assets_per_notification={pumpswap_max_assets_per_notification} "
+            f"work_backlog={pumpswap_radar_work.qsize()}"
+        )
     print(
         f"pumpswap_historical_pool_hits={resolver.historical_store_hits} "
         f"pumpswap_run_store_hits={resolver.store_hits} cache_hits={resolver.cache_hits} "
@@ -507,7 +596,14 @@ async def run_smoke(
         f"hydration_successes={resolver.hydration_successes} rpc_failures={resolver_rpc_failures} "
         f"budget_skips={resolver.hydration_budget_skips} negative_cache_skips={resolver.negative_cache_skips}"
     )
-    if pump_microbatch_size > 1:
+    if pump_microbatch_size > 1 and pumpswap_radar_workers > 0:
+        print(
+            "Pump persistence uses one ordered SQLite microbatch writer. PumpSwap persistence remains "
+            "concurrent; a lightweight ingress-order dispatcher assigns per-asset tickets and radar "
+            "workers evaluate disjoint assets concurrently while preserving FIFO for every shared "
+            "opportunity asset. Detector semantics are unchanged. Execution/risk providers are not called."
+        )
+    elif pump_microbatch_size > 1:
         print(
             "Pump persistence uses one ordered SQLite microbatch writer; PumpSwap keeps bounded "
             "concurrent resolution/persistence. Radar ordering and detector semantics are unchanged. "
