@@ -6,7 +6,7 @@ from pathlib import Path
 from src.assets import USDC_MINT
 from src.causal_quote_store import load_causal_quotes, record_causal_quote
 from src.config import settings
-from src.database import connection, initialize_database
+from src.database import initialize_database
 from src.jupiter_swap_v2 import (
     JupiterOrderError,
     JupiterSwapV2Client,
@@ -19,8 +19,10 @@ from src.wallet_quote_watch import (
     load_forward_events_after,
     quote_attempt_exists,
     record_quote_attempt,
-    schedule_buy_quotes, schedule_sell_quote,
+    schedule_buy_quotes,
+    schedule_sell_quote,
 )
+from src.wallet_sell_quote_lineage import load_same_run_successful_buy_quote_lineage
 
 
 USDC_DECIMALS = 6
@@ -60,7 +62,7 @@ def _poll_new_events(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Observa novas compras já persistidas pelo Forward Wallet Watch e captura snapshots "
+            "Observa novas ações já persistidas pelo Forward Wallet Watch e captura snapshots "
             "causais de rota via Jupiter Swap V2. RESEARCH/READ ONLY: nunca assina nem executa."
         )
     )
@@ -158,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     intake_deadline = started + args.hours * 3_600
     drain_deadline = intake_deadline + max(delays) + 60
     last_request_mono: float | None = None
-    discovered_buys = attempts = successes = failures = duplicates = 0
+    discovered_events = discovered_buys = attempts = successes = failures = duplicates = 0
     intake_closed = False
 
     print("Crypto Copy Trader — Wallet Quote Watch v2")
@@ -178,43 +180,46 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def ingest_once(*, final_sweep: bool = False) -> None:
-        nonlocal cursor_id, discovered_buys, pending
+        nonlocal cursor_id, discovered_events, discovered_buys, pending
         cursor_id, events = _poll_new_events(cursor_id, addresses=addresses)
         if not events:
             if final_sweep:
-                print(f"[final intake] cursor fechado em observation id={cursor_id}; sem BUY novo.")
+                print(f"[final intake] cursor fechado em observation id={cursor_id}; sem evento novo.")
             return
+        discovered_events += len(events)
         discovered_buys += sum(event.side == "buy" for event in events)
-        pending.extend(schedule_buy_quotes([e for e in events if e.side == "buy"], delays_seconds=delays))
-        for event in (e for e in events if e.side == "sell"):
-            with connection() as conn:
-                prior = conn.execute(
-                    """SELECT a.source_event_key, a.quote_key, a.target_at, w.observed_at AS entry_observed_at
-                    FROM causal_quote_attempts a JOIN wallet_forward_observations w
-                      ON w.observation_key=a.source_event_key
-                    WHERE a.side='buy' AND a.status='success' AND a.quote_key IS NOT NULL
-                      AND w.wallet_address=? AND w.token_mint=? AND w.observed_at<=?
-                    ORDER BY a.target_at, a.id""",
-                    (event.wallet_address, event.token_mint, event.observed_at),
-                ).fetchall()
+        pending.extend(
+            schedule_buy_quotes(
+                [event for event in events if event.side == "buy"],
+                delays_seconds=delays,
+            )
+        )
+        for event in (item for item in events if item.side == "sell"):
+            prior = load_same_run_successful_buy_quote_lineage(event.observation_key)
             for row in prior:
-                loaded = load_causal_quotes(quote_keys=[str(row["quote_key"])])
+                loaded = load_causal_quotes(quote_keys=[row.quote_key])
                 if loaded and loaded[0].output_amount_raw:
-                    pending.append(schedule_sell_quote(
-                        event, input_amount_raw=int(loaded[0].output_amount_raw),
-                        entry_event_key=str(row["source_event_key"]),
-                        entry_delay_seconds=max(0, int(row["target_at"]) - int(row["entry_observed_at"])),
-                    ))
+                    pending.append(
+                        schedule_sell_quote(
+                            event,
+                            input_amount_raw=int(loaded[0].output_amount_raw),
+                            entry_event_key=row.source_event_key,
+                            entry_delay_seconds=max(
+                                0,
+                                row.target_at - row.entry_observed_at,
+                            ),
+                        )
+                    )
         pending.sort(key=lambda item: (item.target_at, item.event_id, item.delay_seconds))
-        prefix = "final wallet buy" if final_sweep else "wallet buy"
+        prefix = "final wallet event" if final_sweep else "wallet event"
         for event in events:
             print(
-                f"[{prefix}] {event.wallet_address[:10]}… "
+                f"[{prefix} {event.side}] {event.wallet_address[:10]}… "
                 f"token {event.token_mint[:10]}… observed_at={event.observed_at}"
             )
         if final_sweep:
             print(
-                f"[final intake] {len(events)} BUY(s) adicionados; cursor fechado em id={cursor_id}."
+                f"[final intake] {len(events)} evento(s) adicionados; cursor fechado em id={cursor_id}."
             )
 
     try:
@@ -312,9 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("RESUMO")
     print(
-        f"compras forward novas: {discovered_buys} | probes tentados: {attempts} | "
-        f"sucesso: {successes} | falhas: {failures} | duplicados ignorados: {duplicates} | "
-        f"pendentes não executados: {len(pending)} | final cursor id={cursor_id}"
+        f"eventos forward novos: {discovered_events} | compras forward novas: {discovered_buys} | "
+        f"probes tentados: {attempts} | sucesso: {successes} | falhas: {failures} | "
+        f"duplicados ignorados: {duplicates} | pendentes não executados: {len(pending)} | "
+        f"final cursor id={cursor_id}"
     )
     if pending:
         print(
