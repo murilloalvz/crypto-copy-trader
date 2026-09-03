@@ -1,7 +1,29 @@
 import argparse
 import asyncio
 
+from src.database import connection
 from unified_market_throughput_smoke_v4 import MAX_SMOKE_SECONDS, run_smoke
+
+
+def _print_pump_replay_conflicts(run_key: str) -> None:
+    with connection() as conn:
+        table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='pump_replay_conflicts'"""
+        ).fetchone()
+        if table is None:
+            print("pump_replay_conflicts=0 actions={}")
+            return
+        rows = conn.execute(
+            """SELECT canonical_action, COUNT(*) AS count
+            FROM pump_replay_conflicts
+            WHERE acquisition_run_key=?
+            GROUP BY canonical_action
+            ORDER BY canonical_action""",
+            (run_key,),
+        ).fetchall()
+    actions = {str(row["canonical_action"]): int(row["count"]) for row in rows}
+    print(f"pump_replay_conflicts={sum(actions.values())} actions={actions}")
 
 
 def main() -> None:
@@ -42,8 +64,10 @@ def main() -> None:
             queue_size=args.queue_size,
         )
     )
+    _print_pump_replay_conflicts(args.run_key)
     print(
-        "v5 keeps v4 causal ordering/gates and changes only hot-path schema readiness caching. "
+        "v5 keeps v4 causal ordering/gates and hot-path schema readiness caching. "
+        "Pump replay conflicts are audited with earliest-observed canonical semantics. "
         "Execution/risk providers are not called."
     )
 
