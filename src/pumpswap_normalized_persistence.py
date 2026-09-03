@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from src.market_observation_store import record_market_lifecycle, record_market_trade
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
+from src.market_transaction_view import load_market_trades_by_transaction
 from src.pumpswap_asset_role import classify_pumpswap_opportunity_asset
 from src.pumpswap_stream import PumpSwapLogNotification, PumpSwapPoolResolver
 
@@ -14,6 +15,7 @@ class PumpSwapNormalizedPersistResult:
     role_filtered_trades: int
     newly_persisted_lifecycle: int
     role_filtered_lifecycle: int
+    affected_tokens: tuple[str, ...] = ()
 
 
 async def persist_pumpswap_notification_normalized(
@@ -29,6 +31,11 @@ async def persist_pumpswap_notification_normalized(
     asset. If the opportunity token is the quote side, PumpSwap base-relative buy/sell semantics
     are inverted before persistence. Conflicting replays are audited by the shared market store;
     they do not overwrite a causally earlier observation or crash acquisition.
+
+    ``affected_tokens`` is loaded back from the canonical transaction view after persistence. This
+    is intentionally based on the stored canonical identity, not the incoming decoded identity, so
+    downstream per-asset ordering cannot be confused by a replay conflict whose incoming token was
+    rejected in favor of an earlier observation.
     """
 
     run_key = str(acquisition_run_key).strip()
@@ -102,6 +109,20 @@ async def persist_pumpswap_notification_normalized(
         else:
             duplicates += 1
 
+    canonical_rows = load_market_trades_by_transaction(
+        acquisition_run_key=run_key,
+        transaction_key=notification.signature,
+    )
+    affected_tokens = tuple(
+        sorted(
+            {
+                item.observation.token_mint
+                for item in canonical_rows
+                if item.observation.venue == "pumpswap"
+            }
+        )
+    )
+
     return PumpSwapNormalizedPersistResult(
         newly_persisted_trades=inserted,
         duplicate_or_replayed_trades=duplicates,
@@ -109,4 +130,5 @@ async def persist_pumpswap_notification_normalized(
         role_filtered_trades=role_filtered,
         newly_persisted_lifecycle=newly_persisted_lifecycle,
         role_filtered_lifecycle=role_filtered_lifecycle,
+        affected_tokens=affected_tokens,
     )
