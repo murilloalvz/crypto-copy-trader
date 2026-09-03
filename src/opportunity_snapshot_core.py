@@ -4,17 +4,22 @@ from dataclasses import dataclass
 from src.causal_quotes import CausalQuoteObservation, validate_causal_quote
 
 
-OPPORTUNITY_SNAPSHOT_CORE_VERSION = "opportunity_snapshot_core_v1"
+OPPORTUNITY_SNAPSHOT_CORE_VERSION = "opportunity_snapshot_core_v1_1_dual_clock"
 DEFAULT_FLOW_WINDOWS_SECONDS = (10, 30, 60, 300)
 
 
 @dataclass(frozen=True)
 class FlowTradeObservation:
-    """One token-side flow event with both chain and real observation time.
+    """One token-side flow event with market time and real observation time.
 
-    ``observed_at`` is the only timestamp used for causal feature availability. ``chain_time``
-    is retained for lag/quality analysis, but a historical event discovered later must never be
-    treated as if the system knew it at chain time.
+    ``chain_time`` represents when the trade happened in the market. ``observed_at`` represents
+    when our collector actually knew about it. A causal T0 snapshot needs BOTH conditions:
+
+    - availability: ``observed_at <= as_of``;
+    - market-window membership: ``as_of - window < chain_time <= as_of``.
+
+    This prevents a late/backfilled old trade from being misclassified as fresh order flow merely
+    because it was discovered recently.
     """
 
     token_mint: str
@@ -34,6 +39,9 @@ class FlowWindowFeatures:
     sell_count: int
     unique_buy_wallet_count: int
     unique_sell_wallet_count: int
+    wallet_identity_coverage_pct: float | None
+    notional_coverage_pct: float | None
+    price_coverage_pct: float | None
     buy_notional_usd: float | None
     sell_notional_usd: float | None
     signed_notional_usd: float | None
@@ -43,6 +51,7 @@ class FlowWindowFeatures:
     last_price_usd: float | None
     return_pct: float | None
     median_observation_lag_seconds: float | None
+    max_observation_lag_seconds: int | None
     data_quality_flags: tuple[str, ...]
 
 
@@ -61,6 +70,12 @@ class ExecutionSurfaceFeatures:
     latest_sell_price_impact_pct_points: float | None
     latest_buy_router: str | None
     latest_sell_router: str | None
+    latest_buy_observation_age_seconds: int | None
+    latest_sell_observation_age_seconds: int | None
+    latest_buy_market_age_seconds: int | None
+    latest_sell_market_age_seconds: int | None
+    quote_notional_min_usd: float | None
+    quote_notional_max_usd: float | None
     data_quality_flags: tuple[str, ...]
 
 
@@ -105,6 +120,12 @@ def _median(values: list[int]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+def _coverage_pct(known_count: int, total_count: int) -> float | None:
+    if total_count <= 0:
+        return None
+    return 100.0 * known_count / total_count
+
+
 def _build_flow_window(
     observations: list[FlowTradeObservation],
     *,
@@ -112,15 +133,21 @@ def _build_flow_window(
     window_seconds: int,
 ) -> FlowWindowFeatures:
     lower_bound = as_of - window_seconds
+
+    # Dual-clock rule: the event must have happened inside the market window AND have been
+    # observed by T0. A stale event hydrated now is available now, but it is not fresh flow.
     eligible = [
         item
         for item in observations
-        if lower_bound < item.observed_at <= as_of
+        if lower_bound < item.chain_time <= as_of and item.observed_at <= as_of
     ]
-    eligible.sort(key=lambda item: (item.observed_at, item.chain_time))
+    eligible.sort(key=lambda item: (item.chain_time, item.observed_at))
 
     buys = [item for item in eligible if item.side == "buy"]
     sells = [item for item in eligible if item.side == "sell"]
+
+    wallet_events = [item.wallet_address for item in eligible if item.wallet_address]
+    wallet_coverage = _coverage_pct(len(wallet_events), len(eligible))
     buy_wallets = {
         item.wallet_address for item in buys if item.wallet_address is not None
     }
@@ -128,9 +155,9 @@ def _build_flow_window(
         item.wallet_address for item in sells if item.wallet_address is not None
     }
 
-    notionals_complete = bool(eligible) and all(
-        item.notional_usd is not None for item in eligible
-    )
+    known_notionals = [item for item in eligible if item.notional_usd is not None]
+    notional_coverage = _coverage_pct(len(known_notionals), len(eligible))
+    notionals_complete = bool(eligible) and len(known_notionals) == len(eligible)
     buy_notional = (
         sum(float(item.notional_usd) for item in buys)
         if notionals_complete
@@ -157,25 +184,28 @@ def _build_flow_window(
         else None
     )
 
-    wallet_events = [item.wallet_address for item in eligible if item.wallet_address]
+    # Repetition can be badly biased when wallet identity is missing, so do not calculate it
+    # from a selected subset and present the result as complete.
     repeated_wallet_share = None
-    if wallet_events:
+    if wallet_events and len(wallet_events) == len(eligible):
         repeated_count = len(wallet_events) - len(set(wallet_events))
         repeated_wallet_share = 100.0 * repeated_count / len(wallet_events)
 
     priced = [item for item in eligible if item.price_usd is not None]
-    first_price = float(priced[0].price_usd) if priced else None
-    last_price = float(priced[-1].price_usd) if priced else None
+    price_coverage = _coverage_pct(len(priced), len(eligible))
+    prices_complete = bool(eligible) and len(priced) == len(eligible)
+    first_price = float(eligible[0].price_usd) if prices_complete else None
+    last_price = float(eligible[-1].price_usd) if prices_complete else None
     return_pct = (
         100.0 * (last_price / first_price - 1.0)
-        if first_price is not None and last_price is not None and len(priced) >= 2
+        if first_price is not None and last_price is not None and len(eligible) >= 2
         else None
     )
 
     quality: list[str] = []
     if eligible and not notionals_complete:
         quality.append("partial_notional_coverage")
-    if eligible and len(priced) < len(eligible):
+    if eligible and not prices_complete:
         quality.append("partial_price_coverage")
     if eligible and len(wallet_events) < len(eligible):
         quality.append("partial_wallet_identity_coverage")
@@ -190,6 +220,9 @@ def _build_flow_window(
         sell_count=len(sells),
         unique_buy_wallet_count=len(buy_wallets),
         unique_sell_wallet_count=len(sell_wallets),
+        wallet_identity_coverage_pct=wallet_coverage,
+        notional_coverage_pct=notional_coverage,
+        price_coverage_pct=price_coverage,
         buy_notional_usd=buy_notional,
         sell_notional_usd=sell_notional,
         signed_notional_usd=signed_notional,
@@ -199,6 +232,7 @@ def _build_flow_window(
         last_price_usd=last_price,
         return_pct=return_pct,
         median_observation_lag_seconds=_median(lags),
+        max_observation_lag_seconds=max(lags) if lags else None,
         data_quality_flags=tuple(quality),
     )
 
@@ -227,6 +261,14 @@ def build_execution_surface_features(
     latest_buy = buys[-1] if buys else None
     latest_sell = sells[-1] if sells else None
 
+    quote_notionals = [
+        float(item.provider_swap_usd_value)
+        for item in eligible
+        if item.provider_swap_usd_value is not None
+    ]
+    quote_notional_min = min(quote_notionals) if quote_notionals else None
+    quote_notional_max = max(quote_notionals) if quote_notionals else None
+
     quality: list[str] = []
     if not eligible:
         quality.append("no_causal_quotes_available")
@@ -236,6 +278,15 @@ def build_execution_surface_features(
         quality.append("sell_quote_unavailable")
     if eligible and not any(item.executable for item in eligible):
         quality.append("proxy_quotes_only")
+    if (
+        quote_notional_min is not None
+        and quote_notional_max is not None
+        and quote_notional_min > 0
+        and quote_notional_max / quote_notional_min > 1.01
+    ):
+        quality.append("mixed_quote_notionals")
+    if eligible and len(quote_notionals) < len(eligible):
+        quality.append("partial_quote_notional_metadata")
 
     return ExecutionSurfaceFeatures(
         quote_count=len(eligible),
@@ -255,6 +306,16 @@ def build_execution_surface_features(
         ),
         latest_buy_router=(latest_buy.provider_router if latest_buy else None),
         latest_sell_router=(latest_sell.provider_router if latest_sell else None),
+        latest_buy_observation_age_seconds=(
+            as_of - latest_buy.observed_at if latest_buy else None
+        ),
+        latest_sell_observation_age_seconds=(
+            as_of - latest_sell.observed_at if latest_sell else None
+        ),
+        latest_buy_market_age_seconds=(as_of - latest_buy.market_time if latest_buy else None),
+        latest_sell_market_age_seconds=(as_of - latest_sell.market_time if latest_sell else None),
+        quote_notional_min_usd=quote_notional_min,
+        quote_notional_max_usd=quote_notional_max,
         data_quality_flags=tuple(quality),
     )
 
@@ -271,8 +332,9 @@ def build_opportunity_snapshot_core_v1(
     """Build a score-free, causal T0 feature snapshot for research.
 
     The function never fetches data and never assigns trading weights. Callers must pass raw
-    observations carrying their real ``observed_at``. Future-observed data is ignored even when
-    its underlying chain/market timestamp is earlier than ``as_of``.
+    observations carrying their real ``observed_at``. Flow windows use market/chain time only
+    after the observation-time availability gate has been satisfied. Quotes expose their age
+    explicitly rather than silently pretending the latest historical quote is fresh.
     """
 
     if not token_mint.strip():
