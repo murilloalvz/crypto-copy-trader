@@ -58,6 +58,28 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await scheduler.complete(ready.reservation)
         await scheduler.cancel_waiters()
 
+    async def test_cancel_preserves_pre_cancel_waiting_and_ready_backlog(self):
+        scheduler = ReadyAssetScheduler[str]()
+        a0 = scheduler.reserve(["A"])
+        a1 = scheduler.reserve(["A"])
+        b0 = scheduler.reserve(["B"])
+        scheduler.submit("a0", a0)
+        scheduler.submit("a1", a1)
+        scheduler.submit("b0", b0)
+        await asyncio.sleep(0)
+
+        self.assertEqual(scheduler.ready_backlog(), 2)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+        await scheduler.cancel_waiters()
+
+        self.assertEqual(scheduler.ready_backlog(), 2)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+        snapshot = scheduler.pre_cancel_snapshot()
+        self.assertEqual(snapshot.ready_backlog, 2)
+        self.assertEqual(snapshot.waiting_backlog, 1)
+        self.assertEqual(dict(snapshot.outstanding_by_asset), {"A": 2, "B": 1})
+        self.assertEqual(snapshot.total_outstanding_tickets, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
