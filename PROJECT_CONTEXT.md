@@ -13,7 +13,8 @@ Este arquivo registra o estado técnico consolidado do projeto. Ideias discutida
 - **Não iniciar Run 3 automaticamente.**
 - Próximo gate selecionado: **Causal Opportunity Acquisition v1**.
 - Opportunity Snapshot Core v1 existe em branch de validação, com causalidade dual-clock e anti-leakage.
-- Última suíte confirmada após os fixes pós-Run2: **459 testes, zero falhas**, com `compileall` aprovado.
+- Opportunity Episode Store v1 persiste raw triggers, episódios de 60s e `decision_as_of` imutável, isolados por acquisition run.
+- Última suíte confirmada após os fixes pós-Run2 e Episode Store: **466 testes, zero falhas**, com `compileall` aprovado.
 
 ## Regra central
 
@@ -244,6 +245,24 @@ Contrato causal:
 - `decision_as_of` deve incluir o tempo gasto para obter as próprias features.
 
 Nenhum score automático de trading foi implementado.
+
+## Opportunity Episode Store v1
+
+Arquivos principais:
+
+- `src/opportunity_episode_store.py`
+- `tests/test_opportunity_episode_store.py`
+
+Contrato:
+
+- cada raw BUY trigger pertence a uma `acquisition_run_key`;
+- primeiro trigger abre um episode de 60s;
+- novo trigger do mesmo token antes do fechamento entra no mesmo episode;
+- trigger exatamente no fechamento abre novo episode;
+- runs diferentes nunca compartilham episode;
+- replay/idempotência por observation key;
+- `decision_as_of` só pode ser congelado uma vez;
+- loaders com `as_of` escondem triggers observados depois do cutoff.
 
 ## Data-source feasibility
 
