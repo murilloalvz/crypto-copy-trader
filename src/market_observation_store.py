@@ -165,6 +165,26 @@ def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
         raise ValueError("venue cannot be blank")
 
 
+def _identity_sort_key(identity: tuple) -> str:
+    return json.dumps(identity, separators=(",", ":"), ensure_ascii=True)
+
+
+def _choose_conflict_action(
+    *,
+    stored_observed_at: int,
+    incoming_observed_at: int,
+    stored_identity: tuple,
+    incoming_identity: tuple,
+) -> tuple[str, bool]:
+    if incoming_observed_at < stored_observed_at:
+        return "replace_with_earlier_observation", True
+    if incoming_observed_at > stored_observed_at:
+        return "retain_earlier_observation", False
+    if _identity_sort_key(incoming_identity) < _identity_sort_key(stored_identity):
+        return "replace_equal_timestamp_by_identity_order", True
+    return "retain_equal_timestamp_by_identity_order", False
+
+
 def _record_replay_conflict(
     conn,
     *,
@@ -191,8 +211,8 @@ def _record_replay_conflict(
             source_provider,
             int(stored_observed_at),
             int(incoming_observed_at),
-            json.dumps(stored_identity, separators=(",", ":")),
-            json.dumps(incoming_identity, separators=(",", ":")),
+            _identity_sort_key(stored_identity),
+            _identity_sort_key(incoming_identity),
             canonical_action,
         ),
     )
@@ -246,10 +266,11 @@ def record_market_trade(
                     )
                 return False
 
-            action = (
-                "replace_with_earlier_observation"
-                if incoming_observed_at < stored_observed_at
-                else "retain_earlier_observation"
+            action, incoming_wins = _choose_conflict_action(
+                stored_observed_at=stored_observed_at,
+                incoming_observed_at=incoming_observed_at,
+                stored_identity=existing_identity,
+                incoming_identity=identity_values,
             )
             _record_replay_conflict(
                 conn,
@@ -263,7 +284,7 @@ def record_market_trade(
                 incoming_identity=identity_values,
                 canonical_action=action,
             )
-            if incoming_observed_at < stored_observed_at:
+            if incoming_wins:
                 conn.execute(
                     """UPDATE market_trade_observations
                     SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
@@ -351,10 +372,11 @@ def record_market_lifecycle(
                     )
                 return False
 
-            action = (
-                "replace_with_earlier_observation"
-                if incoming_observed_at < stored_observed_at
-                else "retain_earlier_observation"
+            action, incoming_wins = _choose_conflict_action(
+                stored_observed_at=stored_observed_at,
+                incoming_observed_at=incoming_observed_at,
+                stored_identity=existing_identity,
+                incoming_identity=identity_values,
             )
             _record_replay_conflict(
                 conn,
@@ -368,7 +390,7 @@ def record_market_lifecycle(
                 incoming_identity=identity_values,
                 canonical_action=action,
             )
-            if incoming_observed_at < stored_observed_at:
+            if incoming_wins:
                 conn.execute(
                     """UPDATE market_lifecycle_observations
                     SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
