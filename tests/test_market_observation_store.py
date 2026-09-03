@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from src import database
 from src.market_observation_store import (
+    count_market_replay_conflicts,
     load_latest_market_lifecycle,
     load_market_trades,
     record_market_lifecycle,
@@ -31,82 +32,68 @@ class MarketObservationStoreTests(unittest.TestCase):
         self.assertEqual([item.event_key for item in all_a], ["a", "b"])
         self.assertEqual([item.event_key for item in all_b], ["c"])
 
-    def test_trade_insert_is_idempotent_and_conflict_visible(self):
+    def test_trade_insert_is_idempotent_and_later_conflict_is_audited(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 event = MarketTradeObservation("T", "buy", 100, 105, "W", 10.0, 1.0, "pump")
                 self.assertTrue(record_market_trade(acquisition_run_key="run", event_key="e", source_provider="native", observation=event))
                 self.assertFalse(record_market_trade(acquisition_run_key="run", event_key="e", source_provider="native", observation=event))
-                changed = MarketTradeObservation("T", "sell", 100, 105, "W", 10.0, 1.0, "pump")
-                with self.assertRaises(ValueError):
-                    record_market_trade(acquisition_run_key="run", event_key="e", source_provider="native", observation=changed)
+                changed = MarketTradeObservation("T", "sell", 100, 110, "W", 10.0, 1.0, "pump")
+                self.assertFalse(record_market_trade(acquisition_run_key="run", event_key="e", source_provider="native", observation=changed))
+                loaded = load_market_trades(acquisition_run_key="run", token_mint="T")
+                conflicts = count_market_replay_conflicts(acquisition_run_key="run")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].observation.side, "buy")
+        self.assertEqual(loaded[0].observation.observed_at, 105)
+        self.assertEqual(conflicts, 1)
 
     def test_trade_later_replay_preserves_first_seen_availability(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
-                first = MarketTradeObservation(
-                    "T", "buy", 100, 105, "W", None, None, "pump", "signature"
-                )
-                replay = MarketTradeObservation(
-                    "T", "buy", 100, 112, "W", None, None, "pump", "signature"
-                )
-                self.assertTrue(
-                    record_market_trade(
-                        acquisition_run_key="run",
-                        event_key="pump:signature:0",
-                        source_provider="native",
-                        observation=first,
-                    )
-                )
-                self.assertFalse(
-                    record_market_trade(
-                        acquisition_run_key="run",
-                        event_key="pump:signature:0",
-                        source_provider="native",
-                        observation=replay,
-                    )
-                )
+                first = MarketTradeObservation("T", "buy", 100, 105, "W", None, None, "pump", "signature")
+                replay = MarketTradeObservation("T", "buy", 100, 112, "W", None, None, "pump", "signature")
+                self.assertTrue(record_market_trade(acquisition_run_key="run", event_key="pump:signature:0", source_provider="native", observation=first))
+                self.assertFalse(record_market_trade(acquisition_run_key="run", event_key="pump:signature:0", source_provider="native", observation=replay))
                 loaded = load_market_trades(acquisition_run_key="run", token_mint="T")
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].observation.observed_at, 105)
 
-    def test_trade_replay_cannot_backdate_first_seen_availability(self):
+    def test_trade_earlier_replay_becomes_canonical_under_concurrent_completion(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
-                first = MarketTradeObservation(
-                    "T", "buy", 100, 110, "W", None, None, "pump", "signature"
-                )
-                backdated = MarketTradeObservation(
-                    "T", "buy", 100, 105, "W", None, None, "pump", "signature"
-                )
-                record_market_trade(
-                    acquisition_run_key="run",
-                    event_key="pump:signature:0",
-                    source_provider="native",
-                    observation=first,
-                )
-                with self.assertRaisesRegex(ValueError, "precedes first observation"):
-                    record_market_trade(
-                        acquisition_run_key="run",
-                        event_key="pump:signature:0",
-                        source_provider="native",
-                        observation=backdated,
-                    )
+                later_completion = MarketTradeObservation("T", "buy", 100, 110, "W", None, None, "pump", "signature")
+                earlier_delivery = MarketTradeObservation("T", "buy", 100, 105, "W", None, None, "pump", "signature")
+                record_market_trade(acquisition_run_key="run", event_key="pump:signature:0", source_provider="native", observation=later_completion)
+                self.assertFalse(record_market_trade(acquisition_run_key="run", event_key="pump:signature:0", source_provider="native", observation=earlier_delivery))
+                loaded = load_market_trades(acquisition_run_key="run", token_mint="T")
+        self.assertEqual(loaded[0].observation.observed_at, 105)
+
+    def test_earlier_conflicting_trade_replaces_later_canonical_identity_and_is_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                later = MarketTradeObservation("OLD", "buy", 100, 110, "W", None, None, "pumpswap", "sig")
+                earlier = MarketTradeObservation("NEW", "sell", 100, 105, "W", None, None, "pumpswap", "sig")
+                record_market_trade(acquisition_run_key="run", event_key="pumpswap:sig:0", source_provider="native", observation=later)
+                self.assertFalse(record_market_trade(acquisition_run_key="run", event_key="pumpswap:sig:0", source_provider="native", observation=earlier))
+                old_rows = load_market_trades(acquisition_run_key="run", token_mint="OLD")
+                new_rows = load_market_trades(acquisition_run_key="run", token_mint="NEW")
+                conflicts = count_market_replay_conflicts(acquisition_run_key="run")
+        self.assertEqual(old_rows, ())
+        self.assertEqual(len(new_rows), 1)
+        self.assertEqual(new_rows[0].observation.side, "sell")
+        self.assertEqual(new_rows[0].observation.observed_at, 105)
+        self.assertEqual(conflicts, 1)
 
     def test_chain_time_filter_preserves_market_window_semantics(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 for key, chain in (("old", 100), ("new", 200)):
-                    record_market_trade(
-                        acquisition_run_key="run",
-                        event_key=key,
-                        source_provider="native",
-                        observation=MarketTradeObservation("T", "buy", chain, chain + 1, key),
-                    )
+                    record_market_trade(acquisition_run_key="run", event_key=key, source_provider="native", observation=MarketTradeObservation("T", "buy", chain, chain + 1, key))
                 rows = load_market_trades(acquisition_run_key="run", token_mint="T", chain_time_after=150)
         self.assertEqual([item.event_key for item in rows], ["new"])
 
@@ -114,12 +101,7 @@ class MarketObservationStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
-                record_market_lifecycle(
-                    acquisition_run_key="run",
-                    event_key="start",
-                    source_provider="native",
-                    observation=MarketLifecycleObservation("T", 100, 105, "pump"),
-                )
+                record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=MarketLifecycleObservation("T", 100, 105, "pump"))
                 self.assertIsNone(load_latest_market_lifecycle(acquisition_run_key="run", token_mint="T", as_of=104))
                 loaded = load_latest_market_lifecycle(acquisition_run_key="run", token_mint="T", as_of=105)
         self.assertIsNotNone(loaded)
@@ -140,25 +122,9 @@ class MarketObservationStoreTests(unittest.TestCase):
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 first = MarketLifecycleObservation("T", 100, 105, "pump")
                 replay = MarketLifecycleObservation("T", 100, 115, "pump")
-                self.assertTrue(
-                    record_market_lifecycle(
-                        acquisition_run_key="run",
-                        event_key="pump-create:signature:0",
-                        source_provider="native",
-                        observation=first,
-                    )
-                )
-                self.assertFalse(
-                    record_market_lifecycle(
-                        acquisition_run_key="run",
-                        event_key="pump-create:signature:0",
-                        source_provider="native",
-                        observation=replay,
-                    )
-                )
-                loaded = load_latest_market_lifecycle(
-                    acquisition_run_key="run", token_mint="T"
-                )
+                self.assertTrue(record_market_lifecycle(acquisition_run_key="run", event_key="pump-create:signature:0", source_provider="native", observation=first))
+                self.assertFalse(record_market_lifecycle(acquisition_run_key="run", event_key="pump-create:signature:0", source_provider="native", observation=replay))
+                loaded = load_latest_market_lifecycle(acquisition_run_key="run", token_mint="T")
         self.assertIsNotNone(loaded)
         assert loaded is not None
         self.assertEqual(loaded.observation.observed_at, 105)
@@ -168,12 +134,7 @@ class MarketObservationStoreTests(unittest.TestCase):
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with self.assertRaises(ValueError):
-                    record_market_trade(
-                        acquisition_run_key="run",
-                        event_key="bad",
-                        source_provider="native",
-                        observation=MarketTradeObservation("T", "buy", 100, 99, "W"),
-                    )
+                    record_market_trade(acquisition_run_key="run", event_key="bad", source_provider="native", observation=MarketTradeObservation("T", "buy", 100, 99, "W"))
 
 
 if __name__ == "__main__":
