@@ -62,7 +62,6 @@ def record_pumpswap_pool_mapping(
         raise ValueError("observed_at must be non-negative")
     ensure_pumpswap_pool_schema()
 
-    immutable_values = (base, quote, provider)
     with connection() as conn:
         existing = conn.execute(
             """SELECT base_mint, quote_mint, observed_at, source_provider
@@ -71,16 +70,17 @@ def record_pumpswap_pool_mapping(
             (run_key, pool),
         ).fetchone()
         if existing is not None:
-            actual_immutable = (
+            actual_identity = (
                 str(existing["base_mint"]),
                 str(existing["quote_mint"]),
-                str(existing["source_provider"]),
             )
-            if actual_immutable != immutable_values:
+            if actual_identity != (base, quote):
                 raise ValueError("PumpSwap pool mapping already exists with different data")
             first_seen = int(existing["observed_at"])
             if learned_at < first_seen:
                 raise ValueError("PumpSwap pool replay cannot backdate observed_at")
+            # The first source/clock remains authoritative. A later independent source may
+            # corroborate the same mapping without rewriting causal first-seen metadata.
             return False
 
         conn.execute(
