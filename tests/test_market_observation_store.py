@@ -42,6 +42,60 @@ class MarketObservationStoreTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     record_market_trade(acquisition_run_key="run", event_key="e", source_provider="native", observation=changed)
 
+    def test_trade_later_replay_preserves_first_seen_availability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                first = MarketTradeObservation(
+                    "T", "buy", 100, 105, "W", None, None, "pump", "signature"
+                )
+                replay = MarketTradeObservation(
+                    "T", "buy", 100, 112, "W", None, None, "pump", "signature"
+                )
+                self.assertTrue(
+                    record_market_trade(
+                        acquisition_run_key="run",
+                        event_key="pump:signature:0",
+                        source_provider="native",
+                        observation=first,
+                    )
+                )
+                self.assertFalse(
+                    record_market_trade(
+                        acquisition_run_key="run",
+                        event_key="pump:signature:0",
+                        source_provider="native",
+                        observation=replay,
+                    )
+                )
+                loaded = load_market_trades(acquisition_run_key="run", token_mint="T")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].observation.observed_at, 105)
+
+    def test_trade_replay_cannot_backdate_first_seen_availability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                first = MarketTradeObservation(
+                    "T", "buy", 100, 110, "W", None, None, "pump", "signature"
+                )
+                backdated = MarketTradeObservation(
+                    "T", "buy", 100, 105, "W", None, None, "pump", "signature"
+                )
+                record_market_trade(
+                    acquisition_run_key="run",
+                    event_key="pump:signature:0",
+                    source_provider="native",
+                    observation=first,
+                )
+                with self.assertRaisesRegex(ValueError, "precedes first observation"):
+                    record_market_trade(
+                        acquisition_run_key="run",
+                        event_key="pump:signature:0",
+                        source_provider="native",
+                        observation=backdated,
+                    )
+
     def test_chain_time_filter_preserves_market_window_semantics(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
@@ -79,6 +133,35 @@ class MarketObservationStoreTests(unittest.TestCase):
                 item = MarketLifecycleObservation("T", 100, 105, "pump")
                 self.assertTrue(record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=item))
                 self.assertFalse(record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=item))
+
+    def test_lifecycle_later_replay_preserves_first_seen_availability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                first = MarketLifecycleObservation("T", 100, 105, "pump")
+                replay = MarketLifecycleObservation("T", 100, 115, "pump")
+                self.assertTrue(
+                    record_market_lifecycle(
+                        acquisition_run_key="run",
+                        event_key="pump-create:signature:0",
+                        source_provider="native",
+                        observation=first,
+                    )
+                )
+                self.assertFalse(
+                    record_market_lifecycle(
+                        acquisition_run_key="run",
+                        event_key="pump-create:signature:0",
+                        source_provider="native",
+                        observation=replay,
+                    )
+                )
+                loaded = load_latest_market_lifecycle(
+                    acquisition_run_key="run", token_mint="T"
+                )
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.observation.observed_at, 105)
 
     def test_impossible_clock_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
