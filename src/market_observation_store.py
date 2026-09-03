@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS market_trade_observations (
     notional_usd REAL,
     price_usd REAL,
     venue TEXT,
+    transaction_key TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(acquisition_run_key, event_key)
 );
@@ -42,6 +43,9 @@ CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_token_time
 ON market_trade_observations(
     acquisition_run_key, token_mint, chain_time, observed_at, id
 );
+
+CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
+ON market_trade_observations(acquisition_run_key, transaction_key, id);
 
 CREATE TABLE IF NOT EXISTS market_lifecycle_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,9 +67,24 @@ ON market_lifecycle_observations(
 """
 
 
+def _column_names(conn, table_name: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
 def ensure_market_observation_schema() -> None:
     with connection() as conn:
-        conn.executescript(_SCHEMA)
+        # Existing local research DBs predate transaction_key. Add it before creating its index.
+        base_schema = _SCHEMA.replace(
+            "\nCREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction\nON market_trade_observations(acquisition_run_key, transaction_key, id);\n",
+            "\n",
+        )
+        conn.executescript(base_schema)
+        if "transaction_key" not in _column_names(conn, "market_trade_observations"):
+            conn.execute("ALTER TABLE market_trade_observations ADD COLUMN transaction_key TEXT")
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
+            ON market_trade_observations(acquisition_run_key, transaction_key, id)"""
+        )
 
 
 def _required(value: str, name: str) -> str:
@@ -87,6 +106,8 @@ def _validate_trade(item: MarketTradeObservation) -> None:
         raise ValueError("wallet_address cannot be blank")
     if item.venue is not None and not item.venue.strip():
         raise ValueError("venue cannot be blank")
+    if item.transaction_key is not None and not item.transaction_key.strip():
+        raise ValueError("transaction_key cannot be blank")
     if item.notional_usd is not None and item.notional_usd < 0:
         raise ValueError("notional_usd must be non-negative")
     if item.price_usd is not None and item.price_usd <= 0:
@@ -126,11 +147,12 @@ def record_market_trade(
         observation.notional_usd,
         observation.price_usd,
         observation.venue,
+        observation.transaction_key,
     )
     with connection() as conn:
         existing = conn.execute(
             """SELECT source_provider, token_mint, side, chain_time, observed_at,
-                wallet_address, notional_usd, price_usd, venue
+                wallet_address, notional_usd, price_usd, venue, transaction_key
             FROM market_trade_observations
             WHERE acquisition_run_key=? AND event_key=?""",
             (run_key, raw_key),
@@ -138,7 +160,7 @@ def record_market_trade(
         if existing is not None:
             actual = tuple(existing[key] for key in (
                 "source_provider", "token_mint", "side", "chain_time", "observed_at",
-                "wallet_address", "notional_usd", "price_usd", "venue"
+                "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"
             ))
             if actual != values:
                 raise ValueError("market trade event already exists with different data")
@@ -146,8 +168,9 @@ def record_market_trade(
         conn.execute(
             """INSERT INTO market_trade_observations(
                 acquisition_run_key, event_key, source_provider, token_mint, side,
-                chain_time, observed_at, wallet_address, notional_usd, price_usd, venue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
+                transaction_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (run_key, raw_key, *values),
         )
         return True
@@ -212,7 +235,8 @@ def load_market_trades(
         raise ValueError("chain_time_after must be non-negative")
     ensure_market_observation_schema()
     query = """SELECT acquisition_run_key, event_key, source_provider, token_mint, side,
-        chain_time, observed_at, wallet_address, notional_usd, price_usd, venue
+        chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
+        transaction_key
         FROM market_trade_observations
         WHERE acquisition_run_key=? AND token_mint=?"""
     params: list[object] = [run_key, mint]
@@ -239,6 +263,7 @@ def load_market_trades(
                 notional_usd=(float(row["notional_usd"]) if row["notional_usd"] is not None else None),
                 price_usd=(float(row["price_usd"]) if row["price_usd"] is not None else None),
                 venue=(str(row["venue"]) if row["venue"] is not None else None),
+                transaction_key=(str(row["transaction_key"]) if row["transaction_key"] is not None else None),
             ),
         )
         for row in rows
