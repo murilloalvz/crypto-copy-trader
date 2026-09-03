@@ -16,8 +16,9 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Pump -> Radar -> Opportunity Episode: live PASS.
 - PumpSwap acquisition + causal pool resolution: live PASS.
 - Unified local causal bundle: live PASS para flow/wallet semantics.
-- Unified single-consumer throughput: **FAIL**; substituído pela arquitetura throughput v3.
-- Throughput v3: implementado e CI green; **short live smoke é o próximo gate**.
+- Unified throughput v2: FAIL.
+- Unified throughput v3: **semantic fixes PASS / capacity FAIL**.
+- Throughput v4: implementado + CI green; **short live smoke é o próximo gate**.
 - Jupiter, hazard provider, historical wallet outcomes no unified path, final `decision_as_of` e forward outcomes ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -41,7 +42,6 @@ Objetivo: identificar movimentos precoces cujo resultado forward, líquido de cu
 ## Core ativo
 
 Prioridade:
-
 1. market movement / lifecycle;
 2. order flow / microstructure;
 3. liquidity / execution / tradability;
@@ -69,7 +69,6 @@ Deferred/frozen: Social/X, Telegram/NLP, graph avançado, whitelist/ranking sofi
 Versão: `market_opportunity_radar_v1_1_tx_aware`.
 
 Acquisition mechanics congeladas, não regras de trading:
-
 - fast window 30s;
 - baseline horizon 300s;
 - >=6 fast events;
@@ -90,7 +89,6 @@ Replay idêntico posterior preserva o primeiro `observed_at`; backdating e muta�
 `src/market_opportunity_episode_store.py` deduplica raw hits: mesmo run+token dentro de 60s reutiliza episode. `decision_as_of` é imutável depois do freeze e **não é congelado pelo radar**.
 
 Lifecycle venue-aware:
-
 - Pump bonding `CreateEvent` = token birth para `fresh_market_burst` v1;
 - PumpSwap `CreatePoolEvent` = pool/venue lifecycle, não token birth;
 - PumpSwap pool creation não pode rejuvenescer token migrado/antigo.
@@ -127,7 +125,6 @@ Conclusão: enrichment caro deve ser **episode-scoped**, nunca raw-hit-scoped.
 `pumpswap-smoke-20260903-01`, 120.8s:
 - 749 notifications;
 - 837 decoded/persisted trades;
-- 472 BUY / 365 SELL;
 - 150 pools;
 - 737 wallets;
 - 0 unresolved;
@@ -138,108 +135,126 @@ Decisão: **NATIVE PUMPSWAP ACQUISITION + CAUSAL POOL RESOLUTION PASS**.
 
 ### Unified v2
 
-`unified-market-smoke-20260903-02`, requested 120s:
-- received: 1,054 Pump + 1,426 PumpSwap = 2,480;
-- processed before deadline: 252 Pump + 228 PumpSwap = 480 (~19.4%);
-- backlog: 802 Pump + 1,198 PumpSwap = 2,000;
-- queue high-water: 2,000/2,000;
-- persisted: 234 Pump + 255 PumpSwap trades;
-- 2 unique episodes / 2 enrichments;
-- bundle totals: flow30=29, wallets=23;
-- PumpSwap hydrations 97/97, 0 real RPC failures, 0 budget skips.
+`unified-market-smoke-20260903-02`:
+- received 2,480;
+- processed by deadline 480 (~19.4%);
+- backlog 2,000;
+- bundle flow/wallet semantics valid after T0 clock fix.
 
-Decision: **CAUSAL BUNDLE PASS / THROUGHPUT FAIL**.
+Decisão: **CAUSAL BUNDLE PASS / THROUGHPUT FAIL**.
 
-The v2 bundle fixed the prior clock bug: enrichment is anchored to `episode.first_trigger_observed_at`, not delayed queue-processing wall time. Jupiter must remain blocked until throughput is healthy.
+### Unified throughput v3
 
-The run also exposed a PumpSwap asset-role bug by opening an episode on WSOL. This is fixed in throughput v3.
+`unified-market-smoke-20260903-03`, 120s:
+- received: Pump 2,181 / PumpSwap 2,484 = 4,665;
+- dropped: 0;
+- worker errors: 0;
+- radar processed: Pump 1,270 / PumpSwap 2,468;
+- total radar coverage: **80.1%**;
+- Pump backlog: 910;
+- Pump queue wait p95: **52.6s**;
+- PumpSwap radar end-to-end p95: **29.0s**;
+- reference-asset episodes: 0;
+- unique episodes: 77;
+- enrichment admitted: 77;
+- populated bundle totals: flow30 896 / wallets 754;
+- PumpSwap hydrations: 300/300 successful;
+- real RPC failures: 0;
+- hydration budget skips: 41.
 
-## PumpSwap asset-role normalization v3
+Decisão: **SEMANTIC FIXES PASS / THROUGHPUT CAPACITY FAIL**.
+
+Canonical report: `docs/unified-market-throughput-v3-live-smoke-2026-09-03.md`.
+
+Não retunar radar. Jupiter continua bloqueado até throughput PASS.
+
+## PumpSwap asset-role normalization
 
 Active files:
-
 - `src/pumpswap_asset_role.py`;
 - `src/pumpswap_normalized_persistence.py`;
 - `src/pumpswap_concurrent_resolver.py`;
 - `src/pumpswap_radar_bridge_v3.py`.
 
-V1 reference assets are intentionally narrow: WSOL and USDC.
+V1 reference assets: WSOL e USDC.
 
 Rules:
-
 - exactly one pool side must be a known reference asset;
 - the other side becomes the opportunity token;
-- if opportunity token is PumpSwap base, event buy/sell is preserved;
+- if opportunity token is PumpSwap base, buy/sell is preserved;
 - if opportunity token is quote, buy/sell is inverted because PumpSwap events are base-relative;
 - two-reference or two-unknown pairs are explicit `role_filtered`, never guessed;
-- WSOL/USDC cannot become opportunity episodes;
-- immutable pool `base_mint/quote_mint` identity remains preserved separately.
+- WSOL/USDC cannot become opportunity episodes.
 
-## Throughput v3
+## Throughput v4
 
-Design freeze:
-`docs/unified-market-throughput-v3-design-2026-09-03.md`
+Design freeze: `docs/unified-market-throughput-v4-design-2026-09-03.md`.
 
-Runner:
-`unified_market_throughput_smoke_v3.py`
+Runner: `unified_market_throughput_smoke_v4.py`.
 
-Architecture:
+New Pump path:
 
 ```text
 Pump websocket
--> dedicated Pump queue
--> ordered Pump persist+radar worker
-
-PumpSwap websocket
--> dedicated PumpSwap queue
--> bounded concurrent persistence/pool-resolution workers
+-> dedicated ingress queue
+-> bounded concurrent batch-persistence workers
+-> one SQLite transaction per notification
 -> completed queue
--> ingress-order PumpSwap radar coordinator
-
-Both
--> shared Opportunity Episode store
--> exactly-once local episode bundle
+-> ingress-order radar coordinator
 ```
 
-PumpSwap persistence may complete concurrently/out of order, but radar/episode assignment remains in ingress order. Radar loaders apply causal `as_of`, so later-persisted observations remain invisible to earlier evaluation boundaries.
+PumpSwap keeps bounded concurrent persistence/pool resolution plus ingress-order radar coordination.
 
-Pool resolver adds per-pool single-flight + bounded global concurrency while retaining cache/current-run/historical reuse.
+The important causal invariant is unchanged: persistence may finish out of order, but **radar/episode assignment is released in websocket ingress order**, and loaders still enforce `observed_at <= as_of`.
 
-CI at the v3 code state:
+New files:
+- `src/pump_batch_persistence.py`;
+- `src/pump_radar_bridge_v4.py`;
+- `unified_market_throughput_smoke_v4.py`.
+
+CI at v4 code state:
 - `python -m compileall -q .`: PASS;
-- `python -m unittest discover -s tests -q`: **553 tests, 0 failures**.
+- `python -m unittest discover -s tests -q`: **557 tests, 0 failures**.
 
-## Throughput v3 live PASS gate
+## Throughput v4 live PASS gate
 
-The 120s v3 smoke is an operational PASS only if:
-
+The next 120s smoke is PASS only if:
 1. no traceback / worker errors;
 2. zero dropped notifications;
 3. `reference_asset_episodes == 0`;
-4. Pump and PumpSwap both persist observations;
-5. total radar coverage >=95% at deadline;
-6. total remaining backlog <=5% of enqueued notifications;
-7. Pump queue-wait p95 <=2s;
-8. PumpSwap radar end-to-end wait p95 <=5s;
-9. `budget_skips == 0`;
-10. if episodes are admitted, flow/wallet bundles are not systematically empty.
+4. both venues persist observations;
+5. total radar coverage >=95%;
+6. total remaining backlog <=5% of enqueued;
+7. Pump radar end-to-end p95 <=5s;
+8. PumpSwap radar end-to-end p95 <=5s;
+9. short-smoke `budget_skips == 0`;
+10. admitted bundles are not systematically empty.
 
-These are **capture/capacity criteria**, not economic thresholds. Failure here means fix acquisition/backpressure, never retune radar.
+These are capture/capacity gates, not trading thresholds, and are frozen before the live run.
+
+Initial v4 short-smoke configuration:
+- Pump workers: 4;
+- PumpSwap workers: 8;
+- max concurrent PumpSwap resolutions: 6;
+- queue size: 5,000;
+- PumpSwap hydration ceiling: 1,000 **only as a non-binding short-smoke ceiling**.
+
+A v4 PASS permits Jupiter episode-scoped work, but **does not permit 12h yet**. Long-run hydration/rate/cost policy remains mandatory before 12h.
 
 ## Próximo gate obrigatório
 
-Run short live throughput v3. **Não adicionar Jupiter antes do PASS.**
+Run short live throughput v4. **Não adicionar Jupiter antes do PASS.**
 
 Depois do PASS:
-
 1. Jupiter executable quote somente para novo episode admitido;
 2. hazard provider mínimo com explicit missing/failure;
 3. historical wallet outcomes resolvidos antes do T0;
 4. freeze final `decision_as_of` depois das tentativas obrigatórias de provider;
 5. short true economic E2E smoke;
 6. auditar provider coverage/reconnect/dedup/clocks/cost;
-7. congelar protocolo runnable;
-8. somente então primeira coleta de 12h.
+7. definir long-run PumpSwap hydration/rate/backpressure policy;
+8. congelar protocolo runnable;
+9. somente então primeira coleta de 12h.
 
 ## Avaliação econômica futura
 
@@ -254,7 +269,8 @@ Métricas mínimas: mean/median, win rate, profit factor, drawdown, coverage, to
 - native acquisition: Pump PASS / PumpSwap PASS;
 - causal unified local bundle: PASS;
 - unified throughput v2: FAIL;
-- throughput v3: CI PASS / live pending;
+- throughput v3: semantic PASS / capacity FAIL;
+- throughput v4: CI PASS / live pending;
 - economic edge market-first: não estabelecido;
 - executable fill/landing: não validado;
 - shadow: não liberado;
