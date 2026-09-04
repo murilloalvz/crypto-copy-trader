@@ -75,7 +75,6 @@ class PumpSwapNormalizedPersistenceV3Tests(unittest.IsolatedAsyncioTestCase):
                     signature="same-sig",
                     pool="POOL-NEW",
                     observed_at=1050,
-                    side="sell",
                 )
                 mapping = {"POOL-OLD": "OLD", "POOL-NEW": "NEW"}
 
@@ -139,7 +138,7 @@ class PumpSwapNormalizedPersistenceV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(current_new), 1)
         self.assertEqual(legacy_new[0].observation, current_new[0].observation)
         self.assertEqual(current_new[0].observation.observed_at, 1050)
-        self.assertEqual(current_new[0].observation.side, "sell")
+        self.assertEqual(current_new[0].observation.side, "buy")
         self.assertEqual(len(telemetry), 2)
         self.assertEqual(writer.batch_sizes, [2])
         self.assertTrue(all(item.writer_batch_size == 2 for item in telemetry))
