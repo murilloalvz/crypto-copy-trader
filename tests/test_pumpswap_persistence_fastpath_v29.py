@@ -1,4 +1,3 @@
-import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,13 +94,16 @@ class PumpSwapPersistenceFastPathV29Tests(unittest.IsolatedAsyncioTestCase):
                 fast_old = load_market_trades(acquisition_run_key="fast", token_mint="OLD")
 
         self.assertEqual(legacy_results, fast_results)
+        self.assertEqual(legacy_results[0].affected_tokens, ("OLD",))
+        self.assertEqual(legacy_results[1].affected_tokens, ("NEW",))
         self.assertEqual(len(legacy_new), 1)
         self.assertEqual(len(fast_new), 1)
         self.assertEqual(fast_old, ())
         self.assertEqual(fast_new[0].observation.observed_at, 1050)
         self.assertEqual(snapshot.trade_insert_attempts, 2)
         self.assertEqual(snapshot.trade_collision_reads, 1)
-        self.assertEqual(snapshot.affected_token_batch_readbacks, 1)
+        self.assertEqual(snapshot.affected_token_batch_readbacks, 0)
+        self.assertEqual(snapshot.affected_token_repeated_key_readbacks, 2)
 
     async def test_new_rows_skip_replay_reads_and_share_one_batch_readback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -131,6 +133,7 @@ class PumpSwapPersistenceFastPathV29Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.trade_insert_attempts, 20)
         self.assertEqual(snapshot.trade_collision_reads, 0)
         self.assertEqual(snapshot.affected_token_batch_readbacks, 1)
+        self.assertEqual(snapshot.affected_token_repeated_key_readbacks, 0)
 
 
 if __name__ == "__main__":
