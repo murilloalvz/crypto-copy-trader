@@ -6,6 +6,11 @@ import asyncio
 import unified_market_latency_smoke_v19 as v19
 import unified_market_latency_smoke_v28 as v28
 import src.pumpswap_normalized_persistence_v4 as pumpswap_writer_module
+from src.pump_persistence_fastpath_v29 import (
+    persist_pump_notifications_microbatch_fast_v29,
+    pump_persistence_fastpath_snapshot,
+    reset_pump_persistence_fastpath_metrics,
+)
 from src.pumpswap_persistence_fastpath_v29 import (
     persist_prepared_batch_fast_v29,
     pumpswap_persistence_fastpath_snapshot,
@@ -14,28 +19,54 @@ from src.pumpswap_persistence_fastpath_v29 import (
 
 
 async def run_smoke_v29(**kwargs):
-    """Run v28 with an optimized authoritative PumpSwap persistence transaction.
+    """Run v28 with optimized authoritative Pump/PumpSwap persistence transactions.
 
-    v28 proved that explicit writer admission removes lock races but cannot fix long PumpSwap
-    transactions. v29 changes only the internal SQL shape of the PumpSwap microbatch writer:
+    v28 proved that explicit writer admission removes lock races but cannot fix long persistence
+    transactions. v29 changes only SQL shape inside the two hot observation writers:
 
-    * new rows use INSERT OR IGNORE first;
+    * Pump and PumpSwap new rows use INSERT OR IGNORE first;
     * replay/conflict SELECTs run only after a UNIQUE collision;
-    * canonical affected tokens for transaction keys unique inside a microbatch share one readback;
-    * repeated transaction keys retain immediate per-item readback so later replay in the same
-      microbatch cannot retroactively change an earlier result.
+    * PumpSwap affected tokens for transaction keys unique inside a microbatch share one readback;
+    * repeated PumpSwap transaction keys retain immediate per-item readback so later replay in the
+      same microbatch cannot retroactively change an earlier result.
 
     Replay, earliest-observation canonicalization, reservation, detector, episode, FIFO and audit
     semantics remain unchanged.
     """
 
-    original_db_stage = pumpswap_writer_module._persist_prepared_batch_db_stage
+    original_pump_stage = v19.persist_pump_notifications_microbatch
+    original_pumpswap_stage = pumpswap_writer_module._persist_prepared_batch_db_stage
+    reset_pump_persistence_fastpath_metrics()
     reset_pumpswap_persistence_fastpath_metrics()
+    v19.persist_pump_notifications_microbatch = persist_pump_notifications_microbatch_fast_v29
     pumpswap_writer_module._persist_prepared_batch_db_stage = persist_prepared_batch_fast_v29
     try:
         return await v28.run_smoke_v28(**kwargs)
     finally:
-        pumpswap_writer_module._persist_prepared_batch_db_stage = original_db_stage
+        v19.persist_pump_notifications_microbatch = original_pump_stage
+        pumpswap_writer_module._persist_prepared_batch_db_stage = original_pumpswap_stage
+
+        pump_snapshot = pump_persistence_fastpath_snapshot()
+        pump_trade_collision_pct = (
+            100.0 * pump_snapshot.trade_collision_reads / pump_snapshot.trade_insert_attempts
+            if pump_snapshot.trade_insert_attempts
+            else 0.0
+        )
+        pump_lifecycle_collision_pct = (
+            100.0 * pump_snapshot.lifecycle_collision_reads / pump_snapshot.lifecycle_insert_attempts
+            if pump_snapshot.lifecycle_insert_attempts
+            else 0.0
+        )
+        print("\nV29 OPTIMISTIC PUMP PERSISTENCE FAST-PATH DIAGNOSTIC")
+        print(
+            f"trade_insert_attempts={pump_snapshot.trade_insert_attempts} "
+            f"trade_collision_reads={pump_snapshot.trade_collision_reads} "
+            f"trade_collision_pct={pump_trade_collision_pct:.3f}% "
+            f"lifecycle_insert_attempts={pump_snapshot.lifecycle_insert_attempts} "
+            f"lifecycle_collision_reads={pump_snapshot.lifecycle_collision_reads} "
+            f"lifecycle_collision_pct={pump_lifecycle_collision_pct:.3f}%"
+        )
+
         snapshot = pumpswap_persistence_fastpath_snapshot()
         trade_collision_pct = (
             (100.0 * snapshot.trade_collision_reads / snapshot.trade_insert_attempts)
@@ -73,15 +104,15 @@ async def run_smoke_v29(**kwargs):
             f"readbacks_per_prepared_item={readbacks_per_item:.4f}"
         )
         print(
-            "v29 changes SQL shape only: insert-first on the common new-row path, replay SELECTs "
-            "only after collisions, batch readback for unique transaction keys, and immediate "
-            "readback only for repeated keys that require per-item replay causality."
+            "v29 changes SQL shape only: insert-first on common new-row paths, replay SELECTs "
+            "only after collisions, PumpSwap batch readback for unique transaction keys, and "
+            "immediate readback only for repeated keys requiring per-item replay causality."
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Unified market latency smoke v29 optimized PumpSwap persistence"
+        description="Unified market latency smoke v29 optimized Pump/PumpSwap persistence"
     )
     parser.add_argument("--run-key", required=True)
     parser.add_argument("--duration-seconds", type=int, default=120)
@@ -127,7 +158,7 @@ def main() -> None:
         parser.error("continuation-batch-max-wait-ms cannot be negative")
 
     journal_mode, synchronous = v19._enable_wal_mode()
-    print("Crypto Copy Trader — Unified Market Latency Smoke v29 Optimistic PumpSwap Persistence")
+    print("Crypto Copy Trader — Unified Market Latency Smoke v29 Optimistic Observation Persistence")
     print("Mode: PAPER / RESEARCH / READ ONLY — no signing or transaction submission.")
     print(f"sqlite_journal_mode={journal_mode} sqlite_synchronous={synchronous}")
     kwargs = dict(
