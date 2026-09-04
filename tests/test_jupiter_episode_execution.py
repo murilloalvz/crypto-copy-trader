@@ -46,7 +46,13 @@ def _config(*, api_key="key", taker="Taker1111111111111111111111111111111111"):
     )
 
 
-def _order(*, transaction="base64tx", observed_at=111) -> JupiterOrder:
+def _order(
+    *,
+    transaction="base64tx",
+    observed_at=111,
+    error_code=None,
+    error_message=None,
+) -> JupiterOrder:
     return JupiterOrder(
         input_mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         output_mint=TOKEN,
@@ -64,8 +70,8 @@ def _order(*, transaction="base64tx", observed_at=111) -> JupiterOrder:
         transaction=transaction,
         last_valid_block_height="123",
         expire_at=None,
-        error_code=None,
-        error_message=None,
+        error_code=error_code,
+        error_message=error_message,
         observed_at=observed_at,
     )
 
@@ -113,13 +119,17 @@ class JupiterEpisodeExecutionTests(unittest.TestCase):
         self.assertEqual(kwargs["amount_raw"], 25_000_000)
         self.assertEqual(kwargs["taker"], _config().taker_public_key)
 
-    def test_quote_without_assembled_transaction_is_explicit_unavailable(self):
+    def test_quote_without_assembled_transaction_is_explicit_unavailable_with_reason(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quote.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 decimals_patch, _ = self._patch_decimals()
                 jupiter = Mock()
-                jupiter.order.return_value = _order(transaction=None)
+                jupiter.order.return_value = _order(
+                    transaction=None,
+                    error_code=42,
+                    error_message="cannot assemble",
+                )
                 with decimals_patch, patch(
                     "src.jupiter_episode_execution.JupiterSwapV2Client",
                     return_value=jupiter,
@@ -129,9 +139,9 @@ class JupiterEpisodeExecutionTests(unittest.TestCase):
         self.assertEqual(result.attempt.status, "UNAVAILABLE")
         self.assertIsNotNone(result.quote)
         self.assertFalse(result.quote.executable)
-        self.assertEqual(
-            result.attempt.details["assembled_transaction_present"], False
-        )
+        self.assertFalse(result.attempt.details["assembled_transaction_present"])
+        self.assertEqual(result.attempt.details["provider_error_code"], 42)
+        self.assertEqual(result.attempt.details["provider_error_message"], "cannot assemble")
 
     def test_missing_config_is_persisted_without_network_calls(self):
         with tempfile.TemporaryDirectory() as directory:
