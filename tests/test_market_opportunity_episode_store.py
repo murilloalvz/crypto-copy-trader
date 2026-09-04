@@ -57,6 +57,56 @@ class MarketOpportunityEpisodeStoreTests(unittest.TestCase):
                 second = self._assign(key="t2", observed=160, chain=155)
         self.assertNotEqual(first.episode_key, second.episode_key)
 
+    def test_late_earlier_distinct_trigger_does_not_open_retroactive_overlap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "late-earlier.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                canonical = self._assign(key="later-first", observed=120, chain=115)
+                suppressed = self._assign(key="older-arrived-late", observed=100, chain=95)
+                repeated = self._assign(key="older-arrived-late", observed=100, chain=95)
+
+                with database.connection() as conn:
+                    episode_count = conn.execute(
+                        """SELECT COUNT(*) AS n FROM market_opportunity_episodes
+                        WHERE acquisition_run_key='run-a' AND token_mint='T'"""
+                    ).fetchone()["n"]
+                    conflict_rows = conn.execute(
+                        """SELECT trigger_key, episode_key, stored_observed_at,
+                            incoming_observed_at, canonical_action
+                        FROM market_trigger_replay_conflicts
+                        WHERE acquisition_run_key='run-a'
+                        ORDER BY id"""
+                    ).fetchall()
+                triggers = load_market_opportunity_episode_triggers(canonical.episode_key)
+
+        self.assertEqual(suppressed.episode_key, canonical.episode_key)
+        self.assertEqual(repeated.episode_key, canonical.episode_key)
+        self.assertEqual(canonical.first_trigger_observed_at, 120)
+        self.assertEqual(episode_count, 1)
+        self.assertEqual([item.trigger_key for item in triggers], ["later-first"])
+        self.assertEqual(len(conflict_rows), 1)
+        self.assertEqual(conflict_rows[0]["trigger_key"], "older-arrived-late")
+        self.assertEqual(conflict_rows[0]["episode_key"], canonical.episode_key)
+        self.assertEqual(conflict_rows[0]["stored_observed_at"], 120)
+        self.assertEqual(conflict_rows[0]["incoming_observed_at"], 100)
+        self.assertEqual(
+            conflict_rows[0]["canonical_action"],
+            "retain_first_persisted_episode_late_earlier_trigger",
+        )
+
+    def test_late_earlier_trigger_at_nonoverlapping_boundary_opens_separate_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "late-earlier-boundary.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                later = self._assign(key="later", observed=120, chain=115)
+                earlier = self._assign(key="earlier", observed=60, chain=55)
+                conflicts = count_market_trigger_replay_conflicts(acquisition_run_key="run-a")
+
+        self.assertNotEqual(later.episode_key, earlier.episode_key)
+        self.assertEqual(earlier.first_trigger_observed_at, 60)
+        self.assertEqual(earlier.episode_closes_at, 120)
+        self.assertEqual(conflicts, 0)
+
     def test_different_acquisition_runs_never_share_episode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.db"
