@@ -81,10 +81,10 @@ class ReadyAssetScheduler(Generic[T]):
     inspects only a possible N+1 successor instead of waking every waiter for the asset.
 
     A reservation that is proven to be a causal no-op may be ``skip``-ped instead of
-    submitted. The skipped ticket is remembered until all earlier stateful tickets on that
-    asset complete, then the cursor automatically advances across the no-op. This removes
-    read-only detector results from the dependency graph without allowing any later
-    state-mutating job to overtake an earlier state-mutating predecessor.
+    submitted. The skipped ticket is remembered only while it is still ahead of an
+    earlier stateful predecessor; once the cursor reaches it, the ticket is consumed and
+    forgotten. This removes read-only detector results from the dependency graph without
+    allowing any later state-mutating job to overtake an earlier state-mutating predecessor.
     """
 
     def __init__(self) -> None:
@@ -99,7 +99,6 @@ class ReadyAssetScheduler(Generic[T]):
         self._pending_by_ticket: dict[tuple[str, int], set[int]] = {}
         self._skipped_by_asset: dict[str, set[int]] = {}
         self._submitted_reservations: set[tuple[str, int]] = set()
-        self._skipped_reservations: set[tuple[str, int]] = set()
 
         # Diagnostic-only state. None of these counters participate in scheduling decisions.
         self._reservations_by_asset: dict[str, int] = {}
@@ -142,8 +141,12 @@ class ReadyAssetScheduler(Generic[T]):
         key = self._reservation_key(reservation)
         if key in self._submitted_reservations:
             raise RuntimeError("asset reservation was submitted more than once")
-        if key in self._skipped_reservations:
-            raise RuntimeError("cannot submit a reservation already marked as causal no-op")
+
+        for asset, ticket in reservation.tickets:
+            current = self._completed.get(asset, 0)
+            if ticket < current or ticket in self._skipped_by_asset.get(asset, set()):
+                raise RuntimeError("cannot submit a reservation already marked as causal no-op")
+
         self._submitted_reservations.add(key)
 
         if self._reservation_ready(reservation):
@@ -189,14 +192,13 @@ class ReadyAssetScheduler(Generic[T]):
         ``skip`` must be chosen instead of ``submit``. A skipped ticket may sit ahead of
         the current cursor while an earlier stateful predecessor is still running. Once
         that predecessor completes, contiguous skipped tickets are consumed automatically
-        before successor readiness is evaluated.
+        before successor readiness is evaluated. Empty reservations are already no-op and
+        therefore require no retained scheduler state.
         """
 
         key = self._reservation_key(reservation)
         if key in self._submitted_reservations:
             raise RuntimeError("cannot skip an asset reservation after submit")
-        if key in self._skipped_reservations:
-            raise RuntimeError("asset reservation was skipped more than once")
 
         for asset, ticket in reservation.tickets:
             issued = self._issued.get(asset, 0)
@@ -210,8 +212,9 @@ class ReadyAssetScheduler(Generic[T]):
                     f"cannot skip already completed asset ticket for {asset}: "
                     f"ticket={ticket} completed={current}"
                 )
+            if ticket in self._skipped_by_asset.get(asset, set()):
+                raise RuntimeError("asset reservation was skipped more than once")
 
-        self._skipped_reservations.add(key)
         for asset, ticket in reservation.tickets:
             self._skipped_by_asset.setdefault(asset, set()).add(ticket)
 
@@ -417,4 +420,3 @@ class ReadyAssetScheduler(Generic[T]):
         self._active_waits.clear()
         self._skipped_by_asset.clear()
         self._submitted_reservations.clear()
-        self._skipped_reservations.clear()
