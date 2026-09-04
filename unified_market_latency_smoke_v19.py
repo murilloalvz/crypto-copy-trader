@@ -15,6 +15,11 @@ from src.opportunity_episode_enrichment import build_episode_enrichment_bundle
 from src.pump_bonding_stream import iter_pump_log_notifications
 from src.pump_microbatch_persistence import persist_pump_notifications_microbatch
 from src.pump_radar_bridge_v4 import evaluate_persisted_pump_notification_for_radar_v4
+from src.pump_radar_bridge_v5 import (
+    PreparedPumpRadarV5,
+    finalize_prepared_pump_radar_v5,
+    prepare_persisted_pump_notification_for_radar_v5,
+)
 from src.pumpswap_asset_role import REFERENCE_ASSET_MINTS_V1
 from src.pumpswap_deferred_persistence_v5 import (
     DeferredPumpSwapPersistHandle,
@@ -53,6 +58,18 @@ class EarlyReservationHint:
     assets: tuple[str, ...]
     enqueued_monotonic: float
     normalization_completed_monotonic: float
+
+
+@dataclass(frozen=True)
+class PreparedTimedPumpWork:
+    completed: CompletedPumpNotification
+    prepared: PreparedPumpRadarV5
+    prepare_started_monotonic: float
+    prepare_completed_monotonic: float
+
+    @property
+    def sequence(self) -> int:
+        return self.completed.sequence
 
 
 @dataclass(frozen=True)
@@ -117,6 +134,8 @@ async def run_smoke_v19(
     max_concurrent_resolutions: int,
     queue_size: int,
     offload_sync_radar: bool = False,
+    split_pump_radar: bool = False,
+    pump_prepare_workers: int = 4,
 ) -> ThreadedWriterDiagnostics:
     """Run the unified latency smoke with early conservative PumpSwap reservations.
 
@@ -129,21 +148,26 @@ async def run_smoke_v19(
     remains protected by the same per-asset FIFO scheduler.
 
     ``offload_sync_radar`` is opt-in so historical v19-v21 behavior stays frozen. When
-    enabled, the already-sequential Pump radar coordinator and PumpSwap FIFO finalizer
-    execute their synchronous SQLite stages on one shared one-thread executor. Both
-    coordinators still await each result before advancing, and sharing one executor keeps
-    Pump/PumpSwap trigger assignment globally serialized instead of introducing a new
-    cross-source race. Only event-loop blocking is removed.
+    enabled, the stateful radar stage executes on one shared one-thread executor instead
+    of blocking asyncio. ``split_pump_radar`` is also opt-in: Pump causal reads/detection
+    then run concurrently on a dedicated prepare executor, are reordered back to original
+    Pump ingress sequence, and only the short trigger/episode commit shares the same
+    one-thread executor as PumpSwap finalize. That keeps cross-source trigger persistence
+    serialized without forcing every Pump read/detect through the single commit worker.
     """
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
         raise ValueError("prepare submitters/executor workers must be positive")
+    if split_pump_radar and pump_prepare_workers <= 0:
+        raise ValueError("pump_prepare_workers must be positive when split Pump radar is enabled")
 
     started = time.monotonic()
     deadline = started + duration_seconds
 
     pump_queue: asyncio.Queue[QueuedNotification] = asyncio.Queue(maxsize=queue_size)
     pump_completed: asyncio.Queue[CompletedPumpNotification] = asyncio.Queue()
+    pump_prepare_queue: asyncio.Queue[CompletedPumpNotification] = asyncio.Queue()
+    pump_prepared_queue: asyncio.Queue[PreparedTimedPumpWork] = asyncio.Queue()
 
     pumpswap_queue: asyncio.Queue[QueuedNotification] = asyncio.Queue(maxsize=queue_size)
     pumpswap_reservation_hints: asyncio.Queue[EarlyReservationHint] = asyncio.Queue()
@@ -172,6 +196,14 @@ async def run_smoke_v19(
         max_workers=pumpswap_prepare_executor_workers,
         thread_name_prefix="pumpswap-prepare-v19",
     )
+    pump_prepare_executor = (
+        ThreadPoolExecutor(
+            max_workers=pump_prepare_workers,
+            thread_name_prefix="pump-prepare-v24",
+        )
+        if split_pump_radar
+        else None
+    )
     radar_sync_executor = (
         ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-radar-sequential-v22")
         if offload_sync_radar
@@ -193,6 +225,7 @@ async def run_smoke_v19(
     affected_tokens: set[str] = set()
     episodes_seen: set[str] = set()
     pending_pump: dict[int, CompletedPumpNotification] = {}
+    pending_pump_prepared: dict[int, PreparedTimedPumpWork] = {}
     pending_reservation_hints: dict[int, EarlyReservationHint] = {}
     prepared_by_sequence: dict[int, PreparedTimedPumpSwapWork] = {}
     no_evidence_by_sequence: dict[int, TimedPumpSwapCompletion] = {}
@@ -201,6 +234,8 @@ async def run_smoke_v19(
 
     pump_persist_wait_seconds: list[float] = []
     pump_radar_wait_seconds: list[float] = []
+    pump_prepare_service_seconds: list[float] = []
+    pump_prepare_end_to_end_seconds: list[float] = []
     pump_microbatch_sizes: list[int] = []
 
     pumpswap_persist_wait_seconds: list[float] = []
@@ -427,18 +462,93 @@ async def run_smoke_v19(
             pump_completed.task_done()
             while next_sequence in pending_pump and time.monotonic() < deadline:
                 item = pending_pump.pop(next_sequence)
-                pump_radar_wait_seconds.append(time.monotonic() - item.enqueued_monotonic)
+                if split_pump_radar:
+                    await pump_prepare_queue.put(item)
+                else:
+                    pump_radar_wait_seconds.append(time.monotonic() - item.enqueued_monotonic)
+                    try:
+                        result = await _run_sync_stage(
+                            evaluate_persisted_pump_notification_for_radar_v4,
+                            item.notification,
+                            acquisition_run_key=run_key,
+                            persist_result=item.persist_result,
+                            executor=radar_sync_executor,
+                        )
+                        handle_radar_result("pump", result)
+                    except Exception:
+                        worker_errors["pump_radar"] += 1
+                        raise
+                next_sequence += 1
+
+    async def pump_prepare_worker() -> None:
+        if pump_prepare_executor is None:
+            return
+        loop = asyncio.get_running_loop()
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                completed = await asyncio.wait_for(
+                    pump_prepare_queue.get(), timeout=min(0.5, remaining)
+                )
+            except asyncio.TimeoutError:
+                continue
+            prepare_started = time.monotonic()
+            try:
+                context = contextvars.copy_context()
+                call = functools.partial(
+                    context.run,
+                    prepare_persisted_pump_notification_for_radar_v5,
+                    completed.notification,
+                    acquisition_run_key=run_key,
+                    persist_result=completed.persist_result,
+                )
+                prepared = await loop.run_in_executor(pump_prepare_executor, call)
+                prepare_completed = time.monotonic()
+                pump_prepare_service_seconds.append(prepare_completed - prepare_started)
+                pump_prepare_end_to_end_seconds.append(
+                    prepare_completed - completed.enqueued_monotonic
+                )
+                await pump_prepared_queue.put(
+                    PreparedTimedPumpWork(
+                        completed=completed,
+                        prepared=prepared,
+                        prepare_started_monotonic=prepare_started,
+                        prepare_completed_monotonic=prepare_completed,
+                    )
+                )
+            except Exception:
+                worker_errors["pump_prepare"] += 1
+                raise
+            finally:
+                pump_prepare_queue.task_done()
+
+    async def pump_finalize_coordinator() -> None:
+        next_sequence = 0
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                work = await asyncio.wait_for(
+                    pump_prepared_queue.get(), timeout=min(0.5, remaining)
+                )
+            except asyncio.TimeoutError:
+                continue
+            pending_pump_prepared[work.sequence] = work
+            pump_prepared_queue.task_done()
+            while next_sequence in pending_pump_prepared and time.monotonic() < deadline:
+                ordered = pending_pump_prepared.pop(next_sequence)
+                pump_radar_wait_seconds.append(
+                    time.monotonic() - ordered.completed.enqueued_monotonic
+                )
                 try:
                     result = await _run_sync_stage(
-                        evaluate_persisted_pump_notification_for_radar_v4,
-                        item.notification,
+                        finalize_prepared_pump_radar_v5,
+                        ordered.prepared,
                         acquisition_run_key=run_key,
-                        persist_result=item.persist_result,
                         executor=radar_sync_executor,
                     )
                     handle_radar_result("pump", result)
                 except Exception:
-                    worker_errors["pump_radar"] += 1
+                    worker_errors["pump_finalize"] += 1
                     raise
                 next_sequence += 1
 
@@ -695,6 +805,14 @@ async def run_smoke_v19(
         ),
         asyncio.create_task(pumpswap_finalize_worker(), name="pumpswap-fifo-finalize"),
     ]
+    if split_pump_radar:
+        tasks.append(
+            asyncio.create_task(pump_finalize_coordinator(), name="pump-ingress-finalize")
+        )
+        tasks.extend(
+            asyncio.create_task(pump_prepare_worker(), name=f"prepare-pump-{index}")
+            for index in range(pump_prepare_workers)
+        )
     tasks.extend(
         asyncio.create_task(pumpswap_persist_worker(), name=f"persist-pumpswap-{index}")
         for index in range(pumpswap_workers)
@@ -723,6 +841,8 @@ async def run_smoke_v19(
         writer_diagnostics.batch_sizes = list(writer.batch_sizes)
         writer_diagnostics.batch_service_seconds = list(writer.batch_service_seconds)
         prepare_executor.shutdown(wait=True, cancel_futures=True)
+        if pump_prepare_executor is not None:
+            pump_prepare_executor.shutdown(wait=True, cancel_futures=True)
         if radar_sync_executor is not None:
             radar_sync_executor.shutdown(wait=True, cancel_futures=True)
 
@@ -735,7 +855,7 @@ async def run_smoke_v19(
     )
 
     pump_ingress = pump_queue.qsize()
-    pump_reorder = len(pending_pump) + pump_completed.qsize()
+    pump_reorder = max(0, persistence_completed["pump"] - radar_processed["pump"])
     pump_inflight = max(
         0,
         enqueued["pump"] - persistence_completed["pump"] - pump_ingress,
@@ -813,6 +933,18 @@ async def run_smoke_v19(
     )
     print(f"pump_persist_queue_wait_ms {_latency_summary_ms(pump_persist_wait_seconds)}")
     print(f"pump_radar_end_to_end_wait_ms {_latency_summary_ms(pump_radar_wait_seconds)}")
+    if split_pump_radar:
+        print(
+            f"pump_prepare_service_time_ms {_latency_summary_ms(pump_prepare_service_seconds)}"
+        )
+        print(
+            f"pump_prepare_end_to_end_ms {_latency_summary_ms(pump_prepare_end_to_end_seconds)}"
+        )
+        print(
+            f"pump_split_radar prepare_workers={pump_prepare_workers} finalize_workers=1 "
+            f"prepare_queue={pump_prepare_queue.qsize()} prepared_queue={pump_prepared_queue.qsize()} "
+            f"prepared_reorder={len(pending_pump_prepared)}"
+        )
     avg_pump_batch = (
         sum(pump_microbatch_sizes) / len(pump_microbatch_sizes)
         if pump_microbatch_sizes
@@ -936,7 +1068,7 @@ async def run_smoke_v19(
         f"writer_threads=1 writer_batches={len(writer_diagnostics.batch_sizes)} "
         f"writer_queue_at_deadline={writer_diagnostics.final_writer_queue_size} "
         f"reservation_superset_violations={reservation_superset_violations} "
-        f"offload_sync_radar={offload_sync_radar}"
+        f"offload_sync_radar={offload_sync_radar} split_pump_radar={split_pump_radar}"
     )
     print(
         f"pumpswap_writer_queue_wait_ms {_latency_summary_ms(writer_diagnostics.writer_queue_wait_seconds)}"
