@@ -323,6 +323,9 @@ MIGRATIONS = {
 }
 
 
+_SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
+
+
 def _path() -> Path:
     path = settings.database_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -336,7 +339,13 @@ def connection():
     # of attempting a late DEFERRED read->write upgrade, which can fail immediately
     # under concurrent Pump/PumpSwap/radar writers even in WAL mode. Pure SELECT
     # connections remain concurrent because no transaction begins until the first DML.
-    conn = sqlite3.connect(_path(), isolation_level="IMMEDIATE")
+    # The bounded busy timeout lets short writer contention surface as measured latency;
+    # persistent contention still fails loudly instead of retrying forever.
+    conn = sqlite3.connect(
+        _path(),
+        timeout=_SQLITE_BUSY_TIMEOUT_SECONDS,
+        isolation_level="IMMEDIATE",
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
