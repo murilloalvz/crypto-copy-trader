@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import Future
+from concurrent.futures import Executor, Future
 from dataclasses import dataclass
+import functools
 import time
 
 from src.database import connection
@@ -69,12 +70,14 @@ async def begin_pumpswap_notification_normalized_v5(
     acquisition_run_key: str,
     resolver: PumpSwapPoolResolver,
     writer: PumpSwapSQLiteThreadedMicrobatchWriter,
+    reservation_read_executor: Executor | None = None,
 ) -> DeferredPumpSwapPersistHandle:
     """Normalize causally, emit a safe reservation hint, then persist asynchronously.
 
     The writer future is deliberately *not* awaited here. Callers may establish the
     per-asset FIFO reservation from ``reservation_assets`` immediately and await the
-    canonical persistence result independently.
+    canonical persistence result independently. The replay-safety read can use a small
+    dedicated executor so it never competes with Pump's default ``to_thread`` path.
     """
 
     prepared = await prepare_pumpswap_notification_normalized_v3(
@@ -82,10 +85,14 @@ async def begin_pumpswap_notification_normalized_v5(
         acquisition_run_key=acquisition_run_key,
         resolver=resolver,
     )
-    existing_tokens = await asyncio.to_thread(
-        _load_existing_transaction_tokens,
-        acquisition_run_key=acquisition_run_key,
-        transaction_key=prepared.transaction_key,
+    loop = asyncio.get_running_loop()
+    existing_tokens = await loop.run_in_executor(
+        reservation_read_executor,
+        functools.partial(
+            _load_existing_transaction_tokens,
+            acquisition_run_key=acquisition_run_key,
+            transaction_key=prepared.transaction_key,
+        ),
     )
     reservation_assets = tuple(
         sorted(set(_incoming_trade_tokens(prepared)).union(existing_tokens))
