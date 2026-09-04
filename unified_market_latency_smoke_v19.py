@@ -73,6 +73,12 @@ class PreparedTimedPumpWork:
 
 
 @dataclass(frozen=True)
+class QueuedPumpTriggerCommit:
+    work: PreparedTimedPumpWork
+    enqueued_monotonic: float
+
+
+@dataclass(frozen=True)
 class PreparedTimedPumpSwapWork:
     timed: TimedPumpSwapCompletion
     prepared: PreparedPumpSwapRadarV5
@@ -91,6 +97,10 @@ class SkipTimedPumpSwapWork:
     @property
     def sequence(self) -> int:
         return self.timed.completed.sequence
+
+
+def _prepared_has_trigger(prepared) -> bool:
+    return any(token.trigger is not None for token in prepared.tokens)
 
 
 def _reservation_missing_assets(
@@ -136,6 +146,7 @@ async def run_smoke_v19(
     offload_sync_radar: bool = False,
     split_pump_radar: bool = False,
     pump_prepare_workers: int = 4,
+    stateful_only_finalize: bool = False,
 ) -> ThreadedWriterDiagnostics:
     """Run the unified latency smoke with early conservative PumpSwap reservations.
 
@@ -150,16 +161,26 @@ async def run_smoke_v19(
     ``offload_sync_radar`` is opt-in so historical v19-v21 behavior stays frozen. When
     enabled, the stateful radar stage executes on one shared one-thread executor instead
     of blocking asyncio. ``split_pump_radar`` is also opt-in: Pump causal reads/detection
-    then run concurrently on a dedicated prepare executor, are reordered back to original
-    Pump ingress sequence, and only the short trigger/episode commit shares the same
-    one-thread executor as PumpSwap finalize. That keeps cross-source trigger persistence
-    serialized without forcing every Pump read/detect through the single commit worker.
+    then run concurrently on a dedicated prepare executor and are classified back in
+    original Pump ingress order before finalization.
+
+    ``stateful_only_finalize`` is a later opt-in that removes proven no-op detector results
+    from the stateful ordering path. Pump no-trigger results complete immediately after
+    ingress-ordered classification while trigger-bearing Pump work enters a dedicated
+    FIFO commit queue. PumpSwap no-trigger/no-new-evidence reservations are marked skipped
+    in the per-asset scheduler, so the cursor remembers them but later stateful work still
+    cannot overtake an earlier stateful predecessor. All actual Pump/PumpSwap trigger
+    commits continue to share the same one-thread executor.
     """
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
         raise ValueError("prepare submitters/executor workers must be positive")
     if split_pump_radar and pump_prepare_workers <= 0:
         raise ValueError("pump_prepare_workers must be positive when split Pump radar is enabled")
+    if stateful_only_finalize and not split_pump_radar:
+        raise ValueError("stateful_only_finalize requires split_pump_radar")
+    if stateful_only_finalize and not offload_sync_radar:
+        raise ValueError("stateful_only_finalize requires offload_sync_radar")
 
     started = time.monotonic()
     deadline = started + duration_seconds
@@ -168,6 +189,7 @@ async def run_smoke_v19(
     pump_completed: asyncio.Queue[CompletedPumpNotification] = asyncio.Queue()
     pump_prepare_queue: asyncio.Queue[CompletedPumpNotification] = asyncio.Queue()
     pump_prepared_queue: asyncio.Queue[PreparedTimedPumpWork] = asyncio.Queue()
+    pump_trigger_commit_queue: asyncio.Queue[QueuedPumpTriggerCommit] = asyncio.Queue()
 
     pumpswap_queue: asyncio.Queue[QueuedNotification] = asyncio.Queue(maxsize=queue_size)
     pumpswap_reservation_hints: asyncio.Queue[EarlyReservationHint] = asyncio.Queue()
@@ -236,6 +258,8 @@ async def run_smoke_v19(
     pump_radar_wait_seconds: list[float] = []
     pump_prepare_service_seconds: list[float] = []
     pump_prepare_end_to_end_seconds: list[float] = []
+    pump_trigger_commit_queue_wait_seconds: list[float] = []
+    pump_trigger_commit_service_seconds: list[float] = []
     pump_microbatch_sizes: list[int] = []
 
     pumpswap_persist_wait_seconds: list[float] = []
@@ -274,6 +298,10 @@ async def run_smoke_v19(
     reference_asset_episodes = 0
     role_filtered_trades = 0
     unresolved_pumpswap_trades = 0
+    pump_no_trigger_inline = 0
+    pump_trigger_commits = 0
+    pumpswap_no_trigger_elisions = 0
+    pumpswap_no_evidence_elisions = 0
 
     def handle_radar_result(source: str, result) -> None:
         nonlocal enrichment_admitted, flow30_total, wallets_total, risk_missing
@@ -321,6 +349,7 @@ async def run_smoke_v19(
         return result.newly_persisted_trades > 0 or result.newly_persisted_lifecycle > 0
 
     def maybe_submit(sequence: int) -> None:
+        nonlocal pumpswap_no_trigger_elisions
         prepared_work = prepared_by_sequence.get(sequence)
         reservation = reservations_by_sequence.get(sequence)
         if prepared_work is None or reservation is None:
@@ -332,12 +361,48 @@ async def run_smoke_v19(
         pumpswap_reservation_to_submit_seconds.append(
             max(0.0, submitted - reservation.created_monotonic)
         )
+
+        if stateful_only_finalize and not _prepared_has_trigger(prepared_work.prepared):
+            item = prepared_work.timed.completed
+            started_finalize = time.monotonic()
+            pumpswap_scheduler_dispatch_wait_seconds.append(0.0)
+            pumpswap_dependency_wait_seconds.append(0.0)
+            pumpswap_ready_queue_wait_seconds.append(0.0)
+            pumpswap_finalize_wait_seconds.append(
+                started_finalize - item.enqueued_monotonic
+            )
+            scheduler.skip(reservation)
+            result = finalize_prepared_pumpswap_radar_v5(
+                prepared_work.prepared,
+                acquisition_run_key=run_key,
+            )
+            finalized = time.monotonic()
+            pumpswap_finalize_service_seconds.append(finalized - started_finalize)
+            pumpswap_episode_assign_seconds.append(
+                result.telemetry.episode_assign_seconds
+            )
+            handle_radar_result("pumpswap", result)
+            finished = time.monotonic()
+            pumpswap_post_finalize_seconds.append(finished - finalized)
+            pumpswap_compute_service_seconds.append(
+                (prepared_work.prepare_completed_monotonic - prepared_work.prepare_started_monotonic)
+                + (finished - started_finalize)
+            )
+            pumpswap_pipeline_end_to_end_seconds.append(
+                finished - item.enqueued_monotonic
+            )
+            pumpswap_no_trigger_elisions += 1
+            del prepared_by_sequence[sequence]
+            del reservations_by_sequence[sequence]
+            return
+
         scheduler_submit_times[sequence] = submitted
         scheduler.submit(prepared_work, reservation)
         del prepared_by_sequence[sequence]
         del reservations_by_sequence[sequence]
 
     def maybe_submit_skip(sequence: int) -> None:
+        nonlocal no_new_evidence_skips, pumpswap_no_evidence_elisions
         timed = no_evidence_by_sequence.get(sequence)
         reservation = reservations_by_sequence.get(sequence)
         if timed is None or reservation is None:
@@ -346,6 +411,27 @@ async def run_smoke_v19(
         pumpswap_reservation_to_submit_seconds.append(
             max(0.0, submitted - reservation.created_monotonic)
         )
+
+        if stateful_only_finalize:
+            item = timed.completed
+            pumpswap_scheduler_dispatch_wait_seconds.append(0.0)
+            pumpswap_dependency_wait_seconds.append(0.0)
+            pumpswap_ready_queue_wait_seconds.append(0.0)
+            pumpswap_finalize_wait_seconds.append(submitted - item.enqueued_monotonic)
+            scheduler.skip(reservation)
+            no_new_evidence_skips += 1
+            pumpswap_no_evidence_elisions += 1
+            radar_processed["pumpswap"] += 1
+            pumpswap_finalize_service_seconds.append(0.0)
+            pumpswap_post_finalize_seconds.append(0.0)
+            pumpswap_compute_service_seconds.append(0.0)
+            pumpswap_pipeline_end_to_end_seconds.append(
+                time.monotonic() - item.enqueued_monotonic
+            )
+            del no_evidence_by_sequence[sequence]
+            del reservations_by_sequence[sequence]
+            return
+
         scheduler_submit_times[sequence] = submitted
         scheduler.submit(SkipTimedPumpSwapWork(timed), reservation)
         del no_evidence_by_sequence[sequence]
@@ -523,6 +609,7 @@ async def run_smoke_v19(
                 pump_prepare_queue.task_done()
 
     async def pump_finalize_coordinator() -> None:
+        nonlocal pump_no_trigger_inline
         next_sequence = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -536,21 +623,75 @@ async def run_smoke_v19(
             pump_prepared_queue.task_done()
             while next_sequence in pending_pump_prepared and time.monotonic() < deadline:
                 ordered = pending_pump_prepared.pop(next_sequence)
-                pump_radar_wait_seconds.append(
-                    time.monotonic() - ordered.completed.enqueued_monotonic
-                )
                 try:
-                    result = await _run_sync_stage(
-                        finalize_prepared_pump_radar_v5,
-                        ordered.prepared,
-                        acquisition_run_key=run_key,
-                        executor=radar_sync_executor,
-                    )
-                    handle_radar_result("pump", result)
+                    if stateful_only_finalize:
+                        if _prepared_has_trigger(ordered.prepared):
+                            pump_trigger_commit_queue.put_nowait(
+                                QueuedPumpTriggerCommit(
+                                    work=ordered,
+                                    enqueued_monotonic=time.monotonic(),
+                                )
+                            )
+                        else:
+                            pump_radar_wait_seconds.append(
+                                time.monotonic() - ordered.completed.enqueued_monotonic
+                            )
+                            result = finalize_prepared_pump_radar_v5(
+                                ordered.prepared,
+                                acquisition_run_key=run_key,
+                            )
+                            handle_radar_result("pump", result)
+                            pump_no_trigger_inline += 1
+                    else:
+                        pump_radar_wait_seconds.append(
+                            time.monotonic() - ordered.completed.enqueued_monotonic
+                        )
+                        result = await _run_sync_stage(
+                            finalize_prepared_pump_radar_v5,
+                            ordered.prepared,
+                            acquisition_run_key=run_key,
+                            executor=radar_sync_executor,
+                        )
+                        handle_radar_result("pump", result)
                 except Exception:
                     worker_errors["pump_finalize"] += 1
                     raise
                 next_sequence += 1
+
+    async def pump_trigger_commit_worker() -> None:
+        nonlocal pump_trigger_commits
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                queued = await asyncio.wait_for(
+                    pump_trigger_commit_queue.get(), timeout=min(0.5, remaining)
+                )
+            except asyncio.TimeoutError:
+                continue
+            started_commit = time.monotonic()
+            try:
+                pump_trigger_commit_queue_wait_seconds.append(
+                    max(0.0, started_commit - queued.enqueued_monotonic)
+                )
+                pump_radar_wait_seconds.append(
+                    started_commit - queued.work.completed.enqueued_monotonic
+                )
+                result = await _run_sync_stage(
+                    finalize_prepared_pump_radar_v5,
+                    queued.work.prepared,
+                    acquisition_run_key=run_key,
+                    executor=radar_sync_executor,
+                )
+                pump_trigger_commit_service_seconds.append(
+                    time.monotonic() - started_commit
+                )
+                handle_radar_result("pump", result)
+                pump_trigger_commits += 1
+            except Exception:
+                worker_errors["pump_trigger_commit"] += 1
+                raise
+            finally:
+                pump_trigger_commit_queue.task_done()
 
     async def pumpswap_persist_worker() -> None:
         nonlocal role_filtered_trades, unresolved_pumpswap_trades
@@ -813,6 +954,12 @@ async def run_smoke_v19(
             asyncio.create_task(pump_prepare_worker(), name=f"prepare-pump-{index}")
             for index in range(pump_prepare_workers)
         )
+        if stateful_only_finalize:
+            tasks.append(
+                asyncio.create_task(
+                    pump_trigger_commit_worker(), name="pump-trigger-commit"
+                )
+            )
     tasks.extend(
         asyncio.create_task(pumpswap_persist_worker(), name=f"persist-pumpswap-{index}")
         for index in range(pumpswap_workers)
@@ -943,8 +1090,20 @@ async def run_smoke_v19(
         print(
             f"pump_split_radar prepare_workers={pump_prepare_workers} finalize_workers=1 "
             f"prepare_queue={pump_prepare_queue.qsize()} prepared_queue={pump_prepared_queue.qsize()} "
-            f"prepared_reorder={len(pending_pump_prepared)}"
+            f"prepared_reorder={len(pending_pump_prepared)} "
+            f"trigger_commit_queue={pump_trigger_commit_queue.qsize()} "
+            f"no_trigger_inline={pump_no_trigger_inline} trigger_commits={pump_trigger_commits} "
+            f"stateful_only_finalize={stateful_only_finalize}"
         )
+        if stateful_only_finalize:
+            print(
+                "pump_trigger_commit_queue_wait_ms "
+                f"{_latency_summary_ms(pump_trigger_commit_queue_wait_seconds)}"
+            )
+            print(
+                "pump_trigger_commit_service_time_ms "
+                f"{_latency_summary_ms(pump_trigger_commit_service_seconds)}"
+            )
     avg_pump_batch = (
         sum(pump_microbatch_sizes) / len(pump_microbatch_sizes)
         if pump_microbatch_sizes
@@ -1033,6 +1192,9 @@ async def run_smoke_v19(
         f"ready_backlog={scheduler_snapshot.ready_backlog} "
         f"waiting_backlog={scheduler_snapshot.waiting_backlog} "
         f"no_new_evidence_skips={no_new_evidence_skips} "
+        f"no_trigger_elisions={pumpswap_no_trigger_elisions} "
+        f"no_evidence_elisions={pumpswap_no_evidence_elisions} "
+        f"stateful_only_finalize={stateful_only_finalize} "
         f"reservation_superset_violations={reservation_superset_violations}"
     )
     print(
@@ -1068,7 +1230,8 @@ async def run_smoke_v19(
         f"writer_threads=1 writer_batches={len(writer_diagnostics.batch_sizes)} "
         f"writer_queue_at_deadline={writer_diagnostics.final_writer_queue_size} "
         f"reservation_superset_violations={reservation_superset_violations} "
-        f"offload_sync_radar={offload_sync_radar} split_pump_radar={split_pump_radar}"
+        f"offload_sync_radar={offload_sync_radar} split_pump_radar={split_pump_radar} "
+        f"stateful_only_finalize={stateful_only_finalize}"
     )
     print(
         f"pumpswap_writer_queue_wait_ms {_latency_summary_ms(writer_diagnostics.writer_queue_wait_seconds)}"
@@ -1094,8 +1257,10 @@ async def run_smoke_v19(
     print(
         "v19 issues conservative per-asset reservations at the causal normalization watermark, "
         "before SQLite completion, while detector preparation still waits for the authoritative "
-        "persist result. Duplicate/no-new-evidence items traverse FIFO as no-op releases. "
-        "Any canonical affected asset missing from the early superset is fatal."
+        "persist result. Duplicate/no-new-evidence items traverse FIFO as no-op releases unless "
+        "stateful-only finalization is enabled, in which case proven no-ops are elided from the "
+        "stateful dependency graph. Any canonical affected asset missing from the early superset "
+        "is fatal."
     )
 
     return writer_diagnostics
