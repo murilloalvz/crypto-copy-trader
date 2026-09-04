@@ -46,7 +46,7 @@ def _config(*, api_key="key", taker="Taker1111111111111111111111111111111111"):
     )
 
 
-def _order(*, transaction="base64tx") -> JupiterOrder:
+def _order(*, transaction="base64tx", observed_at=111) -> JupiterOrder:
     return JupiterOrder(
         input_mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         output_mint=TOKEN,
@@ -66,7 +66,7 @@ def _order(*, transaction="base64tx") -> JupiterOrder:
         expire_at=None,
         error_code=None,
         error_message=None,
-        observed_at=111,
+        observed_at=observed_at,
     )
 
 
@@ -189,6 +189,27 @@ class JupiterEpisodeExecutionTests(unittest.TestCase):
         self.assertEqual(result.attempt.status, "METADATA_ERROR")
         self.assertIsNone(result.quote)
         jupiter_cls.assert_not_called()
+
+    def test_quote_observed_before_episode_t0_is_rejected_and_not_persisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quote.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                decimals_patch, _ = self._patch_decimals()
+                jupiter = Mock()
+                jupiter.order.return_value = _order(transaction="base64tx", observed_at=99)
+                with decimals_patch, patch(
+                    "src.jupiter_episode_execution.JupiterSwapV2Client",
+                    return_value=jupiter,
+                ), patch("src.jupiter_episode_execution.time.time", return_value=110):
+                    result = JupiterEpisodeQuoteProbe(_config()).capture(_episode())
+                quotes = load_causal_quotes(
+                    quote_keys=(JupiterEpisodeQuoteProbe.quote_key(_episode()),)
+                )
+
+        self.assertEqual(result.attempt.status, "NORMALIZATION_ERROR")
+        self.assertIsNone(result.quote)
+        self.assertIn("cannot precede", result.attempt.error_message)
+        self.assertEqual(quotes, [])
 
 
 if __name__ == "__main__":
