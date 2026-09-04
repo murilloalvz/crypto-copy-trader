@@ -6,23 +6,22 @@ import queue
 import threading
 import time
 
+from src.pumpswap_concurrent_resolver import ConcurrentReusablePumpSwapPoolResolver
 from src.pumpswap_stream import (
     PUMPSWAP_PROGRAM_ID,
     PumpSwapPoolAccount,
     decode_pumpswap_pool_account,
 )
 from src.solana import SolanaRPCError
-from unified_market_latency_smoke_v8 import BoundedConcurrentResolver
 
 
-class BatchedBoundedConcurrentResolverV32(BoundedConcurrentResolver):
-    """Preserve v30 causal/FIFO semantics while batching expensive unknown-pool RPC reads.
+class BatchedBoundedConcurrentResolverV32(ConcurrentReusablePumpSwapPoolResolver):
+    """Batch expensive unknown-pool RPC reads without weakening v30 causal/FIFO rules.
 
-    The inherited resolver still performs cache, run-store, historical-store, per-pool
-    single-flight and global expensive-resolution semaphore checks before reaching
-    ``_load_pool_account``. Only the final network shape changes: concurrent unknown pools
-    are coalesced into one ``getMultipleAccounts`` request instead of independent
-    ``getAccountInfo`` calls. Hydration budget accounting remains per pool, not per RPC.
+    Cache, run-store, historical-store, per-pool single-flight and the global expensive
+    resolution semaphore are inherited unchanged. Only the final network shape changes:
+    concurrent unknown pools are coalesced into one ``getMultipleAccounts`` request.
+    Hydration budget accounting remains per pool, not per RPC call.
     """
 
     last_instance: "BatchedBoundedConcurrentResolverV32 | None" = None
@@ -30,21 +29,33 @@ class BatchedBoundedConcurrentResolverV32(BoundedConcurrentResolver):
     def __init__(
         self,
         *args,
+        max_network_hydrations: int,
+        retry_seconds: float = 15.0,
         hydration_batch_size: int = 64,
         hydration_batch_max_wait_ms: int = 5,
         **kwargs,
     ) -> None:
+        if max_network_hydrations <= 0:
+            raise ValueError("max_network_hydrations must be positive")
         if hydration_batch_size <= 0:
             raise ValueError("hydration_batch_size must be positive")
         if hydration_batch_max_wait_ms < 0:
             raise ValueError("hydration_batch_max_wait_ms cannot be negative")
         super().__init__(*args, **kwargs)
+        self.max_network_hydrations = int(max_network_hydrations)
+        self.retry_seconds = float(retry_seconds)
         self.hydration_batch_size = int(hydration_batch_size)
         self.hydration_batch_max_wait_ms = int(hydration_batch_max_wait_ms)
+
+        self.network_hydration_calls = 0
+        self.hydration_budget_skips = 0
+        self.negative_cache_skips = 0
         self.network_batch_calls = 0
         self.network_batch_sizes: list[int] = []
-        self._batch_queue: queue.Queue[tuple[str, Future]] = queue.Queue()
+        self._failed_until: dict[str, float] = {}
+        self._budget_lock = threading.Lock()
         self._batch_metrics_lock = threading.Lock()
+        self._batch_queue: queue.Queue[tuple[str, Future]] = queue.Queue()
         self._batch_thread = threading.Thread(
             target=self._batch_loop,
             name="pumpswap-pool-hydration-v32",
@@ -75,13 +86,7 @@ class BatchedBoundedConcurrentResolverV32(BoundedConcurrentResolver):
         try:
             result = self.client.call(
                 "getMultipleAccounts",
-                [
-                    pools,
-                    {
-                        "encoding": "base64",
-                        "commitment": self.commitment,
-                    },
-                ],
+                [pools, {"encoding": "base64", "commitment": self.commitment}],
             ) or {}
             values = result.get("value") if isinstance(result, dict) else None
             if not isinstance(values, list) or len(values) != len(items):
