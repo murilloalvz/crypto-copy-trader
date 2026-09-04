@@ -154,12 +154,22 @@ def build_episode_enrichment_bundle(
     This function performs no network I/O and creates no BUY/SELL recommendation. It combines
     shared Pump/PumpSwap market observations, optional causal execution quotes, wallet evidence and
     optional persisted token-hazard evidence. Wallet-owned PnL history and market-first opportunity
-    associations remain separate; callers must prefilter market-first associations with the strict
-    pre-T0 loader. Later evidence is never backfilled into an earlier ``as_of`` bundle.
+    associations remain separate. Market-first association labels must be strictly known before this
+    episode's T0 even when the bundle itself is assembled later. Later evidence is never backfilled
+    into an earlier causal state.
     """
 
     if as_of < episode.first_trigger_observed_at:
         raise ValueError("enrichment as_of cannot precede episode trigger observation")
+    for item in historical_wallet_opportunity_associations:
+        if item.prior_decision_as_of >= episode.first_trigger_observed_at:
+            raise ValueError(
+                "market-first wallet history decision must be strictly before current T0"
+            )
+        if item.outcome_observed_at >= episode.first_trigger_observed_at:
+            raise ValueError(
+                "market-first wallet history outcome must be strictly known before current T0"
+            )
 
     lower = max(0, as_of - 300)
     stored = load_market_trades(
