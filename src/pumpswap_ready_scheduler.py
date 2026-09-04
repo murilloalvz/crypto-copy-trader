@@ -21,6 +21,7 @@ def _percentile(values: list[float], quantile: float) -> float:
 class AssetReservation:
     tickets: tuple[tuple[str, int], ...]
     created_monotonic: float = field(default=0.0, compare=False)
+    reservation_id: int = field(default=-1, compare=False)
 
     @property
     def assets(self) -> tuple[str, ...]:
@@ -92,12 +93,13 @@ class ReadyAssetScheduler(Generic[T]):
         self._ready: asyncio.Queue[ScheduledAssetWork[T]] = asyncio.Queue()
         self._pre_cancel_snapshot: SchedulerSnapshot | None = None
 
+        self._next_reservation_id = 0
         self._next_pending_id = 0
         self._pending: dict[int, _PendingAssetWork[T]] = {}
         self._pending_by_ticket: dict[tuple[str, int], set[int]] = {}
         self._skipped_by_asset: dict[str, set[int]] = {}
-        self._submitted_reservations: set[tuple[tuple[str, int], ...]] = set()
-        self._skipped_reservations: set[tuple[tuple[str, int], ...]] = set()
+        self._submitted_reservations: set[tuple[str, int]] = set()
+        self._skipped_reservations: set[tuple[str, int]] = set()
 
         # Diagnostic-only state. None of these counters participate in scheduling decisions.
         self._reservations_by_asset: dict[str, int] = {}
@@ -107,12 +109,20 @@ class ReadyAssetScheduler(Generic[T]):
         self._dependency_waits_by_asset: dict[str, list[float]] = {}
         self._active_waits: dict[int, tuple[float, tuple[str, ...]]] = {}
 
+    @staticmethod
+    def _reservation_key(reservation: AssetReservation) -> tuple[str, int]:
+        if reservation.reservation_id >= 0:
+            return ("issued", reservation.reservation_id)
+        return ("external", id(reservation))
+
     def reserve(self, assets: tuple[str, ...] | list[str]) -> AssetReservation:
         unique_assets = tuple(
             sorted({str(asset).strip() for asset in assets if str(asset).strip()})
         )
         tickets: list[tuple[str, int]] = []
         created = time.monotonic()
+        reservation_id = self._next_reservation_id
+        self._next_reservation_id += 1
         for asset in unique_assets:
             ticket = self._issued.get(asset, 0)
             self._issued[asset] = ticket + 1
@@ -122,10 +132,14 @@ class ReadyAssetScheduler(Generic[T]):
             self._max_outstanding_by_asset[asset] = max(
                 self._max_outstanding_by_asset.get(asset, 0), outstanding
             )
-        return AssetReservation(tuple(tickets), created_monotonic=created)
+        return AssetReservation(
+            tuple(tickets),
+            created_monotonic=created,
+            reservation_id=reservation_id,
+        )
 
     def submit(self, payload: T, reservation: AssetReservation) -> None:
-        key = reservation.tickets
+        key = self._reservation_key(reservation)
         if key in self._submitted_reservations:
             raise RuntimeError("asset reservation was submitted more than once")
         if key in self._skipped_reservations:
@@ -178,7 +192,7 @@ class ReadyAssetScheduler(Generic[T]):
         before successor readiness is evaluated.
         """
 
-        key = reservation.tickets
+        key = self._reservation_key(reservation)
         if key in self._submitted_reservations:
             raise RuntimeError("cannot skip an asset reservation after submit")
         if key in self._skipped_reservations:
@@ -305,7 +319,7 @@ class ReadyAssetScheduler(Generic[T]):
         self._ready.task_done()
 
     async def complete(self, reservation: AssetReservation) -> None:
-        key = reservation.tickets
+        key = self._reservation_key(reservation)
         if key not in self._submitted_reservations:
             raise RuntimeError("cannot complete an asset reservation that was not submitted")
 
