@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import time
 
 from src.database import connection
+from src.market_observation_store import ensure_market_observation_schema
 from src.pumpswap_normalized_persistence import PumpSwapNormalizedPersistResult
 from src.pumpswap_normalized_persistence_v3 import (
     PreparedPumpSwapPersistenceV3,
@@ -38,6 +39,7 @@ def _load_existing_transaction_tokens(
     *, acquisition_run_key: str,
     transaction_key: str,
 ) -> tuple[str, ...]:
+    ensure_market_observation_schema()
     with connection() as conn:
         rows = conn.execute(
             """SELECT DISTINCT token_mint
