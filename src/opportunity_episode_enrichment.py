@@ -8,6 +8,7 @@ from src.opportunity_snapshot_core import (
     OpportunitySnapshotCoreV1,
     build_opportunity_snapshot_core_v1,
 )
+from src.opportunity_token_hazard import TokenHazardEvidence
 from src.opportunity_wallet_intelligence import (
     HistoricalWalletOutcome,
     OpportunityWalletIntelligenceSnapshot,
@@ -21,15 +22,28 @@ EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_minimal"
 
 @dataclass(frozen=True)
 class RiskEvidenceEnvelope:
-    """Explicit placeholder until a causal token-hazard provider is wired live.
+    """Causal token-hazard evidence with explicit provider missingness.
 
-    Flow concentration belongs to the Core and wallet snapshot; it must not be mislabeled as a
-    rug/manipulation probability. The E2E pipeline therefore carries risk missingness explicitly
-    rather than inventing a score from incomplete data.
+    This envelope is descriptive evidence, not a recommendation or a manipulation probability.
+    When provider evidence is absent or observed after the requested ``as_of``, values remain
+    unavailable rather than being backfilled from a later snapshot.
     """
 
     status: str
     data_quality_flags: tuple[str, ...]
+    provider: str | None = None
+    observed_at: int | None = None
+    risk_score: float | None = None
+    rugged: bool | None = None
+    jupiter_verified: bool | None = None
+    top10_pct: float | None = None
+    dev_pct: float | None = None
+    snipers_pct: float | None = None
+    bundlers_pct: float | None = None
+    insiders_pct: float | None = None
+    freeze_authority_present: bool | None = None
+    mint_authority_present: bool | None = None
+    risk_factors: tuple[tuple[str, str, float | None], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -43,6 +57,51 @@ class EpisodeEnrichmentBundle:
     risk: RiskEvidenceEnvelope
 
 
+def _risk_envelope(
+    *,
+    episode: MarketOpportunityEpisode,
+    as_of: int,
+    hazard_evidence: TokenHazardEvidence | None,
+) -> RiskEvidenceEnvelope:
+    if hazard_evidence is None:
+        return RiskEvidenceEnvelope(
+            status="not_integrated",
+            data_quality_flags=("token_hazard_provider_not_integrated",),
+        )
+    if hazard_evidence.episode_key != episode.episode_key:
+        raise ValueError("hazard evidence episode does not match enrichment episode")
+    if hazard_evidence.token_mint and hazard_evidence.token_mint != episode.token_mint:
+        raise ValueError("hazard evidence token does not match enrichment episode")
+    if hazard_evidence.observed_at is not None and hazard_evidence.observed_at > as_of:
+        return RiskEvidenceEnvelope(
+            status="not_observed_as_of",
+            provider=hazard_evidence.provider,
+            observed_at=None,
+            data_quality_flags=("token_hazard_observed_after_as_of",),
+        )
+
+    flags = list(hazard_evidence.data_quality_flags)
+    if hazard_evidence.observed_at is None:
+        flags.append("token_hazard_observed_at_missing")
+    return RiskEvidenceEnvelope(
+        status=hazard_evidence.status,
+        provider=hazard_evidence.provider,
+        observed_at=hazard_evidence.observed_at,
+        risk_score=hazard_evidence.risk_score,
+        rugged=hazard_evidence.rugged,
+        jupiter_verified=hazard_evidence.jupiter_verified,
+        top10_pct=hazard_evidence.top10_pct,
+        dev_pct=hazard_evidence.dev_pct,
+        snipers_pct=hazard_evidence.snipers_pct,
+        bundlers_pct=hazard_evidence.bundlers_pct,
+        insiders_pct=hazard_evidence.insiders_pct,
+        freeze_authority_present=hazard_evidence.freeze_authority_present,
+        mint_authority_present=hazard_evidence.mint_authority_present,
+        risk_factors=hazard_evidence.risk_factors,
+        data_quality_flags=tuple(flags),
+    )
+
+
 def build_episode_enrichment_bundle(
     *,
     episode: MarketOpportunityEpisode,
@@ -50,12 +109,14 @@ def build_episode_enrichment_bundle(
     quotes: tuple[CausalQuoteObservation, ...] | list[CausalQuoteObservation] = (),
     historical_wallet_outcomes: tuple[HistoricalWalletOutcome, ...]
     | list[HistoricalWalletOutcome] = (),
+    hazard_evidence: TokenHazardEvidence | None = None,
 ) -> EpisodeEnrichmentBundle:
     """Build the minimal causal evidence bundle for one already-open market episode.
 
     This function performs no network I/O and creates no BUY/SELL recommendation. It combines
-    the shared Pump/PumpSwap market store with optional causal execution quotes and already-known
-    wallet outcomes. Token hazard remains explicitly unavailable until its live provider is wired.
+    shared Pump/PumpSwap market observations, optional causal execution quotes, wallet evidence and
+    optional persisted token-hazard evidence. Later hazard observations are never backfilled into
+    an earlier ``as_of`` bundle.
     """
 
     if as_of < episode.first_trigger_observed_at:
@@ -112,9 +173,10 @@ def build_episode_enrichment_bundle(
         historical_outcomes=list(historical_wallet_outcomes),
     )
 
-    risk = RiskEvidenceEnvelope(
-        status="not_integrated",
-        data_quality_flags=("token_hazard_provider_not_integrated",),
+    risk = _risk_envelope(
+        episode=episode,
+        as_of=as_of,
+        hazard_evidence=hazard_evidence,
     )
     return EpisodeEnrichmentBundle(
         method_version=EPISODE_ENRICHMENT_VERSION,
