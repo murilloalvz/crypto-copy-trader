@@ -13,11 +13,13 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Pump -> radar -> opportunity episode: PASS.
 - PumpSwap native acquisition + causal pool resolution: PASS.
 - Unified local causal bundle flow/wallet semantics: PASS.
-- End-to-end replay hardening observation → pool mapping → trigger/episode: CODE/CI/LIVE PASS; conflitos continuam auditáveis.
-- Pump ordered SQLite microbatch (v6): live PASS para Pump latency.
-- Unified v7 per-asset PumpSwap worker pool: **FAIL — scheduler starvation / capacity fail**.
-- v8 nonblocking ready scheduler: **CODE/CI PASS / LIVE REVALIDATION PENDING**.
-- Jupiter, hazard/risk provider, final decision_as_of, executable forward outcomes e historical wallet outcomes no unified path ainda não estão ligados.
+- End-to-end replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos continuam auditáveis.
+- Pump ordered SQLite microbatch: live PASS para Pump latency.
+- Unified v7 PumpSwap worker pool: **FAIL — scheduler starvation**.
+- v8 nonblocking ready scheduler: **CODE/CI PASS / LIVE FAIL — gross PumpSwap capacity deficit**.
+- v9 bounded 8-worker capacity stress: **LIVE FAIL SOMENTE NO PUMPSWAP LATENCY TAIL**; coverage/backlog/Pump passaram.
+- Próximo gate: **v10 diagnostic-only latency decomposition**, sem tuning especulativo.
+- Jupiter executable quotes, hazard/risk provider, final `decision_as_of`, executable forward outcomes e historical wallet outcomes no unified path ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
 ## North star
@@ -81,10 +83,10 @@ Wallet é evidência pós-episódio, nunca whitelist de aquisição.
 
 Reference assets v1: WSOL e USDC.
 
-- exatamente um lado reference → outro é opportunity token;
-- opportunity token base → side preservado;
-- opportunity token quote → side invertido;
-- two-reference/two-unknown → role_filtered;
+- exatamente um lado reference -> outro é opportunity token;
+- opportunity token base -> side preservado;
+- opportunity token quote -> side invertido;
+- two-reference/two-unknown -> role_filtered;
 - WSOL/USDC não podem virar opportunity episodes.
 
 Pool identity:
@@ -100,23 +102,17 @@ Pool identity:
 `pump-smoke-20260903-01`: 3,476 notifications; 3,688 decoded trades; 3,600 persisted; 223 tokens; 1,984 wallets. PASS.
 
 ### Pump radar
-`market-radar-smoke-20260903-03`: 2,037 trades; 738 raw hits; 31 episodes; 29 tokens. 95.8% dos raw hits eram continuation → enrichment caro deve ser episode-scoped. PASS.
+`market-radar-smoke-20260903-03`: 2,037 trades; 738 raw hits; 31 episodes; 29 tokens. 95.8% dos raw hits eram continuation; enrichment caro deve ser episode-scoped. PASS.
 
 ### PumpSwap native
 `pumpswap-smoke-20260903-01`: 837/837 trades persisted; 150 pools; 737 wallets; 92/92 hydrations; 0 failures/skips. PASS.
 
-### Unified v2/v3/v4/v5
+### Unified v2-v5
 - v2: bundle PASS / throughput FAIL.
 - v3: semantics PASS / capacity FAIL.
 - v4: coverage/capacity PASS / latency FAIL.
 - v5: burst capacity/latency FAIL; PumpSwap global HOL sob carga.
-
-### Replay incidents v5b/v5c/v5d
-- v5b: Pump replay integrity abort.
-- reused 05b namespace: invalid/contaminated.
-- v5c: shared market replay integrity abort.
-- v5d: trigger replay integrity abort.
-- hardening posterior: 571+ tests, CI PASS e live revalidation posterior sem crash.
+- replay incidents v5b/v5c/v5d levaram ao hardening posterior; conflitos permanecem explícitos.
 
 ### v5e
 `unified-market-smoke-20260903-05e`:
@@ -131,75 +127,127 @@ Decision: Pump persistence era gargalo; implementar writer ordenado microbatch.
 
 ### v6
 `unified-market-smoke-20260903-06`:
-- received PumpSwap 2,181 + Pump 1,349 = 3,530;
+- received 3,530;
 - coverage 100%; backlog 1 item;
 - Pump persistence p95 1.91s;
 - Pump radar p95 **2.80s PASS**;
-- Pump microbatch 163 batches, avg 8.28, max 32;
 - PumpSwap persistence p95 0.58s;
 - PumpSwap radar p95 **7.95s FAIL**;
-- hydrations 71/71, RPC failures 0, budget skips 0;
-- one `market_replay_conflicts` retain-earlier observation; deve ser auditado, não é edge evidence.
+- hydration 71/71; RPC failures 0; budget skips 0.
 
-Decision: Pump microbatch resolveu Pump. PumpSwap persistence não era gargalo; global radar ordering ainda causava latency.
+Decision: Pump microbatch resolveu Pump. PumpSwap global radar ordering continuava limitando latency.
 
 ### v7
 `unified-market-smoke-20260903-07`:
-- received PumpSwap 3,297 + Pump 2,742 = 6,039;
-- persistence completed 100% em ambos;
+- received 6,039;
+- PumpSwap persistence completed 100%;
 - radar processed Pump 2,742 / PumpSwap 2,206;
 - coverage **81.9% FAIL**;
-- deadline backlog PumpSwap **1,091**;
+- PumpSwap deadline backlog **1,091**;
 - Pump radar p95 **2.42s PASS**;
-- PumpSwap persistence p95 2.26s;
 - PumpSwap radar p95 **65.05s FAIL**;
-- 4 radar workers, 3,297 reservations, work backlog 1,091;
-- 93/93 hydrations, RPC failures 0, budget skips 0;
-- replay telemetry: Pump 17 retain-earlier; market 4 retain-earlier; trigger 4 retain-first; pool 0.
+- 4 radar workers.
 
 Classification: **FAIL — PUMPSWAP RADAR SCHEDULER STARVATION / CAPACITY FAIL**.
 
-Root cause: v7 workers retiravam work item da fila e só depois esperavam o ticket causal do asset. Um ticket futuro bloqueado consumia um dos quatro worker slots, permitindo que todos os slots ficassem presos enquanto trabalho de assets independentes e já executável permanecia na fila. A vazão ficou ~18.4 notifications/s, praticamente sem ganho sobre o caminho sequencial anterior, enquanto o ingress foi ~27.5/s.
+Root cause: worker consumia execution slot antes de o ticket causal do asset estar pronto. Tickets futuros bloqueados podiam ocupar todos os workers enquanto assets independentes aguardavam.
 
-Canonical report: `docs/unified-market-latency-v7-live-result-2026-09-03.md`.
+### v8 — nonblocking per-asset ready scheduler
 
-## v8 — nonblocking per-asset ready scheduler
+Architecture:
+1. dispatcher em websocket ingress order;
+2. reservation recebe ticket FIFO por opportunity asset;
+3. espera causal não consome radar worker;
+4. somente work causalmente pronto entra na ready queue;
+5. multi-asset espera todos os predecessors;
+6. replay sem nova evidência causal é reconhecido sem recomputar radar;
+7. thresholds/clocks/replay/episode/provider semantics não mudam.
 
-Files:
-- `src/pumpswap_ready_scheduler.py`;
-- `unified_market_latency_smoke_v8.py`;
-- `tests/test_pumpswap_ready_scheduler.py`.
+Validation pre-live: compileall PASS; **581 tests / 0 failures**; CI PASS.
 
-Semantics:
-1. dispatcher continua emitindo reservations em websocket ingress order;
-2. cada reservation recebe tickets FIFO por opportunity asset;
-3. waiter de dependência **não consome radar execution slot**;
-4. somente reservation cujos predecessors terminaram entra na ready queue;
-5. quatro workers executam somente trabalho causalmente pronto;
-6. multi-asset notification espera todos os predecessors; relações continuam acíclicas por derivarem de uma ordem global de ingress;
-7. replay sem nenhuma nova observação/lifecycle é reconhecido como no-op e não recomputa radar; conta como processado, pois nenhuma nova evidência causal foi perdida;
-8. detector, clocks, thresholds, episode semantics e provider policy não mudam.
+Live `unified-market-smoke-20260903-08`:
+- PumpSwap received 3,553;
+- persistence completed 3,531 (~29.4/s);
+- radar processed 2,157 (~18.0/s);
+- coverage **75.6% FAIL**;
+- PumpSwap reorder backlog **1,374**;
+- Pump radar p95 **2.319s PASS**;
+- PumpSwap persistence p95 **0.498s**;
+- PumpSwap radar service p95 **0.790s**;
+- PumpSwap radar end-to-end p95 **54.973s FAIL**;
+- drops 0; worker errors 0; RPC failures 0; budget skips 0;
+- replay conflicts 0.
 
-Nova telemetria:
-- `pumpswap_radar_service_time_ms` separa custo real de avaliação de queue/end-to-end latency;
-- `ready_backlog` = trabalho causalmente pronto esperando execução;
-- `waiting_backlog` = trabalho esperando predecessor do mesmo asset;
-- `no_new_evidence_skips` e `duplicate_or_replayed_trades` tornam replay load explícito.
+Classification: **PUMP PASS / PUMPSWAP RADAR CAPACITY FAIL**.
 
-Validation v8: `compileall` PASS; **581 tests / 0 failures**; CI PASS. Live pending.
+The v8 summary's `waiting_backlog=0` was not trustworthy because waiters had already been cancelled before the snapshot. This telemetry defect was fixed for v9.
 
-## Gate atual — v8 live
+### v9 — measured 8-worker capacity stress
 
-Config congelada:
+v9 deliberately changed only PumpSwap radar execution capacity from 4 -> 8 workers and preserved a pre-cancellation scheduler snapshot.
+
+Live `unified-market-smoke-20260903-09`:
+- received Pump 1,525 + PumpSwap 1,979 = 3,504;
+- persistence completed Pump 1,502 / PumpSwap 1,978;
+- radar processed Pump 1,481 / PumpSwap 1,927;
+- coverage **97.3% PASS**;
+- deadline backlog 96 / 3,504 = **~2.74% PASS**;
+- Pump radar p95 **1.798s PASS**;
+- PumpSwap persistence p95 **0.390s**;
+- PumpSwap radar service p95 **0.676s**;
+- PumpSwap radar end-to-end p50/p95/max **2.271s / 18.311s / 27.176s**;
+- scheduler snapshot: ready backlog 22 / waiting backlog 17;
+- hydration 99/99; RPC failures 0; budget skips 0;
+- drops 0; worker errors 0; reference asset episodes 0;
+- replay: Pump 1 retain-earlier; market 2 retain-earlier; trigger 0; pool mapping 0.
+
+Classification: **PUMP PASS / PUMPSWAP LATENCY TAIL FAIL**.
+
+Important inference:
+- v9 removed the gross capacity deficit enough to pass coverage/backlog;
+- radar service itself is not the 18s tail;
+- most latency occurs before radar execution starts;
+- do **not** raise worker count again automatically.
+
+Canonical report: `docs/unified-market-latency-v9-live-and-v10-diagnostic-2026-09-03.md`.
+
+## Gate atual — v10 diagnostic-only
+
+v10 must keep:
 - duration 120s;
 - commitment confirmed;
-- Pump batch size 32;
-- Pump batch max dwell 25ms;
+- Pump batch 32 / 25ms;
 - PumpSwap persistence workers 24;
-- PumpSwap radar workers 4;
+- PumpSwap radar workers **8**;
 - max concurrent resolutions 18;
 - max hydrations 1500;
-- queue 5000.
+- queue 5000;
+- all detector/causal/replay/persistence/provider semantics frozen.
+
+v10 instruments:
+- persistence queue wait;
+- persistence service;
+- persistence-complete -> reservation/reorder wait;
+- causal dependency wait;
+- ready queue wait;
+- radar service;
+- full pipeline E2E;
+- transaction-view DB read;
+- token-history DB read;
+- detector compute;
+- episode assignment/write;
+- per-asset reservations, outstanding depth, waiting depth and causal-wait concentration.
+
+v10 is **measurement only**, not an optimization.
+
+Interpretation:
+- causal wait dominates + concentrated in few assets -> hot-asset serialization;
+- ready queue dominates -> execution scheduling/capacity;
+- persist-to-reservation dominates -> ingress reorder/dispatcher HOL;
+- DB reads inflate under load -> shared SQLite/read contention;
+- none explains E2E -> reconcile phase clocks before changing architecture.
+
+## Frozen latency PASS gate
 
 PASS somente se:
 1. no traceback/worker errors;
@@ -209,41 +257,49 @@ PASS somente se:
 5. total deadline backlog <=5% do received;
 6. Pump radar p95 <=5s;
 7. PumpSwap radar p95 <=5s;
-8. budget skips 0;
+8. hydration budget skips 0;
 9. bundles não sistematicamente vazios;
 10. replay counters inspecionáveis e sem corrupção não explicada.
 
-Se v8 ainda falhar, **não aumentar radar workers automaticamente**. Usar `pumpswap_radar_service_time_ms`, `ready_backlog` e `waiting_backlog` para decidir:
-- service time alto + ready backlog alto → otimizar custo do radar/DB;
-- waiting backlog alto + service time baixo → hot-asset serialization é limite causal real;
-- ambos baixos mas E2E alto → revisar dispatcher/persistence clocks.
-
 ## Depois do latency PASS
 
+Ordem congelada:
 1. Jupiter executable quote somente para novo episode admitido;
 2. hazard/risk provider mínimo com explicit missing/failure;
-3. historical wallet outcomes resolvidos antes de T0;
+3. historical wallet outcomes resolvidos antes de T0 quando aplicável;
 4. freeze final `decision_as_of` após provider attempts obrigatórias;
-5. short true economic E2E smoke;
-6. auditar provider coverage/reconnect/dedup/clocks/cost;
-7. definir hydration/rate/backpressure policy para long run;
-8. congelar protocolo runnable;
-9. somente então primeira coleta de 12h.
+5. forward executable outcomes +5m/+15m/+60m;
+6. short true economic E2E smoke;
+7. auditar provider coverage/reconnect/dedup/clocks/cost;
+8. definir hydration/rate/backpressure policy;
+9. congelar protocolo runnable;
+10. somente então primeira coleta de 12h.
 
 ## Avaliação econômica futura
 
 Outcomes +5m/+15m/+60m com semântica executável/route-aware quando possível. Nunca substituir silenciosamente quote/fill ausente por candle posterior.
 
-Ablations: movement, flow, execution, wallet e risk. Métricas mínimas: mean/median, win rate, profit factor, drawdown, coverage, token/cluster concentration, top-winner contribution e robustez removendo top1/top3 winners.
+Ablations: movement, flow, execution, wallet e risk.
+
+Métricas mínimas:
+- mean/median;
+- win rate;
+- profit factor;
+- drawdown;
+- coverage;
+- token/cluster concentration;
+- top-winner contribution;
+- robustez removendo top1/top3 winners.
 
 ## Shadow / live
 
 - native acquisition: Pump PASS / PumpSwap PASS;
 - causal unified local bundle: PASS;
-- replay integrity: hardened + live validated;
-- Pump latency: PASS via v6 microbatch;
-- PumpSwap v7: scheduler starvation FAIL;
-- PumpSwap v8: code/CI PASS, live pending;
+- replay integrity: hardened e auditável;
+- Pump latency: PASS via ordered microbatch;
+- PumpSwap v8: gross capacity FAIL;
+- PumpSwap v9: coverage/backlog PASS, p95 latency FAIL;
+- v10: diagnostic gate atual;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
-- shadow/live: não liberado.
+- shadow/live: **não liberado**.
