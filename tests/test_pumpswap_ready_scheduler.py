@@ -123,6 +123,86 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await scheduler.complete(ready_ab.reservation)
         await scheduler.cancel_waiters()
 
+    async def test_skipped_noop_ticket_is_consumed_after_stateful_predecessor(self):
+        scheduler = ReadyAssetScheduler[str]()
+        first = scheduler.reserve(["HOT"])
+        noop = scheduler.reserve(["HOT"])
+        third = scheduler.reserve(["HOT"])
+
+        scheduler.submit("first", first)
+        scheduler.skip(noop)
+        scheduler.submit("third", third)
+
+        self.assertEqual(scheduler.ready_backlog(), 1)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+
+        ready_first = scheduler._ready.get_nowait()
+        self.assertEqual(ready_first.payload, "first")
+        scheduler.ready_task_done()
+        await scheduler.complete(ready_first.reservation)
+
+        self.assertEqual(scheduler.waiting_backlog(), 0)
+        ready_third = scheduler._ready.get_nowait()
+        self.assertEqual(ready_third.payload, "third")
+        scheduler.ready_task_done()
+        await scheduler.complete(ready_third.reservation)
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+        await scheduler.cancel_waiters()
+
+    async def test_current_noop_ticket_advances_cursor_immediately(self):
+        scheduler = ReadyAssetScheduler[str]()
+        noop = scheduler.reserve(["A"])
+        next_stateful = scheduler.reserve(["A"])
+
+        scheduler.skip(noop)
+        scheduler.submit("next", next_stateful)
+
+        self.assertEqual(scheduler.waiting_backlog(), 0)
+        ready = scheduler._ready.get_nowait()
+        self.assertEqual(ready.payload, "next")
+        scheduler.ready_task_done()
+        await scheduler.complete(ready.reservation)
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+        await scheduler.cancel_waiters()
+
+    async def test_multi_asset_noop_elision_never_overtakes_stateful_predecessor(self):
+        scheduler = ReadyAssetScheduler[str]()
+        a0 = scheduler.reserve(["A"])
+        b0 = scheduler.reserve(["B"])
+        noop_ab = scheduler.reserve(["A", "B"])
+        next_ab = scheduler.reserve(["A", "B"])
+
+        scheduler.submit("a0", a0)
+        scheduler.submit("b0", b0)
+        scheduler.skip(noop_ab)
+        scheduler.submit("next-ab", next_ab)
+
+        ready_a = scheduler._ready.get_nowait()
+        ready_b = scheduler._ready.get_nowait()
+        scheduler.ready_task_done()
+        scheduler.ready_task_done()
+        self.assertEqual({ready_a.payload, ready_b.payload}, {"a0", "b0"})
+        self.assertEqual(scheduler.ready_backlog(), 0)
+
+        await scheduler.complete(ready_a.reservation)
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        await scheduler.complete(ready_b.reservation)
+
+        ready_next = scheduler._ready.get_nowait()
+        self.assertEqual(ready_next.payload, "next-ab")
+        scheduler.ready_task_done()
+        await scheduler.complete(ready_next.reservation)
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+        await scheduler.cancel_waiters()
+
+    async def test_skip_after_submit_is_rejected(self):
+        scheduler = ReadyAssetScheduler[str]()
+        reservation = scheduler.reserve(["A"])
+        scheduler.submit("work", reservation)
+        with self.assertRaises(RuntimeError):
+            scheduler.skip(reservation)
+        await scheduler.cancel_waiters()
+
     async def test_cancel_preserves_pre_cancel_waiting_and_ready_backlog(self):
         scheduler = ReadyAssetScheduler[str]()
         a0 = scheduler.reserve(["A"])
