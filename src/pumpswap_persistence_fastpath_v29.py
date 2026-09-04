@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 import threading
 import time
@@ -19,6 +19,7 @@ class PumpSwapPersistenceFastPathSnapshot:
     lifecycle_insert_attempts: int
     lifecycle_collision_reads: int
     affected_token_batch_readbacks: int
+    affected_token_repeated_key_readbacks: int
 
 
 _STATS_LOCK = threading.Lock()
@@ -29,6 +30,7 @@ _STATS = {
     "lifecycle_insert_attempts": 0,
     "lifecycle_collision_reads": 0,
     "affected_token_batch_readbacks": 0,
+    "affected_token_repeated_key_readbacks": 0,
 }
 
 
@@ -263,6 +265,18 @@ def _record_trade_optimistic(conn, *, run_key: str, item) -> bool:
     return False
 
 
+def _load_one_transaction_affected_tokens(conn, *, run_key: str, transaction_key: str) -> tuple[str, ...]:
+    rows = conn.execute(
+        """SELECT token_mint
+        FROM market_trade_observations
+        WHERE acquisition_run_key=? AND venue='pumpswap' AND transaction_key=?
+        ORDER BY token_mint, id""",
+        (run_key, transaction_key),
+    ).fetchall()
+    _add_stat("affected_token_repeated_key_readbacks")
+    return tuple(sorted({str(row["token_mint"]) for row in rows}))
+
+
 def _load_batch_affected_tokens(conn, prepared_items) -> dict[tuple[str, str], tuple[str, ...]]:
     grouped: dict[str, list[str]] = defaultdict(list)
     for prepared in prepared_items:
@@ -292,12 +306,13 @@ def _load_batch_affected_tokens(conn, prepared_items) -> dict[tuple[str, str], t
 
 
 def persist_prepared_batch_fast_v29(prepared_items):
-    """Persist a PumpSwap microbatch with insert-first replay checks and one batch readback.
+    """Persist a PumpSwap microbatch with insert-first replay checks and batch readback.
 
     Semantics match v3/v4: earliest observed_at stays canonical, conflicting replay remains
-    auditable, and affected_tokens is read back from the authoritative persisted store. The hot
-    path avoids one pre-insert SELECT per new row and replaces one transaction-token SELECT per
-    notification with one SELECT per run/microbatch.
+    auditable, and affected_tokens is read back from the authoritative persisted store. New rows
+    skip the pre-insert replay SELECT. Transaction keys that occur only once in the microbatch share
+    one readback query per run; repeated transaction keys retain per-item readback so a later replay
+    in the same batch cannot retroactively change an earlier item's result.
     """
 
     prepared_items = tuple(prepared_items)
@@ -307,8 +322,12 @@ def persist_prepared_batch_fast_v29(prepared_items):
     ensure_market_observation_schema()
     _add_stat("prepared_items", len(prepared_items))
 
+    transaction_counts = Counter(
+        (prepared.acquisition_run_key, prepared.transaction_key)
+        for prepared in prepared_items
+    )
     writer_started = time.perf_counter()
-    interim: list[tuple[object, int, int]] = []
+    interim: list[tuple[object, int, int, int, tuple[str, ...] | None]] = []
     with connection() as conn:
         for prepared in prepared_items:
             newly_persisted_lifecycle = 0
@@ -331,9 +350,31 @@ def persist_prepared_batch_fast_v29(prepared_items):
                     inserted += 1
                 else:
                     duplicates += 1
-            interim.append((prepared, newly_persisted_lifecycle, inserted, duplicates))
 
-        affected_by_transaction = _load_batch_affected_tokens(conn, prepared_items)
+            key = (prepared.acquisition_run_key, prepared.transaction_key)
+            immediate_affected = None
+            if transaction_counts[key] > 1:
+                immediate_affected = _load_one_transaction_affected_tokens(
+                    conn,
+                    run_key=prepared.acquisition_run_key,
+                    transaction_key=prepared.transaction_key,
+                )
+            interim.append(
+                (
+                    prepared,
+                    newly_persisted_lifecycle,
+                    inserted,
+                    duplicates,
+                    immediate_affected,
+                )
+            )
+
+        unique_prepared = tuple(
+            prepared
+            for prepared in prepared_items
+            if transaction_counts[(prepared.acquisition_run_key, prepared.transaction_key)] == 1
+        )
+        affected_by_transaction = _load_batch_affected_tokens(conn, unique_prepared)
         results = tuple(
             PumpSwapNormalizedPersistResult(
                 newly_persisted_trades=inserted,
@@ -342,12 +383,16 @@ def persist_prepared_batch_fast_v29(prepared_items):
                 role_filtered_trades=prepared.role_filtered_trades,
                 newly_persisted_lifecycle=newly_persisted_lifecycle,
                 role_filtered_lifecycle=prepared.role_filtered_lifecycle,
-                affected_tokens=affected_by_transaction.get(
-                    (prepared.acquisition_run_key, prepared.transaction_key),
-                    (),
+                affected_tokens=(
+                    immediate_affected
+                    if immediate_affected is not None
+                    else affected_by_transaction.get(
+                        (prepared.acquisition_run_key, prepared.transaction_key),
+                        (),
+                    )
                 ),
             )
-            for prepared, newly_persisted_lifecycle, inserted, duplicates in interim
+            for prepared, newly_persisted_lifecycle, inserted, duplicates, immediate_affected in interim
         )
 
     writer_finished = time.perf_counter()
