@@ -32,6 +32,16 @@ class QuoteJob:
     enqueued_monotonic: float
 
 
+def _terminal_reason(attempt) -> str:
+    details = attempt.details or {}
+    code = details.get("provider_error_code")
+    message = details.get("provider_error_message") or attempt.error_message
+    if code is None and not message:
+        return "none"
+    text = str(message or "").replace("\n", " ").replace("\r", " ")[:180]
+    return f"code={code},message={text}" if code is not None else f"message={text}"
+
+
 async def run_smoke_v31(
     *,
     max_quote_episodes: int,
@@ -124,7 +134,8 @@ async def run_smoke_v31(
                     f"[jupiter-episode] worker={index} episode={job.episode_key[-12:]} "
                     f"status={result.attempt.status} "
                     f"latency_ms={(finished-started)*1000.0:.1f} "
-                    f"executable={bool(result.quote and result.quote.executable)}"
+                    f"executable={bool(result.quote and result.quote.executable)} "
+                    f"reason={_terminal_reason(result.attempt)}"
                 )
             except Exception as exc:
                 counters["quote_worker_errors"] += 1
