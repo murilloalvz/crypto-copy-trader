@@ -62,6 +62,7 @@ class BatchedBoundedConcurrentResolverV32(ConcurrentReusablePumpSwapPoolResolver
             daemon=True,
         )
         self._batch_thread.start()
+        BatchedBoundedConcurrentResolverV32.last_instance = self
         type(self).last_instance = self
 
     @staticmethod
