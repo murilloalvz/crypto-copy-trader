@@ -11,6 +11,7 @@ from src.opportunity_snapshot_core import (
 )
 from src.opportunity_token_hazard import TokenHazardEvidence
 from src.opportunity_wallet_intelligence import (
+    HistoricalWalletOpportunityAssociation,
     HistoricalWalletOutcome,
     OpportunityWalletIntelligenceSnapshot,
     OpportunityWalletParticipation,
@@ -18,7 +19,7 @@ from src.opportunity_wallet_intelligence import (
 )
 
 
-EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_minimal"
+EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_1_market_first_wallet_history"
 HazardEvidence = TokenHazardEvidence | OnchainMintHazardEvidence
 
 
@@ -142,14 +143,19 @@ def build_episode_enrichment_bundle(
     quotes: tuple[CausalQuoteObservation, ...] | list[CausalQuoteObservation] = (),
     historical_wallet_outcomes: tuple[HistoricalWalletOutcome, ...]
     | list[HistoricalWalletOutcome] = (),
+    historical_wallet_opportunity_associations: tuple[
+        HistoricalWalletOpportunityAssociation, ...
+    ]
+    | list[HistoricalWalletOpportunityAssociation] = (),
     hazard_evidence: HazardEvidence | None = None,
 ) -> EpisodeEnrichmentBundle:
     """Build the minimal causal evidence bundle for one already-open market episode.
 
     This function performs no network I/O and creates no BUY/SELL recommendation. It combines
     shared Pump/PumpSwap market observations, optional causal execution quotes, wallet evidence and
-    optional persisted token-hazard evidence. Later hazard observations are never backfilled into
-    an earlier ``as_of`` bundle.
+    optional persisted token-hazard evidence. Wallet-owned PnL history and market-first opportunity
+    associations remain separate; callers must prefilter market-first associations with the strict
+    pre-T0 loader. Later evidence is never backfilled into an earlier ``as_of`` bundle.
     """
 
     if as_of < episode.first_trigger_observed_at:
@@ -204,6 +210,9 @@ def build_episode_enrichment_bundle(
         as_of=as_of,
         participations=participations,
         historical_outcomes=list(historical_wallet_outcomes),
+        historical_opportunity_associations=list(
+            historical_wallet_opportunity_associations
+        ),
     )
 
     risk = _risk_envelope(
