@@ -36,6 +36,10 @@ class Settings:
     birdeye_api_key: str = getenv("BIRDEYE_API_KEY", "").strip()
     solana_tracker_api_key: str = getenv("SOLANA_TRACKER_API_KEY", "").strip()
     jupiter_api_key: str = getenv("JUPITER_API_KEY", "").strip()
+    # Public address only. Used to ask Jupiter to assemble a candidate transaction so the
+    # research pipeline can distinguish a route quote from an actually assemblable route.
+    # No private key is loaded anywhere in this project and no execute endpoint is called.
+    jupiter_taker_public_key: str = getenv("JUPITER_TAKER_PUBLIC_KEY", "").strip()
     solana_tracker_timeout_seconds: int = int(
         getenv("SOLANA_TRACKER_TIMEOUT_SECONDS", "12")
     )
