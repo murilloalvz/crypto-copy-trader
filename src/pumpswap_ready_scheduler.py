@@ -97,6 +97,23 @@ class ReadyAssetScheduler(Generic[T]):
         return AssetReservation(tuple(tickets), created_monotonic=created)
 
     def submit(self, payload: T, reservation: AssetReservation) -> None:
+        # Fast path: most reservations are already the next ticket for every asset.
+        # Avoid creating an asyncio Task merely to discover that there is no causal
+        # predecessor to wait for. Under burst load that task-resumption delay became
+        # measurable at the latency gate even though the reservation was already ready.
+        if self._reservation_ready(reservation):
+            now = time.monotonic()
+            self._ready.put_nowait(
+                ScheduledAssetWork(
+                    payload,
+                    reservation,
+                    waiter_started_monotonic=now,
+                    dependency_ready_monotonic=now,
+                    ready_queue_entered_monotonic=now,
+                )
+            )
+            return
+
         task = asyncio.create_task(self._wait_until_ready(payload, reservation))
         self._waiters.add(task)
         task.add_done_callback(self._waiters.discard)
