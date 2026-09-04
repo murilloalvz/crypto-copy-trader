@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from src.jupiter_episode_execution import JUPITER_ENTRY_PROVIDER, JUPITER_ENTRY_PURPOSE
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
+from src.opportunity_onchain_hazard import ONCHAIN_HAZARD_PROVIDER, ONCHAIN_HAZARD_PURPOSE
 from src.opportunity_provider_attempt_store import (
     FINAL_PROVIDER_STATUSES,
     OpportunityProviderAttempt,
@@ -12,6 +13,12 @@ from src.opportunity_token_hazard import (
     SOLANA_TRACKER_HAZARD_PROVIDER,
     SOLANA_TRACKER_HAZARD_PURPOSE,
 )
+
+
+SUPPORTED_HAZARD_PROVIDER_PURPOSES = {
+    (SOLANA_TRACKER_HAZARD_PROVIDER, SOLANA_TRACKER_HAZARD_PURPOSE),
+    (ONCHAIN_HAZARD_PROVIDER, ONCHAIN_HAZARD_PURPOSE),
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,10 @@ def _matches(attempt: OpportunityProviderAttempt | None, provider: str, purpose:
     return attempt is not None and attempt.provider == provider and attempt.purpose == purpose
 
 
+def _matches_supported_hazard(attempt: OpportunityProviderAttempt | None) -> bool:
+    return attempt is not None and (attempt.provider, attempt.purpose) in SUPPORTED_HAZARD_PROVIDER_PURPOSES
+
+
 def _provider_message(attempt: OpportunityProviderAttempt) -> str:
     details = attempt.details or {}
     values = [
@@ -36,6 +47,19 @@ def _provider_message(attempt: OpportunityProviderAttempt) -> str:
         attempt.error_message,
     ]
     return " ".join(str(item) for item in values if item).strip().lower()
+
+
+def _onchain_available_core_complete(attempt: OpportunityProviderAttempt) -> bool:
+    if (attempt.provider, attempt.purpose) != (ONCHAIN_HAZARD_PROVIDER, ONCHAIN_HAZARD_PURPOSE):
+        return True
+    details = attempt.details or {}
+    return (
+        bool(str(details.get("token_program") or "").strip())
+        and details.get("decimals") is not None
+        and details.get("supply_raw") is not None
+        and isinstance(details.get("mint_authority_present"), bool)
+        and isinstance(details.get("freeze_authority_present"), bool)
+    )
 
 
 def assess_opportunity_decision_readiness(
@@ -50,6 +74,10 @@ def assess_opportunity_decision_readiness(
     than silently dropping the episode. A funded executable entry remains a hard prerequisite for
     the official economic cohort, so an unfunded taker is reported as BLOCKED_BY_FUNDING instead
     of being reinterpreted as strategy failure.
+
+    Multiple versioned hazard providers are supported. Provider identity is never silently
+    rewritten: Solana Tracker and the minimal Solana-RPC provider retain separate provider/purpose
+    identifiers and their own validation gates.
     """
 
     blockers: list[str] = []
@@ -82,7 +110,7 @@ def assess_opportunity_decision_readiness(
     if hazard_attempt is None:
         hazard_status = "NOT_CAPTURED"
         blockers.append("token_hazard_not_captured")
-    elif not _matches(hazard_attempt, SOLANA_TRACKER_HAZARD_PROVIDER, SOLANA_TRACKER_HAZARD_PURPOSE):
+    elif not _matches_supported_hazard(hazard_attempt):
         hazard_status = "WRONG_PROVIDER"
         blockers.append("token_hazard_provider_mismatch")
     else:
@@ -93,7 +121,10 @@ def assess_opportunity_decision_readiness(
             blockers.append("token_hazard_pending")
         elif hazard_attempt.status not in FINAL_PROVIDER_STATUSES:
             blockers.append("token_hazard_nonterminal")
-        elif hazard_attempt.status != "AVAILABLE":
+        elif hazard_attempt.status == "AVAILABLE":
+            if not _onchain_available_core_complete(hazard_attempt):
+                blockers.append("token_hazard_available_incomplete")
+        else:
             # This is intentionally not a blocker. The final protocol may keep an episode with an
             # explicit missing/error hazard value; what is forbidden is silent omission.
             hazard_missingness_explicit = True
