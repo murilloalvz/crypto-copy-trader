@@ -74,10 +74,16 @@ class _PendingAssetWork(Generic[T]):
 class ReadyAssetScheduler(Generic[T]):
     """Ingress-ordered per-asset FIFO scheduler without waiter-task thundering herd.
 
-    Reservations still receive monotonically increasing per-asset tickets. A submitted
-    job can become ready only when every asset's completed cursor equals that job's
+    Reservations receive monotonically increasing per-asset tickets. Stateful submitted
+    work can become ready only when every asset's completed cursor equals that work's
     ticket. Pending jobs are indexed by the exact ticket they need, so completing N
     inspects only a possible N+1 successor instead of waking every waiter for the asset.
+
+    A reservation that is proven to be a causal no-op may be ``skip``-ped instead of
+    submitted. The skipped ticket is remembered until all earlier stateful tickets on that
+    asset complete, then the cursor automatically advances across the no-op. This removes
+    read-only detector results from the dependency graph without allowing any later
+    state-mutating job to overtake an earlier state-mutating predecessor.
     """
 
     def __init__(self) -> None:
@@ -89,6 +95,9 @@ class ReadyAssetScheduler(Generic[T]):
         self._next_pending_id = 0
         self._pending: dict[int, _PendingAssetWork[T]] = {}
         self._pending_by_ticket: dict[tuple[str, int], set[int]] = {}
+        self._skipped_by_asset: dict[str, set[int]] = {}
+        self._submitted_reservations: set[tuple[tuple[str, int], ...]] = set()
+        self._skipped_reservations: set[tuple[tuple[str, int], ...]] = set()
 
         # Diagnostic-only state. None of these counters participate in scheduling decisions.
         self._reservations_by_asset: dict[str, int] = {}
@@ -116,6 +125,13 @@ class ReadyAssetScheduler(Generic[T]):
         return AssetReservation(tuple(tickets), created_monotonic=created)
 
     def submit(self, payload: T, reservation: AssetReservation) -> None:
+        key = reservation.tickets
+        if key in self._submitted_reservations:
+            raise RuntimeError("asset reservation was submitted more than once")
+        if key in self._skipped_reservations:
+            raise RuntimeError("cannot submit a reservation already marked as causal no-op")
+        self._submitted_reservations.add(key)
+
         if self._reservation_ready(reservation):
             now = time.monotonic()
             self._enqueue_ready(
@@ -152,6 +168,60 @@ class ReadyAssetScheduler(Generic[T]):
             )
         for pair in indexed_tickets:
             self._pending_by_ticket.setdefault(pair, set()).add(pending_id)
+
+    def skip(self, reservation: AssetReservation) -> None:
+        """Remove a proven no-op reservation from the stateful dependency graph.
+
+        ``skip`` must be chosen instead of ``submit``. A skipped ticket may sit ahead of
+        the current cursor while an earlier stateful predecessor is still running. Once
+        that predecessor completes, contiguous skipped tickets are consumed automatically
+        before successor readiness is evaluated.
+        """
+
+        key = reservation.tickets
+        if key in self._submitted_reservations:
+            raise RuntimeError("cannot skip an asset reservation after submit")
+        if key in self._skipped_reservations:
+            raise RuntimeError("asset reservation was skipped more than once")
+
+        for asset, ticket in reservation.tickets:
+            issued = self._issued.get(asset, 0)
+            current = self._completed.get(asset, 0)
+            if ticket >= issued:
+                raise RuntimeError(
+                    f"cannot skip unissued asset ticket for {asset}: ticket={ticket} issued={issued}"
+                )
+            if ticket < current:
+                raise RuntimeError(
+                    f"cannot skip already completed asset ticket for {asset}: "
+                    f"ticket={ticket} completed={current}"
+                )
+
+        self._skipped_reservations.add(key)
+        for asset, ticket in reservation.tickets:
+            self._skipped_by_asset.setdefault(asset, set()).add(ticket)
+
+        advanced_pairs: list[tuple[str, int]] = []
+        for asset, _ in reservation.tickets:
+            advanced_pairs.extend(self._advance_skipped_asset(asset))
+        if advanced_pairs:
+            self._consider_successors(tuple(advanced_pairs))
+
+    def _advance_skipped_asset(self, asset: str) -> list[tuple[str, int]]:
+        skipped = self._skipped_by_asset.get(asset)
+        if not skipped:
+            return []
+
+        advanced_pairs: list[tuple[str, int]] = []
+        current = self._completed.get(asset, 0)
+        while current in skipped:
+            skipped.remove(current)
+            current += 1
+            self._completed[asset] = current
+            advanced_pairs.append((asset, current))
+        if not skipped:
+            self._skipped_by_asset.pop(asset, None)
+        return advanced_pairs
 
     def _reservation_ready(self, reservation: AssetReservation) -> bool:
         return all(
@@ -235,6 +305,10 @@ class ReadyAssetScheduler(Generic[T]):
         self._ready.task_done()
 
     async def complete(self, reservation: AssetReservation) -> None:
+        key = reservation.tickets
+        if key not in self._submitted_reservations:
+            raise RuntimeError("cannot complete an asset reservation that was not submitted")
+
         for asset, ticket in reservation.tickets:
             current = self._completed.get(asset, 0)
             if current != ticket:
@@ -242,11 +316,13 @@ class ReadyAssetScheduler(Generic[T]):
                     f"asset order completion mismatch for {asset}: expected {current}, got {ticket}"
                 )
 
+        self._submitted_reservations.discard(key)
         advanced_pairs: list[tuple[str, int]] = []
         for asset, ticket in reservation.tickets:
             next_ticket = ticket + 1
             self._completed[asset] = next_ticket
             advanced_pairs.append((asset, next_ticket))
+            advanced_pairs.extend(self._advance_skipped_asset(asset))
         self._consider_successors(tuple(advanced_pairs))
 
     def ready_backlog(self) -> int:
@@ -325,3 +401,6 @@ class ReadyAssetScheduler(Generic[T]):
         self._pending.clear()
         self._pending_by_ticket.clear()
         self._active_waits.clear()
+        self._skipped_by_asset.clear()
+        self._submitted_reservations.clear()
+        self._skipped_reservations.clear()
