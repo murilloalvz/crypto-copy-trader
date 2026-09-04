@@ -13,10 +13,11 @@ async def run_smoke_v22(**kwargs):
 
     v21 measured material event-loop starvation while all causal/replay gates remained
     healthy. v22 keeps the same one-at-a-time Pump radar coordinator and the same single
-    PumpSwap FIFO finalizer, but executes each coordinator's synchronous SQLite stage on
-    its own isolated one-thread executor. Each stage is still awaited before that
-    coordinator advances, so source ordering, per-asset FIFO, detector, replay and
-    decision semantics are unchanged.
+    PumpSwap FIFO finalizer, but executes both coordinators' synchronous SQLite stages on
+    one shared one-thread executor. Each coordinator still awaits its own result before
+    advancing, and the shared executor preserves cross-source trigger-assignment
+    serialization instead of introducing a new Pump/PumpSwap race. Detector, replay,
+    reservation, decision and per-asset FIFO semantics remain unchanged.
     """
 
     samples: list[float] = []
@@ -48,14 +49,15 @@ async def run_smoke_v22(**kwargs):
         )
         print(
             "v22 changes scheduling only: Pump radar remains ingress-sequential and PumpSwap "
-            "finalize remains one-worker per-asset FIFO; their synchronous SQLite stages run "
-            "on isolated one-thread executors instead of blocking the asyncio event loop."
+            "finalize remains one-worker per-asset FIFO; both synchronous SQLite stages share "
+            "one one-thread executor off the asyncio loop, preserving cross-source trigger "
+            "serialization."
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Unified market latency smoke v22 sequential radar SQLite offload"
+        description="Unified market latency smoke v22 shared sequential radar SQLite offload"
     )
     parser.add_argument("--run-key", required=True)
     parser.add_argument("--duration-seconds", type=int, default=120)
@@ -96,7 +98,7 @@ def main() -> None:
             parser.error(f"{name.replace('_', '-')} must be positive")
 
     journal_mode, synchronous = v19._enable_wal_mode()
-    print("Crypto Copy Trader — Unified Market Latency Smoke v22 Sequential Radar Offload")
+    print("Crypto Copy Trader — Unified Market Latency Smoke v22 Shared Sequential Radar Offload")
     print("Mode: PAPER / RESEARCH / READ ONLY — no signing or transaction submission.")
     print(
         f"run_key={args.run_key} duration={args.duration_seconds}s commitment={args.commitment} "
@@ -110,16 +112,16 @@ def main() -> None:
         f"pumpswap_prepare_executor_workers={args.pumpswap_prepare_executor_workers} "
         f"pumpswap_reservation_watermark=post_normalization_pre_writer_result "
         f"pumpswap_reservation_replay_index=preloaded_once "
-        f"pump_radar_executor_workers=1 pumpswap_finalize_executor_workers=1 "
+        f"market_radar_sync_executor_workers=1 "
         f"pumpswap_finalize_workers=1 concurrent_resolutions={args.max_concurrent_resolutions} "
         f"event_loop_lag_probe_ms=20 "
         f"max_hydrations={args.max_hydrations} queue_size={args.queue_size} "
         f"sqlite_journal_mode={journal_mode} sqlite_synchronous={synchronous}"
     )
     print(
-        "v22 keeps detector/provider/replay/as_of/reservation/FIFO rules frozen. Only the "
-        "already-sequential synchronous Pump radar and PumpSwap finalize SQLite stages are "
-        "moved off the asyncio thread."
+        "v22 keeps detector/provider/replay/as_of/reservation/FIFO rules frozen. The "
+        "already-sequential synchronous Pump radar and PumpSwap finalize SQLite stages share "
+        "one off-loop worker, preserving their cross-source trigger serialization."
     )
 
     kwargs = dict(
