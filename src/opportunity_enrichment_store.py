@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import threading
 
+from src import database
 from src.database import connection
 
 
@@ -31,6 +33,9 @@ CREATE INDEX IF NOT EXISTS idx_opportunity_enrichment_attempts_run_status
 ON opportunity_enrichment_attempts(acquisition_run_key, status, admitted_at, id);
 """
 
+_SCHEMA_READY_PATHS: set[str] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
+
 
 def _required(value: str, name: str) -> str:
     normalized = str(value).strip()
@@ -39,9 +44,24 @@ def _required(value: str, name: str) -> str:
     return normalized
 
 
+def _database_cache_key() -> str:
+    path = database.settings.database_path
+    try:
+        return str(path.resolve())
+    except AttributeError:
+        return str(path)
+
+
 def ensure_opportunity_enrichment_schema() -> None:
-    with connection() as conn:
-        conn.executescript(_SCHEMA)
+    cache_key = _database_cache_key()
+    if cache_key in _SCHEMA_READY_PATHS:
+        return
+    with _SCHEMA_READY_LOCK:
+        if cache_key in _SCHEMA_READY_PATHS:
+            return
+        with connection() as conn:
+            conn.executescript(_SCHEMA)
+        _SCHEMA_READY_PATHS.add(cache_key)
 
 
 def admit_opportunity_episode(
