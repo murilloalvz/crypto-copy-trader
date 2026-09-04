@@ -33,9 +33,9 @@ class QuoteJob:
 
 
 def _terminal_reason(attempt) -> str:
-    details = attempt.details or {}
+    details = getattr(attempt, "details", None) or {}
     code = details.get("provider_error_code")
-    message = details.get("provider_error_message") or attempt.error_message
+    message = details.get("provider_error_message") or getattr(attempt, "error_message", None)
     if code is None and not message:
         return "none"
     text = str(message or "").replace("\n", " ").replace("\r", " ")[:180]
