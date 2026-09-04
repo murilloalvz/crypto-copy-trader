@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import Executor, Future
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import functools
 import time
@@ -15,6 +15,12 @@ from src.pumpswap_normalized_persistence_v3 import (
 )
 from src.pumpswap_normalized_persistence_v4 import PumpSwapSQLiteThreadedMicrobatchWriter
 from src.pumpswap_stream import PumpSwapLogNotification, PumpSwapPoolResolver
+
+
+_RESERVATION_READ_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="pumpswap-early-reservation-read",
+)
 
 
 @dataclass(frozen=True)
@@ -76,8 +82,9 @@ async def begin_pumpswap_notification_normalized_v5(
 
     The writer future is deliberately *not* awaited here. Callers may establish the
     per-asset FIFO reservation from ``reservation_assets`` immediately and await the
-    canonical persistence result independently. The replay-safety read can use a small
-    dedicated executor so it never competes with Pump's default ``to_thread`` path.
+    canonical persistence result independently. Replay-safety reads use an isolated
+    four-thread executor by default so they never compete with Pump's default
+    ``asyncio.to_thread`` persistence path.
     """
 
     prepared = await prepare_pumpswap_notification_normalized_v3(
@@ -87,7 +94,7 @@ async def begin_pumpswap_notification_normalized_v5(
     )
     loop = asyncio.get_running_loop()
     existing_tokens = await loop.run_in_executor(
-        reservation_read_executor,
+        reservation_read_executor or _RESERVATION_READ_EXECUTOR,
         functools.partial(
             _load_existing_transaction_tokens,
             acquisition_run_key=acquisition_run_key,
