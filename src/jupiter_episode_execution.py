@@ -253,6 +253,8 @@ class JupiterEpisodeQuoteProbe:
                 details={
                     "token_decimals": decimals.decimals,
                     "metadata_observed_at": decimals.observed_at,
+                    "provider_error_code": order.error_code,
+                    "provider_error_message": order.error_message,
                 },
                 completed_floor=order.observed_at,
             )
@@ -275,6 +277,8 @@ class JupiterEpisodeQuoteProbe:
                 "assembled_transaction_present": quote.executable,
                 "route_id": quote.route_id,
                 "router": quote.provider_router,
+                "provider_error_code": order.error_code,
+                "provider_error_message": order.error_message,
             },
             completed_floor=quote.observed_at,
         )
