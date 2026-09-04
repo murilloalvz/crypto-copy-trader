@@ -1,6 +1,6 @@
 # Crypto Copy Trader — Project Context
 
-Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado permanece em `docs/`; aqui ficam estado canônico, invariantes, gates e a próxima ordem de trabalho.
+Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado permanece em `docs/`; aqui ficam estado canônico, invariantes, gates e próxima ordem de trabalho.
 
 ## Estado atual
 
@@ -13,28 +13,29 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 
 Status canônico:
 
-- Pump native acquisition: PASS.
-- PumpSwap native acquisition + causal pool resolution: PASS.
-- Unified radar -> causal opportunity episode: PASS.
-- Replay / continuation hardening: PASS / auditável.
+- Pump native acquisition: **PASS**.
+- PumpSwap native acquisition + causal pool resolution: **PASS**.
+- Unified radar -> causal opportunity episode: **PASS**.
+- Replay / continuation hardening: **PASS / auditável**.
 - **Unified Market Latency v34/v37: FORMAL PASS 11/11.**
 - **Jupiter route availability: PASS 12/12.**
-- **Funded executable assembly: BLOCKED_BY_FUNDING.**
+- **Funded executable BUY assembly: BLOCKED_BY_FUNDING.**
 - v35 taker readiness: `SOL=0`, `USDC=0`, déficit USDC `25`, `INSUFFICIENT_USDC_AND_SOL`.
 - Solana Tracker hazard v36: **FAIL / BLOCKED_BY_PROVIDER_CREDITS** — 12/12 `HTTP 403: Insufficient credits for this request`.
 - **Solana RPC on-chain hazard v37: FORMAL PROVIDER PASS 12/12**, no mesmo live em que latency também passou 11/11.
-- Wallet market-first history v38: **CODE/CI READY**; strict pre-T0 loader e bundle guard implementados. Amostra econômica oficial ainda não existe por causa do funded executable blocker.
-- `decision_as_of`: mecanismo/readiness CODE/CI READY; **nenhum freeze oficial enquanto funded executability estiver bloqueada**.
-- Forward outcomes +5m/+15m/+60m: schema/schedule CODE/CI READY; coleta econômica oficial ainda bloqueada.
-- Economic edge/profitability: **não estabelecido**.
-- Shadow/live money: **não liberado**.
+- Wallet market-first history v38: **strict causal lineage PASS / official history sample INCONCLUSIVE**, pois não existem decisões/outcomes econômicos oficiais anteriores.
+- Forward route-only v39: **CODE/CI READY**; pesquisa causal de rota SELL sem taker, explicitamente incapaz de completar outcome econômico oficial.
+- `decision_as_of`: mecanismo/readiness CODE/CI READY; **nenhum freeze oficial enquanto funded executable BUY estiver bloqueado**.
+- Official forward outcomes +5m/+15m/+60m: schema/schedule CODE/CI READY; coleta executável oficial ainda bloqueada.
+- Economic edge/profitability: **NOT ESTABLISHED**.
+- Shadow/live money: **NOT RELEASED**.
 - **Não iniciar coleta de 12h ainda.**
 
 Bloqueios externos não são strategy failure:
 - funding pode esperar;
 - créditos do Solana Tracker não serão comprados apenas para fabricar PASS;
-- o provider on-chain v37 já substitui a dependência de Solana Tracker para o hazard mínimo;
-- implementação paralela não muda a ordem dos gates econômicos finais.
+- o provider on-chain v37 já remove a dependência de Solana Tracker para hazard mínimo;
+- implementação paralela não muda a precedência dos gates econômicos finais.
 
 ## North star
 
@@ -68,8 +69,10 @@ Objetivo científico: testar se informação realmente disponível no momento da
 - Não aumentar workers por tentativa; primeiro localizar o relógio dominante.
 - Nenhum live money sem forward evidence robusta + gate explícito.
 - Features de hazard/wallet permanecem descritivas até demonstrarem valor incremental out-of-sample.
-- Não criar threshold porque uma feature “parece boa” ou porque um resultado histórico favorece um corte.
+- Não criar threshold porque uma feature “parece boa” ou porque um histórico favorece um corte.
 - Reordenar implementação por blocker externo não muda a precedência da validação final.
+- Route availability != assemblable transaction != landed transaction != fill.
+- Um outcome de oportunidade onde uma wallet apareceu **não é P&L realizado da wallet**.
 
 ## Detector congelado
 
@@ -127,8 +130,7 @@ v34 semantics permanecem congeladas:
 
 ### v37 retained latency live — 2026-09-04
 
-Run:
-`unified-market-onchain-hazard-smoke-20260904-37`
+Run: `unified-market-onchain-hazard-smoke-20260904-37`
 
 - elapsed 120.2s;
 - received PumpSwap 3061 + Pump 2720 = **5781**;
@@ -137,12 +139,7 @@ Run:
 - true backlog `10/5781 = 0.173%`;
 - Pump radar p95 **1.397s**;
 - PumpSwap pipeline p95 **1.695s**;
-- drops 0;
-- worker errors 0;
-- reference asset episodes 0;
-- hydration budget skips 0;
-- reservation superset violations 0;
-- bundles non-empty / replay auditable;
+- drops / worker errors / reference assets / budget skips / superset violations = 0;
 - v34 demoted pending jobs 80;
 - demoted finalizer acks pending 0.
 
@@ -150,7 +147,7 @@ Resultado: **UNIFIED MARKET LATENCY v37 = PASS 11/11**.
 
 Não mexer em scheduler/workers/SQLite/hydration sem nova evidência.
 
-## Jupiter executable entry
+## Jupiter executable BUY entry
 
 Provider:
 - `jupiter_swap_v2_order`;
@@ -166,7 +163,7 @@ Provider:
 
 Persisted v34 diagnostic:
 - attempts 12;
-- `route_id` 12/12;
+- route_id 12/12;
 - AVAILABLE 0;
 - UNAVAILABLE 12;
 - assembled transaction 0;
@@ -176,7 +173,7 @@ Classificação:
 - **route availability = PASS 12/12**;
 - **funded executable assembly = BLOCKED_BY_FUNDING**.
 
-Final executable quote PASS continua exigindo na mesma fresh run:
+Final executable BUY PASS continua exigindo numa fresh run:
 - latency 11/11 PASS;
 - selected>0;
 - terminal coverage100%;
@@ -190,8 +187,8 @@ Final executable quote PASS continua exigindo na mesma fresh run:
 ## v35 taker readiness
 
 `jupiter_taker_readiness_v35.py` é READ ONLY:
-- `getBalance` SOL;
-- `getTokenAccountsByOwner` USDC;
+- getBalance SOL;
+- getTokenAccountsByOwner USDC;
 - sem Jupiter order/sign/execute/transfer.
 
 Taker observado:
@@ -208,9 +205,7 @@ Não gastar nova coorte funded até esse preflight ficar READY. READY sozinho ai
 
 ## Hazard v36 — Solana Tracker continua falha histórica explícita
 
-Provider:
-- `solana_tracker_token_info`;
-- purpose `token_hazard_v1`.
+Provider `solana_tracker_token_info`, purpose `token_hazard_v1`.
 
 Live v36:
 - selected12;
@@ -225,26 +220,17 @@ Persisted diagnostic provou 12/12:
 `SolanaTrackerAuthenticationError: HTTP 403: Insufficient credits for this request`.
 
 Classificação:
-- plumbing/terminal observability: funcionou;
-- provider availability: FAIL;
-- root cause: **BLOCKED_BY_PROVIDER_CREDITS**.
+- plumbing/terminal observability funcionou;
+- provider availability FAIL;
+- root cause **BLOCKED_BY_PROVIDER_CREDITS**.
 
-Não alterar endpoint/retries/workers para mascarar esse resultado e não promover v36 retroativamente para PASS.
+Não promover v36 retroativamente para PASS.
 
 ## v37 — minimal causal on-chain hazard — LIVE PASS
 
-Arquivos:
-- `src/opportunity_onchain_hazard.py`;
-- `unified_market_onchain_hazard_smoke_v37.py`;
-- `tests/test_opportunity_onchain_hazard.py`;
-- `tests/test_unified_market_onchain_hazard_smoke_v37.py`;
-- `docs/onchain-hazard-v37-protocol-2026-09-04.md`.
+Provider `solana_rpc_mint_hazard_v1`, purpose `token_hazard_minimal_v1`.
 
-Provider:
-- `solana_rpc_mint_hazard_v1`;
-- purpose `token_hazard_minimal_v1`.
-
-Core via `getAccountInfo(jsonParsed)`:
+Core:
 - SPL Token / Token-2022;
 - decimals;
 - raw supply;
@@ -253,11 +239,8 @@ Core via `getAccountInfo(jsonParsed)`:
 - Token-2022 extensions quando expostas;
 - Mint context slot.
 
-Auxiliary via `getTokenLargestAccounts`:
-- `top10_token_account_concentration_pct`;
-- count/raw sum/context slot quando disponível.
-
-Nomenclature invariant:
+Auxiliary `getTokenLargestAccounts`:
+- `top10_token_account_concentration_pct` quando disponível;
 - largest token accounts != unique holders/owners;
 - nunca chamar essa métrica de holder concentration.
 
@@ -276,105 +259,66 @@ Live v37:
 
 Classificação: **PASS_CAUSAL_ONCHAIN_HAZARD_PROVIDER**.
 
-A falha auxiliar 12/12 não apaga o Mint core válido e não será “corrigida” com dado sintético. Investigar separadamente apenas se/quanto essa feature auxiliar justificar dependência operacional.
+A falha auxiliar não apaga o Mint core válido e não será “corrigida” com dado sintético. Hazard é off-path.
 
-Hazard terminal latency v37 p95 ~7.91s é aceitável porque a fila é off-path; não colocar hazard no hot path do detector apenas para reduzir esse número.
+## Wallet market-first history v38 — strict pre-T0
 
-## Wallet market-first history v38 — strict pre-T0 — CODE/CI READY
-
-Arquivos:
+Arquivos principais:
 - `src/opportunity_wallet_intelligence.py`;
 - `src/opportunity_wallet_market_history.py`;
 - `src/opportunity_episode_enrichment.py`;
 - `wallet_market_history_diagnostic_v38.py`;
-- `tests/test_opportunity_wallet_market_history.py`;
-- `tests/test_opportunity_wallet_history_enrichment_guard.py`;
-- `docs/market-first-wallet-history-v38-protocol-2026-09-04.md`.
+- `docs/market-first-wallet-history-v38-protocol-2026-09-04.md`;
+- `docs/wallet-history-v38-diagnostic-2026-09-04.md`.
 
-### Separação semântica obrigatória
+### Semântica
 
-**Wallet-owned historical outcome** e **market-first wallet/opportunity association** são famílias diferentes.
+Wallet-owned historical outcome e market-first wallet/opportunity association são famílias diferentes.
 
-Um outcome +5/+15/+60 de uma oportunidade onde a wallet apareceu:
-- NÃO é PnL realizado da wallet;
-- NÃO prova que a wallet entrou no nosso quote;
-- NÃO prova que ela saiu naquele horizonte;
-- NÃO prova landing/fill nosso.
-
-Por isso o novo label é:
+O label da associação é:
 `executable_quote_return_pct`
 
-e fica separado de:
-`realized_return_pct`.
+Ele NÃO é `realized_return_pct` da wallet.
 
-### Fonte oficial permitida
+### Lineage permitida
 
-Uma associação só existe quando a lineage anterior contém:
-1. market-first episode com `decision_as_of` congelado;
+Uma associação só pode existir quando o prior episode tem:
+1. market-first `decision_as_of` congelado;
 2. Jupiter entry attempt AVAILABLE;
-3. `assembled_transaction_present=True`;
-4. executable BUY quote válido e observado dentro do prior decision clock;
-5. exact forward outcome no horizonte predeclared;
-6. status AVAILABLE;
-7. executable SELL quote válido;
-8. outcome + exit quote estritamente conhecidos antes do T0 atual;
-9. wallet atual realmente presente no prior opportunity decision window de 30s.
+3. assembled transaction evidence;
+4. executable BUY quote dentro do prior decision clock;
+5. exact predeclared forward outcome;
+6. executable SELL quote válido;
+7. outcome e SELL quote estritamente conhecidos antes do current T0;
+8. current wallet realmente presente no prior opportunity decision window de 30s.
 
-O loader **não lê** legacy Discovery/Copyability, Solana Tracker leaderboard PnL, old wallet-forward research ou resultados exploratórios v2/v3.
+Legacy Discovery/Copyability, leaderboard PnL, old wallet-forward research e exploratórios v2/v3 são ignorados.
 
-### Strict pre-T0 rule
+Strict rule:
+- prior decision < current T0;
+- prior outcome observed_at < current T0;
+- prior SELL quote observed_at < current T0;
+- igualdade é excluída por ambiguidade em clock de segundos.
 
-Para current T0:
-`current_episode.first_trigger_observed_at`
+### Live persisted diagnostic v38
 
-Obrigatório:
-- prior `decision_as_of < current_t0`;
-- prior `outcome_observed_at < current_t0`;
-- prior exit quote `observed_at < current_t0`.
+Run inspecionada: `unified-market-onchain-hazard-smoke-20260904-37`
 
-Igualdade é excluída por ambiguidade de ordering em timestamps de segundo.
+- episodes=12;
+- participant wallet observations=194;
+- candidate prior official episodes=0;
+- eligible labeled prior episodes=0;
+- matching prior episodes=0;
+- associations=0;
+- `no_prior_official_market_first_decisions`: 12/12;
+- `no_valid_market_first_history_sample`: 12/12.
 
-`history_cutoff` pode ser mais conservador que T0, nunca posterior.
+Classificação:
+**INCONCLUSIVE_NO_OFFICIAL_MARKET_FIRST_HISTORY_SAMPLE**.
 
-O próprio enrichment bundle repete essa validação e rejeita injeção manual post-T0 mesmo que alguém tente pular o loader.
+Interpretação: comportamento causal correto. O sistema preferiu zero histórico a reutilizar labels contaminados. Isso não é strategy failure nem evidência de edge.
 
-### Horizon rule
-
-Horizon aceito: 300 / 900 / 3600 segundos.
-
-- uma snapshot usa um único horizon predeclared;
-- não existe fallback automático entre horizontes;
-- não escolher o melhor historical label retroativamente;
-- não promover 15m só porque resultados exploratórios antigos eram mais fortes.
-
-### Missingness
-
-Se não existir lineage oficial:
-`no_valid_market_first_history_sample`
-
-é o estado correto, não loss e não strategy failure.
-
-Como funded executable assembly ainda está bloqueado, **a expectativa atual é zero official market-first wallet associations**. O diagnóstico local v38 deve portanto ser inconclusivo até existirem decisões/outcomes oficiais anteriores.
-
-CI do protocolo v38: compile + unit tests PASS em 2026-09-04.
-
-## Risk bundle / decision readiness
-
-`src/opportunity_episode_enrichment.py`:
-- providers de hazard versionados ficam semanticamente separados;
-- token-account concentration nunca vira Solana Tracker holder metric;
-- hazard observado depois de bundle `as_of` não é backfilled;
-- market-first wallet history precisa ser strict pre-T0, mesmo que o bundle seja montado depois.
-
-`src/opportunity_decision_readiness.py`:
-- aceita Solana Tracker e on-chain RPC hazard como providers distintos;
-- on-chain AVAILABLE incompleto falha fechado;
-- hazard terminal missing/error pode permanecer explicit missingness;
-- executable entry continua hard prerequisite da coorte econômica;
-- `Insufficient funds` => `BLOCKED_BY_FUNDING`;
-- não congela `decision_as_of` automaticamente.
-
-## Forward outcomes +5/+15/+60 — infra READY
+## Forward outcomes +5/+15/+60 — official store
 
 `src/opportunity_forward_outcome_store.py`
 
@@ -388,40 +332,105 @@ CI do protocolo v38: compile + unit tests PASS em 2026-09-04.
 - terminal immutable;
 - sem later candle/artificial backfill.
 
-Ainda falta o collector econômico oficial apoiado no funded executable gate; não iniciar coorte antes disso.
+## v39 — causal forward SELL route-only — CODE/CI READY
+
+Arquivos:
+- `src/jupiter_forward_exit_route.py`;
+- `src/opportunity_forward_due.py`;
+- `forward_exit_route_probe_v39.py`;
+- `tests/test_jupiter_forward_exit_route.py`;
+- `tests/test_opportunity_forward_due.py`;
+- `tests/test_forward_exit_route_probe_v39.py`;
+- `docs/forward-exit-route-v39-protocol-2026-09-04.md`.
+
+Objetivo: preparar observabilidade causal do lado SELL sem inventar uma posição que a wallet paper não possui.
+
+Regra central:
+- SELL route-only usa o exact `output_amount_raw` do prior executable BUY quote como sizing;
+- roda somente quando um official scheduled outcome já está due;
+- `target_at = decision_as_of + horizon`;
+- quote observed_at precisa ser >= target;
+- target lateness fica explícito;
+- input token -> USDC;
+- `taker=None`;
+- no signing / no execute / no private key.
+
+**Route-only nunca completa official forward outcome.**
+
+Uma route-only quote válida precisa permanecer:
+`executable=False`.
+
+Se Jupiter inesperadamente retornar assembled transaction sem taker, v39 falha fechado com normalization/protocol error.
+
+Classificações:
+- `INCONCLUSIVE_NO_DUE_OFFICIAL_FORWARD_OUTCOMES`;
+- `PASS_ROUTE_ONLY_FORWARD_OBSERVABILITY`;
+- `INCONCLUSIVE_NO_AVAILABLE_FORWARD_ROUTE`;
+- `FAIL_ROUTE_ONLY_EXECUTABILITY_SEMANTICS`;
+- `FAIL_FORWARD_ROUTE_PLUMBING`.
+
+PASS v39 prova apenas route-only observability. NÃO prova:
+- token balance para SELL;
+- assemblable official SELL;
+- landing/fill;
+- profitability;
+- economic edge.
+
+Motivo estrutural: um executable SELL assembly para um taker real exige que a posição/token supply do taker seja compatível. Como o current BUY é somente assembly research e não é executado, não podemos fingir que a wallet recebeu o token.
+
+CI v39: compile + unit tests **PASS** em 2026-09-04.
+
+## Risk bundle / decision readiness
+
+`src/opportunity_episode_enrichment.py`:
+- providers de hazard versionados ficam separados;
+- token-account concentration nunca vira holder metric;
+- hazard post-as_of não é backfilled;
+- market-first wallet history precisa ser strict pre-T0 mesmo se bundle for montado depois.
+
+`src/opportunity_decision_readiness.py`:
+- on-chain hazard AVAILABLE incompleto falha fechado;
+- hazard terminal missing/error permanece explicit missingness;
+- executable BUY entry é hard prerequisite da coorte econômica;
+- Insufficient funds => BLOCKED_BY_FUNDING;
+- não congela `decision_as_of` automaticamente.
 
 ## Ordem de trabalho atual
 
 Enquanto funding continua externo:
-1. v37 hazard fica congelado como PASS; não ajustar por outcome;
-2. rodar apenas o diagnóstico SQLite v38 para confirmar estado explícito de no official history sample;
-3. preparar o collector de forward executable SELL quotes +5/+15/+60 sem iniciar coorte oficial;
-4. manter decision readiness/bundle pronto, sem freeze oficial;
-5. investigar `getTokenLargestAccounts` auxiliar somente se houver benefício claro, sem transformar isso em blocker.
+1. v34/v37 systems latency ficam congelados como PASS;
+2. v37 hazard fica congelado como PASS;
+3. v38 strict wallet-history lineage fica congelado; no-sample atual é esperado;
+4. v39 route-only SELL plumbing fica CODE/CI READY e não deve ser promovido a official outcome;
+5. manter official decision/outcome collectors preparados sem iniciar coorte;
+6. investigar `getTokenLargestAccounts` apenas se houver benefício incremental claro;
+7. não criar novos thresholds/score antes de labels forward oficiais.
 
 Quando funding puder ser usado:
 1. v35 preflight READY;
-2. fresh integrated funded executable quote gate PASS;
+2. fresh integrated funded executable BUY gate PASS;
 3. on-chain minimal hazard já validado;
 4. freeze final `decision_as_of`;
-5. executable forward outcomes +5/+15/+60;
-6. histórico market-first começa a nascer naturalmente para episódios futuros;
-7. short true economic E2E smoke;
-8. provider/clock/cost/dedup/reconnect audit;
-9. hydration/rate/backpressure policy;
-10. freeze runnable protocol;
-11. primeira coleta 12h;
-12. somente depois ablation/time-split para medir edge e valor incremental de wallet/hazard/flow.
+5. schedule exact +5/+15/+60 outcomes;
+6. coletar official executable SELL evidence sem substituir por route-only;
+7. histórico market-first começa a nascer naturalmente para episódios futuros;
+8. short true economic E2E smoke;
+9. provider/clock/cost/dedup/reconnect audit;
+10. hydration/rate/backpressure policy;
+11. freeze runnable protocol;
+12. primeira coleta 12h;
+13. depois ablation/time-split para medir edge e valor incremental de wallet/hazard/flow.
 
 ## Shadow / live
 
 - systems acquisition/latency: **PASS**;
 - Jupiter route: **PASS**;
-- funded executable entry: **BLOCKED_BY_FUNDING**;
+- funded executable BUY: **BLOCKED_BY_FUNDING**;
 - Solana Tracker hazard: **BLOCKED_BY_PROVIDER_CREDITS**;
 - on-chain hazard v37: **PASS**;
-- market-first wallet history v38: **CODE/CI READY; official sample not yet available**;
+- market-first wallet history v38: **LINEAGE CORRECT / OFFICIAL SAMPLE INCONCLUSIVE**;
+- forward route-only v39: **CODE/CI READY**;
 - decision_as_of: official freeze pending;
-- executable forward outcomes: official collection pending;
+- official executable forward outcomes: pending;
 - economic edge: **NOT ESTABLISHED**;
 - shadow/live money: **NOT RELEASED**.
