@@ -88,6 +88,28 @@ class ReadyAssetSchedulerDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(asset.dependency_wait_total_seconds, 0.0)
         self.assertGreaterEqual(asset.max_waiting_jobs, 1)
 
+    async def test_out_of_order_submission_still_honors_reserved_fifo(self):
+        scheduler = ReadyAssetScheduler[str]()
+        first_reservation = scheduler.reserve(["A"])
+        second_reservation = scheduler.reserve(["A"])
+
+        scheduler.submit("second-prepared-first", second_reservation)
+        await asyncio.sleep(0)
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+
+        scheduler.submit("first-prepared-later", first_reservation)
+        first = await asyncio.wait_for(scheduler.get_ready(), timeout=0.2)
+        self.assertEqual(first.payload, "first-prepared-later")
+        await scheduler.complete(first.reservation)
+        scheduler.ready_task_done()
+
+        second = await asyncio.wait_for(scheduler.get_ready(), timeout=0.2)
+        self.assertEqual(second.payload, "second-prepared-first")
+        await scheduler.complete(second.reservation)
+        scheduler.ready_task_done()
+        await scheduler.cancel_waiters()
+
 
 if __name__ == "__main__":
     unittest.main()
