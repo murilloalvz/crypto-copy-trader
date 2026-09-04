@@ -130,9 +130,10 @@ async def run_smoke_v19(
 
     ``offload_sync_radar`` is opt-in so historical v19-v21 behavior stays frozen. When
     enabled, the already-sequential Pump radar coordinator and PumpSwap FIFO finalizer
-    execute their synchronous SQLite stages on isolated one-thread executors. Each
-    coordinator still awaits each result before advancing, so source order and per-asset
-    FIFO semantics do not change; only event-loop blocking is removed.
+    execute their synchronous SQLite stages on one shared one-thread executor. Both
+    coordinators still await each result before advancing, and sharing one executor keeps
+    Pump/PumpSwap trigger assignment globally serialized instead of introducing a new
+    cross-source race. Only event-loop blocking is removed.
     """
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
@@ -171,13 +172,8 @@ async def run_smoke_v19(
         max_workers=pumpswap_prepare_executor_workers,
         thread_name_prefix="pumpswap-prepare-v19",
     )
-    pump_radar_executor = (
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="pump-radar-sequential-v22")
-        if offload_sync_radar
-        else None
-    )
-    pumpswap_finalize_executor = (
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="pumpswap-finalize-sequential-v22")
+    radar_sync_executor = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-radar-sequential-v22")
         if offload_sync_radar
         else None
     )
@@ -438,7 +434,7 @@ async def run_smoke_v19(
                         item.notification,
                         acquisition_run_key=run_key,
                         persist_result=item.persist_result,
-                        executor=pump_radar_executor,
+                        executor=radar_sync_executor,
                     )
                     handle_radar_result("pump", result)
                 except Exception:
@@ -665,7 +661,7 @@ async def run_smoke_v19(
                     finalize_prepared_pumpswap_radar_v5,
                     payload.prepared,
                     acquisition_run_key=run_key,
-                    executor=pumpswap_finalize_executor,
+                    executor=radar_sync_executor,
                 )
                 finalized = time.monotonic()
                 pumpswap_finalize_service_seconds.append(finalized - started_finalize)
@@ -727,10 +723,8 @@ async def run_smoke_v19(
         writer_diagnostics.batch_sizes = list(writer.batch_sizes)
         writer_diagnostics.batch_service_seconds = list(writer.batch_service_seconds)
         prepare_executor.shutdown(wait=True, cancel_futures=True)
-        if pump_radar_executor is not None:
-            pump_radar_executor.shutdown(wait=True, cancel_futures=True)
-        if pumpswap_finalize_executor is not None:
-            pumpswap_finalize_executor.shutdown(wait=True, cancel_futures=True)
+        if radar_sync_executor is not None:
+            radar_sync_executor.shutdown(wait=True, cancel_futures=True)
 
     elapsed = time.monotonic() - started
     resolver_operational_skips = (
