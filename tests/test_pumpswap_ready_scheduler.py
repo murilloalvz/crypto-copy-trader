@@ -64,9 +64,6 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         scheduler.submit("a0", reservation)
 
-        # The ready fast path must be visible synchronously, before yielding the
-        # event loop. The old implementation created a waiter task first, which
-        # could be delayed hundreds of milliseconds under the latency smoke load.
         self.assertEqual(scheduler.ready_backlog(), 1)
         self.assertEqual(scheduler.waiting_backlog(), 0)
         ready = scheduler._ready.get_nowait()
@@ -75,6 +72,55 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready.dependency_ready_monotonic, ready.ready_queue_entered_monotonic)
         scheduler.ready_task_done()
         await scheduler.complete(ready.reservation)
+        await scheduler.cancel_waiters()
+
+    async def test_hot_asset_chain_releases_exactly_one_successor_per_completion(self):
+        scheduler = ReadyAssetScheduler[str]()
+        reservations = [scheduler.reserve(["HOT"]) for _ in range(50)]
+        for index, reservation in enumerate(reservations):
+            scheduler.submit(f"hot-{index}", reservation)
+
+        self.assertEqual(scheduler.ready_backlog(), 1)
+        self.assertEqual(scheduler.waiting_backlog(), 49)
+
+        for index in range(50):
+            ready = scheduler._ready.get_nowait()
+            self.assertEqual(ready.payload, f"hot-{index}")
+            scheduler.ready_task_done()
+            await scheduler.complete(ready.reservation)
+            self.assertEqual(scheduler.waiting_backlog(), max(0, 48 - index))
+            if index < 49:
+                self.assertEqual(scheduler.ready_backlog(), 1)
+
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        await scheduler.cancel_waiters()
+
+    async def test_multi_asset_pending_job_releases_only_after_last_exact_successor(self):
+        scheduler = ReadyAssetScheduler[str]()
+        a0 = scheduler.reserve(["A"])
+        b0 = scheduler.reserve(["B"])
+        ab1 = scheduler.reserve(["A", "B"])
+        scheduler.submit("a0", a0)
+        scheduler.submit("b0", b0)
+        scheduler.submit("ab1", ab1)
+
+        ready_a = scheduler._ready.get_nowait()
+        ready_b = scheduler._ready.get_nowait()
+        scheduler.ready_task_done()
+        scheduler.ready_task_done()
+        self.assertEqual({ready_a.payload, ready_b.payload}, {"a0", "b0"})
+
+        first, second = (ready_a, ready_b)
+        await scheduler.complete(first.reservation)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        await scheduler.complete(second.reservation)
+        self.assertEqual(scheduler.waiting_backlog(), 0)
+        self.assertEqual(scheduler.ready_backlog(), 1)
+        ready_ab = scheduler._ready.get_nowait()
+        self.assertEqual(ready_ab.payload, "ab1")
+        scheduler.ready_task_done()
+        await scheduler.complete(ready_ab.reservation)
         await scheduler.cancel_waiters()
 
     async def test_cancel_preserves_pre_cancel_waiting_and_ready_backlog(self):
