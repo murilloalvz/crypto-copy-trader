@@ -1,11 +1,13 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from src import database
 from src.market_opportunity_episode_store import (
+    _run_with_sqlite_lock_retry,
     assign_market_opportunity_trigger,
     count_market_trigger_replay_conflicts,
     freeze_market_opportunity_decision_as_of,
@@ -154,6 +156,36 @@ class MarketOpportunityEpisodeStoreTests(unittest.TestCase):
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with self.assertRaises(ValueError):
                     self._assign(observed=99, chain=100)
+
+    def test_transient_sqlite_lock_retries_complete_transaction(self):
+        attempts = []
+
+        def operation():
+            attempts.append(len(attempts) + 1)
+            if len(attempts) < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return "ok"
+
+        with patch("src.market_opportunity_episode_store.time.sleep") as sleep:
+            result = _run_with_sqlite_lock_retry(operation)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(attempts, [1, 2, 3])
+        sleep.assert_has_calls([call(0.05), call(0.20)])
+
+    def test_non_lock_sqlite_operational_error_is_not_retried(self):
+        attempts = []
+
+        def operation():
+            attempts.append(1)
+            raise sqlite3.OperationalError("no such table: broken")
+
+        with patch("src.market_opportunity_episode_store.time.sleep") as sleep:
+            with self.assertRaises(sqlite3.OperationalError):
+                _run_with_sqlite_lock_retry(operation)
+
+        self.assertEqual(attempts, [1])
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
