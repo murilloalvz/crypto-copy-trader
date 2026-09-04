@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,10 +47,6 @@ class UnifiedMarketExecutionQuoteSmokeV31Tests(unittest.IsolatedAsyncioTestCase)
             v31.v30, "run_smoke_v30", side_effect=fake_v30_run
         ), patch.object(v31, "get_market_opportunity_episode", side_effect=fake_episode), patch.object(
             v31, "JupiterEpisodeQuoteProbe", _FakeProbe
-        ), patch.object(
-            v31.settings, "jupiter_api_key", "key"
-        ), patch.object(
-            v31.settings, "jupiter_taker_public_key", "taker"
         ):
             await v31.run_smoke_v31(
                 max_quote_episodes=2,
