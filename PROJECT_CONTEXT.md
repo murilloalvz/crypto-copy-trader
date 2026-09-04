@@ -13,12 +13,13 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Pump -> radar -> opportunity episode: PASS.
 - PumpSwap native acquisition + causal pool resolution: PASS.
 - Unified local causal bundle flow/wallet semantics: PASS.
-- End-to-end replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos continuam auditáveis.
+- Replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos continuam auditáveis.
 - Pump ordered SQLite microbatch: live PASS para Pump latency.
 - Unified v7 PumpSwap worker pool: **FAIL — scheduler starvation**.
-- v8 nonblocking ready scheduler: **CODE/CI PASS / LIVE FAIL — gross PumpSwap capacity deficit**.
-- v9 bounded 8-worker capacity stress: **LIVE FAIL SOMENTE NO PUMPSWAP LATENCY TAIL**; coverage/backlog/Pump passaram.
-- Próximo gate: **v10 diagnostic-only latency decomposition**, sem tuning especulativo.
+- v8 nonblocking ready scheduler: **LIVE FAIL — gross PumpSwap capacity deficit**.
+- v9 8-worker stress: **coverage/backlog PASS; PumpSwap latency tail FAIL**.
+- v10 diagnostic: **FAIL — hot-asset causal serialization + secondary PumpSwap persistence/reorder pressure**.
+- v11 prepared-radar split: **CODE/CI PASS; live validation is the current gate**.
 - Jupiter executable quotes, hazard/risk provider, final `decision_as_of`, executable forward outcomes e historical wallet outcomes no unified path ainda não estão ligados.
 - **Não iniciar 12h ainda.**
 
@@ -99,46 +100,33 @@ Pool identity:
 ## Evidência live canônica
 
 ### Pump native
+
 `pump-smoke-20260903-01`: 3,476 notifications; 3,688 decoded trades; 3,600 persisted; 223 tokens; 1,984 wallets. PASS.
 
 ### Pump radar
+
 `market-radar-smoke-20260903-03`: 2,037 trades; 738 raw hits; 31 episodes; 29 tokens. 95.8% dos raw hits eram continuation; enrichment caro deve ser episode-scoped. PASS.
 
 ### PumpSwap native
+
 `pumpswap-smoke-20260903-01`: 837/837 trades persisted; 150 pools; 737 wallets; 92/92 hydrations; 0 failures/skips. PASS.
 
-### Unified v2-v5
+### Unified v2-v6
+
 - v2: bundle PASS / throughput FAIL.
 - v3: semantics PASS / capacity FAIL.
 - v4: coverage/capacity PASS / latency FAIL.
 - v5: burst capacity/latency FAIL; PumpSwap global HOL sob carga.
-- replay incidents v5b/v5c/v5d levaram ao hardening posterior; conflitos permanecem explícitos.
+- replay incidents v5b/v5c/v5d levaram ao hardening posterior.
+- v5e: coverage 97.0%; Pump radar p95 24.50s FAIL; PumpSwap radar p95 4.85s PASS.
+- v6: coverage 100%; Pump radar p95 2.80s PASS; PumpSwap radar p95 7.95s FAIL.
 
-### v5e
-`unified-market-smoke-20260903-05e`:
-- received 4,256;
-- coverage 97.0%;
-- deadline backlog ~2.98%;
-- Pump radar p95 24.50s FAIL;
-- PumpSwap radar p95 4.85s PASS;
-- replay counters all zero.
-
-Decision: Pump persistence era gargalo; implementar writer ordenado microbatch.
-
-### v6
-`unified-market-smoke-20260903-06`:
-- received 3,530;
-- coverage 100%; backlog 1 item;
-- Pump persistence p95 1.91s;
-- Pump radar p95 **2.80s PASS**;
-- PumpSwap persistence p95 0.58s;
-- PumpSwap radar p95 **7.95s FAIL**;
-- hydration 71/71; RPC failures 0; budget skips 0.
-
-Decision: Pump microbatch resolveu Pump. PumpSwap global radar ordering continuava limitando latency.
+Decision after v6: Pump writer was solved; PumpSwap radar path became the active latency problem.
 
 ### v7
+
 `unified-market-smoke-20260903-07`:
+
 - received 6,039;
 - PumpSwap persistence completed 100%;
 - radar processed Pump 2,742 / PumpSwap 2,206;
@@ -150,7 +138,7 @@ Decision: Pump microbatch resolveu Pump. PumpSwap global radar ordering continua
 
 Classification: **FAIL — PUMPSWAP RADAR SCHEDULER STARVATION / CAPACITY FAIL**.
 
-Root cause: worker consumia execution slot antes de o ticket causal do asset estar pronto. Tickets futuros bloqueados podiam ocupar todos os workers enquanto assets independentes aguardavam.
+Root cause: workers consumiam execution slots antes de tickets causais estarem prontos.
 
 ### v8 — nonblocking per-asset ready scheduler
 
@@ -160,110 +148,180 @@ Architecture:
 3. espera causal não consome radar worker;
 4. somente work causalmente pronto entra na ready queue;
 5. multi-asset espera todos os predecessors;
-6. replay sem nova evidência causal é reconhecido sem recomputar radar;
+6. replay sem nova evidência causal não recomputa radar;
 7. thresholds/clocks/replay/episode/provider semantics não mudam.
 
-Validation pre-live: compileall PASS; **581 tests / 0 failures**; CI PASS.
-
 Live `unified-market-smoke-20260903-08`:
+
 - PumpSwap received 3,553;
-- persistence completed 3,531 (~29.4/s);
-- radar processed 2,157 (~18.0/s);
+- persistence completed 3,531;
+- radar processed 2,157;
 - coverage **75.6% FAIL**;
-- PumpSwap reorder backlog **1,374**;
 - Pump radar p95 **2.319s PASS**;
 - PumpSwap persistence p95 **0.498s**;
 - PumpSwap radar service p95 **0.790s**;
 - PumpSwap radar end-to-end p95 **54.973s FAIL**;
-- drops 0; worker errors 0; RPC failures 0; budget skips 0;
-- replay conflicts 0.
+- drops/worker errors/RPC failures/budget skips/replay conflicts: 0.
 
 Classification: **PUMP PASS / PUMPSWAP RADAR CAPACITY FAIL**.
 
-The v8 summary's `waiting_backlog=0` was not trustworthy because waiters had already been cancelled before the snapshot. This telemetry defect was fixed for v9.
-
-### v9 — measured 8-worker capacity stress
-
-v9 deliberately changed only PumpSwap radar execution capacity from 4 -> 8 workers and preserved a pre-cancellation scheduler snapshot.
+### v9 — 8-worker measured capacity stress
 
 Live `unified-market-smoke-20260903-09`:
+
 - received Pump 1,525 + PumpSwap 1,979 = 3,504;
-- persistence completed Pump 1,502 / PumpSwap 1,978;
-- radar processed Pump 1,481 / PumpSwap 1,927;
 - coverage **97.3% PASS**;
-- deadline backlog 96 / 3,504 = **~2.74% PASS**;
+- deadline backlog ~2.74% PASS;
 - Pump radar p95 **1.798s PASS**;
 - PumpSwap persistence p95 **0.390s**;
 - PumpSwap radar service p95 **0.676s**;
 - PumpSwap radar end-to-end p50/p95/max **2.271s / 18.311s / 27.176s**;
-- scheduler snapshot: ready backlog 22 / waiting backlog 17;
-- hydration 99/99; RPC failures 0; budget skips 0;
-- drops 0; worker errors 0; reference asset episodes 0;
-- replay: Pump 1 retain-earlier; market 2 retain-earlier; trigger 0; pool mapping 0.
+- scheduler snapshot: ready 22 / waiting 17;
+- hydration 99/99; budget skips 0;
+- drops 0; worker errors 0; reference asset episodes 0.
 
 Classification: **PUMP PASS / PUMPSWAP LATENCY TAIL FAIL**.
 
-Important inference:
-- v9 removed the gross capacity deficit enough to pass coverage/backlog;
-- radar service itself is not the 18s tail;
-- most latency occurs before radar execution starts;
-- do **not** raise worker count again automatically.
+Inference: service time did not explain the 18s tail. Do not raise worker count again automatically.
 
-Canonical report: `docs/unified-market-latency-v9-live-and-v10-diagnostic-2026-09-03.md`.
+### v10 — diagnostic decomposition
 
-## Gate atual — v10 diagnostic-only
+Live `unified-market-smoke-20260903-10`:
 
-v10 must keep:
+- received Pump 1,743 + PumpSwap 3,789 = 5,532;
+- persistence completed Pump 1,743 / PumpSwap 3,787;
+- radar processed Pump 1,743 / PumpSwap 2,460;
+- coverage **76.0% FAIL**;
+- drops 0; worker errors 0;
+- reference asset episodes 0;
+- RPC failures 0; budget skips 0;
+- replay conflicts 0.
+
+Pump:
+- persistence queue p95 **2.242s**;
+- radar end-to-end p95 **3.864s PASS**.
+
+PumpSwap:
+- persistence queue p50/p95/max **10.807s / 29.094s / 33.188s**;
+- persistence service p50/p95/max **0.016s / 2.754s / 13.985s**;
+- persist-complete -> reservation p95 **11.112s**;
+- scheduler dispatch p95 **0.999s**;
+- causal dependency wait p50/p95/max **11.894s / 54.449s / 68.103s**;
+- ready queue wait p95 **10.644s**;
+- radar evaluation p95 **1.138s**;
+- full pipeline p50/p95/max **39.279s / 90.996s / 101.449s**;
+- radar DB read p95 **106.9ms**;
+- detector compute p95 **0.3ms**;
+- episode assignment p95 **16.6ms**;
+- post-evaluation handling p95 **0ms**.
+
+Hot-asset evidence:
+- 3,733 reservations;
+- 222 assets with reservations;
+- 1,198 waiting on causal predecessors at deadline;
+- 75 ready;
+- max waiting jobs on one asset **108**;
+- 11 assets generated 50% of causal wait;
+- 32 assets generated 90% of causal wait;
+- hottest assets carried roughly 137-159 reservations each.
+
+Classification:
+
+**FAIL — PUMPSWAP HOT-ASSET SERIALIZATION, WITH SECONDARY PERSISTENCE/REORDER PRESSURE.**
+
+Primary inference: v8-v10 serialize the entire same-asset radar evaluation even though transaction/history reads and the frozen detector are read-only under the causal `as_of` boundary. The stateful operation that truly requires per-asset FIFO is trigger/episode assignment.
+
+Secondary inference: the 29.1s persistence queue p95 is independently large enough to remain a future gate blocker under a similar burst. Do not ignore it after the radar split is measured.
+
+Canonical report:
+`docs/unified-market-latency-v10-live-and-v11-prepared-radar-2026-09-03.md`.
+
+## v11 — parallel prepare, FIFO finalize
+
+Files:
+- `src/pumpswap_radar_bridge_v5.py`;
+- `unified_market_latency_smoke_v11.py`;
+- `tests/test_pumpswap_radar_bridge_v5.py`;
+- `tests/test_pumpswap_ready_scheduler_diagnostics.py`.
+
+Architecture:
+
+```text
+PumpSwap persistence
+      |
+      +--> parallel prepare (8 workers)
+      |    - canonical transaction view
+      |    - causal history read (`observed_at <= token_as_of`)
+      |    - frozen detector
+      |
+      +--> ingress-ordered asset reservation
+                    |
+                    v
+             per-asset FIFO barrier
+                    |
+                    v
+             finalize trigger/episode
+                    |
+                    v
+             episode-scoped enrichment
+```
+
+Semantics:
+1. preparation creates no trigger/episode side effects;
+2. later notifications may prepare before earlier notifications;
+3. asset tickets are still issued from canonical ingress order;
+4. a later prepared result cannot finalize before its predecessor on the same asset;
+5. trigger key remains `market-radar:pumpswap-v3:<signature>:<mint>`;
+6. detector config, `token_as_of`, episode window, replay semantics and provider policy are unchanged;
+7. PumpSwap preparation workers remain **8** in the frozen live smoke;
+8. finalization starts with one worker because v10 measured the stateful commit as cheap; do not increase it unless the v11 ready queue proves it necessary.
+
+Validation:
+- compileall PASS;
+- **590 tests / 0 failures**;
+- GitHub Actions CI PASS.
+
+v11 also fixes telemetry naming by separating:
+- total PumpSwap radar backlog;
+- actual order/reorder backlog;
+- prepare queue;
+- prepared waiting for reservation;
+- reservation waiting for prepare;
+- ready finalization queue;
+- causal finalization waiters.
+
+## Gate atual — v11 live
+
+Frozen config:
 - duration 120s;
 - commitment confirmed;
 - Pump batch 32 / 25ms;
 - PumpSwap persistence workers 24;
-- PumpSwap radar workers **8**;
+- PumpSwap prepare workers 8;
+- PumpSwap finalizer workers 1;
 - max concurrent resolutions 18;
 - max hydrations 1500;
-- queue 5000;
-- all detector/causal/replay/persistence/provider semantics frozen.
+- queue 5000.
 
-v10 instruments:
-- persistence queue wait;
-- persistence service;
-- persistence-complete -> reservation/reorder wait;
-- reservation -> scheduler waiter task dispatch;
-- causal dependency wait;
-- ready queue wait;
-- radar service (same boundary as v8/v9: evaluation + result handling/enrichment);
-- full pipeline E2E;
-- transaction-view DB read;
-- token-history DB read;
-- detector compute;
-- episode assignment/write;
-- radar evaluation vs post-evaluation handling/enrichment;
-- per-asset reservations, outstanding depth, waiting depth and causal-wait concentration.
-
-v10 is **measurement only**, not an optimization.
-
-Interpretation:
-- scheduler task dispatch dominates -> event-loop/scheduler dispatch overhead;
-- causal wait dominates + concentrated in few assets -> hot-asset serialization;
-- ready queue dominates -> execution scheduling/capacity;
-- persist-to-reservation dominates -> ingress reorder/dispatcher HOL;
-- DB reads inflate under load -> shared SQLite/read contention;
-- post-evaluation handling dominates -> episode admission/enrichment bottleneck;
-- none explains E2E -> reconcile phase clocks before changing architecture.
-
-## Frozen latency PASS gate
-
-PASS somente se:
+PASS conditions remain:
 1. no traceback/worker errors;
 2. drops 0;
 3. reference_asset_episodes 0;
 4. coverage >=95%;
-5. total deadline backlog <=5% do received;
+5. total deadline backlog <=5% of received;
 6. Pump radar p95 <=5s;
-7. PumpSwap radar p95 <=5s;
+7. PumpSwap causal result availability p95 <=5s;
 8. hydration budget skips 0;
-9. bundles não sistematicamente vazios;
-10. replay counters inspecionáveis e sem corrupção não explicada.
+9. bundles not systematically empty;
+10. replay counters inspectable and no unexplained integrity corruption.
+
+Interpretation after v11:
+- causal wait collapses but persistence queue remains high -> target PumpSwap persistence architecture next;
+- actual order/reorder dominates -> remove global HOL without weakening canonical identity;
+- prepare queue dominates -> optimize preparation/thread-pool behavior;
+- finalizer ready queue dominates -> measured finalizer capacity issue;
+- finalizer causal wait remains concentrated -> inspect stateful commit/ticket release;
+- all phase clocks low but E2E high -> reconcile clocks before changing architecture.
 
 ## Depois do latency PASS
 
@@ -303,7 +361,8 @@ Métricas mínimas:
 - Pump latency: PASS via ordered microbatch;
 - PumpSwap v8: gross capacity FAIL;
 - PumpSwap v9: coverage/backlog PASS, p95 latency FAIL;
-- v10: diagnostic gate atual;
+- PumpSwap v10: diagnostic FAIL, root cause measured;
+- PumpSwap v11: code/CI PASS / live pending;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
 - shadow/live: **não liberado**.
