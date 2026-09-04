@@ -242,6 +242,8 @@ class JupiterEpisodeQuoteProbe:
                 side="buy",
                 token_decimals=decimals.decimals,
             )
+            if quote.observed_at < episode.first_trigger_observed_at:
+                raise ValueError("Jupiter quote cannot precede episode admission clock")
         except (JupiterOrderError, ValueError, TypeError) as exc:
             attempt = self._complete(
                 episode,
