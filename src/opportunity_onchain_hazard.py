@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import time
 
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
@@ -35,6 +35,12 @@ class OnchainMintHazardEvidence:
     freeze_authority_present: bool | None
     token_2022: bool | None
     extensions_present: tuple[str, ...]
+    top10_token_account_concentration_pct: float | None
+    largest_token_accounts_observed: int | None
+    largest_accounts_sum_raw: str | None
+    largest_accounts_context_slot: int | None
+    largest_accounts_error_type: str | None
+    largest_accounts_error_message: str | None
     data_quality_flags: tuple[str, ...]
 
 
@@ -57,12 +63,19 @@ def _details(evidence: OnchainMintHazardEvidence) -> dict:
         "freeze_authority_present": evidence.freeze_authority_present,
         "token_2022": evidence.token_2022,
         "extensions_present": list(evidence.extensions_present),
+        "top10_token_account_concentration_pct": evidence.top10_token_account_concentration_pct,
+        "largest_token_accounts_observed": evidence.largest_token_accounts_observed,
+        "largest_accounts_sum_raw": evidence.largest_accounts_sum_raw,
+        "largest_accounts_context_slot": evidence.largest_accounts_context_slot,
+        "largest_accounts_error_type": evidence.largest_accounts_error_type,
+        "largest_accounts_error_message": evidence.largest_accounts_error_message,
         "data_quality_flags": list(evidence.data_quality_flags),
     }
 
 
 def evidence_from_attempt(attempt: OpportunityProviderAttempt) -> OnchainMintHazardEvidence:
     details = attempt.details or {}
+    concentration = details.get("top10_token_account_concentration_pct")
     return OnchainMintHazardEvidence(
         episode_key=attempt.episode_key,
         token_mint=str(details.get("token_mint") or ""),
@@ -77,7 +90,40 @@ def evidence_from_attempt(attempt: OpportunityProviderAttempt) -> OnchainMintHaz
         freeze_authority_present=(details.get("freeze_authority_present") if isinstance(details.get("freeze_authority_present"), bool) else None),
         token_2022=(details.get("token_2022") if isinstance(details.get("token_2022"), bool) else None),
         extensions_present=tuple(str(item) for item in (details.get("extensions_present") or [])),
+        top10_token_account_concentration_pct=(float(concentration) if concentration is not None else None),
+        largest_token_accounts_observed=(int(details["largest_token_accounts_observed"]) if details.get("largest_token_accounts_observed") is not None else None),
+        largest_accounts_sum_raw=(str(details["largest_accounts_sum_raw"]) if details.get("largest_accounts_sum_raw") is not None else None),
+        largest_accounts_context_slot=(int(details["largest_accounts_context_slot"]) if details.get("largest_accounts_context_slot") is not None else None),
+        largest_accounts_error_type=(str(details["largest_accounts_error_type"]) if details.get("largest_accounts_error_type") else None),
+        largest_accounts_error_message=(str(details["largest_accounts_error_message"]) if details.get("largest_accounts_error_message") else None),
         data_quality_flags=tuple(str(item) for item in (details.get("data_quality_flags") or [])),
+    )
+
+
+def _base_unavailable(
+    *, episode: MarketOpportunityEpisode, observed_at: int, context_slot: int | None, flag: str
+) -> OnchainMintHazardEvidence:
+    return OnchainMintHazardEvidence(
+        episode_key=episode.episode_key,
+        token_mint=episode.token_mint,
+        provider=ONCHAIN_HAZARD_PROVIDER,
+        observed_at=observed_at,
+        context_slot=context_slot,
+        status="UNAVAILABLE",
+        token_program=None,
+        decimals=None,
+        supply_raw=None,
+        mint_authority_present=None,
+        freeze_authority_present=None,
+        token_2022=None,
+        extensions_present=(),
+        top10_token_account_concentration_pct=None,
+        largest_token_accounts_observed=None,
+        largest_accounts_sum_raw=None,
+        largest_accounts_context_slot=None,
+        largest_accounts_error_type=None,
+        largest_accounts_error_message=None,
+        data_quality_flags=(flag,),
     )
 
 
@@ -90,32 +136,23 @@ def _normalize_account_info(
     if not isinstance(result, dict):
         raise ValueError("getAccountInfo result is not an object")
     context = result.get("context") or {}
+    context_slot = int(context["slot"]) if context.get("slot") is not None else None
     value = result.get("value")
     if value is None:
-        return OnchainMintHazardEvidence(
-            episode_key=episode.episode_key,
-            token_mint=episode.token_mint,
-            provider=ONCHAIN_HAZARD_PROVIDER,
+        return _base_unavailable(
+            episode=episode,
             observed_at=observed_at,
-            context_slot=(int(context["slot"]) if context.get("slot") is not None else None),
-            status="UNAVAILABLE",
-            token_program=None,
-            decimals=None,
-            supply_raw=None,
-            mint_authority_present=None,
-            freeze_authority_present=None,
-            token_2022=None,
-            extensions_present=(),
-            data_quality_flags=("mint_account_missing",),
+            context_slot=context_slot,
+            flag="mint_account_missing",
         )
     if not isinstance(value, dict):
         raise ValueError("getAccountInfo value is not an object")
 
     owner = str(value.get("owner") or "").strip() or None
-    flags: list[str] = []
     if owner not in SUPPORTED_TOKEN_PROGRAMS:
-        flags.append("unsupported_mint_owner_program")
+        raise ValueError("mint owner is not a supported SPL Token program")
 
+    flags: list[str] = []
     data = value.get("data")
     parsed = data.get("parsed") if isinstance(data, dict) else None
     info = parsed.get("info") if isinstance(parsed, dict) else None
@@ -157,24 +194,140 @@ def _normalize_account_info(
         token_mint=episode.token_mint,
         provider=ONCHAIN_HAZARD_PROVIDER,
         observed_at=observed_at,
-        context_slot=(int(context["slot"]) if context.get("slot") is not None else None),
+        context_slot=context_slot,
         status="AVAILABLE",
         token_program=owner,
         decimals=(int(decimals) if decimals is not None else None),
         supply_raw=(str(supply) if supply is not None else None),
         mint_authority_present=authority_present("mintAuthority"),
         freeze_authority_present=authority_present("freezeAuthority"),
-        token_2022=(owner == TOKEN_2022_PROGRAM if owner is not None else None),
+        token_2022=(owner == TOKEN_2022_PROGRAM),
         extensions_present=tuple(extensions),
+        top10_token_account_concentration_pct=None,
+        largest_token_accounts_observed=None,
+        largest_accounts_sum_raw=None,
+        largest_accounts_context_slot=None,
+        largest_accounts_error_type=None,
+        largest_accounts_error_message=None,
+        data_quality_flags=tuple(flags),
+    )
+
+
+def _normalize_largest_accounts(
+    *, evidence: OnchainMintHazardEvidence, result: dict, observed_at: int
+) -> OnchainMintHazardEvidence:
+    flags = list(evidence.data_quality_flags)
+    flags.append("largest_accounts_are_token_accounts_not_unique_owners")
+    if not isinstance(result, dict):
+        raise ValueError("getTokenLargestAccounts result is not an object")
+    context = result.get("context") or {}
+    context_slot = int(context["slot"]) if context.get("slot") is not None else None
+    values = result.get("value")
+    if not isinstance(values, list):
+        raise ValueError("getTokenLargestAccounts value is not a list")
+
+    try:
+        supply = int(evidence.supply_raw) if evidence.supply_raw is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError("mint supply is not an integer raw amount") from exc
+    if supply is None:
+        flags.append("top10_token_account_concentration_unavailable_supply_missing")
+        return replace(
+            evidence,
+            observed_at=observed_at,
+            largest_token_accounts_observed=len(values),
+            largest_accounts_context_slot=context_slot,
+            data_quality_flags=tuple(flags),
+        )
+    if supply <= 0:
+        flags.append("top10_token_account_concentration_unavailable_zero_supply")
+        return replace(
+            evidence,
+            observed_at=observed_at,
+            largest_token_accounts_observed=len(values),
+            largest_accounts_context_slot=context_slot,
+            data_quality_flags=tuple(flags),
+        )
+    if not values:
+        flags.append("top10_token_account_concentration_unavailable_no_accounts")
+        return replace(
+            evidence,
+            observed_at=observed_at,
+            largest_token_accounts_observed=0,
+            largest_accounts_context_slot=context_slot,
+            data_quality_flags=tuple(flags),
+        )
+
+    top = values[:10]
+    amounts: list[int] = []
+    for item in top:
+        if not isinstance(item, dict) or item.get("amount") is None:
+            flags.append("top10_token_account_concentration_unavailable_invalid_amount")
+            return replace(
+                evidence,
+                observed_at=observed_at,
+                largest_token_accounts_observed=len(values),
+                largest_accounts_context_slot=context_slot,
+                data_quality_flags=tuple(flags),
+            )
+        try:
+            amount = int(str(item["amount"]))
+        except (TypeError, ValueError):
+            flags.append("top10_token_account_concentration_unavailable_invalid_amount")
+            return replace(
+                evidence,
+                observed_at=observed_at,
+                largest_token_accounts_observed=len(values),
+                largest_accounts_context_slot=context_slot,
+                data_quality_flags=tuple(flags),
+            )
+        if amount < 0:
+            raise ValueError("largest token-account amount cannot be negative")
+        amounts.append(amount)
+
+    top_sum = sum(amounts)
+    concentration = 100.0 * top_sum / supply
+    if concentration < 0.0 or concentration > 100.000001:
+        flags.append("top10_token_account_concentration_unavailable_cross_slot_supply_mismatch")
+        concentration_value = None
+    else:
+        concentration_value = min(100.0, concentration)
+        flags.append("top10_token_account_concentration_is_not_holder_concentration")
+
+    if context_slot is not None and evidence.context_slot is not None and context_slot != evidence.context_slot:
+        flags.append("mint_and_largest_accounts_context_slots_differ")
+
+    return replace(
+        evidence,
+        observed_at=observed_at,
+        top10_token_account_concentration_pct=concentration_value,
+        largest_token_accounts_observed=len(values),
+        largest_accounts_sum_raw=str(top_sum),
+        largest_accounts_context_slot=context_slot,
+        data_quality_flags=tuple(flags),
+    )
+
+
+def _with_auxiliary_failure(
+    evidence: OnchainMintHazardEvidence, *, observed_at: int, error: BaseException, flag: str
+) -> OnchainMintHazardEvidence:
+    flags = list(evidence.data_quality_flags)
+    flags.append(flag)
+    return replace(
+        evidence,
+        observed_at=observed_at,
+        largest_accounts_error_type=type(error).__name__,
+        largest_accounts_error_message=str(error),
         data_quality_flags=tuple(flags),
     )
 
 
 class SolanaRPCMintHazardProbe:
-    """At-most-once minimal causal token hazard using only Solana RPC mint state.
+    """At-most-once minimal causal token hazard using only Solana RPC state.
 
-    This intentionally does not synthesize proprietary concepts such as risk score, rugged,
-    snipers, bundlers or insiders. Those remain optional enrichment from separate providers.
+    Core evidence is parsed Mint state. Largest token accounts are an optional auxiliary feature:
+    their failure does not erase already observed mint/freeze authorities. No proprietary risk
+    score, rug label, holder identity, sniper, bundler or insider label is synthesized here.
     """
 
     def __init__(self, *, rpc_timeout_seconds: int = 3):
@@ -231,9 +384,12 @@ class SolanaRPCMintHazardProbe:
         if not is_new:
             return self._existing(episode)
 
-        client = SolanaClient(timeout=self.rpc_timeout_seconds)
+        # Keep this off-path research probe bounded: one configured primary endpoint, one attempt
+        # per RPC method. Missing auxiliary concentration stays explicit instead of retrying into a
+        # long causal tail or borrowing a later snapshot.
+        client = SolanaClient(timeout=self.rpc_timeout_seconds, fallback_urls=())
         try:
-            result = client.call(
+            mint_result = client.call(
                 "getAccountInfo",
                 [episode.token_mint, {"encoding": "jsonParsed", "commitment": "confirmed"}],
                 max_attempts=1,
@@ -252,7 +408,7 @@ class SolanaRPCMintHazardProbe:
         try:
             evidence = _normalize_account_info(
                 episode=episode,
-                result=result,
+                result=mint_result,
                 observed_at=observed_at,
             )
         except (ValueError, TypeError, KeyError) as exc:
@@ -264,6 +420,33 @@ class SolanaRPCMintHazardProbe:
                 details={"token_mint": episode.token_mint, "observed_at": observed_at},
             )
             return OnchainMintHazardCaptureResult(attempt, evidence_from_attempt(attempt), False)
+
+        if evidence.status == "AVAILABLE":
+            try:
+                largest_result = client.call(
+                    "getTokenLargestAccounts",
+                    [episode.token_mint, {"commitment": "confirmed"}],
+                    max_attempts=1,
+                )
+                evidence = _normalize_largest_accounts(
+                    evidence=evidence,
+                    result=largest_result,
+                    observed_at=max(observed_at, int(time.time())),
+                )
+            except SolanaRPCError as exc:
+                evidence = _with_auxiliary_failure(
+                    evidence,
+                    observed_at=max(observed_at, int(time.time())),
+                    error=exc,
+                    flag="largest_accounts_rpc_unavailable",
+                )
+            except (ValueError, TypeError, KeyError) as exc:
+                evidence = _with_auxiliary_failure(
+                    evidence,
+                    observed_at=max(observed_at, int(time.time())),
+                    error=exc,
+                    flag="largest_accounts_normalization_unavailable",
+                )
 
         attempt = self._complete(
             episode,
