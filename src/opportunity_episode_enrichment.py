@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from src.causal_quotes import CausalQuoteObservation
 from src.market_observation_store import load_market_trades
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
+from src.opportunity_onchain_hazard import OnchainMintHazardEvidence
 from src.opportunity_snapshot_core import (
     FlowTradeObservation,
     OpportunitySnapshotCoreV1,
@@ -18,21 +19,24 @@ from src.opportunity_wallet_intelligence import (
 
 
 EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_minimal"
+HazardEvidence = TokenHazardEvidence | OnchainMintHazardEvidence
 
 
 @dataclass(frozen=True)
 class RiskEvidenceEnvelope:
     """Causal token-hazard evidence with explicit provider missingness.
 
-    This envelope is descriptive evidence, not a recommendation or a manipulation probability.
-    When provider evidence is absent or observed after the requested ``as_of``, values remain
-    unavailable rather than being backfilled from a later snapshot.
+    Provider-native fields remain separate. In particular, Solana RPC
+    ``top10_token_account_concentration_pct`` is never relabeled as holder concentration and is not
+    written into the Solana Tracker ``top10_pct`` field.
     """
 
     status: str
     data_quality_flags: tuple[str, ...]
     provider: str | None = None
     observed_at: int | None = None
+
+    # Solana Tracker provider-native evidence. These are not synthesized by the RPC provider.
     risk_score: float | None = None
     rugged: bool | None = None
     jupiter_verified: bool | None = None
@@ -41,9 +45,18 @@ class RiskEvidenceEnvelope:
     snipers_pct: float | None = None
     bundlers_pct: float | None = None
     insiders_pct: float | None = None
+    risk_factors: tuple[tuple[str, str, float | None], ...] = ()
+
+    # Shared / on-chain evidence.
     freeze_authority_present: bool | None = None
     mint_authority_present: bool | None = None
-    risk_factors: tuple[tuple[str, str, float | None], ...] = ()
+    token_program: str | None = None
+    token_2022: bool | None = None
+    extensions_present: tuple[str, ...] = ()
+    mint_context_slot: int | None = None
+    top10_token_account_concentration_pct: float | None = None
+    largest_token_accounts_observed: int | None = None
+    largest_accounts_context_slot: int | None = None
 
 
 @dataclass(frozen=True)
@@ -61,7 +74,7 @@ def _risk_envelope(
     *,
     episode: MarketOpportunityEpisode,
     as_of: int,
-    hazard_evidence: TokenHazardEvidence | None,
+    hazard_evidence: HazardEvidence | None,
 ) -> RiskEvidenceEnvelope:
     if hazard_evidence is None:
         return RiskEvidenceEnvelope(
@@ -83,6 +96,26 @@ def _risk_envelope(
     flags = list(hazard_evidence.data_quality_flags)
     if hazard_evidence.observed_at is None:
         flags.append("token_hazard_observed_at_missing")
+
+    if isinstance(hazard_evidence, OnchainMintHazardEvidence):
+        return RiskEvidenceEnvelope(
+            status=hazard_evidence.status,
+            provider=hazard_evidence.provider,
+            observed_at=hazard_evidence.observed_at,
+            freeze_authority_present=hazard_evidence.freeze_authority_present,
+            mint_authority_present=hazard_evidence.mint_authority_present,
+            token_program=hazard_evidence.token_program,
+            token_2022=hazard_evidence.token_2022,
+            extensions_present=hazard_evidence.extensions_present,
+            mint_context_slot=hazard_evidence.context_slot,
+            top10_token_account_concentration_pct=(
+                hazard_evidence.top10_token_account_concentration_pct
+            ),
+            largest_token_accounts_observed=hazard_evidence.largest_token_accounts_observed,
+            largest_accounts_context_slot=hazard_evidence.largest_accounts_context_slot,
+            data_quality_flags=tuple(flags),
+        )
+
     return RiskEvidenceEnvelope(
         status=hazard_evidence.status,
         provider=hazard_evidence.provider,
@@ -109,7 +142,7 @@ def build_episode_enrichment_bundle(
     quotes: tuple[CausalQuoteObservation, ...] | list[CausalQuoteObservation] = (),
     historical_wallet_outcomes: tuple[HistoricalWalletOutcome, ...]
     | list[HistoricalWalletOutcome] = (),
-    hazard_evidence: TokenHazardEvidence | None = None,
+    hazard_evidence: HazardEvidence | None = None,
 ) -> EpisodeEnrichmentBundle:
     """Build the minimal causal evidence bundle for one already-open market episode.
 
