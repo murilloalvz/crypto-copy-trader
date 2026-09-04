@@ -15,6 +15,10 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
     behind one resolution path and then reuse the resulting cache/store mapping. CreatePoolEvent
     learning uses the same causal replay policy as the shared pool store so an earlier on-chain
     observation can safely supersede a later RPC completion without aborting acquisition.
+
+    The concurrency semaphore protects only potentially expensive resolution work. A causally valid
+    in-memory cache hit is returned before both the per-pool lock and global semaphore so the common
+    cheap path cannot queue behind unrelated network hydrations.
     """
 
     def __init__(self, *args, max_concurrent_resolutions: int = 8, **kwargs):
@@ -25,6 +29,18 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
         self._resolution_semaphore = asyncio.Semaphore(self.max_concurrent_resolutions)
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self.singleflight_waits = 0
+
+    def _causal_cache_hit(
+        self,
+        pool: str,
+        *,
+        as_of: int,
+    ) -> PumpSwapPoolMapping | None:
+        cached = self._cache.get(pool)
+        if cached is None or cached.observed_at > as_of:
+            return None
+        self.cache_hits += 1
+        return cached
 
     def learn_from_create(self, event, *, observed_at: int) -> PumpSwapPoolMapping:
         learned_at = int(observed_at)
@@ -52,13 +68,26 @@ class ConcurrentReusablePumpSwapPoolResolver(ReusablePumpSwapPoolResolver):
         pool = str(pool_address).strip()
         if not pool:
             raise ValueError("pool_address cannot be empty")
+        decision_time = int(as_of)
+        if decision_time < 0:
+            raise ValueError("as_of must be non-negative")
+
+        cached = self._causal_cache_hit(pool, as_of=decision_time)
+        if cached is not None:
+            return cached
 
         lock = self._pool_locks.setdefault(pool, asyncio.Lock())
         if lock.locked():
             self.singleflight_waits += 1
         async with lock:
+            # Another same-pool resolution may have populated the canonical cache while this
+            # coroutine waited for the single-flight lock. Re-check before spending a global slot.
+            cached = self._causal_cache_hit(pool, as_of=decision_time)
+            if cached is not None:
+                return cached
+
             async with self._resolution_semaphore:
-                resolved = await super().resolve(pool, as_of=as_of)
+                resolved = await super().resolve(pool, as_of=decision_time)
             if resolved is None:
                 return None
 
