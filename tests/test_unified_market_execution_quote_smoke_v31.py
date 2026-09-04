@@ -21,6 +21,7 @@ class _FakeProbe:
 
 class UnifiedMarketExecutionQuoteSmokeV31Tests(unittest.IsolatedAsyncioTestCase):
     async def test_only_new_admissions_enter_predeclared_first_n_quote_cohort(self):
+        actual_admit_before_patch = v19.admit_opportunity_episode
         decisions = iter([True, False, True, True])
 
         def fake_original_admit(**kwargs):
@@ -73,10 +74,13 @@ class UnifiedMarketExecutionQuoteSmokeV31Tests(unittest.IsolatedAsyncioTestCase)
                 continuation_batch_size=32,
                 continuation_batch_max_wait_ms=5,
             )
+            # run_smoke_v31 must restore the admission hook it received before returning.
+            self.assertIs(v19.admit_opportunity_episode, fake_original_admit)
 
         # episode-1 was a replay; episode-3 was a real admission but beyond the predeclared cap.
         self.assertEqual(_FakeProbe.captured, ["episode-0", "episode-2"])
-        self.assertIs(v19.admit_opportunity_episode, fake_original_admit)
+        # The outer unittest patch then restores the real production function.
+        self.assertIs(v19.admit_opportunity_episode, actual_admit_before_patch)
 
 
 if __name__ == "__main__":
