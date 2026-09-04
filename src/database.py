@@ -331,7 +331,12 @@ def _path() -> Path:
 
 @contextmanager
 def connection():
-    conn = sqlite3.connect(_path())
+    # Market persistence frequently performs read-before-write replay checks. Using
+    # IMMEDIATE makes the first DML reserve SQLite's single writer explicitly instead
+    # of attempting a late DEFERRED read->write upgrade, which can fail immediately
+    # under concurrent Pump/PumpSwap/radar writers even in WAL mode. Pure SELECT
+    # connections remain concurrent because no transaction begins until the first DML.
+    conn = sqlite3.connect(_path(), isolation_level="IMMEDIATE")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
