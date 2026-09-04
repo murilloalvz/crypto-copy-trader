@@ -42,12 +42,12 @@ class HistoricalWalletOutcome:
 
 @dataclass(frozen=True)
 class HistoricalWalletOpportunityAssociation:
-    """A wallet's participation in a prior market-first opportunity with a resolved executable label.
+    """A wallet's participation in a prior market-first opportunity with a resolved quote label.
 
-    ``executable_return_pct`` is the return of the *market opportunity* from the official executable
-    buy quote to the official executable sell quote at one predeclared horizon. It is association
-    evidence about a wallet that was present, not a claim that the wallet bought/sold at those prices
-    or held for that horizon.
+    ``executable_quote_return_pct`` is the return of the *market opportunity* from the official
+    executable buy quote to the official executable sell quote at one predeclared horizon. It is
+    association evidence about a wallet that was present, not a claim that the wallet bought/sold at
+    those prices, held for that horizon, or obtained an on-chain fill.
     """
 
     episode_key: str
@@ -56,7 +56,7 @@ class HistoricalWalletOpportunityAssociation:
     prior_decision_as_of: int
     outcome_observed_at: int
     horizon_seconds: int
-    executable_return_pct: float
+    executable_quote_return_pct: float
     entry_quote_key: str
     exit_quote_key: str
     method_version: str
@@ -84,8 +84,8 @@ class WalletOpportunityEvidence:
     prior_market_first_same_token_episode_count: int
     prior_market_first_horizon_seconds: int | None
     prior_market_first_positive_outcome_share_pct: float | None
-    prior_market_first_mean_executable_return_pct: float | None
-    prior_market_first_median_executable_return_pct: float | None
+    prior_market_first_mean_executable_quote_return_pct: float | None
+    prior_market_first_median_executable_quote_return_pct: float | None
     data_quality_flags: tuple[str, ...]
 
 
@@ -161,8 +161,8 @@ def _validate_market_first_association(item: HistoricalWalletOpportunityAssociat
         raise ValueError("market-first outcome cannot precede its prior decision")
     if item.horizon_seconds <= 0:
         raise ValueError("market-first history horizon must be positive")
-    if not math.isfinite(item.executable_return_pct):
-        raise ValueError("market-first executable_return_pct must be finite")
+    if not math.isfinite(item.executable_quote_return_pct):
+        raise ValueError("market-first executable_quote_return_pct must be finite")
     if not item.entry_quote_key.strip() or not item.exit_quote_key.strip():
         raise ValueError("market-first history requires entry and exit quote keys")
     if not item.method_version.strip():
@@ -189,9 +189,9 @@ def build_opportunity_wallet_intelligence(
 
     This function intentionally has no whitelist, wallet score, ``passed``, recommendation or BUY
     decision. Wallet-owned historical outcomes and market-first opportunity associations stay as
-    separate evidence families so an opportunity return can never masquerade as realized wallet PnL.
-    Every historical label must already be observable by ``as_of``; future/unresolved evidence stays
-    missing.
+    separate evidence families so an opportunity quote return can never masquerade as realized wallet
+    PnL. Every historical label must already be observable by ``as_of``; future/unresolved evidence
+    stays missing.
     """
 
     episode = str(episode_key).strip()
@@ -267,8 +267,8 @@ def build_opportunity_wallet_intelligence(
         ]
 
         # Market-first history: association only. It says this wallet was present in a prior
-        # opportunity whose official executable outcome was already known; it does not claim the
-        # wallet itself realized that outcome.
+        # opportunity whose official executable quote outcome was already known; it does not claim
+        # the wallet itself realized that outcome.
         associated = [
             item
             for item in historical_opportunity_associations
@@ -278,7 +278,9 @@ def build_opportunity_wallet_intelligence(
             and item.outcome_observed_at <= as_of
         ]
         associated.sort(key=lambda item: (item.outcome_observed_at, item.episode_key))
-        associated_returns = [float(item.executable_return_pct) for item in associated]
+        associated_returns = [
+            float(item.executable_quote_return_pct) for item in associated
+        ]
 
         wallet_notional = (
             sum(float(item.notional_usd) for item in wallet_current)
@@ -349,12 +351,12 @@ def build_opportunity_wallet_intelligence(
                     if associated_returns
                     else None
                 ),
-                prior_market_first_mean_executable_return_pct=(
+                prior_market_first_mean_executable_quote_return_pct=(
                     sum(associated_returns) / len(associated_returns)
                     if associated_returns
                     else None
                 ),
-                prior_market_first_median_executable_return_pct=(
+                prior_market_first_median_executable_quote_return_pct=(
                     median(associated_returns) if associated_returns else None
                 ),
                 data_quality_flags=tuple(quality),
@@ -380,14 +382,14 @@ def build_opportunity_wallet_intelligence(
     positive_market_first_median = sum(
         1
         for row in wallet_rows
-        if row.prior_market_first_median_executable_return_pct is not None
-        and row.prior_market_first_median_executable_return_pct > 0
+        if row.prior_market_first_median_executable_quote_return_pct is not None
+        and row.prior_market_first_median_executable_quote_return_pct > 0
     )
     negative_market_first_median = sum(
         1
         for row in wallet_rows
-        if row.prior_market_first_median_executable_return_pct is not None
-        and row.prior_market_first_median_executable_return_pct < 0
+        if row.prior_market_first_median_executable_quote_return_pct is not None
+        and row.prior_market_first_median_executable_quote_return_pct < 0
     )
 
     repeated_share = None
