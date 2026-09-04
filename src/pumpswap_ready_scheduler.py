@@ -62,16 +62,33 @@ class SchedulerSnapshot:
         return sum(count for _, count in self.outstanding_by_asset)
 
 
+@dataclass
+class _PendingAssetWork(Generic[T]):
+    payload: T
+    reservation: AssetReservation
+    waiter_started_monotonic: float
+    blocking_assets: tuple[str, ...]
+    indexed_tickets: set[tuple[str, int]]
+
+
 class ReadyAssetScheduler(Generic[T]):
-    """Ingress-ordered per-asset FIFO scheduler that never spends execution slots waiting."""
+    """Ingress-ordered per-asset FIFO scheduler without waiter-task thundering herd.
+
+    Reservations still receive monotonically increasing per-asset tickets. A submitted
+    job can become ready only when every asset's completed cursor equals that job's
+    ticket. Pending jobs are indexed by the exact ticket they need, so completing N
+    inspects only a possible N+1 successor instead of waking every waiter for the asset.
+    """
 
     def __init__(self) -> None:
         self._issued: dict[str, int] = {}
         self._completed: dict[str, int] = {}
-        self._condition = asyncio.Condition()
         self._ready: asyncio.Queue[ScheduledAssetWork[T]] = asyncio.Queue()
-        self._waiters: set[asyncio.Task[None]] = set()
         self._pre_cancel_snapshot: SchedulerSnapshot | None = None
+
+        self._next_pending_id = 0
+        self._pending: dict[int, _PendingAssetWork[T]] = {}
+        self._pending_by_ticket: dict[tuple[str, int], set[int]] = {}
 
         # Diagnostic-only state. None of these counters participate in scheduling decisions.
         self._reservations_by_asset: dict[str, int] = {}
@@ -82,7 +99,9 @@ class ReadyAssetScheduler(Generic[T]):
         self._active_waits: dict[int, tuple[float, tuple[str, ...]]] = {}
 
     def reserve(self, assets: tuple[str, ...] | list[str]) -> AssetReservation:
-        unique_assets = tuple(sorted({str(asset).strip() for asset in assets if str(asset).strip()}))
+        unique_assets = tuple(
+            sorted({str(asset).strip() for asset in assets if str(asset).strip()})
+        )
         tickets: list[tuple[str, int]] = []
         created = time.monotonic()
         for asset in unique_assets:
@@ -97,26 +116,41 @@ class ReadyAssetScheduler(Generic[T]):
         return AssetReservation(tuple(tickets), created_monotonic=created)
 
     def submit(self, payload: T, reservation: AssetReservation) -> None:
-        # Fast path: most reservations are already the next ticket for every asset.
-        # Avoid creating an asyncio Task merely to discover that there is no causal
-        # predecessor to wait for. Under burst load that task-resumption delay became
-        # measurable at the latency gate even though the reservation was already ready.
         if self._reservation_ready(reservation):
-            now = time.monotonic()
-            self._ready.put_nowait(
-                ScheduledAssetWork(
-                    payload,
-                    reservation,
-                    waiter_started_monotonic=now,
-                    dependency_ready_monotonic=now,
-                    ready_queue_entered_monotonic=now,
-                )
+            self._enqueue_ready(
+                payload,
+                reservation,
+                waiter_started_monotonic=time.monotonic(),
+                blocking_assets=(),
             )
             return
 
-        task = asyncio.create_task(self._wait_until_ready(payload, reservation))
-        self._waiters.add(task)
-        task.add_done_callback(self._waiters.discard)
+        waiter_started = time.monotonic()
+        blocking_pairs = tuple(
+            (asset, ticket)
+            for asset, ticket in reservation.tickets
+            if self._completed.get(asset, 0) != ticket
+        )
+        blocking_assets = tuple(asset for asset, _ in blocking_pairs)
+        pending_id = self._next_pending_id
+        self._next_pending_id += 1
+        indexed_tickets = set(blocking_pairs)
+        self._pending[pending_id] = _PendingAssetWork(
+            payload=payload,
+            reservation=reservation,
+            waiter_started_monotonic=waiter_started,
+            blocking_assets=blocking_assets,
+            indexed_tickets=indexed_tickets,
+        )
+        self._active_waits[pending_id] = (waiter_started, blocking_assets)
+        for asset in blocking_assets:
+            current = self._waiting_by_asset.get(asset, 0) + 1
+            self._waiting_by_asset[asset] = current
+            self._max_waiting_by_asset[asset] = max(
+                self._max_waiting_by_asset.get(asset, 0), current
+            )
+        for pair in indexed_tickets:
+            self._pending_by_ticket.setdefault(pair, set()).add(pending_id)
 
     def _reservation_ready(self, reservation: AssetReservation) -> bool:
         return all(
@@ -124,52 +158,67 @@ class ReadyAssetScheduler(Generic[T]):
             for asset, ticket in reservation.tickets
         )
 
-    async def _wait_until_ready(self, payload: T, reservation: AssetReservation) -> None:
-        waiter_started = time.monotonic()
-        task = asyncio.current_task()
-        task_key = id(task) if task is not None else id(reservation)
-        blocking_assets: tuple[str, ...] = ()
-
-        async with self._condition:
-            blocking_assets = tuple(
-                asset
-                for asset, ticket in reservation.tickets
-                if self._completed.get(asset, 0) != ticket
-            )
-            if blocking_assets:
-                self._active_waits[task_key] = (waiter_started, blocking_assets)
-                for asset in blocking_assets:
-                    current = self._waiting_by_asset.get(asset, 0) + 1
-                    self._waiting_by_asset[asset] = current
-                    self._max_waiting_by_asset[asset] = max(
-                        self._max_waiting_by_asset.get(asset, 0), current
-                    )
-            try:
-                await self._condition.wait_for(lambda: self._reservation_ready(reservation))
-            finally:
-                if blocking_assets:
-                    for asset in blocking_assets:
-                        self._waiting_by_asset[asset] = max(
-                            0, self._waiting_by_asset.get(asset, 0) - 1
-                        )
-                    self._active_waits.pop(task_key, None)
-
+    def _enqueue_ready(
+        self,
+        payload: T,
+        reservation: AssetReservation,
+        *,
+        waiter_started_monotonic: float,
+        blocking_assets: tuple[str, ...],
+    ) -> None:
         dependency_ready = time.monotonic()
         if blocking_assets:
-            wait_seconds = max(0.0, dependency_ready - waiter_started)
+            wait_seconds = max(0.0, dependency_ready - waiter_started_monotonic)
             for asset in blocking_assets:
                 self._dependency_waits_by_asset.setdefault(asset, []).append(wait_seconds)
-
-        ready_queue_entered = time.monotonic()
-        await self._ready.put(
+        self._ready.put_nowait(
             ScheduledAssetWork(
                 payload,
                 reservation,
-                waiter_started_monotonic=waiter_started,
+                waiter_started_monotonic=waiter_started_monotonic,
                 dependency_ready_monotonic=dependency_ready,
-                ready_queue_entered_monotonic=ready_queue_entered,
+                ready_queue_entered_monotonic=time.monotonic(),
             )
         )
+
+    def _remove_pending_indexes(self, pending_id: int, pending: _PendingAssetWork[T]) -> None:
+        for pair in tuple(pending.indexed_tickets):
+            ids = self._pending_by_ticket.get(pair)
+            if ids is None:
+                continue
+            ids.discard(pending_id)
+            if not ids:
+                self._pending_by_ticket.pop(pair, None)
+        pending.indexed_tickets.clear()
+
+    def _release_pending(self, pending_id: int) -> None:
+        pending = self._pending.pop(pending_id)
+        self._remove_pending_indexes(pending_id, pending)
+        for asset in pending.blocking_assets:
+            self._waiting_by_asset[asset] = max(
+                0, self._waiting_by_asset.get(asset, 0) - 1
+            )
+        self._active_waits.pop(pending_id, None)
+        self._enqueue_ready(
+            pending.payload,
+            pending.reservation,
+            waiter_started_monotonic=pending.waiter_started_monotonic,
+            blocking_assets=pending.blocking_assets,
+        )
+
+    def _consider_successors(self, advanced_pairs: tuple[tuple[str, int], ...]) -> None:
+        candidate_ids: set[int] = set()
+        for pair in advanced_pairs:
+            candidate_ids.update(self._pending_by_ticket.pop(pair, set()))
+
+        for pending_id in candidate_ids:
+            pending = self._pending.get(pending_id)
+            if pending is None:
+                continue
+            for pair in advanced_pairs:
+                pending.indexed_tickets.discard(pair)
+            if self._reservation_ready(pending.reservation):
+                self._release_pending(pending_id)
 
     async def get_ready(self) -> ScheduledAssetWork[T]:
         return await self._ready.get()
@@ -178,16 +227,19 @@ class ReadyAssetScheduler(Generic[T]):
         self._ready.task_done()
 
     async def complete(self, reservation: AssetReservation) -> None:
-        async with self._condition:
-            for asset, ticket in reservation.tickets:
-                current = self._completed.get(asset, 0)
-                if current != ticket:
-                    raise RuntimeError(
-                        f"asset order completion mismatch for {asset}: expected {current}, got {ticket}"
-                    )
-            for asset, ticket in reservation.tickets:
-                self._completed[asset] = ticket + 1
-            self._condition.notify_all()
+        for asset, ticket in reservation.tickets:
+            current = self._completed.get(asset, 0)
+            if current != ticket:
+                raise RuntimeError(
+                    f"asset order completion mismatch for {asset}: expected {current}, got {ticket}"
+                )
+
+        advanced_pairs: list[tuple[str, int]] = []
+        for asset, ticket in reservation.tickets:
+            next_ticket = ticket + 1
+            self._completed[asset] = next_ticket
+            advanced_pairs.append((asset, next_ticket))
+        self._consider_successors(tuple(advanced_pairs))
 
     def ready_backlog(self) -> int:
         if self._pre_cancel_snapshot is not None:
@@ -197,7 +249,7 @@ class ReadyAssetScheduler(Generic[T]):
     def waiting_backlog(self) -> int:
         if self._pre_cancel_snapshot is not None:
             return self._pre_cancel_snapshot.waiting_backlog
-        return sum(1 for task in self._waiters if not task.done())
+        return len(self._pending)
 
     def _asset_telemetry(self) -> tuple[SchedulerAssetTelemetry, ...]:
         now = time.monotonic()
@@ -252,7 +304,7 @@ class ReadyAssetScheduler(Generic[T]):
         )
         return SchedulerSnapshot(
             ready_backlog=self._ready.qsize(),
-            waiting_backlog=sum(1 for task in self._waiters if not task.done()),
+            waiting_backlog=len(self._pending),
             outstanding_by_asset=outstanding,
             asset_telemetry=self._asset_telemetry(),
         )
@@ -262,8 +314,6 @@ class ReadyAssetScheduler(Generic[T]):
 
     async def cancel_waiters(self) -> None:
         self._pre_cancel_snapshot = self.snapshot()
-        waiters = tuple(task for task in self._waiters if not task.done())
-        for task in waiters:
-            task.cancel()
-        if waiters:
-            await asyncio.gather(*waiters, return_exceptions=True)
+        self._pending.clear()
+        self._pending_by_ticket.clear()
+        self._active_waits.clear()
