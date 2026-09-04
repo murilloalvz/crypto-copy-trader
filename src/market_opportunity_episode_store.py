@@ -10,6 +10,7 @@ from src.database import connection
 
 DEFAULT_MARKET_EPISODE_WINDOW_SECONDS = 60
 _SQLITE_LOCK_RETRY_DELAYS_SECONDS = (0.05, 0.20)
+_LATE_EARLIER_TRIGGER_ACTION = "retain_first_persisted_episode_late_earlier_trigger"
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,14 @@ def assign_market_opportunity_trigger(
     different direction/kind after more observations became available. The first persisted trigger
     therefore stays canonical; conflicting replays are audited instead of crashing acquisition.
 
+    Distinct Pump/PumpSwap pipelines can finish out of order. If an older distinct trigger reaches
+    this store only after a newer same-token episode was already persisted, and its hypothetical
+    episode window would overlap that canonical episode, it is *not* allowed to open a retroactive
+    overlapping episode. The first persisted episode remains canonical, the late-earlier trigger is
+    audited in ``market_trigger_replay_conflicts``, and repeated delivery of that trigger key reuses
+    the same canonical episode without creating repeated conflict rows. This preserves the project's
+    no-retroactive-enrollment rule without pretending the late trigger had been available earlier.
+
     A transient SQLite writer collision is retried as one complete transaction. This is safe because
     the context-managed connection rolls back an uncommitted attempt on close and the trigger key is
     unique/idempotent. The bounded retry exists to survive short writer bursts without weakening the
@@ -308,6 +317,19 @@ def assign_market_opportunity_trigger(
                     raise RuntimeError("market trigger references missing episode")
                 return _row_to_episode(row)
 
+            suppressed = conn.execute(
+                """SELECT episode_key
+                FROM market_trigger_replay_conflicts
+                WHERE acquisition_run_key=? AND trigger_key=? AND canonical_action=?
+                ORDER BY id ASC LIMIT 1""",
+                (run_key, raw_key, _LATE_EARLIER_TRIGGER_ACTION),
+            ).fetchone()
+            if suppressed is not None:
+                row = _load_episode_row(conn, str(suppressed["episode_key"]))
+                if row is None:
+                    raise RuntimeError("suppressed market trigger references missing episode")
+                return _row_to_episode(row)
+
             row = conn.execute(
                 """SELECT episode_key, acquisition_run_key, token_mint,
                     first_trigger_key, first_trigger_kind, first_trigger_direction,
@@ -323,6 +345,60 @@ def assign_market_opportunity_trigger(
             ).fetchone()
 
             if row is None:
+                # A later-observed episode may already be canonical because another source's
+                # stateful finalize completed first. If this late-arriving older trigger would
+                # overlap that episode, opening a backdated second episode would be retroactive
+                # enrollment. Keep the first persisted episode canonical and audit the suppression.
+                future = conn.execute(
+                    """SELECT episode_key, acquisition_run_key, token_mint,
+                        first_trigger_key, first_trigger_kind, first_trigger_direction,
+                        first_trigger_chain_time, first_trigger_observed_at,
+                        episode_closes_at, decision_as_of
+                    FROM market_opportunity_episodes
+                    WHERE acquisition_run_key=? AND token_mint=?
+                      AND first_trigger_observed_at>?
+                      AND first_trigger_observed_at<?
+                    ORDER BY first_trigger_observed_at ASC, id ASC
+                    LIMIT 1""",
+                    (run_key, mint, observed_at, observed_at + episode_window_seconds),
+                ).fetchone()
+                if future is not None:
+                    episode = _row_to_episode(future)
+                    canonical_trigger = conn.execute(
+                        """SELECT token_mint, trigger_kind, direction, chain_time,
+                            observed_at, method_version, venue
+                        FROM market_opportunity_episode_triggers
+                        WHERE acquisition_run_key=? AND trigger_key=?""",
+                        (run_key, episode.first_trigger_key),
+                    ).fetchone()
+                    if canonical_trigger is None:
+                        raise RuntimeError("canonical market episode is missing its first trigger")
+                    canonical_venue = (
+                        canonical_trigger["venue"]
+                        if canonical_trigger["venue"] is None
+                        else str(canonical_trigger["venue"])
+                    )
+                    stored_identity = (
+                        str(canonical_trigger["token_mint"]),
+                        str(canonical_trigger["trigger_kind"]),
+                        str(canonical_trigger["direction"]),
+                        int(canonical_trigger["chain_time"]),
+                        str(canonical_trigger["method_version"]),
+                        canonical_venue,
+                    )
+                    _record_trigger_conflict(
+                        conn,
+                        acquisition_run_key=run_key,
+                        trigger_key=raw_key,
+                        episode_key=episode.episode_key,
+                        stored_observed_at=int(canonical_trigger["observed_at"]),
+                        incoming_observed_at=observed_at,
+                        stored_identity=stored_identity,
+                        incoming_identity=incoming_identity,
+                        canonical_action=_LATE_EARLIER_TRIGGER_ACTION,
+                    )
+                    return episode
+
                 episode_key = f"market-opportunity:{run_key}:{raw_key}"
                 closes_at = observed_at + episode_window_seconds
                 conn.execute(
