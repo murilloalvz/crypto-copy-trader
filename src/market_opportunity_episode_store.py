@@ -1,12 +1,15 @@
 from dataclasses import dataclass
 import json
+import sqlite3
 import threading
+import time
 
 from src import database
 from src.database import connection
 
 
 DEFAULT_MARKET_EPISODE_WINDOW_SECONDS = 60
+_SQLITE_LOCK_RETRY_DELAYS_SECONDS = (0.05, 0.20)
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,24 @@ def _record_trigger_conflict(
     )
 
 
+def _is_transient_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
+def _run_with_sqlite_lock_retry(operation):
+    for attempt in range(len(_SQLITE_LOCK_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not _is_transient_sqlite_lock(exc):
+                raise
+            if attempt >= len(_SQLITE_LOCK_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_SQLITE_LOCK_RETRY_DELAYS_SECONDS[attempt])
+    raise RuntimeError("unreachable sqlite retry state")
+
+
 def get_market_opportunity_episode(episode_key: str) -> MarketOpportunityEpisode | None:
     key = _required(episode_key, "episode_key")
     ensure_market_opportunity_episode_schema()
@@ -211,6 +232,11 @@ def assign_market_opportunity_trigger(
     same key is not new market evidence, even if recomputing the detector later would yield a
     different direction/kind after more observations became available. The first persisted trigger
     therefore stays canonical; conflicting replays are audited instead of crashing acquisition.
+
+    A transient SQLite writer collision is retried as one complete transaction. This is safe because
+    the context-managed connection rolls back an uncommitted attempt on close and the trigger key is
+    unique/idempotent. The bounded retry exists to survive short writer bursts without weakening the
+    latency gate: persistent contention still surfaces as an error after the retries are exhausted.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
@@ -229,96 +255,100 @@ def assign_market_opportunity_trigger(
 
     incoming_identity = (mint, kind, pressure, int(chain_time), version, normalized_venue)
     ensure_market_opportunity_episode_schema()
-    with connection() as conn:
-        existing = conn.execute(
-            """SELECT episode_key, token_mint, trigger_kind, direction,
-                chain_time, observed_at, method_version, venue
-            FROM market_opportunity_episode_triggers
-            WHERE acquisition_run_key=? AND trigger_key=?""",
-            (run_key, raw_key),
-        ).fetchone()
-        if existing is not None:
-            existing_venue = existing["venue"] if existing["venue"] is None else str(existing["venue"])
-            stored_identity = (
-                str(existing["token_mint"]),
-                str(existing["trigger_kind"]),
-                str(existing["direction"]),
-                int(existing["chain_time"]),
-                str(existing["method_version"]),
-                existing_venue,
-            )
-            stored_observed_at = int(existing["observed_at"])
-            episode_key = str(existing["episode_key"])
-            if stored_identity != incoming_identity:
-                _record_trigger_conflict(
-                    conn,
-                    acquisition_run_key=run_key,
-                    trigger_key=raw_key,
-                    episode_key=episode_key,
-                    stored_observed_at=stored_observed_at,
-                    incoming_observed_at=observed_at,
-                    stored_identity=stored_identity,
-                    incoming_identity=incoming_identity,
-                    canonical_action="retain_first_persisted_trigger",
-                )
-            elif observed_at < stored_observed_at:
-                # This should not happen in the ingress-ordered coordinators. Retaining the already
-                # persisted later T0 is conservative and avoids retroactively reshaping episodes.
-                _record_trigger_conflict(
-                    conn,
-                    acquisition_run_key=run_key,
-                    trigger_key=raw_key,
-                    episode_key=episode_key,
-                    stored_observed_at=stored_observed_at,
-                    incoming_observed_at=observed_at,
-                    stored_identity=stored_identity,
-                    incoming_identity=incoming_identity,
-                    canonical_action="retain_first_persisted_trigger_earlier_replay",
-                )
-            row = _load_episode_row(conn, episode_key)
-            if row is None:
-                raise RuntimeError("market trigger references missing episode")
-            return _row_to_episode(row)
 
-        row = conn.execute(
-            """SELECT episode_key, acquisition_run_key, token_mint,
-                first_trigger_key, first_trigger_kind, first_trigger_direction,
-                first_trigger_chain_time, first_trigger_observed_at,
-                episode_closes_at, decision_as_of
-            FROM market_opportunity_episodes
-            WHERE acquisition_run_key=? AND token_mint=?
-              AND first_trigger_observed_at<=?
-              AND episode_closes_at>?
-            ORDER BY first_trigger_observed_at DESC, id DESC
-            LIMIT 1""",
-            (run_key, mint, observed_at, observed_at),
-        ).fetchone()
+    def persist_once() -> MarketOpportunityEpisode:
+        with connection() as conn:
+            existing = conn.execute(
+                """SELECT episode_key, token_mint, trigger_kind, direction,
+                    chain_time, observed_at, method_version, venue
+                FROM market_opportunity_episode_triggers
+                WHERE acquisition_run_key=? AND trigger_key=?""",
+                (run_key, raw_key),
+            ).fetchone()
+            if existing is not None:
+                existing_venue = existing["venue"] if existing["venue"] is None else str(existing["venue"])
+                stored_identity = (
+                    str(existing["token_mint"]),
+                    str(existing["trigger_kind"]),
+                    str(existing["direction"]),
+                    int(existing["chain_time"]),
+                    str(existing["method_version"]),
+                    existing_venue,
+                )
+                stored_observed_at = int(existing["observed_at"])
+                episode_key = str(existing["episode_key"])
+                if stored_identity != incoming_identity:
+                    _record_trigger_conflict(
+                        conn,
+                        acquisition_run_key=run_key,
+                        trigger_key=raw_key,
+                        episode_key=episode_key,
+                        stored_observed_at=stored_observed_at,
+                        incoming_observed_at=observed_at,
+                        stored_identity=stored_identity,
+                        incoming_identity=incoming_identity,
+                        canonical_action="retain_first_persisted_trigger",
+                    )
+                elif observed_at < stored_observed_at:
+                    # This should not happen in the ingress-ordered coordinators. Retaining the already
+                    # persisted later T0 is conservative and avoids retroactively reshaping episodes.
+                    _record_trigger_conflict(
+                        conn,
+                        acquisition_run_key=run_key,
+                        trigger_key=raw_key,
+                        episode_key=episode_key,
+                        stored_observed_at=stored_observed_at,
+                        incoming_observed_at=observed_at,
+                        stored_identity=stored_identity,
+                        incoming_identity=incoming_identity,
+                        canonical_action="retain_first_persisted_trigger_earlier_replay",
+                    )
+                row = _load_episode_row(conn, episode_key)
+                if row is None:
+                    raise RuntimeError("market trigger references missing episode")
+                return _row_to_episode(row)
 
-        if row is None:
-            episode_key = f"market-opportunity:{run_key}:{raw_key}"
-            closes_at = observed_at + episode_window_seconds
-            conn.execute(
-                """INSERT INTO market_opportunity_episodes(
-                    episode_key, acquisition_run_key, token_mint,
+            row = conn.execute(
+                """SELECT episode_key, acquisition_run_key, token_mint,
                     first_trigger_key, first_trigger_kind, first_trigger_direction,
-                    first_trigger_chain_time, first_trigger_observed_at, episode_closes_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (episode_key, run_key, mint, raw_key, kind, pressure, chain_time, observed_at, closes_at),
-            )
-            row = _load_episode_row(conn, episode_key)
-            if row is None:
-                raise RuntimeError("failed to persist market opportunity episode")
+                    first_trigger_chain_time, first_trigger_observed_at,
+                    episode_closes_at, decision_as_of
+                FROM market_opportunity_episodes
+                WHERE acquisition_run_key=? AND token_mint=?
+                  AND first_trigger_observed_at<=?
+                  AND episode_closes_at>?
+                ORDER BY first_trigger_observed_at DESC, id DESC
+                LIMIT 1""",
+                (run_key, mint, observed_at, observed_at),
+            ).fetchone()
 
-        episode = _row_to_episode(row)
-        conn.execute(
-            """INSERT INTO market_opportunity_episode_triggers(
-                acquisition_run_key, episode_key, trigger_key, token_mint,
-                trigger_kind, direction, chain_time, observed_at,
-                method_version, venue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run_key, episode.episode_key, raw_key, mint, kind, pressure, chain_time, observed_at, version, normalized_venue),
-        )
-        return episode
+            if row is None:
+                episode_key = f"market-opportunity:{run_key}:{raw_key}"
+                closes_at = observed_at + episode_window_seconds
+                conn.execute(
+                    """INSERT INTO market_opportunity_episodes(
+                        episode_key, acquisition_run_key, token_mint,
+                        first_trigger_key, first_trigger_kind, first_trigger_direction,
+                        first_trigger_chain_time, first_trigger_observed_at, episode_closes_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (episode_key, run_key, mint, raw_key, kind, pressure, chain_time, observed_at, closes_at),
+                )
+                row = _load_episode_row(conn, episode_key)
+                if row is None:
+                    raise RuntimeError("failed to persist market opportunity episode")
+
+            episode = _row_to_episode(row)
+            conn.execute(
+                """INSERT INTO market_opportunity_episode_triggers(
+                    acquisition_run_key, episode_key, trigger_key, token_mint,
+                    trigger_kind, direction, chain_time, observed_at,
+                    method_version, venue
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_key, episode.episode_key, raw_key, mint, kind, pressure, chain_time, observed_at, version, normalized_venue),
+            )
+            return episode
+
+    return _run_with_sqlite_lock_retry(persist_once)
 
 
 def freeze_market_opportunity_decision_as_of(
