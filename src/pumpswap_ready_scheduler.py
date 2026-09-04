@@ -117,10 +117,11 @@ class ReadyAssetScheduler(Generic[T]):
 
     def submit(self, payload: T, reservation: AssetReservation) -> None:
         if self._reservation_ready(reservation):
+            now = time.monotonic()
             self._enqueue_ready(
                 payload,
                 reservation,
-                waiter_started_monotonic=time.monotonic(),
+                waiter_started_monotonic=now,
                 blocking_assets=(),
             )
             return
@@ -166,18 +167,25 @@ class ReadyAssetScheduler(Generic[T]):
         waiter_started_monotonic: float,
         blocking_assets: tuple[str, ...],
     ) -> None:
-        dependency_ready = time.monotonic()
         if blocking_assets:
+            dependency_ready = time.monotonic()
+            ready_queue_entered = time.monotonic()
             wait_seconds = max(0.0, dependency_ready - waiter_started_monotonic)
             for asset in blocking_assets:
                 self._dependency_waits_by_asset.setdefault(asset, []).append(wait_seconds)
+        else:
+            # Preserve the existing fast-path telemetry contract: no causal wait means
+            # all scheduler timestamps are exactly the same instant.
+            dependency_ready = waiter_started_monotonic
+            ready_queue_entered = waiter_started_monotonic
+
         self._ready.put_nowait(
             ScheduledAssetWork(
                 payload,
                 reservation,
                 waiter_started_monotonic=waiter_started_monotonic,
                 dependency_ready_monotonic=dependency_ready,
-                ready_queue_entered_monotonic=time.monotonic(),
+                ready_queue_entered_monotonic=ready_queue_entered,
             )
         )
 
