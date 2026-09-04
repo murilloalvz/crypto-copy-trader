@@ -95,13 +95,10 @@ class UnifiedMarketHazardSmokeV36Tests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("hazard_provider_classification=PASS_CAUSAL_HAZARD_PROVIDER", text)
         self.assertEqual(probe.capture.call_count, 1)
-        self.assertIs(v36.v19.admit_opportunity_episode, admitted)
+        self.assertIs(v36.v19.admit_opportunity_episode, original_admit)
         self.assertIs(v36.v19.BoundedConcurrentResolver, original_resolver)
         self.assertIs(v36.v19.ReadyAssetScheduler, original_scheduler)
         self.assertIs(v36.v27._EpisodeContinuationCache, original_cache)
-
-        # Restore the module-level admit patched by the context for clarity after assertion.
-        v36.v19.admit_opportunity_episode = original_admit
 
 
 if __name__ == "__main__":
