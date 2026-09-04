@@ -136,6 +136,55 @@ class PumpSwapRadarBridgeV5Tests(unittest.TestCase):
         self.assertEqual(split_result.hits[0].episode.first_trigger_observed_at, 997)
         self.assertGreaterEqual(split_result.telemetry.episode_assign_seconds, 0.0)
 
+    def test_no_trigger_finalize_does_not_persist_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bridge-v5-no-trigger.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                self._record(
+                    "run",
+                    "single",
+                    chain_time=996,
+                    observed_at=997,
+                    wallet="W1",
+                    tx="single-tx",
+                )
+                notification = self._notification(
+                    "single-tx",
+                    chain_time=996,
+                    observed_at=997,
+                    wallet="W1",
+                )
+                persisted = PumpSwapNormalizedPersistResult(
+                    1, 0, 0, 0, 0, 0, ("TOKEN",)
+                )
+                prepared = prepare_persisted_pumpswap_notification_for_radar_v5(
+                    notification,
+                    acquisition_run_key="run",
+                    persist_result=persisted,
+                )
+                self.assertTrue(all(token.trigger is None for token in prepared.tokens))
+
+                ensure_market_opportunity_episode_schema()
+                with database.connection() as conn:
+                    before = conn.execute(
+                        "SELECT COUNT(*) AS n FROM market_opportunity_episodes"
+                    ).fetchone()["n"]
+
+                result = finalize_prepared_pumpswap_radar_v5(
+                    prepared,
+                    acquisition_run_key="run",
+                )
+
+                with database.connection() as conn:
+                    after = conn.execute(
+                        "SELECT COUNT(*) AS n FROM market_opportunity_episodes"
+                    ).fetchone()["n"]
+
+        self.assertEqual(result.hits, ())
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 0)
+        self.assertEqual(result.telemetry.episode_assign_seconds, 0.0)
+
     def test_prepared_notifications_finalize_in_fifo_into_same_episode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bridge-v5-order.db"
