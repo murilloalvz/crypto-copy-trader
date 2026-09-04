@@ -31,6 +31,7 @@ class AssetReservation:
 class ScheduledAssetWork(Generic[T]):
     payload: T
     reservation: AssetReservation
+    waiter_started_monotonic: float = field(default=0.0, compare=False)
     dependency_ready_monotonic: float = field(default=0.0, compare=False)
     ready_queue_entered_monotonic: float = field(default=0.0, compare=False)
 
@@ -107,9 +108,9 @@ class ReadyAssetScheduler(Generic[T]):
         )
 
     async def _wait_until_ready(self, payload: T, reservation: AssetReservation) -> None:
+        waiter_started = time.monotonic()
         task = asyncio.current_task()
         task_key = id(task) if task is not None else id(reservation)
-        created = reservation.created_monotonic or time.monotonic()
         blocking_assets: tuple[str, ...] = ()
 
         async with self._condition:
@@ -119,7 +120,7 @@ class ReadyAssetScheduler(Generic[T]):
                 if self._completed.get(asset, 0) != ticket
             )
             if blocking_assets:
-                self._active_waits[task_key] = (created, blocking_assets)
+                self._active_waits[task_key] = (waiter_started, blocking_assets)
                 for asset in blocking_assets:
                     current = self._waiting_by_asset.get(asset, 0) + 1
                     self._waiting_by_asset[asset] = current
@@ -138,7 +139,7 @@ class ReadyAssetScheduler(Generic[T]):
 
         dependency_ready = time.monotonic()
         if blocking_assets:
-            wait_seconds = max(0.0, dependency_ready - created)
+            wait_seconds = max(0.0, dependency_ready - waiter_started)
             for asset in blocking_assets:
                 self._dependency_waits_by_asset.setdefault(asset, []).append(wait_seconds)
 
@@ -147,6 +148,7 @@ class ReadyAssetScheduler(Generic[T]):
             ScheduledAssetWork(
                 payload,
                 reservation,
+                waiter_started_monotonic=waiter_started,
                 dependency_ready_monotonic=dependency_ready,
                 ready_queue_entered_monotonic=ready_queue_entered,
             )

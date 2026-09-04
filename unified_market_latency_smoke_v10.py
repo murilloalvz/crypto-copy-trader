@@ -144,9 +144,12 @@ async def run_smoke_v10(
     pumpswap_persist_wait_seconds: list[float] = []
     pumpswap_persist_service_seconds: list[float] = []
     pumpswap_persist_to_reservation_seconds: list[float] = []
+    pumpswap_scheduler_dispatch_wait_seconds: list[float] = []
     pumpswap_dependency_wait_seconds: list[float] = []
     pumpswap_ready_queue_wait_seconds: list[float] = []
     pumpswap_radar_wait_seconds: list[float] = []
+    pumpswap_radar_evaluation_seconds: list[float] = []
+    pumpswap_radar_post_evaluation_seconds: list[float] = []
     pumpswap_radar_service_seconds: list[float] = []
     pumpswap_pipeline_end_to_end_seconds: list[float] = []
 
@@ -413,10 +416,16 @@ async def run_smoke_v10(
             try:
                 timed = work.payload
                 item = timed.completed
+                pumpswap_scheduler_dispatch_wait_seconds.append(
+                    max(
+                        0.0,
+                        work.waiter_started_monotonic - work.reservation.created_monotonic,
+                    )
+                )
                 pumpswap_dependency_wait_seconds.append(
                     max(
                         0.0,
-                        work.dependency_ready_monotonic - work.reservation.created_monotonic,
+                        work.dependency_ready_monotonic - work.waiter_started_monotonic,
                     )
                 )
                 pumpswap_ready_queue_wait_seconds.append(
@@ -432,8 +441,16 @@ async def run_smoke_v10(
                     acquisition_run_key=run_key,
                     persist_result=item.persist_result,
                 )
-                finished_service = time.monotonic()
+                evaluation_finished = time.monotonic()
                 handle_radar_result("pumpswap", result)
+                finished_service = time.monotonic()
+                pumpswap_radar_evaluation_seconds.append(
+                    evaluation_finished - started_service
+                )
+                pumpswap_radar_post_evaluation_seconds.append(
+                    finished_service - evaluation_finished
+                )
+                # Keep this definition comparable with v8/v9: evaluation + result handling/enrichment.
                 pumpswap_radar_service_seconds.append(finished_service - started_service)
                 pumpswap_pipeline_end_to_end_seconds.append(
                     finished_service - item.enqueued_monotonic
@@ -578,6 +595,10 @@ async def run_smoke_v10(
         f"{_latency_summary_ms(pumpswap_persist_to_reservation_seconds)}"
     )
     print(
+        f"pumpswap_scheduler_dispatch_wait_ms "
+        f"{_latency_summary_ms(pumpswap_scheduler_dispatch_wait_seconds)}"
+    )
+    print(
         f"pumpswap_causal_dependency_wait_ms "
         f"{_latency_summary_ms(pumpswap_dependency_wait_seconds)}"
     )
@@ -590,6 +611,14 @@ async def run_smoke_v10(
         f"{_latency_summary_ms(pumpswap_pipeline_end_to_end_seconds)}"
     )
 
+    print(
+        f"pumpswap_radar_evaluation_time_ms "
+        f"{_latency_summary_ms(pumpswap_radar_evaluation_seconds)}"
+    )
+    print(
+        f"pumpswap_radar_post_evaluation_time_ms "
+        f"{_latency_summary_ms(pumpswap_radar_post_evaluation_seconds)}"
+    )
     print(
         f"pumpswap_radar_transaction_view_read_ms "
         f"{_latency_summary_ms(pumpswap_transaction_read_seconds)}"
@@ -696,8 +725,9 @@ def main() -> None:
         f"max_hydrations={args.max_hydrations} queue_size={args.queue_size}"
     )
     print(
-        "v10 measures persistence service, ingress-order reorder, causal dependency wait, ready-queue "
-        "wait and radar DB/read phases. It deliberately applies no throughput optimization."
+        "v10 measures persistence service, ingress-order reorder, scheduler task dispatch, causal "
+        "dependency wait, ready-queue wait and radar DB/read phases. It deliberately applies no "
+        "throughput optimization."
     )
 
     try:

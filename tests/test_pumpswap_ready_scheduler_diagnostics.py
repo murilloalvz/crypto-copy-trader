@@ -15,7 +15,10 @@ class ReadyAssetSchedulerDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         first = await asyncio.wait_for(scheduler.get_ready(), timeout=0.2)
         self.assertEqual(first.payload, "a0")
         self.assertGreaterEqual(
-            first.dependency_ready_monotonic, first.reservation.created_monotonic
+            first.waiter_started_monotonic, first.reservation.created_monotonic
+        )
+        self.assertGreaterEqual(
+            first.dependency_ready_monotonic, first.waiter_started_monotonic
         )
         self.assertGreaterEqual(
             first.ready_queue_entered_monotonic, first.dependency_ready_monotonic
@@ -28,7 +31,7 @@ class ReadyAssetSchedulerDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         second = await asyncio.wait_for(scheduler.get_ready(), timeout=0.2)
         self.assertEqual(second.payload, "a1")
         self.assertGreater(
-            second.dependency_ready_monotonic - second.reservation.created_monotonic,
+            second.dependency_ready_monotonic - second.waiter_started_monotonic,
             0.0,
         )
         await scheduler.complete(second.reservation)

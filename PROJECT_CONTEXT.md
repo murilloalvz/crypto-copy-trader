@@ -228,23 +228,27 @@ v10 instruments:
 - persistence queue wait;
 - persistence service;
 - persistence-complete -> reservation/reorder wait;
+- reservation -> scheduler waiter task dispatch;
 - causal dependency wait;
 - ready queue wait;
-- radar service;
+- radar service (same boundary as v8/v9: evaluation + result handling/enrichment);
 - full pipeline E2E;
 - transaction-view DB read;
 - token-history DB read;
 - detector compute;
 - episode assignment/write;
+- radar evaluation vs post-evaluation handling/enrichment;
 - per-asset reservations, outstanding depth, waiting depth and causal-wait concentration.
 
 v10 is **measurement only**, not an optimization.
 
 Interpretation:
+- scheduler task dispatch dominates -> event-loop/scheduler dispatch overhead;
 - causal wait dominates + concentrated in few assets -> hot-asset serialization;
 - ready queue dominates -> execution scheduling/capacity;
 - persist-to-reservation dominates -> ingress reorder/dispatcher HOL;
 - DB reads inflate under load -> shared SQLite/read contention;
+- post-evaluation handling dominates -> episode admission/enrichment bottleneck;
 - none explains E2E -> reconcile phase clocks before changing architecture.
 
 ## Frozen latency PASS gate

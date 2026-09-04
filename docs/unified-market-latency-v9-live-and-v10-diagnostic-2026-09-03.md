@@ -90,10 +90,11 @@ The objective is to decompose the latency visible in v9 into:
 1. ingress -> persistence worker queue wait
 2. persistence service
 3. persistence completion -> ingress-order reservation / dispatcher wait
-4. per-asset causal dependency wait
-5. ready queue wait
-6. radar service
-7. total pipeline end-to-end
+4. reservation -> scheduler waiter task start
+5. per-asset causal dependency wait
+6. ready queue wait
+7. radar service (kept comparable with v8/v9: evaluation + result handling/enrichment)
+8. total pipeline end-to-end
 
 Radar internals are also timed observationally:
 - transaction-view read
@@ -101,6 +102,8 @@ Radar internals are also timed observationally:
 - detector compute
 - episode assignment/write
 - aggregate DB read time
+- evaluation time before result handling
+- post-evaluation result handling/enrichment time
 
 ## Hot-asset diagnostics
 
@@ -123,6 +126,9 @@ Multi-asset notifications remain FIFO across all involved assets. Diagnostic att
 
 ## Interpretation after v10
 
+If `pumpswap_scheduler_dispatch_wait_ms` dominates:
+- investigate event-loop/scheduler task dispatch overhead before attributing the delay to causal serialization
+
 If `pumpswap_causal_dependency_wait_ms` dominates the 18s tail and wait is concentrated in a few assets:
 - classify as hot-asset causal serialization
 - optimize only with a design that preserves causal semantics
@@ -135,6 +141,9 @@ If `pumpswap_persist_to_reservation_wait_ms` dominates:
 
 If DB read timing becomes a large fraction of radar service or grows strongly under concurrency:
 - investigate shared SQLite/read contention and schema/read-path overhead
+
+If post-evaluation time dominates:
+- investigate episode admission/enrichment cost independently from radar evaluation
 
 If none explains the total:
 - reconcile phase sums against `pumpswap_radar_end_to_end_wait_ms` before changing architecture.
