@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+import time
+
+from src.market_opportunity_episode_store import get_market_opportunity_episode
+from src.opportunity_onchain_hazard import (
+    ONCHAIN_HAZARD_PROVIDER,
+    ONCHAIN_HAZARD_PURPOSE,
+    SolanaRPCMintHazardProbe,
+)
+from src.pumpswap_demoting_scheduler_v34 import DemotingReadyAssetSchedulerV34
+from src.pumpswap_hedged_batched_resolver_v33 import HedgedBatchedBoundedResolverV33
+import unified_market_execution_quote_smoke_v31 as v31
+import unified_market_latency_smoke_v19 as v19
+import unified_market_latency_smoke_v27 as v27
+import unified_market_latency_smoke_v30 as v30
+
+
+@dataclass(frozen=True)
+class HazardJob:
+    episode_key: str
+    enqueued_monotonic: float
+
+
+async def run_smoke_v37(
+    *,
+    max_hazard_episodes: int,
+    hazard_workers: int,
+    hazard_rpc_timeout_seconds: int,
+    hydration_batch_size: int,
+    hydration_batch_max_wait_ms: int,
+    hedge_endpoints: int,
+    default_io_workers: int,
+    **kwargs,
+) -> None:
+    """Run the proven v34 market path plus a bounded Solana-RPC token-hazard queue.
+
+    The provider is intentionally descriptive and score-free. Mint/freeze authority and SPL Token
+    program state are core evidence. ``getTokenLargestAccounts`` is auxiliary: it can add top-10
+    token-account concentration but cannot erase already observed core Mint evidence if it fails.
+    """
+
+    if min(max_hazard_episodes, hazard_workers, hazard_rpc_timeout_seconds) <= 0:
+        raise ValueError("hazard smoke counts/timeouts must be positive")
+    if hydration_batch_size <= 0 or hedge_endpoints <= 0:
+        raise ValueError("hydration batch size and hedge endpoints must be positive")
+    if hydration_batch_max_wait_ms < 0:
+        raise ValueError("hydration_batch_max_wait_ms cannot be negative")
+
+    original_cache_class = v27._EpisodeContinuationCache
+    original_scheduler_class = v19.ReadyAssetScheduler
+    original_resolver_class = v19.BoundedConcurrentResolver
+    original_admit = v19.admit_opportunity_episode
+
+    class TrackingEpisodeCache(original_cache_class):
+        last_instance = None
+
+        def __init__(self):
+            super().__init__()
+            TrackingEpisodeCache.last_instance = self
+
+    class ConfiguredDemotingScheduler(DemotingReadyAssetSchedulerV34):
+        last_instance = None
+
+        def __init__(self):
+            def should_remain_stateful(payload) -> bool:
+                prepared = getattr(payload, "prepared", None)
+                cache = TrackingEpisodeCache.last_instance
+                if prepared is None or cache is None:
+                    return True
+                return v27._prepared_requires_stateful_episode(prepared, cache)
+
+            super().__init__(should_remain_stateful=should_remain_stateful)
+            ConfiguredDemotingScheduler.last_instance = self
+
+    class ConfiguredHedgedResolver(HedgedBatchedBoundedResolverV33):
+        def __init__(self, *args, **resolver_kwargs):
+            super().__init__(
+                *args,
+                hydration_batch_size=hydration_batch_size,
+                hydration_batch_max_wait_ms=hydration_batch_max_wait_ms,
+                hedge_endpoints=hedge_endpoints,
+                **resolver_kwargs,
+            )
+
+    hazard_queue: asyncio.Queue[HazardJob] = asyncio.Queue(maxsize=max_hazard_episodes)
+    counters: Counter[str] = Counter()
+    latencies: list[float] = []
+    selected_episode_keys: set[str] = set()
+    probe = SolanaRPCMintHazardProbe(rpc_timeout_seconds=hazard_rpc_timeout_seconds)
+    executor = ThreadPoolExecutor(
+        max_workers=hazard_workers,
+        thread_name_prefix="solana-rpc-hazard-v37",
+    )
+
+    def admit_and_enqueue(**admit_kwargs) -> bool:
+        admitted = original_admit(**admit_kwargs)
+        if not admitted:
+            counters["admission_replays"] += 1
+            return False
+        counters["new_admissions"] += 1
+        episode_key = str(admit_kwargs["episode_key"])
+        if len(selected_episode_keys) >= max_hazard_episodes:
+            counters["not_selected_after_predeclared_cap"] += 1
+            return True
+        if episode_key in selected_episode_keys:
+            raise RuntimeError("new episode admission unexpectedly selected twice for hazard")
+        selected_episode_keys.add(episode_key)
+        hazard_queue.put_nowait(HazardJob(episode_key, time.monotonic()))
+        counters["selected_for_hazard"] += 1
+        return True
+
+    async def hazard_worker(index: int) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            job = await hazard_queue.get()
+            try:
+                episode = get_market_opportunity_episode(job.episode_key)
+                if episode is None:
+                    counters["missing_episode_after_admission"] += 1
+                    continue
+                started = time.monotonic()
+                result = await loop.run_in_executor(executor, probe.capture, episode)
+                finished = time.monotonic()
+                latencies.append(finished - job.enqueued_monotonic)
+                counters[f"status_{result.attempt.status.lower()}"] += 1
+                if result.reused_attempt:
+                    counters["reused_attempts"] += 1
+                evidence = result.evidence
+                if evidence.observed_at is not None and evidence.observed_at < episode.first_trigger_observed_at:
+                    counters["causal_clock_violations"] += 1
+                if evidence.status == "AVAILABLE":
+                    counters["hazard_evidence_available"] += 1
+                    if (
+                        evidence.mint_authority_present is not None
+                        and evidence.freeze_authority_present is not None
+                        and evidence.token_program is not None
+                        and evidence.decimals is not None
+                        and evidence.supply_raw is not None
+                    ):
+                        counters["available_core_complete"] += 1
+                    else:
+                        counters["available_core_incomplete"] += 1
+                    concentration = evidence.top10_token_account_concentration_pct
+                    if concentration is not None:
+                        counters["concentration_available"] += 1
+                        if concentration < 0.0 or concentration > 100.0:
+                            counters["concentration_range_violations"] += 1
+                        if "top10_token_account_concentration_is_not_holder_concentration" not in evidence.data_quality_flags:
+                            counters["concentration_semantic_violations"] += 1
+                    if evidence.largest_accounts_error_type is not None:
+                        counters["largest_accounts_aux_errors"] += 1
+                print(
+                    f"[onchain-hazard] worker={index} episode={job.episode_key[-12:]} "
+                    f"status={result.attempt.status} latency_ms={(finished-started)*1000.0:.1f} "
+                    f"mint_auth={evidence.mint_authority_present} "
+                    f"freeze_auth={evidence.freeze_authority_present} "
+                    f"token2022={evidence.token_2022} "
+                    f"top10_token_accounts_pct={evidence.top10_token_account_concentration_pct} "
+                    f"quality_flags={len(evidence.data_quality_flags)}"
+                )
+            except Exception as exc:
+                counters["hazard_worker_errors"] += 1
+                print(
+                    f"[onchain-hazard-error] worker={index} episode={job.episode_key[-12:]} "
+                    f"error={type(exc).__name__}:{exc}"
+                )
+            finally:
+                hazard_queue.task_done()
+
+    workers = [
+        asyncio.create_task(hazard_worker(index), name=f"onchain-hazard-v37-{index}")
+        for index in range(hazard_workers)
+    ]
+
+    HedgedBatchedBoundedResolverV33.last_instance = None
+    v27._EpisodeContinuationCache = TrackingEpisodeCache
+    v19.ReadyAssetScheduler = ConfiguredDemotingScheduler
+    v19.BoundedConcurrentResolver = ConfiguredHedgedResolver
+    v19.admit_opportunity_episode = admit_and_enqueue
+    try:
+        await v30.run_smoke_v30(default_io_workers=default_io_workers, **kwargs)
+        await hazard_queue.join()
+    finally:
+        v19.admit_opportunity_episode = original_admit
+        v19.BoundedConcurrentResolver = original_resolver_class
+        v19.ReadyAssetScheduler = original_scheduler_class
+        v27._EpisodeContinuationCache = original_cache_class
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        executor.shutdown(wait=True, cancel_futures=False)
+
+    scheduler = ConfiguredDemotingScheduler.last_instance
+    resolver = HedgedBatchedBoundedResolverV33.last_instance
+    selected = counters["selected_for_hazard"]
+    terminal_statuses = (
+        "available",
+        "unavailable",
+        "config_missing",
+        "provider_error",
+        "metadata_error",
+        "normalization_error",
+    )
+    terminal = sum(counters[f"status_{status}"] for status in terminal_statuses)
+    coverage = 100.0 * terminal / selected if selected else 0.0
+
+    print("\nV37 SOLANA RPC CAUSAL ONCHAIN TOKEN HAZARD DIAGNOSTIC")
+    print(
+        f"provider={ONCHAIN_HAZARD_PROVIDER} purpose={ONCHAIN_HAZARD_PURPOSE} "
+        f"new_admissions={counters['new_admissions']} selected={selected} "
+        f"predeclared_cap={max_hazard_episodes} hazard_workers={hazard_workers}"
+    )
+    print(
+        f"statuses={{'AVAILABLE': {counters['status_available']}, "
+        f"'UNAVAILABLE': {counters['status_unavailable']}, "
+        f"'CONFIG_MISSING': {counters['status_config_missing']}, "
+        f"'PROVIDER_ERROR': {counters['status_provider_error']}, "
+        f"'METADATA_ERROR': {counters['status_metadata_error']}, "
+        f"'NORMALIZATION_ERROR': {counters['status_normalization_error']}}} "
+        f"terminal_coverage_pct={coverage:.1f}%"
+    )
+    print(
+        f"hazard_evidence_available={counters['hazard_evidence_available']} "
+        f"available_core_complete={counters['available_core_complete']} "
+        f"available_core_incomplete={counters['available_core_incomplete']} "
+        f"concentration_available={counters['concentration_available']} "
+        f"largest_accounts_aux_errors={counters['largest_accounts_aux_errors']}"
+    )
+    print(
+        f"reused_attempts={counters['reused_attempts']} "
+        f"hazard_worker_errors={counters['hazard_worker_errors']} "
+        f"causal_clock_violations={counters['causal_clock_violations']} "
+        f"concentration_range_violations={counters['concentration_range_violations']} "
+        f"concentration_semantic_violations={counters['concentration_semantic_violations']} "
+        f"not_selected_after_predeclared_cap={counters['not_selected_after_predeclared_cap']}"
+    )
+    print(f"episode_to_hazard_terminal_ms {v19._latency_summary_ms(latencies)}")
+
+    if not selected:
+        classification = "INCONCLUSIVE_NO_SAMPLE"
+    elif (
+        terminal == selected
+        and counters["status_config_missing"] == 0
+        and counters["hazard_worker_errors"] == 0
+        and counters["causal_clock_violations"] == 0
+        and counters["reused_attempts"] == 0
+        and counters["hazard_evidence_available"] > 0
+        and counters["available_core_incomplete"] == 0
+        and counters["concentration_range_violations"] == 0
+        and counters["concentration_semantic_violations"] == 0
+    ):
+        classification = "PASS_CAUSAL_ONCHAIN_HAZARD_PROVIDER"
+    else:
+        classification = "FAIL_CAUSAL_ONCHAIN_HAZARD_PROVIDER"
+    print(f"onchain_hazard_provider_classification={classification}")
+    print(
+        "concentration_gate_note=top10 token-account concentration is optional; auxiliary "
+        "getTokenLargestAccounts failure remains explicit but does not erase valid Mint authority evidence"
+    )
+
+    print("\nV37 RETAINED V34/V33 DIAGNOSTICS")
+    if scheduler is None:
+        print("v34_scheduler_instance=missing")
+    else:
+        print(
+            f"demoted_pending_jobs={scheduler.demoted_pending_jobs} "
+            f"demoted_pending_tickets={scheduler.demoted_pending_tickets} "
+            f"demoted_finalizer_acks_pending={scheduler.demoted_finalizer_acks_pending} "
+            f"demotion_wait_ms={v19._latency_summary_ms(scheduler.demotion_wait_seconds)}"
+        )
+    if resolver is None:
+        print("v33_resolver_instance=missing")
+    else:
+        print(
+            f"pool_hydrations={resolver.network_hydration_calls} "
+            f"successful_batches={resolver.network_batch_calls} "
+            f"endpoint_requests={resolver.hedged_endpoint_requests} "
+            f"all_hedges_failed={resolver.hedged_all_failed} "
+            f"budget_skips={resolver.hydration_budget_skips}"
+        )
+    print(
+        "v37 adds only a bounded off-path Solana-RPC hazard queue after first-time episode "
+        "admission. It does not call Jupiter or Solana Tracker, change detector thresholds, freeze "
+        "decision_as_of, schedule official outcomes, sign transactions or move funds. The v30 "
+        "11-gate latency summary printed above must still be evaluated independently in the same run."
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Unified market v37 onchain-hazard smoke retaining the v34 latency path"
+    )
+    parser.add_argument("--run-key", required=True)
+    parser.add_argument("--duration-seconds", type=int, default=120)
+    parser.add_argument("--commitment", default="confirmed")
+    parser.add_argument("--max-hydrations", type=int, default=1500)
+    parser.add_argument("--rpc-timeout-seconds", type=int, default=3)
+    parser.add_argument("--pump-batch-size", type=int, default=32)
+    parser.add_argument("--pump-batch-max-wait-ms", type=int, default=25)
+    parser.add_argument("--pump-prepare-workers", type=int, default=v31.PASS_PUMP_PREPARE_WORKERS)
+    parser.add_argument("--pumpswap-workers", type=int, default=v31.PASS_PUMPSWAP_WORKERS)
+    parser.add_argument("--pumpswap-prepare-submitters", type=int, default=v31.PASS_PUMPSWAP_PREPARE_SUBMITTERS)
+    parser.add_argument("--pumpswap-prepare-executor-workers", type=int, default=v31.PASS_PUMPSWAP_PREPARE_EXECUTOR_WORKERS)
+    parser.add_argument("--pumpswap-writer-batch-size", type=int, default=32)
+    parser.add_argument("--pumpswap-writer-batch-max-wait-ms", type=int, default=10)
+    parser.add_argument("--max-concurrent-resolutions", type=int, default=18)
+    parser.add_argument("--queue-size", type=int, default=5000)
+    parser.add_argument("--continuation-batch-size", type=int, default=32)
+    parser.add_argument("--continuation-batch-max-wait-ms", type=int, default=5)
+    parser.add_argument("--default-io-workers", type=int, default=v31.PASS_DEFAULT_IO_WORKERS)
+    parser.add_argument("--hydration-batch-size", type=int, default=64)
+    parser.add_argument("--hydration-batch-max-wait-ms", type=int, default=5)
+    parser.add_argument("--hedge-endpoints", type=int, default=2)
+    parser.add_argument("--max-hazard-episodes", type=int, default=12)
+    parser.add_argument("--hazard-workers", type=int, default=2)
+    parser.add_argument("--hazard-rpc-timeout-seconds", type=int, default=3)
+    args = parser.parse_args()
+
+    if not 1 <= args.duration_seconds <= v19.MAX_SMOKE_SECONDS:
+        parser.error(f"duration-seconds must be between 1 and {v19.MAX_SMOKE_SECONDS}")
+    try:
+        v30.validate_capacity_profile(
+            pumpswap_workers=args.pumpswap_workers,
+            pump_prepare_workers=args.pump_prepare_workers,
+            pumpswap_prepare_submitters=args.pumpswap_prepare_submitters,
+            pumpswap_prepare_executor_workers=args.pumpswap_prepare_executor_workers,
+            default_io_workers=args.default_io_workers,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if min(
+        args.hydration_batch_size,
+        args.hedge_endpoints,
+        args.max_hazard_episodes,
+        args.hazard_workers,
+        args.hazard_rpc_timeout_seconds,
+    ) <= 0:
+        parser.error("hydration/hazard counts and timeouts must be positive")
+    if args.hydration_batch_max_wait_ms < 0:
+        parser.error("hydration-batch-max-wait-ms cannot be negative")
+
+    print("Crypto Copy Trader — Unified Market Onchain Hazard Smoke v37")
+    print(
+        "Mode: PAPER / RESEARCH / READ ONLY — v34 market path + Solana RPC Mint hazard; "
+        "no Solana Tracker, Jupiter order, signing, execute or transfer."
+    )
+    asyncio.run(
+        run_smoke_v37(
+            max_hazard_episodes=args.max_hazard_episodes,
+            hazard_workers=args.hazard_workers,
+            hazard_rpc_timeout_seconds=args.hazard_rpc_timeout_seconds,
+            hydration_batch_size=args.hydration_batch_size,
+            hydration_batch_max_wait_ms=args.hydration_batch_max_wait_ms,
+            hedge_endpoints=args.hedge_endpoints,
+            default_io_workers=args.default_io_workers,
+            run_key=args.run_key,
+            duration_seconds=args.duration_seconds,
+            commitment=args.commitment,
+            max_hydrations=args.max_hydrations,
+            rpc_timeout_seconds=args.rpc_timeout_seconds,
+            pump_batch_size=args.pump_batch_size,
+            pump_batch_max_wait_ms=args.pump_batch_max_wait_ms,
+            pump_prepare_workers=args.pump_prepare_workers,
+            pumpswap_workers=args.pumpswap_workers,
+            pumpswap_prepare_submitters=args.pumpswap_prepare_submitters,
+            pumpswap_prepare_executor_workers=args.pumpswap_prepare_executor_workers,
+            pumpswap_writer_batch_size=args.pumpswap_writer_batch_size,
+            pumpswap_writer_batch_max_wait_ms=args.pumpswap_writer_batch_max_wait_ms,
+            max_concurrent_resolutions=args.max_concurrent_resolutions,
+            queue_size=args.queue_size,
+            continuation_batch_size=args.continuation_batch_size,
+            continuation_batch_max_wait_ms=args.continuation_batch_max_wait_ms,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
