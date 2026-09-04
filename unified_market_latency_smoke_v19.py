@@ -5,7 +5,7 @@ import asyncio
 from collections import Counter
 import contextvars
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 import functools
 import time
 
@@ -83,6 +83,23 @@ def _reservation_missing_assets(
     return tuple(sorted(set(result.affected_tokens).difference(handle.reservation_assets)))
 
 
+async def _run_sync_stage(
+    function,
+    /,
+    *args,
+    executor: Executor | None = None,
+    **kwargs,
+):
+    """Run one synchronous stage inline or on an isolated executor with context preserved."""
+
+    if executor is None:
+        return function(*args, **kwargs)
+    loop = asyncio.get_running_loop()
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, function, *args, **kwargs)
+    return await loop.run_in_executor(executor, call)
+
+
 async def run_smoke_v19(
     *,
     run_key: str,
@@ -99,6 +116,7 @@ async def run_smoke_v19(
     pumpswap_writer_batch_max_wait_ms: int,
     max_concurrent_resolutions: int,
     queue_size: int,
+    offload_sync_radar: bool = False,
 ) -> ThreadedWriterDiagnostics:
     """Run the unified latency smoke with early conservative PumpSwap reservations.
 
@@ -109,6 +127,12 @@ async def run_smoke_v19(
     sequence without waiting for the SQLite writer result. Detector preparation still
     starts only after canonical persistence succeeds, and trigger/episode finalization
     remains protected by the same per-asset FIFO scheduler.
+
+    ``offload_sync_radar`` is opt-in so historical v19-v21 behavior stays frozen. When
+    enabled, the already-sequential Pump radar coordinator and PumpSwap FIFO finalizer
+    execute their synchronous SQLite stages on isolated one-thread executors. Each
+    coordinator still awaits each result before advancing, so source order and per-asset
+    FIFO semantics do not change; only event-loop blocking is removed.
     """
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
@@ -146,6 +170,16 @@ async def run_smoke_v19(
     prepare_executor = ThreadPoolExecutor(
         max_workers=pumpswap_prepare_executor_workers,
         thread_name_prefix="pumpswap-prepare-v19",
+    )
+    pump_radar_executor = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="pump-radar-sequential-v22")
+        if offload_sync_radar
+        else None
+    )
+    pumpswap_finalize_executor = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="pumpswap-finalize-sequential-v22")
+        if offload_sync_radar
+        else None
     )
 
     received: Counter[str] = Counter()
@@ -399,10 +433,12 @@ async def run_smoke_v19(
                 item = pending_pump.pop(next_sequence)
                 pump_radar_wait_seconds.append(time.monotonic() - item.enqueued_monotonic)
                 try:
-                    result = evaluate_persisted_pump_notification_for_radar_v4(
+                    result = await _run_sync_stage(
+                        evaluate_persisted_pump_notification_for_radar_v4,
                         item.notification,
                         acquisition_run_key=run_key,
                         persist_result=item.persist_result,
+                        executor=pump_radar_executor,
                     )
                     handle_radar_result("pump", result)
                 except Exception:
@@ -625,9 +661,11 @@ async def run_smoke_v19(
                     )
                     continue
 
-                result = finalize_prepared_pumpswap_radar_v5(
+                result = await _run_sync_stage(
+                    finalize_prepared_pumpswap_radar_v5,
                     payload.prepared,
                     acquisition_run_key=run_key,
+                    executor=pumpswap_finalize_executor,
                 )
                 finalized = time.monotonic()
                 pumpswap_finalize_service_seconds.append(finalized - started_finalize)
@@ -689,6 +727,10 @@ async def run_smoke_v19(
         writer_diagnostics.batch_sizes = list(writer.batch_sizes)
         writer_diagnostics.batch_service_seconds = list(writer.batch_service_seconds)
         prepare_executor.shutdown(wait=True, cancel_futures=True)
+        if pump_radar_executor is not None:
+            pump_radar_executor.shutdown(wait=True, cancel_futures=True)
+        if pumpswap_finalize_executor is not None:
+            pumpswap_finalize_executor.shutdown(wait=True, cancel_futures=True)
 
     elapsed = time.monotonic() - started
     resolver_operational_skips = (
@@ -899,7 +941,8 @@ async def run_smoke_v19(
         f"persistence_calls={len(writer_diagnostics.writer_result_wait_seconds)} "
         f"writer_threads=1 writer_batches={len(writer_diagnostics.batch_sizes)} "
         f"writer_queue_at_deadline={writer_diagnostics.final_writer_queue_size} "
-        f"reservation_superset_violations={reservation_superset_violations}"
+        f"reservation_superset_violations={reservation_superset_violations} "
+        f"offload_sync_radar={offload_sync_radar}"
     )
     print(
         f"pumpswap_writer_queue_wait_ms {_latency_summary_ms(writer_diagnostics.writer_queue_wait_seconds)}"
