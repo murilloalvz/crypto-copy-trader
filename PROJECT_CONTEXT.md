@@ -1,29 +1,26 @@
 # Crypto Copy Trader — Project Context
 
-Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado fica em `docs/`; aqui permanecem decisões, evidências canônicas e gates necessários para continuar sem reabrir trabalho encerrado.
+Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado pode ficar em `docs/`; aqui permanecem decisões canônicas, evidência live relevante, invariantes e gates que controlam o próximo passo.
 
 ## Estado atual
 
 - Repositório: `murilloalvz/crypto-copy-trader`.
-- Branch principal de pesquisa: `feat/exit-engine-v1`.
+- Branch de pesquisa: `feat/exit-engine-v1`.
 - Modo: **PAPER / RESEARCH / READ ONLY**.
 - Tese ativa: **market-first Solana Opportunity Intelligence / Opportunity Engine**.
-- Fluxo conceitual: `market data -> unified radar -> detector -> opportunity episode -> wallets/flow/context -> execution/risk -> decision_as_of -> forward executable outcomes`.
-- Wallet Forward v2: encerrado como **OUTCOME D — TOO LITTLE ECONOMIC SAMPLE**; não iniciar Run 3.
+- Fluxo: `market data -> unified radar -> detector -> opportunity episode -> wallets/flow/context -> execution/risk -> decision_as_of -> forward executable outcomes`.
 - Pump native acquisition: PASS.
 - Pump -> radar -> opportunity episode: PASS.
 - PumpSwap native acquisition + causal pool resolution: PASS.
-- Unified local causal bundle flow/wallet semantics: PASS.
-- Replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos continuam auditáveis.
-- Pump ordered SQLite microbatch: live PASS para Pump latency.
-- PumpSwap v7-v10 localizaram scheduler starvation, gross capacity deficit e hot-asset causal serialization.
-- v11 split prepare/finalize: **arquitetura validada; causal wait colapsou**.
-- v12 dedicated prepare executor: **melhorou prepare queue, expôs reader/writer interference**.
-- v13 SQLite WAL: **persistence reader/writer contention resolvida; prepare queue permaneceu dominante**.
-- v14 hidden-time diagnostic: **prepare interno é barato (~86ms p95); atraso dominante ocorre fora da thread, na retomada do event loop/executor**.
-- v15 dedicated SQLite writer: **CODE/CI PASS; live validation é o gate atual**.
-- Jupiter executable quotes, hazard/risk provider, final `decision_as_of`, executable forward outcomes e historical wallet outcomes ainda não estão ligados no unified path.
-- **Não iniciar 12h ainda.**
+- Unified causal flow/wallet bundle semantics: PASS.
+- Replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos permanecem auditáveis.
+- Pump latency: PASS via ordered SQLite microbatch.
+- PumpSwap latency: **ainda não fechou o gate formal**.
+- Último live smoke canônico: **v19c**; coverage/backlog/Pump/safety passaram, PumpSwap pipeline p95 ficou em **6.281s** (>5s).
+- Última correção de código após v19c: cache hits causais do concurrent PumpSwap resolver agora bypassam o semaphore destinado a resolução cara/rede. CI: **608/608 PASS**.
+- Próxima execução: mesmo `unified_market_latency_smoke_v19.py`, mesmos parâmetros, nova run key; objetivo é medir somente o efeito do resolver cache fast path.
+- Jupiter executable quotes, hazard/risk provider, final `decision_as_of`, executable forward outcomes e historical wallet outcomes continuam bloqueados até o latency gate PASS.
+- **Não iniciar coleta de 12h ainda.**
 
 ## North star
 
@@ -42,11 +39,23 @@ market changes state
 
 Objetivo: identificar movimentos precoces cujo resultado forward, líquido de custos e com executabilidade realista, permaneça favorável fora da amostra.
 
+## Princípios científicos congelados
+
+- Histórico exploratório de P&L não é prova causal de edge.
+- Detector/estratégia/coorte ficam congelados durante validação de infraestrutura.
+- Separar: qualidade do sinal, qualidade observacional, executabilidade, replay econômico e latência do sistema.
+- Sem survivorship/lookahead/retroactive enrollment/artificial backfill.
+- No-sample não significa strategy failure.
+- Wallet é contexto/evidência pós-episódio, nunca whitelist de aquisição.
+- Nenhum live money sem forward evidence robusta e gate explícito.
+- Não aumentar workers por tentativa; primeiro localizar o relógio dominante.
+- PASS de latência significa apenas **systems latency/observability PASS**, não economic edge/profitability PASS.
+
 ## Detector congelado
 
 `src/market_opportunity_radar.py` — `market_opportunity_radar_v1_1_tx_aware`.
 
-Acquisition mechanics, não regras de trading:
+Acquisition mechanics:
 - fast window 30s;
 - baseline horizon 300s;
 - >=6 fast events;
@@ -60,27 +69,25 @@ Acquisition mechanics, não regras de trading:
 
 ## Causalidade e replay
 
-Shared market observation semantics:
+Shared market observations:
 - exact replay idempotente;
 - SQLite completion order não define causalidade;
 - earliest collector `observed_at` vence;
-- identidade conflitante é auditada em `market_replay_conflicts`;
-- conflito não vira flow novo nem derruba a aquisição.
+- identidade conflitante fica em `market_replay_conflicts`;
+- conflito não vira flow novo nem derruba aquisição.
 
-Trigger/episode semantics:
+Trigger/episode:
 - replay do mesmo trigger não cria novo episode/enrichment;
-- recomputação divergente fica em `market_trigger_replay_conflicts`;
+- divergência de recomputação fica em `market_trigger_replay_conflicts`;
 - primeiro trigger-to-episode persistido permanece canônico;
 - corrupção referencial real continua fatal.
 
-Pump-specific replay telemetry permanece em `pump_replay_conflicts`.
-PumpSwap pool conflicts permanecem em `pumpswap_pool_mapping_conflicts`.
+Pump-specific replay: `pump_replay_conflicts`.
+PumpSwap pool conflicts: `pumpswap_pool_mapping_conflicts`.
 
 Lifecycle:
 - Pump `CreateEvent` = token birth;
 - PumpSwap `CreatePoolEvent` = venue/pool lifecycle, não token birth.
-
-Wallet é evidência pós-episódio, nunca whitelist de aquisição.
 
 ## PumpSwap identity / asset role
 
@@ -93,225 +100,313 @@ Reference assets v1: WSOL e USDC.
 - WSOL/USDC não podem virar opportunity episodes.
 
 Pool identity:
-- schema cacheado por DB path;
 - earliest observed mapping vence;
-- conflitos auditados;
+- conflicts auditados;
 - histórico ambíguo não é reutilizado;
-- concurrent resolver recarrega mapping canônico persistido antes de normalizar.
+- reusable resolver pode reaproveitar identidade imutável aprendida antes de T0;
+- concurrent resolver mantém single-flight por pool e recarrega mapping canônico persistido antes de normalizar;
+- após v19c, cache hit causal em memória bypassa lock/semaphore de resolução cara; o semaphore continua limitando misses que podem chegar a store/historical/network.
 
-## Evidência live canônica
-
-### Native / early unified
-
-- Pump native `pump-smoke-20260903-01`: 3,476 notifications; 3,688 decoded trades; 3,600 persisted; 223 tokens; 1,984 wallets. PASS.
-- Pump radar `market-radar-smoke-20260903-03`: 2,037 trades; 738 raw hits; 31 episodes; 29 tokens. 95.8% raw hits eram continuation; enrichment caro deve ser episode-scoped. PASS.
-- PumpSwap native `pumpswap-smoke-20260903-01`: 837/837 trades persisted; 150 pools; 737 wallets; 92/92 hydrations; 0 failures/skips. PASS.
-- unified v2-v6: semantics/capacity progressivos; v6 coverage 100%, Pump p95 2.80s PASS, PumpSwap p95 7.95s FAIL.
-
-### v7-v10 — root-cause discovery
-
-- v7: coverage 81.9%, PumpSwap backlog 1,091, PumpSwap p95 65.05s. **Scheduler starvation**.
-- v8: nonblocking per-asset ready scheduler removeu worker starvation, mas coverage 75.6% e PumpSwap p95 54.973s. **Gross capacity deficit**.
-- v9: 8 workers, coverage 97.3% PASS, backlog ~2.74% PASS, Pump p95 1.798s PASS, PumpSwap p95 18.311s FAIL. Service p95 só 0.676s.
-- v10 diagnostic: coverage 76.0%; PumpSwap pipeline p95 90.996s; causal dependency p95 54.449s; ready queue p95 10.644s; DB read p95 106.9ms; detector p95 0.3ms. 11 assets concentraram 50% do causal wait, max 108 waiting em um asset.
-
-Conclusão v10: **serializar a avaliação inteira por asset era o erro arquitetural**. Apenas trigger/episode finalization exige FIFO estrito.
-
-## v11 — parallel prepare, FIFO finalize
-
-Architecture:
+## Arquitetura PumpSwap atual
 
 ```text
-PumpSwap persistence
-      |
-      +--> parallel prepare
-      |    - canonical transaction view
-      |    - causal history read (observed_at <= token_as_of)
-      |    - frozen detector
-      |
-      +--> ingress-ordered asset reservation
-                    |
-                    v
-             per-asset FIFO barrier
-                    |
-                    v
-             finalize trigger/episode
-                    |
-                    v
-             episode-scoped enrichment
+logsSubscribe notification
+        |
+        v
+64 async persistence/normalization workers
+        |
+        +--> causal pool resolve/normalize
+        |       |
+        |       +--> in-memory causal cache fast path
+        |       +--> single-flight + bounded expensive resolution on miss
+        |
+        +--> conservative early reservation hint
+        |       watermark = post-normalization / pre-writer-result
+        |
+        +--> thread-owned SQLite microbatch writer
+        |       batch 32 / 10ms, WAL
+        |       authoritative canonical persist result
+        |
+        +--> 48 async prepare submitters
+                12 dedicated prepare executor threads
+                canonical tx view + causal history + frozen detector
+                        |
+                        v
+                per-asset FIFO scheduler
+                direct ticket-successor release
+                        |
+                        v
+                1 stateful finalizer
+                trigger/episode assignment
+                        |
+                        v
+                episode-scoped enrichment
 ```
 
-Semantics preservadas:
+Important invariants:
 1. preparation cria zero side effects de trigger/episode;
-2. later notifications podem preparar antes das anteriores;
-3. asset tickets continuam emitidos em canonical ingress order;
-4. later prepared result não finaliza antes do predecessor do mesmo asset;
-5. trigger key permanece `market-radar:pumpswap-v3:<signature>:<mint>`;
-6. detector config, `token_as_of`, episode window, replay e provider policy não mudam.
+2. detector prepare só inicia após canonical SQLite persistence;
+3. early reservation asset set é um conservative superset;
+4. `reservation_superset_violations > 0` é fatal/fail closed;
+5. no-new-evidence/duplicate atravessa o mesmo FIFO como no-op release;
+6. final trigger/episode assignment preserva FIFO para notifications que compartilham opportunity asset;
+7. multi-asset notification espera todos os predecessores relevantes;
+8. trigger key permanece `market-radar:pumpswap-v3:<signature>:<mint>`;
+9. detector config, `token_as_of`, episode window, replay e provider policy permanecem congelados.
 
-### v11 live, 8 prepare workers
+## Evolução da unified latency
 
-- coverage 83.7%;
-- causal dependency p95 **346ms** versus 54.449s no v10;
-- max waiting single asset **11** versus 108;
-- prepare queue p95 **50.387s**;
-- prepare service p95 **875ms**;
-- DB read p95 **83.9ms**;
-- detector p95 **0.3ms**.
+### v7-v10 — descobrir os gargalos
 
-Conclusão: split arquitetural funcionou; novo gargalo = **prepare capacity**.
+- v7: coverage 81.9%, PumpSwap p95 65.05s. Worker slot starvation por predecessor do mesmo asset.
+- v8: nonblocking per-asset scheduler removeu starvation; coverage 75.6%, PumpSwap p95 54.973s. Gross capacity deficit.
+- v9: coverage 97.3%, backlog ~2.74%, Pump p95 1.798s, PumpSwap p95 18.311s. Service local barato; espera dominava.
+- v10: pipeline p95 90.996s; causal dependency 54.449s; ready queue 10.644s; DB 106.9ms; detector 0.3ms. Hot-asset serialization era dominante.
 
-### v11b, 12 prepare workers
+Conclusão: serializar avaliação inteira por asset era errado; somente a fase stateful de trigger/episode precisa FIFO estrito.
 
-- coverage 84.9%;
-- Pump p95 4.279s PASS;
-- PumpSwap persistence p95 0.629s;
-- prepare queue p95 30.187s;
-- prepare service p95 1.127s;
-- DB read p95 100.1ms;
-- detector p95 0.6ms.
+### v11 — parallel prepare / FIFO finalize
 
-Conclusão: subir coroutines 8 -> 12 não escalou linearmente; não aumentar workers cegamente.
+- 8 prepare workers: causal p95 caiu para 346ms, mas prepare queue p95 50.387s.
+- 12 prepare workers: prepare queue 30.187s, service 1.127s; scaling ruim.
 
-## v12 — dedicated prepare executor
+Conclusão: split causal correto; bottleneck mudou para prepare capacity/resumption.
 
-Mudança: 12 prepare coroutines passam a usar `ThreadPoolExecutor` dedicado de 12 threads; demais semânticas intactas.
+### v12 — dedicated prepare executor
 
-Live `unified-market-smoke-20260903-12`:
-- coverage **94.0%**;
-- Pump p95 **2.320s PASS**;
-- prepare queue p95 **10.683s**, melhora forte versus 30.187s;
-- porém PumpSwap persistence queue p95 explodiu para **20.108s**;
-- pipeline p95 **36.416s**.
+- coverage 94.0%; Pump 2.320s;
+- prepare queue 10.683s;
+- persistence queue 20.108s;
+- pipeline 36.416s.
 
-Conclusão: executor isolation ajudou prepare, mas criou/expôs **SQLite reader-writer interference** sob muitas leituras concorrentes.
+Conclusão: prepare executor ajudou e expôs reader/writer interference.
 
-## v13 — SQLite WAL
+### v13 — SQLite WAL
 
-Mudança única adicional: `PRAGMA journal_mode=WAL`; `PRAGMA synchronous` preservado (`2`).
+- coverage 91.4%; Pump 3.645s;
+- persistence queue 0.721s;
+- persistence service 68ms;
+- prepare queue 21.119s;
+- pipeline 23.039s.
 
-Live `unified-market-smoke-20260903-13`:
-- coverage **91.4%**;
-- Pump p95 **3.645s PASS**;
-- PumpSwap persistence queue p95 **0.721s** versus 20.108s no v12;
-- persistence service p95 **68.2ms**;
-- prepare queue p95 **21.119s**;
-- prepare service p95 **1.258s**;
-- DB read p95 **104.1ms**;
-- detector p95 **0.3ms**;
-- pipeline p95 **23.039s**.
+Conclusão: WAL resolveu reader/writer contention; atraso restante não era custo do detector.
 
-Conclusão: **WAL resolveu reader/writer contention**. Persistence voltou saudável. Prepare continua dominante.
+### v14 — hidden-time diagnostic
 
-## v14 — prepare hidden-time diagnostic
+- coverage ~95.2%; Pump ~3.965s;
+- persistence queue ~0.671s;
+- prepare queue ~20.557s;
+- outer prepare service ~1.367s;
+- inner prepare total p95 ~86ms;
+- unaccounted inside thread ~0.1ms;
+- pipeline ~21.825s.
 
-Live `unified-market-smoke-20260903-14`:
-- received PumpSwap 1,961 + Pump 1,632;
-- coverage **95.2% PASS**;
-- backlog total PumpSwap 170 + ingress 1 = ~4.8% do total recebido, aproximadamente no limite PASS;
-- Pump p95 **3.965s PASS**;
-- PumpSwap persistence queue p95 **0.671s PASS**;
-- persistence service p95 **65.5ms**;
-- prepare queue p95 **20.557s FAIL**;
-- outer prepare service p95 **1.367s**;
-- pipeline p95 **21.825s FAIL**;
-- finalize causal p95 **596ms**;
-- finalize service p95 **15.8ms**;
-- DB read p95 **86.2ms**;
-- detector p95 **0.2ms**;
-- drops 0; worker errors 0; RPC failures 0; budget skips 0; reference assets 0.
+Conclusão: thread terminava rápido; coroutine demorava para retomar. Event-loop/executor resumption starvation confirmado.
 
-V14 inner-thread diagnostic:
-- prepare calls 1,811;
-- inner total p50/p95/max **49.2ms / 86.3ms / 173.6ms**;
-- accounted DB+detector p50/p95/max **49.2ms / 86.3ms / 173.5ms**;
-- unaccounted p95 **0.1ms**.
+### v15 — dedicated SQLite writer
 
-Conclusão definitiva:
+- coverage ~85.2%;
+- Pump ~3.58s;
+- PumpSwap persistence queue ~22.235s;
+- persistence service ~1.67s;
+- prepare queue ~5.877s;
+- pipeline ~28.75s;
+- writer queue ~0.912s; writer service ~81ms.
 
-**O prepare não é computacionalmente pesado. O ~1.3s outer service não acontece dentro da thread.** A thread termina em ~50-86ms e a coroutine demora para retomar. A principal fonte restante é event-loop starvation/dispatch delay. O caminho PumpSwap persistence ainda executa `record_market_trade`, `record_market_lifecycle` e canonical readback síncronos diretamente em 24 asyncio workers; bursts de pequenas operações SQLite bloqueiam o event loop em sequência.
+Conclusão: tirar SQLite síncrono do event loop funcionou, mas commit/result por notification deixou throughput limitado pelo writer.
 
-## v15 — dedicated SQLite writer (gate atual)
+### v16 — writer microbatch
 
-Novos arquivos:
-- `src/pumpswap_normalized_persistence_v2.py`;
-- `unified_market_latency_smoke_v15.py`;
-- `tests/test_pumpswap_normalized_persistence_v2.py`.
+Com 24 persistence workers:
+- PumpSwap received ~6093, Pump ~2571;
+- coverage 59.1%;
+- PumpSwap persistence queue ~57s;
+- prepare queue ~0.875s;
+- pipeline ~57.77s;
+- avg writer batch 16.57, max 24.
 
-Architecture:
+Root cause: cada persistence worker aguardava seu writer result, criando WIP cap de 24 e impedindo batches/throughput suficientes.
 
-```text
-24 async PumpSwap persistence workers
-        |
-        +--> pool resolution / normalization stays async
-        |
-        +--> canonical market observation write request
-                         |
-                         v
-            single dedicated SQLite writer thread
-                         |
-                         +--> record trade/lifecycle
-                         +--> canonical transaction readback
+Controlled 64-worker run (`v16b`):
+- coverage ~87.4%; backlog ~12.6%;
+- Pump 2.975s;
+- PumpSwap persistence queue 1.891s;
+- persistence service 2.613s;
+- prepare queue 7.515s;
+- pipeline 11.046s;
+- diferença writer results vs persistence completed = 64, mostrando resume pressure.
 
-12 dedicated prepare reader threads (WAL)
-                         |
-                         v
-                   FIFO finalize
-```
+Conclusão: 64 resolveu ingress persistence, mas bottleneck migrou. Não subir para 96/128 cegamente.
 
-Rationale:
-- SQLite possui um writer efetivo por vez; múltiplas writer threads não trazem benefício estrutural;
-- WAL permite este writer coexistir com prepare readers;
-- mover canonical writes para fora do asyncio loop evita que bursts de commits bloqueiem a retomada de futures já concluídos;
-- pool resolver cache/network state continua no event loop, evitando thread-safety drift;
-- event identity, replay, `observed_at`, trigger keys, detector, `as_of`, reservation FIFO e provider policy permanecem intactos.
+### v17 — thread-owned writer loop
 
-V15 diagnostic adicional mede:
-- resolver/normalize time;
-- SQLite writer queue wait;
-- SQLite writer service time.
+- received total 4554;
+- coverage 88.4%;
+- Pump 2.886s;
+- PumpSwap persistence queue 424ms;
+- persistence service 1.233s;
+- persist->reservation 5.900s;
+- prepare queue 38.516s;
+- pipeline 40.526s;
+- writer queue no deadline 0; writer saudável.
+
+Conclusão: writer deixou de ser gargalo; async prepare submission/resumption passou a dominar.
+
+### v18 — decoupled prepare submitters
+
+Config: 48 async submitters, **12 actual prepare threads**.
+
+Live:
+- received 4983;
+- coverage 94.5%; true backlog 5.46%;
+- Pump p95 3.368s;
+- persistence queue 675ms;
+- prepare queue **489ms**;
+- prepare service ~1.390s;
+- persist->reservation ~7.177s;
+- prepared->submit ~6.657s;
+- causal dependency ~3.356s;
+- pipeline **9.957s**;
+- writer saudável; DB ~94ms; detector ~0.4ms.
+
+Conclusão: decoupled submitters resolveram prepare queue. Novo HOL = global reservation watermark emitido tarde, depois de persistence completion.
+
+### v19 — early reservation watermark
+
+`src/pumpswap_deferred_persistence_v5.py` permite:
+1. causal normalize/pool resolution;
+2. conservative reservation asset superset;
+3. early hint antes de writer completion;
+4. authoritative writer result continua obrigatório para detector prepare;
+5. guard final confirma que canonical `affected_tokens` está contido no early superset.
+
+#### v19 inicial
+
+- received 4585;
+- processed 4442; true backlog **143/4585 = 3.12% PASS**;
+- coverage **96.9% PASS**;
+- Pump p95 **3.448s PASS**;
+- PumpSwap persistence queue 846ms;
+- normalization->reservation 1.885s;
+- prepare queue 700ms;
+- causal dependency 1.182s;
+- pipeline **5.765s FAIL**;
+- `reservation_superset_violations=0`;
+- no drops/errors/budget skips/reference episodes.
+
+Conclusão: early reservation removeu grande parte do HOL e levou pipeline de ~9.96s para ~5.76s.
+
+#### v19b — immediate-ready scheduler fast path
+
+Mudança: reservation já causalmente pronta entra direto na ready queue, sem criar task só para redescobrir que está pronta.
+
+Live:
+- coverage **97.1% PASS**;
+- true backlog **129/4503 = 2.86% PASS**;
+- Pump p95 **3.691s PASS**;
+- pipeline **8.523s FAIL**;
+- um hot asset concentrou >50% do causal wait: 178 reservations, 44 outstanding, 39 waiters, hot-asset p95 ~11.55s.
+
+Diagnóstico: `Condition.notify_all()` acordava dezenas de waiters a cada ticket; thundering herd quase O(n²) em burst de mesmo asset.
+
+#### scheduler direct-successor release
+
+`src/pumpswap_ready_scheduler.py` foi alterado para indexar pending work por ticket exato. `complete(N)` considera somente jobs desbloqueáveis pelo ticket concluído, em vez de acordar todos os waiters.
+
+Safety tests incluem:
+- FIFO burst de dezenas de tickets do mesmo asset;
+- multi-asset predecessor barrier;
+- immediate-ready path.
+
+#### v19c — após direct-successor release
+
+- received **4372**;
+- processed **4276**;
+- true backlog **96/4372 = 2.20% PASS**;
+- coverage **97.8% PASS**;
+- drops 0; worker errors 0;
+- reference assets 0;
+- hydration budget skips 0;
+- `reservation_superset_violations=0`;
+- replay conflicts 0;
+- bundles não vazios;
+- Pump p95 **2.864s PASS**;
+- PumpSwap writer queue p95 **86ms**, result p95 **270ms**;
+- prepare queue p95 **715ms**;
+- prepare service p95 **1.120s**;
+- scheduler dispatch p95 **0.0ms**;
+- causal dependency p95 **410ms**;
+- hot-asset worst shown p95 ~**1.420s**, contra 11.55s no v19b;
+- ready queue p95 **462ms**;
+- normalization->reservation p95 **4.671s**;
+- ingress->reservation p95 **6.231s**;
+- prepared->submit p95 **3.519s**;
+- PumpSwap pipeline p95 **6.281s FAIL**.
+
+Conclusão v19c:
+- scheduler thundering herd foi resolvido de forma clara;
+- writer, prepare queue, detector e finalizer estão saudáveis;
+- gate falha somente no PumpSwap pipeline;
+- gargalo dominante atual = **global normalization reservation watermark / sequence holes antes da reservation**, amplificado por resolution latency.
+
+### Resolver cache fast path — correção pós-v19c
+
+Inspeção mostrou que `ConcurrentReusablePumpSwapPoolResolver` adquiria per-pool lock + global `Semaphore(max_concurrent_resolutions=18)` antes de chamar o reusable resolver, embora o reusable resolver começasse por cache/store/historical lookup.
+
+No v19c:
+- cache hits: **2518**;
+- network hydrations: **101**;
+- singleflight waits: 83.
+
+Assim, a enorme maioria das resoluções baratas disputava o mesmo semaphore pensado para limitar trabalho caro/rede.
+
+Correção:
+- causally valid in-memory cache hit retorna **antes** de per-pool lock e semaphore;
+- após esperar single-flight lock, cache é checado novamente antes de gastar slot global;
+- misses continuam bounded pelo mesmo semaphore;
+- canonical store reload após resolução cara permanece intacto;
+- nenhuma mudança em detector/provider/replay/as_of/reservation FIFO.
 
 Validation:
-- compileall PASS;
-- **595 tests / 0 failures**;
-- teste confirma semântica v2 equivalente ao caminho legado;
-- teste confirma DB stage executando no executor fornecido;
-- GitHub Actions CI PASS.
+- teste específico esgota o semaphore e confirma que cache hit ainda retorna imediatamente;
+- **608 tests / 0 failures**;
+- GitHub Actions PASS.
 
-## Gate atual — v15 live
+## Gate atual — next v19 live validation
 
-Frozen smoke config:
+Frozen runnable config:
 - duration 120s;
 - commitment confirmed;
 - Pump batch 32 / 25ms;
-- PumpSwap persistence workers 24;
-- SQLite writer workers 1;
-- PumpSwap prepare workers 12;
-- PumpSwap prepare executor workers 12;
-- PumpSwap finalizer workers 1;
-- max concurrent resolutions 18;
+- PumpSwap persistence workers 64;
+- thread-owned SQLite writer threads 1;
+- writer batch 32 / 10ms;
+- PumpSwap prepare submitters 48;
+- actual prepare executor workers 12;
+- finalizer workers 1;
+- max concurrent expensive resolutions 18;
 - max hydrations 1500;
 - queue 5000;
 - SQLite WAL;
-- synchronous unchanged.
+- synchronous 2.
 
-PASS conditions:
+PASS conditions — todas obrigatórias:
 1. no traceback/worker errors;
 2. drops 0;
-3. reference_asset_episodes 0;
+3. `reference_asset_episodes=0`;
 4. coverage >=95%;
-5. total deadline backlog <=5% of received;
+5. **true total deadline backlog = (total_received - total_radar_processed) / total_received <=5%**; não somar counters de backlog que se sobrepõem;
 6. Pump radar p95 <=5s;
 7. PumpSwap causal result availability / pipeline p95 <=5s;
 8. hydration budget skips 0;
-9. bundles not systematically empty;
-10. replay counters inspectable and no unexplained integrity corruption.
+9. bundles não sistematicamente vazios;
+10. replay counters auditáveis / sem corruption não explicada;
+11. `reservation_superset_violations=0`.
 
-Interpretation after v15:
-- prepare queue + outer prepare service collapse -> event-loop starvation diagnosis confirmed; evaluate full gate;
-- writer queue dominates -> add measured writer batching, not extra writer threads;
-- prepare queue remains high while writer/event-loop clocks stay low -> build causal per-asset read batching/cache;
-- all phase clocks low but E2E high -> instrument explicit event-loop lag before any architecture change.
+Current hypothesis:
+- se cache fast path reduzir normalization sequence holes, `normalization_to_reservation`, `prepared_to_submit` e pipeline devem cair sem alterar workers;
+- se normalization->reservation continuar alto apesar do fast path, o próximo problema é o **global normalization watermark em si**, especialmente rare network-resolution outliers; não aumentar workers automaticamente;
+- qualquer mudança futura que relaxe per-asset ingress FIFO é semanticamente relevante e exige prova separada, não tuning oportunista.
 
 ## Depois do latency PASS
 
@@ -348,7 +443,7 @@ Métricas mínimas:
 - native acquisition: Pump PASS / PumpSwap PASS;
 - causal unified local bundle: PASS;
 - replay integrity: hardened e auditável;
-- Pump latency: PASS via ordered microbatch;
+- Pump latency: PASS;
 - PumpSwap latency gate: **ainda não fechado**;
 - economic edge: não estabelecido;
 - executable fill/landing: não validado;
