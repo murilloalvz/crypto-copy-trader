@@ -58,6 +58,22 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await scheduler.complete(ready.reservation)
         await scheduler.cancel_waiters()
 
+    async def test_multiple_empty_reservations_keep_distinct_submission_identity(self):
+        scheduler = ReadyAssetScheduler[str]()
+        first = scheduler.reserve([])
+        second = scheduler.reserve([])
+        scheduler.submit("first", first)
+        scheduler.submit("second", second)
+
+        ready1 = scheduler._ready.get_nowait()
+        ready2 = scheduler._ready.get_nowait()
+        scheduler.ready_task_done()
+        scheduler.ready_task_done()
+        self.assertEqual({ready1.payload, ready2.payload}, {"first", "second"})
+        await scheduler.complete(ready1.reservation)
+        await scheduler.complete(ready2.reservation)
+        await scheduler.cancel_waiters()
+
     async def test_ready_reservation_enters_queue_without_async_waiter_turn(self):
         scheduler = ReadyAssetScheduler[str]()
         reservation = scheduler.reserve(["A"])
@@ -135,12 +151,14 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(scheduler.ready_backlog(), 1)
         self.assertEqual(scheduler.waiting_backlog(), 1)
+        self.assertEqual(scheduler._skipped_by_asset, {"HOT": {1}})
 
         ready_first = scheduler._ready.get_nowait()
         self.assertEqual(ready_first.payload, "first")
         scheduler.ready_task_done()
         await scheduler.complete(ready_first.reservation)
 
+        self.assertEqual(scheduler._skipped_by_asset, {})
         self.assertEqual(scheduler.waiting_backlog(), 0)
         ready_third = scheduler._ready.get_nowait()
         self.assertEqual(ready_third.payload, "third")
@@ -155,6 +173,7 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         next_stateful = scheduler.reserve(["A"])
 
         scheduler.skip(noop)
+        self.assertEqual(scheduler._skipped_by_asset, {})
         scheduler.submit("next", next_stateful)
 
         self.assertEqual(scheduler.waiting_backlog(), 0)
