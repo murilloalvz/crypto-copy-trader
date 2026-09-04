@@ -21,8 +21,9 @@ async def run_smoke_v29(**kwargs):
 
     * new rows use INSERT OR IGNORE first;
     * replay/conflict SELECTs run only after a UNIQUE collision;
-    * canonical affected tokens are still read from SQLite, but once per run/microbatch instead of
-      once per notification.
+    * canonical affected tokens for transaction keys unique inside a microbatch share one readback;
+    * repeated transaction keys retain immediate per-item readback so later replay in the same
+      microbatch cannot retroactively change an earlier result.
 
     Replay, earliest-observation canonicalization, reservation, detector, episode, FIFO and audit
     semantics remain unchanged.
@@ -46,8 +47,12 @@ async def run_smoke_v29(**kwargs):
             if snapshot.lifecycle_insert_attempts
             else 0.0
         )
+        total_readbacks = (
+            snapshot.affected_token_batch_readbacks
+            + snapshot.affected_token_repeated_key_readbacks
+        )
         readbacks_per_item = (
-            snapshot.affected_token_batch_readbacks / snapshot.prepared_items
+            total_readbacks / snapshot.prepared_items
             if snapshot.prepared_items
             else 0.0
         )
@@ -63,11 +68,14 @@ async def run_smoke_v29(**kwargs):
         )
         print(
             f"affected_token_batch_readbacks={snapshot.affected_token_batch_readbacks} "
+            f"affected_token_repeated_key_readbacks={snapshot.affected_token_repeated_key_readbacks} "
+            f"total_affected_token_readbacks={total_readbacks} "
             f"readbacks_per_prepared_item={readbacks_per_item:.4f}"
         )
         print(
             "v29 changes SQL shape only: insert-first on the common new-row path, replay SELECTs "
-            "only after collisions, and authoritative affected-token readback once per microbatch."
+            "only after collisions, batch readback for unique transaction keys, and immediate "
+            "readback only for repeated keys that require per-item replay causality."
         )
 
 
@@ -118,8 +126,10 @@ def main() -> None:
     if args.continuation_batch_max_wait_ms < 0:
         parser.error("continuation-batch-max-wait-ms cannot be negative")
 
+    journal_mode, synchronous = v19._enable_wal_mode()
     print("Crypto Copy Trader — Unified Market Latency Smoke v29 Optimistic PumpSwap Persistence")
     print("Mode: PAPER / RESEARCH / READ ONLY — no signing or transaction submission.")
+    print(f"sqlite_journal_mode={journal_mode} sqlite_synchronous={synchronous}")
     kwargs = dict(
         run_key=args.run_key,
         duration_seconds=args.duration_seconds,
