@@ -58,6 +58,25 @@ class ReadyAssetSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await scheduler.complete(ready.reservation)
         await scheduler.cancel_waiters()
 
+    async def test_ready_reservation_enters_queue_without_async_waiter_turn(self):
+        scheduler = ReadyAssetScheduler[str]()
+        reservation = scheduler.reserve(["A"])
+
+        scheduler.submit("a0", reservation)
+
+        # The ready fast path must be visible synchronously, before yielding the
+        # event loop. The old implementation created a waiter task first, which
+        # could be delayed hundreds of milliseconds under the latency smoke load.
+        self.assertEqual(scheduler.ready_backlog(), 1)
+        self.assertEqual(scheduler.waiting_backlog(), 0)
+        ready = scheduler._ready.get_nowait()
+        self.assertEqual(ready.payload, "a0")
+        self.assertEqual(ready.waiter_started_monotonic, ready.dependency_ready_monotonic)
+        self.assertEqual(ready.dependency_ready_monotonic, ready.ready_queue_entered_monotonic)
+        scheduler.ready_task_done()
+        await scheduler.complete(ready.reservation)
+        await scheduler.cancel_waiters()
+
     async def test_cancel_preserves_pre_cancel_waiting_and_ready_backlog(self):
         scheduler = ReadyAssetScheduler[str]()
         a0 = scheduler.reserve(["A"])
