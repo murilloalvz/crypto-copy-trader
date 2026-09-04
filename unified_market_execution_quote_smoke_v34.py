@@ -17,8 +17,9 @@ async def run_smoke_v34(**kwargs) -> None:
     v27 already rechecks the immutable run-local episode cache at finalize time. v34 moves
     that same proof one step earlier for jobs that are still pending in the per-asset FIFO:
     after an opener establishes the episode, pending submitted jobs that the same cache proves
-    are continuation-only are converted to causal skips. Tickets remain ordered and ambiguous,
-    late-earlier or different-window work remains stateful.
+    are continuation-only have only their *stateful dependency ticket* converted to a causal
+    skip. Their payload still traverses the normal v27-aware finalizer so continuation audit,
+    canonical hit handling and metrics remain complete.
     """
 
     original_cache_class = v27._EpisodeContinuationCache
@@ -61,12 +62,14 @@ async def run_smoke_v34(**kwargs) -> None:
         print(
             f"demoted_pending_jobs={scheduler.demoted_pending_jobs} "
             f"demoted_pending_tickets={scheduler.demoted_pending_tickets} "
+            f"demoted_finalizer_acks_pending={scheduler.demoted_finalizer_acks_pending} "
             f"demotion_wait_ms={v19._latency_summary_ms(scheduler.demotion_wait_seconds)}"
         )
     print(
         "v34 changes no detector threshold, episode window, trigger identity, reservation ticket, "
-        "or FIFO rule. It only converts already-submitted pending jobs to causal skips after the "
-        "same v27 episode cache proves they can no longer mutate episode state."
+        "or FIFO rule for state-mutating work. It only removes a proven continuation from the "
+        "stateful dependency graph after the same v27 episode cache proves it cannot mutate "
+        "episode state; continuation audit/hit finalization still executes."
     )
 
 
