@@ -69,6 +69,36 @@ class ConcurrentReusableResolverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(max_active, 2)
 
+    async def test_causal_cache_hit_bypasses_exhausted_resolution_semaphore(self):
+        resolver = ConcurrentReusablePumpSwapPoolResolver(
+            acquisition_run_key="run",
+            client=SimpleNamespace(),
+            max_concurrent_resolutions=1,
+        )
+        resolver._cache["POOL"] = PumpSwapPoolMapping(
+            acquisition_run_key="run",
+            pool_address="POOL",
+            base_mint="BASE",
+            quote_mint="QUOTE",
+            observed_at=100,
+            source_provider="cached",
+        )
+
+        await resolver._resolution_semaphore.acquire()
+        try:
+            mapping = await asyncio.wait_for(
+                resolver.resolve("POOL", as_of=120),
+                timeout=0.05,
+            )
+        finally:
+            resolver._resolution_semaphore.release()
+
+        self.assertIsNotNone(mapping)
+        assert mapping is not None
+        self.assertEqual(mapping.base_mint, "BASE")
+        self.assertEqual(resolver.cache_hits, 1)
+        self.assertNotIn("POOL", resolver._pool_locks)
+
     async def test_resolution_returns_store_canonical_mapping_not_stale_parent_object(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "resolver.db"
