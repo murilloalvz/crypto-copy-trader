@@ -15,8 +15,9 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Pump/PumpSwap -> unified radar -> opportunity episode: PASS.
 - Unified causal flow/wallet bundle semantics: PASS.
 - Replay hardening observation -> pool mapping -> trigger/episode: CODE/CI/LIVE PASS; conflitos permanecem auditáveis.
-- **Unified Market Latency Gate: FORMAL PASS via v30.**
-- Jupiter executable quote para novo episode: **CODE/CI pronto; primeiro live v31 ainda não executado**.
+- **Unified Market Latency v30: FORMAL PASS histórico/canônico.**
+- **v31 live: FAIL do executable-quote gate e evidência de regressão de robustez sob burst de unknown-pool hydration.**
+- v32 batched unknown-pool hydration: **CODE/CI pronto; live pendente**.
 - Hazard/risk provider: ainda não integrado ao protocolo final.
 - Final `decision_as_of`: ainda não congelado.
 - Executable forward outcomes +5m/+15m/+60m: ainda não liberados.
@@ -120,9 +121,10 @@ Pool identity:
 - causal cache hit em memória bypassa lock/semaphore de resolução cara;
 - same-pool misses mantêm single-flight;
 - resolução cara/rede continua bounded;
-- mapping canônico é recarregado antes da normalização final.
+- mapping canônico é recarregado antes da normalização final;
+- quando identidade só fica conhecida por RPC, trade normalized usa `effective_observed_at=max(notification.observed_at, mapping.observed_at)`.
 
-## Arquitetura vencedora de acquisition/radar — v30
+## Arquitetura vencedora de acquisition/radar — v30 baseline
 
 ```text
 Pump + PumpSwap logsSubscribe
@@ -172,7 +174,7 @@ Validated v30 capacity profile:
 
 Important: 256 PumpSwap orchestration coroutines **não** significam 256 RPCs ou 256 SQLite writers. External/expensive work remains bounded as above.
 
-## Unified Market Latency v30 — FORMAL PASS
+## Unified Market Latency v30 — FORMAL PASS baseline
 
 Canonical live result, 2026-09-04:
 - elapsed: 120.2s;
@@ -193,7 +195,7 @@ Canonical live result, 2026-09-04:
 - bundles: non-empty in aggregate (`wallets_total=3059`, `flow30_total=4229`);
 - replay/collision telemetry: auditable, no unexplained corruption.
 
-Frozen latency PASS conditions — all satisfied by v30:
+Frozen latency PASS conditions:
 1. no traceback/worker errors;
 2. drops 0;
 3. `reference_asset_episodes=0`;
@@ -206,70 +208,131 @@ Frozen latency PASS conditions — all satisfied by v30:
 10. replay counters auditáveis / sem corruption não explicada;
 11. `reservation_superset_violations=0`.
 
-**Não reabrir esse gate sem evidência de regressão.** Alterações futuras que compartilhem recursos com acquisition devem demonstrar que não quebram essas condições, mas o PASS v30 permanece o baseline canônico.
+O v30 permanece o **baseline histórico PASS**, mas qualquer pipeline integrado com novos providers deve continuar satisfazendo esses critérios no mesmo live run. O v31 mostrou que robustez sob unknown-pool burst ainda precisava endurecimento.
 
-## Estágio atual — Jupiter executable quote v31
+## v31 live — executable quote FAIL + robustness regression
 
-Goal: obter uma evidência de entrada executável/route-aware somente para **novo episode admitido**, sem assinatura ou envio de transação.
+Primeiro live v31, 2026-09-04:
+- elapsed: 123.3s;
+- received total: **5769**;
+- processed total: **5753**;
+- coverage: **99.7% PASS**;
+- true backlog: `16/5769 = 0.277% PASS`;
+- errors: 0;
+- drops: 0;
+- reference asset episodes: 0;
+- budget skips: 0;
+- superset violations: 0;
+- Pump radar p95: **7.223s FAIL**;
+- PumpSwap pipeline p95: **50.768s FAIL**.
 
-Código principal:
-- `src/jupiter_swap_v2.py` — Jupiter `/order` read-only / assembly;
-- `src/causal_quotes.py` + `src/causal_quote_store.py` — modelo/store causal;
-- `src/opportunity_provider_attempt_store.py` — lifecycle genérico de provider attempt;
-- `src/jupiter_episode_execution.py` — probe por episódio;
-- `unified_market_execution_quote_smoke_v31.py` — primeiro live smoke.
+Critical systems telemetry:
+- PumpSwap writer batch service p95: **76.2ms** — healthy;
+- event-loop lag p95: **28.6ms** — healthy;
+- network pool hydrations: **299**;
+- hydration successes: 299;
+- singleflight waits: **271**;
+- normalization->reservation p95: **50.006s**;
+- prepared->submit p95: **49.079s**.
+
+Interpretation:
+- SQLite writer did not regress;
+- event loop did not regress;
+- burst de pools desconhecidos criou long resolution sequence holes;
+- global ingress-ordered reservation coordinator reteve hints posteriores atrás desses holes;
+- late release criou burst stateful e também elevou Pump trigger-commit queue;
+- portanto v31 reabriu **robustness of systems latency**, não a validade histórica do v30 PASS.
+
+Jupiter v31 result, first predeclared 12 new admissions:
+- `AVAILABLE=0`;
+- `UNAVAILABLE=11`;
+- `METADATA_ERROR=1`;
+- other terminal errors=0;
+- terminal coverage=100%;
+- quotes persisted=11;
+- executable quotes=0;
+- reused attempts=0;
+- quote worker errors=0.
+
+Formal classification: **v31 executable-quote gate FAIL** because no persisted executable quote existed and the same run violated latency gates #6/#7.
+
+The 11 `UNAVAILABLE` rows contained normalizable Jupiter order evidence but no assembled transaction. The first live did not surface Jupiter's `errorCode/errorMessage`, so no causal claim is made yet about why assembly was unavailable.
+
+## v32 — batched unknown-pool hydration + Jupiter terminal reason
+
+Goal: harden v30/v31 against unknown-pool bursts **without weakening ordering or causal semantics**.
+
+New systems layer:
+- `src/pumpswap_batched_resolver_v32.py`;
+- concurrent unknown-pool misses still pass through cache/store/historical, per-pool single-flight and global expensive-resolution semaphore;
+- final network reads are coalesced into Solana `getMultipleAccounts` batches;
+- hydration budget remains counted per pool, not per RPC call;
+- default batch: 64 pools / max wait 5ms;
+- same `max_concurrent_resolutions=18`;
+- same global reservation sequence coordinator;
+- same per-asset FIFO;
+- same `effective_observed_at`;
+- same persistence/replay/detector/episode semantics.
+
+Jupiter diagnostics hardening:
+- `provider_error_code` and `provider_error_message` from `/order` are persisted in provider-attempt details;
+- `[jupiter-episode]` lines now print explicit terminal `reason=...`;
+- unavailable provider evidence is not guessed or rewritten.
+
+Wrapper:
+- `unified_market_execution_quote_smoke_v32.py`;
+- patches only the resolver class during the nested v31 run and restores it in `finally`;
+- prints `V32 BATCHED PUMPSWAP UNKNOWN-POOL HYDRATION DIAGNOSTIC`.
 
 Pre-live validation:
-- HEAD/protocolo v31 validado em GitHub Actions;
-- **666 tests / 0 failures** no run que inclui a camada v31 e seus invariantes;
-- live v31 ainda pendente.
+- **671 tests / 0 failures**;
+- GitHub Actions PASS on HEAD `b81a0f49e4c95f8d25608e0c64681e1cb7d1b440` before this context-only commit;
+- batch behavior, per-pool budget and patch restoration are covered.
+
+Expected evidence if v32 works:
+- `network_batch_calls << pool_hydrations`;
+- average batch size >1 under miss bursts;
+- normalization->reservation and prepared->submit p95 collapse;
+- current-run Pump/PumpSwap latency gates return <=5s;
+- Jupiter reason lines explain `UNAVAILABLE` without inference.
+
+## Current executable quote protocol
 
 Provider attempt lifecycle:
-- `STARTED` é persistido antes de I/O;
-- terminal: `AVAILABLE`, `UNAVAILABLE`, `CONFIG_MISSING`, `PROVIDER_ERROR`, `METADATA_ERROR`, `NORMALIZATION_ERROR`;
-- terminal é imutável;
-- crash com `STARTED` permanece visível;
-- replay de attempt não reexecuta provider silenciosamente.
+- `STARTED` persisted before I/O;
+- terminal statuses: `AVAILABLE`, `UNAVAILABLE`, `CONFIG_MISSING`, `PROVIDER_ERROR`, `METADATA_ERROR`, `NORMALIZATION_ERROR`;
+- terminal immutable;
+- crash with STARTED remains visible;
+- replay does not silently reexecute provider.
 
-Frozen first-smoke cohort/config:
-- primeiros 12 **novos admissions** da run, em ordem;
-- 2 quote workers;
+Frozen cohort/config:
+- first 12 **new admissions** of fresh run;
+- 2 Jupiter workers;
 - input USDC;
 - notional US$25;
 - slippage request 100 bps;
-- token decimals via causal `getTokenSupply` lookup/cache;
+- token decimals via causal `getTokenSupply`;
 - Jupiter timeout 5s;
-- taker = public Solana address configurado em `JUPITER_TAKER_PUBLIC_KEY`;
-- nenhuma private key carregada;
-- nenhum signing;
-- nenhum execute/submit.
+- taker = public Solana address only;
+- no private key;
+- no signing;
+- no `/execute` or submit.
 
-Causal rules:
-1. provider só é enfileirado após `admit_opportunity_episode(...) == True`;
-2. continuation/replay não cria provider call novo;
-3. `quote.observed_at >= episode.first_trigger_observed_at` obrigatório;
-4. missing/error não recebe substituição posterior;
-5. `AVAILABLE` requer artifact com `executable=True` / assembled candidate transaction;
-6. candidate transaction assembly não prova landing/fill.
+Gate remains:
+- all 11 current-run market-latency conditions green;
+- selected >0 (`0 => INCONCLUSIVE_NO_SAMPLE`);
+- terminal coverage=100%;
+- no selected STARTED;
+- CONFIG_MISSING=0;
+- quote_worker_errors=0;
+- reused_attempts=0 on fresh run;
+- >=1 `AVAILABLE` executable quote persisted;
+- causal clocks valid;
+- no synthetic/backfilled provider evidence.
 
-Gate v31 completo está congelado em:
-`docs/jupiter-executable-quote-v31-protocol-2026-09-04.md`.
+Não existe threshold arbitrário de `% AVAILABLE`; distribuição é evidence descritiva. Não alterar notional/slippage/taker retroativamente para fabricar PASS sem primeiro interpretar o motivo explícito do provider.
 
-Resumo mandatory para PASS do primeiro live:
-- v30 market-latency conditions continuam verdes durante a run;
-- selected > 0 (zero sample => `INCONCLUSIVE_NO_SAMPLE`);
-- terminal coverage = 100%;
-- nenhuma tentativa selecionada termina em `STARTED`;
-- `CONFIG_MISSING=0`;
-- `quote_worker_errors=0`;
-- fresh run: `reused_attempts=0`;
-- pelo menos 1 `AVAILABLE` executable quote persistido;
-- clocks causais válidos;
-- sem synthetic/backfilled provider evidence.
-
-Não existe threshold arbitrário de `% AVAILABLE` no primeiro smoke; distribuição de statuses é evidence descritiva para provider coverage.
-
-## Ordem congelada após v31 PASS
+## Ordem congelada após executable-quote PASS
 
 1. minimal hazard/risk provider com explicit missing/failure e provider-attempt lifecycle;
 2. historical wallet outcomes resolvidos antes de T0 quando aplicável;
@@ -302,8 +365,8 @@ Métricas mínimas:
 - native acquisition: Pump PASS / PumpSwap PASS;
 - causal unified local bundle: PASS;
 - replay integrity: hardened e auditável;
-- unified systems latency: **FORMAL PASS v30**;
-- executable Jupiter entry quote: code/CI ready, first live v31 pending;
+- unified systems latency: **v30 historical FORMAL PASS; v31 integrated run exposed robustness regression now targeted by v32**;
+- executable Jupiter entry quote: **v31 first live FAIL; v32 live pending**;
 - hazard/risk integration: pending;
 - economic edge: not established;
 - executable fill/landing: not validated;
