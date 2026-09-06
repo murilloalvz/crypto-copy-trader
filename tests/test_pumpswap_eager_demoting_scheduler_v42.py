@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 
 from src.pumpswap_eager_demoting_scheduler_v42 import EagerDemotingReadyAssetSchedulerV42
@@ -29,9 +28,12 @@ class EagerDemotingSchedulerV42Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scheduler.demoted_pending_jobs, 1)
         self.assertEqual(scheduler.waiting_backlog(), 0)
 
-        ready1 = await scheduler.get_ready()
-        ready2 = await scheduler.get_ready()
-        self.assertEqual({ready1.payload, ready2.payload}, {"opener", "follower"} | ({"new"} if ready2.payload == "new" else set()))
+        first = await scheduler.get_ready()
+        second = await scheduler.get_ready()
+        third = await scheduler.get_ready()
+        self.assertEqual(first.payload, "opener")
+        self.assertEqual(second.payload, "follower")
+        self.assertEqual(third.payload, "new")
 
     async def test_ambiguous_pending_follower_remains_fifo(self):
         stateful = {"opener": True, "follower": True, "other": True}
