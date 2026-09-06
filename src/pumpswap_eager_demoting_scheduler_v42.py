@@ -26,11 +26,15 @@ class EagerDemotingReadyAssetSchedulerV42(DemotingReadyAssetSchedulerV34[T], Gen
     No detector, episode-window, reservation, replay, as-of or trigger semantics change.
     """
 
+    last_instance: "EagerDemotingReadyAssetSchedulerV42 | None" = None
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.eager_submit_demote_passes = 0
         self.eager_submit_demoted_jobs = 0
         self.eager_submit_demoted_tickets = 0
+        EagerDemotingReadyAssetSchedulerV42.last_instance = self
+        type(self).last_instance = self
 
     def submit(self, payload: T, reservation) -> None:
         before_jobs = self.demoted_pending_jobs
