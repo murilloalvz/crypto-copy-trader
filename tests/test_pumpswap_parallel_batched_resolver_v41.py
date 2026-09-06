@@ -64,6 +64,7 @@ class ParallelBatchedResolverV41Tests(unittest.TestCase):
             resolver._batch_queue.put((f"pool-{index}", future))
 
         results = [future.result(timeout=2.0) for future in futures]
+        resolver._batch_queue.join()
         snapshot = resolver.parallel_batch_snapshot()
         resolver.shutdown_parallel_batches(wait=True)
 
@@ -114,6 +115,7 @@ class ParallelBatchedResolverV41Tests(unittest.TestCase):
         release.set()
         for future in futures:
             future.result(timeout=2.0)
+        resolver._batch_queue.join()
         snapshot = resolver.parallel_batch_snapshot()
         resolver.shutdown_parallel_batches(wait=True)
 
