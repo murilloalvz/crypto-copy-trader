@@ -24,12 +24,9 @@ Status atual:
 - Solana RPC minimal hazard v37 semantics: **PASS**
 - Jupiter route-only plumbing: **PASS**
 - v43 integrated cohort: **LIVE SYSTEMS PASS 11/11 / SAMPLE INCONCLUSIVE 18<30**
-- v43 sample loss cause: **PROVIDER THROTTLING CONFIRMED** — 15/40 Solana RPC 429 + 7/25 Jupiter entry 429
 - v44 provider-paced cohort: **LIVE SYSTEMS PASS 11/11 / 39 DECISIONS / FORWARD COMPLETE / OVERALL INCONCLUSIVE**
-- v44 hazard pacing: **40/40 AVAILABLE / 0 hazard 429**
-- v44 entry pacing: **39/40 AVAILABLE / 1 Jupiter entry 429**
-- v44 forward missingness: **all 24 SELL PROVIDER_ERROR = Jupiter HTTP 400 `Failed to get quotes`, not 429**
-- v45 larger predeclared cohort: **CODE/CI PASS / LIVE PENDING**
+- v45 larger single cohort: **LIVE SYSTEMS FAIL 10/11 — PumpSwap p95 9.512s; collector correctly not started**
+- v46 dual prospective v44-size subcohorts: **CODE/CI PASS / LIVE PENDING**
 - Funded executable BUY assembly: **BLOCKED_BY_FUNDING**
 - Solana Tracker hazard v36: **BLOCKED_BY_PROVIDER_CREDITS**
 - Wallet history v38: **strict lineage correct / official sample inconclusive**
@@ -68,7 +65,7 @@ Version: `market_opportunity_radar_v1_1_tx_aware`
 - com tx identity coverage 100%: >=4 unique fast tx
 - direction descritiva
 
-Nenhum threshold foi alterado pelos resultados v40-v45.
+Nenhum threshold foi alterado pelos resultados v40-v46.
 
 ## Systems latency gate
 
@@ -101,7 +98,16 @@ v44 também manteve systems PASS 11/11:
 - Pump p95 1.733s
 - PumpSwap p95 3.808s
 
-Latency engine permanece congelado.
+v45 single-cohort 50/40 live:
+- systems **FAIL 10/11**
+- coverage 99.7%
+- true backlog 0.311%
+- Pump p95 2.732s PASS
+- PumpSwap p95 **9.512s FAIL**
+- hazard starts 50; entry starts 47
+- collector did not start
+
+Interpretation: increasing one acquisition from cap40 to cap50 is not operationally neutral under the current machine/provider side-work profile. The v45 cohort must not be used as economic evidence. Do not raise workers or relax the latency gate to rescue it.
 
 ## Funding / official executable entry
 
@@ -205,12 +211,6 @@ Frozen pacing:
 - Jupiter route-only BUY starts: 1000ms apart
 - Jupiter route-only SELL starts: 250ms apart
 
-Critical semantics:
-- pacing before the original at-most-once provider capture;
-- no retry after provider failure;
-- no backfill/later replacement;
-- no detector/episode/FIFO/as-of/economic-definition changes.
-
 Live run `route-research-forward-cohort-20260906-44`:
 - systems PASS 11/11
 - selected 40
@@ -247,55 +247,64 @@ Classifications:
 - 3600s: `INCONCLUSIVE_SAMPLE_LT_30`
 - overall: `INCONCLUSIVE_V43_FORWARD_COHORT`
 
-Interpretation: first larger causal sample remains economically negative/heavy-tailed. This is not yet a formal negative-edge conclusion because two horizons missed the n>=30 descriptive gate by one label. Do not tune strategy from v44.
+Interpretation: first larger causal sample remains economically negative/heavy-tailed. Do not tune strategy from v44.
 
-## v45 larger predeclared cohort
-
-Protocol: `docs/route-only-forward-economic-cohort-v45-protocol-2026-09-06.md`
+## v45 larger single cohort — live systems failure
 
 Files:
 - `route_research_forward_cohort_v45.py`
 - `tests/test_route_research_forward_cohort_v45.py`
 
+Live result:
+- single acquisition cap 50 / minimum decisions 40
+- same-run systems 10/11
+- PumpSwap p95 9.512s >5s
+- hazard starts 50; entry starts 47
+- forward collector correctly did not start
+
+Conclusion: **v45 is rejected as the sampling path**. A larger single concurrent acquisition changes operational load enough to violate the frozen systems gate.
+
+## v46 dual prospective v44-size subcohorts
+
+Files:
+- `route_research_forward_cohort_v46.py`
+- `src/route_research_multi_evaluation_v46.py`
+- `tests/test_route_research_forward_cohort_v46.py`
+
 Status: **CODE/CI PASS / LIVE PENDING**.
 
-v45 changes only sample size relative to v44:
-- selected cap: **50**
-- minimum clean research decisions before collector starts: **40**
+Protocol:
+- one command derives two fresh run keys: `<base>-A` and `<base>-B`;
+- runs **two complete v44 subcohorts sequentially**;
+- each subcohort keeps cap40 / minimum30;
+- each independently must have systems 11/11, >=30 decisions, terminal collector, target lateness p95 <=2s and lineage violations 0;
+- if A fails, B is not used to rescue it; execution stops fail-closed;
+- if both pass, evaluation aggregates the persisted A+B outcomes while preserving original run keys and explicit missingness;
+- aggregate readiness still requires >=30 AVAILABLE labels at each horizon and zero lineage violations.
 
-Everything else remains frozen:
-- acquisition 120s
-- hazard pacing 650ms
-- BUY pacing 1000ms
-- SELL pacing 250ms
-- route-only BUY $25 / 100bps
-- exact horizons 300/900/3600s
-- same-run systems gate 11/11
-- no retry/backfill
-- same detector/provider/economic definitions
+Everything else remains frozen: detector, $25 route-only BUY, 100bps, 300/900/3600s, v44 pacing, no retry/backfill.
 
-Reason for 50/40: v44 forward availability at 900/3600 was 29/39 (~74.4%). The larger predeclared cohort is intended only to absorb legitimate `Failed to get quotes` missingness and reach the already-defined >=30 AVAILABLE labels/horizon without changing route semantics after seeing outcomes.
+Reason for v46: gain statistical sample by **time-separated independent cohorts**, not by increasing one hot-path acquisition above the systems capacity demonstrated by v44/v45.
 
 ## Immediate next work
 
-Run one fresh v45 cohort with a new run key and no concurrent market/collector process.
+Run one fresh v46 base cohort with no concurrent market/collector process. Keep the PC awake for both sequential subcohorts.
 
 Interpretation order:
-1. same-run systems must remain 11/11;
-2. require >=40 fresh research decisions before collector starts;
-3. inspect hazard/entry 429s without retrying them;
-4. require terminal forward collection and target lateness p95 <=2s;
-5. preserve all `Failed to get quotes` as explicit missingness;
-6. check whether all three horizons reach >=30 AVAILABLE labels;
-7. only then perform descriptive comparison with v40/v44, with detector/features/thresholds still frozen.
+1. subcohort A must independently pass systems/collection gates;
+2. subcohort B must independently pass the same gates;
+3. preserve all `Failed to get quotes` missingness;
+4. inspect aggregate n/coverage per horizon;
+5. only if all three aggregate horizons are descriptive-ready, compare aggregate economics against v40/v44 without changing detector/features/thresholds.
 
 ## Shadow / live
 
-- systems current: **PASS**
+- systems current canonical path: **PASS at v44-size acquisition**
+- v45 single larger acquisition: **REJECTED — SYSTEMS FAIL**
+- v46: **CODE/CI PASS / LIVE PENDING**
 - route-only research plumbing: **PASS**
 - on-chain hazard semantics: **PASS**
 - v44 economics: **OVERALL INCONCLUSIVE / NEGATIVE-HEAVY-TAILED OBSERVATION**
-- v45: **CODE/CI PASS / LIVE PENDING**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official decision/outcomes: **PENDING**
 - economic edge: **NOT ESTABLISHED**
