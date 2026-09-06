@@ -35,7 +35,7 @@ class EagerDemotingSchedulerV42Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.payload, "follower")
         self.assertEqual(third.payload, "new")
 
-    async def test_ambiguous_pending_follower_remains_fifo(self):
+    async def test_ambiguous_pending_follower_remains_fifo_without_blocking_other_asset(self):
         stateful = {"opener": True, "follower": True, "other": True}
         scheduler = EagerDemotingReadyAssetSchedulerV42(
             should_remain_stateful=lambda payload: stateful[payload]
@@ -51,12 +51,18 @@ class EagerDemotingSchedulerV42Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scheduler.eager_submit_demoted_jobs, 0)
         self.assertEqual(scheduler.waiting_backlog(), 1)
 
+        # Different assets stay independent: opener and unrelated work are ready, while the
+        # same-asset follower remains pending until opener completion advances its FIFO cursor.
         first = await scheduler.get_ready()
+        second = await scheduler.get_ready()
         self.assertEqual(first.payload, "opener")
+        self.assertEqual(second.payload, "other")
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+
         await scheduler.complete(first.reservation)
         scheduler.ready_task_done()
-        second = await scheduler.get_ready()
-        self.assertEqual(second.payload, "follower")
+        third = await scheduler.get_ready()
+        self.assertEqual(third.payload, "follower")
 
     async def test_ready_job_is_never_demoted_by_eager_submit_pass(self):
         stateful = {"ready": True, "other": True}
