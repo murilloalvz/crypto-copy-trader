@@ -1,13 +1,13 @@
 # Crypto Copy Trader — Project Context
 
-Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado fica em `docs/`; aqui ficam estado canônico, invariantes, gates e próxima ordem de trabalho.
+Este arquivo é o **source of truth operacional e científico** do projeto. Histórico detalhado permanece em `docs/`.
 
-## Estado atual
+## Estado canônico
 
 - Repositório: `murilloalvz/crypto-copy-trader`
 - Branch: `feat/exit-engine-v1`
 - Modo: **PAPER / RESEARCH / READ ONLY**
-- Tese: **market-first Solana Opportunity Intelligence / Opportunity Engine**
+- Tese ativa: **market-first Solana Opportunity Intelligence / Opportunity Engine**
 
 Fluxo oficial:
 `market -> radar -> causal episode T0 -> flow/wallet/context -> executable entry/hazard -> official decision_as_of -> executable forward outcomes -> economic validation -> shadow`
@@ -15,24 +15,25 @@ Fluxo oficial:
 Trilha paralela sem funding:
 `fresh episode -> on-chain hazard -> route-only BUY -> research_decision_as_of -> route-only SELL +5/+15/+60 -> descriptive causal evaluation`
 
-### Status canônico
-
+Status:
 - Pump acquisition: **PASS**
-- PumpSwap acquisition + causal pool resolution: **PASS**
-- Detector / episode persistence / replay hardening: **PASS**
+- PumpSwap acquisition + causal resolution: **PASS**
+- Detector / episode / replay hardening: **PASS**
 - Unified Market Latency v34/v37: **FORMAL PASS 11/11**
-- Jupiter route availability: **PASS 12/12**
+- Unified Market Latency v42, same-run with current route-research plumbing: **FORMAL PASS 11/11**
+- Solana RPC minimal hazard v37: **PASS**
+- Jupiter route availability: **PASS**
 - Funded executable BUY assembly: **BLOCKED_BY_FUNDING**
 - Solana Tracker hazard v36: **BLOCKED_BY_PROVIDER_CREDITS**
-- Solana RPC minimal hazard v37: **FORMAL PROVIDER PASS**
 - Wallet history v38: **strict lineage correct / official sample inconclusive**
-- v39 route-only official-schedule plumbing: **CODE/CI PASS**
-- v40 first route-only cohort: **COLLECTOR PASS / economic sample INCONCLUSIVE / same-run latency FAIL**
-- v41 structural hardening: **CODE/CI PASS / LIVE PENDING**
+- v40 first route-only forward cohort: **collector PASS / economic microcohort INCONCLUSIVE / historical same-run systems FAIL**
+- v41 accounting + parallel hydration: **implemented / live plumbing PASS; systems still failed at 6.387s PumpSwap p95**
+- v42 eager proven-continuation demotion: **CODE/CI PASS + LIVE SYSTEMS PASS 11/11 + route plumbing PASS**
+- v43 integrated forward economic cohort runner: **CODE/CI PASS / LIVE PENDING**
 - Official `decision_as_of`: **PENDING**
 - Official executable forward outcomes: **PENDING**
 - Economic edge: **NOT ESTABLISHED**
-- Shadow/live: **NOT RELEASED**
+- Shadow/live money: **NOT RELEASED**
 - Não iniciar coleta oficial de 12h ainda.
 
 ## Invariantes congelados
@@ -64,29 +65,46 @@ Version: `market_opportunity_radar_v1_1_tx_aware`
 - com tx identity coverage 100%: >=4 unique fast tx
 - direction descritiva
 
-Nenhum threshold foi alterado pelos resultados v40.
+Nenhum threshold foi alterado pelos resultados v40-v43.
 
-## Unified Market Latency gate
+## Systems latency — gate congelado
 
 ALL:
-1. no traceback/worker errors
+1. no worker/traceback errors
 2. drops 0
-3. reference assets 0
+3. reference asset episodes 0
 4. coverage >=95%
-5. true total deadline backlog <=5%
-6. Pump p95 <=5s
+5. true backlog `(received - radar_processed) / received` <=5%
+6. Pump radar p95 <=5s
 7. PumpSwap causal pipeline p95 <=5s
 8. hydration budget skips 0
-9. bundles não sistematicamente vazios
-10. replay/collision counters auditáveis
+9. wallet/flow bundles não vazios
+10. replay/audit sem fatal corruption
 11. reservation superset violations 0
 
-Canonical PASS v37:
-- coverage 99.8%
-- true backlog 0.173%
-- Pump p95 1.397s
-- PumpSwap p95 1.695s
-- errors/drops/ref/budget/superset violations 0
+### Canonical current same-run PASS — v42
+
+Run `unified-market-route-research-smoke-20260906-42`:
+- received 6823
+- processed 6823
+- coverage 100.0%
+- true backlog 0%
+- Pump p95 1.842s
+- PumpSwap pipeline p95 3.302s
+- drops/errors/reference assets/budget skips/superset violations = 0
+- bundles non-empty
+- replay/audit live and no fatal error
+
+Result: **FORMAL PASS 11/11**.
+
+v42 eager demotion evidence:
+- submit-time proof passes 282
+- eager-demoted jobs 19
+- eager-demoted tickets 20
+- total demoted pending jobs 173
+- finalizer acks pending 0
+
+Do not modify detector, worker profile, SQLite, hydration, scheduler or continuation semantics without new evidence.
 
 ## Funding / official executable entry
 
@@ -95,36 +113,29 @@ Frozen Jupiter official entry:
 - purpose `entry_executable_buy_v1`
 - USDC input
 - US$25
-- slippage 100bps
+- 100bps
 - public taker only
-- no private key/signing/execute
+- no signing/execute
 
-Persisted result:
-- route_id 12/12
+Persisted earlier diagnostic:
+- routes 12/12
 - assembled tx 0/12
 - reason 12/12 `Insufficient funds`
 
-Therefore:
-- route availability **PASS**
-- funded assemblability **BLOCKED_BY_FUNDING**
+Therefore route availability passed; funded assemblability remains **BLOCKED_BY_FUNDING**.
 
 ## Hazard
 
 v37 provider `solana_rpc_mint_hazard_v1 / token_hazard_minimal_v1` remains the minimal validated provider.
 Core: token program, decimals, supply, mint authority, freeze authority, Token-2022 metadata when exposed.
 
-`getTokenLargestAccounts` is optional auxiliary evidence and must never be called holder/owner concentration without owner resolution.
+`getTokenLargestAccounts` is optional auxiliary evidence and is **token-account concentration**, not holder/owner concentration.
 
-## Wallet history v38
+## Wallet market-first history v38
 
-Strict pre-T0 only:
-- prior official decision < current T0
-- prior forward outcome observed < current T0
-- prior exit quote observed < current T0
-- same-second equality excluded
-- legacy Discovery/Copyability / leaderboard / exploratory wallet P&L forbidden as official label source
+Strict pre-T0 official lineage only. Legacy Discovery/Copyability, leaderboard PnL, exploratory v2/v3 and later backfill are forbidden as official labels.
 
-Persisted diagnostic on v37 run:
+Persisted diagnostic on canonical v37 run:
 - 12 episodes
 - 194 participant-wallet observations
 - 0 prior official decisions
@@ -132,189 +143,116 @@ Persisted diagnostic on v37 run:
 - 0 associations
 - classification `INCONCLUSIVE_NO_OFFICIAL_MARKET_FIRST_HISTORY_SAMPLE`
 
-This is correct missingness, not strategy failure.
+Correct missingness, not strategy failure.
 
-## v40 — first causal route-only forward cohort
+## v40 — first causal route-only microcohort
 
-Run:
-`unified-market-route-research-smoke-20260905-40`
+Run `unified-market-route-research-smoke-20260905-40`.
 
-### Same-run systems
-
-- received 5330
-- radar processed 5236
-- coverage 98.2% — PASS
-- true backlog 94/5330 = 1.764% — PASS
-- Pump p95 1.685s — PASS
-- PumpSwap pipeline p95 **36.416s — FAIL**
-- reference assets 0
-- drops 0
-- worker errors 0
-- hydration budget skips 0
-- reservation superset violations 0
-
-Dominant clocks:
-- PumpSwap normalization -> reservation p95 ~35.555s
-- prepared -> submit p95 ~34.655s
-- pipeline p95 ~36.416s
-- writer physical batch service p95 only ~85.8ms
-
-Burst evidence:
-- 347 network hydrations
-- 189 successful hydration batches
-- 378 endpoint requests
-- 0 all-hedges-failed
-- one hot asset reached 332 reservations / 239 max outstanding
-
-Historical v40 same-run systems classification therefore remains **FAIL**. Do not rewrite it.
-
-### v40 hazard / entry accounting
-
-v37 hazard inside v40:
-- selected 12
-- AVAILABLE 11
-- PROVIDER_ERROR 1
-- terminal coverage 100%
-- provider classification PASS
-
-v40 research:
-- selected 12
-- route-only Jupiter entry attempts 11 AVAILABLE
-- research decisions frozen 11
-- forward schedules 33
-- route-only executable violations 0
-- clock violations 0
-- official decision mutation 0
-- historical v40 entry terminal coverage reported 91.7%
-- historical classification `FAIL_ROUTE_ONLY_RESEARCH_DECISION_PLUMBING`
-
-Source review proved the denominator bug: the 12th selected episode had terminal hazard PROVIDER_ERROR, so Jupiter entry was intentionally **not attempted**. v40 divided 11 entry terminals by all 12 selected episodes and mislabeled explicit upstream missingness as missing entry plumbing.
-
-Historical classification is preserved. v41 fixes future accounting only.
-
-### v40 forward collector — PASS
-
+Collector:
 - scheduled 33
 - AVAILABLE 30
 - PROVIDER_ERROR 3
-- 300s: 10 AVAILABLE / 1 PROVIDER_ERROR
-- 900s: 10 AVAILABLE / 1 PROVIDER_ERROR
-- 3600s: 10 AVAILABLE / 1 PROVIDER_ERROR
-- target lateness p95 1s, max1s
-- reused 0
+- 10 AVAILABLE per 300/900/3600 horizon
+- target lateness p95 1s
 - collector errors 0
-- executable semantic violations 0
-- classification `PASS_ROUTE_ONLY_FORWARD_COLLECTION_COMPLETE`
+- executable violations 0
+- PASS collection complete
 
-The same episode failed provider-side at all three horizons. Exact persisted provider reason must be inspected with:
-`route_research_structural_diagnostic_v41.py`
-No explanation is invented before that diagnostic.
+Repeated forward provider failure was one token failing Jupiter `/order` with HTTP 400 `Failed to get quotes` at all three horizons: persistent route/provider evidence, not collector plumbing failure.
 
-### v40 economic microcohort
+Economic microcohort:
+- 300s n10: positive40%, mean -22.788%, median -32.044%, PF0.412, best +138.698%, mean without best -40.731%
+- 900s n10: positive10%, mean -47.031%, median -50.019%, PF0.049
+- 3600s n10: positive10%, mean -53.070%, median -50.184%, PF0.052
 
-Route-only research labels only; not landed/fill P&L.
+All horizons: **INCONCLUSIVE_SAMPLE_LT_30**. Strongly negative/heavy-tailed first observation, but insufficient for edge conclusion. No tuning from it.
 
-300s:
-- n=10
-- positive 40%
-- mean -22.788%
-- median -32.044%
-- PF 0.412
-- best +138.698%
-- worst -99.275%
-- mean without best -40.731%
-- best winner = 86.991% of gross positive return
+## v41 / v42 structural resolution
 
-900s:
-- n=10
-- positive 10%
-- mean -47.031%
-- median -50.019%
-- PF 0.049
+v41 fixed:
+1. terminal upstream hazard failure is an explicit disposition, not a missing Jupiter entry;
+2. hidden one-lane PumpSwap hydration transport became bounded parallel batches within the existing resolution budget.
 
-3600s:
-- n=10
-- positive 10%
-- mean -53.070%
-- median -50.184%
-- PF 0.052
+v41 live:
+- route-research decision plumbing PASS
+- entry terminal coverage among eligible 100%
+- PumpSwap p95 improved from v40 ~36.4s to ~6.387s but still failed systems gate.
 
-Every horizon: `INCONCLUSIVE_SAMPLE_LT_30`.
+v42 then reused the exact v34/v27 continuation proof at submit time over already-pending followers. Only proven continuation-only pending work is demoted; ready/running/ambiguous/late-earlier/state-mutating work remains strict FIFO.
 
-Interpretation: first clean microcohort is strongly negative/heavy-tailed, but too small for edge conclusion. Do not tune thresholds from it.
+v42 live result: **systems PASS 11/11** and route-research decision plumbing PASS in the same run.
 
-## v41 — structural hardening — CODE/CI PASS, LIVE PENDING
+Latency engine is now frozen.
+
+## v43 — integrated forward economic cohort
 
 Protocol:
-`docs/route-research-v41-structural-hardening-2026-09-06.md`
+`docs/route-only-forward-economic-cohort-v43-protocol-2026-09-06.md`
 
-New files:
-- `src/pumpswap_parallel_batched_resolver_v41.py`
-- `unified_market_route_research_smoke_v41.py`
-- `route_research_structural_diagnostic_v41.py`
-- `tests/test_pumpswap_parallel_batched_resolver_v41.py`
-- `tests/test_unified_market_route_research_smoke_v41.py`
+Files:
+- `route_research_forward_cohort_v43.py`
+- `src/route_research_forward_collection_v43.py`
+- `tests/test_route_research_forward_cohort_v43.py`
 
-### v41 fix 1 — correct terminal accounting
+Status: **CODE/CI PASS / LIVE PENDING**.
 
-Selected episode terminal disposition is now either:
-- terminal non-AVAILABLE hazard -> explicit upstream disposition, no fake Jupiter call; or
-- hazard AVAILABLE -> eligible Jupiter entry -> terminal entry disposition.
+Purpose: eliminate the manual `smoke -> start collector` handoff and collect the first >=30 causal route-only outcomes per horizon under the frozen v42 market path.
 
-Separate metrics:
-- `selected_terminal_disposition_coverage_pct`
-- `entry_terminal_coverage_among_eligible_pct`
+Frozen defaults:
+- acquisition 120s
+- predeclared cohort cap 40
+- minimum clean research decisions 30
+- hazard cap = research cap
+- route-only BUY notional $25
+- slippage parameter 100bps
+- exact horizons 300/900/3600s
+- forward lateness descriptive gate p95 <=2s
 
-A missing entry after AVAILABLE hazard still fails closed.
+v43 execution logic:
+1. run fresh v42 acquisition/research path;
+2. capture the v42 diagnostics while still printing them live;
+3. automatically audit same-run systems gate 11/11;
+4. if systems fail, stop — no forward collection;
+5. audit persisted research schedules;
+6. if <30 decisions or incomplete 3-horizon schedules, preserve undersized run and stop;
+7. otherwise start forward collector immediately;
+8. derive collector stop time from the **latest persisted target + grace**, not a blind fixed 3700s;
+9. collect route-only SELL only at/after exact targets;
+10. run descriptive evaluation automatically at the end.
 
-### v41 fix 2 — remove hidden single-batch network serialization
+`READY_FOR_DESCRIPTIVE_RESEARCH_REVIEW` requires:
+- same-run systems 11/11
+- >=30 fresh decisions
+- exact schedules
+- terminal forward collection
+- target lateness p95 <=2s
+- lineage violations 0
+- >=30 AVAILABLE outcomes at each of 300/900/3600s
 
-Source review found v32/v33 had a single daemon batch thread executing `_fetch_batch` synchronously. Therefore only one `getMultipleAccounts` batch was in flight even with an 18-resolution outer budget.
-
-v41 keeps one ordered dispatcher but executes bounded parallel batches.
-Frozen candidate profile:
-- hydration batch workers 8
-- hedge endpoints 2
-- possible endpoint requests 16
-- existing `max_concurrent_resolutions` 18
-
-Hard invariant:
-`hydration_batch_workers * hedge_endpoints <= max_concurrent_resolutions`
-
-This uses the existing expensive-work budget rather than raising it blindly.
-
-No detector/FIFO/as_of/episode/hydration-budget semantics changed.
-
-### v41 fresh live gate
-
-Code/CI PASS is not live PASS.
-A fresh 120s smoke must independently satisfy:
-- original systems latency 11/11
-- route research selected terminal disposition 100%
-- entry terminal coverage among hazard-AVAILABLE episodes 100%
-- no config/reuse/worker/clock/official-decision/schedule/executable-semantic violations
-- >=1 route-only AVAILABLE entry for PASS rather than inconclusive
+This classification is sample/lineage readiness only. It is **not** profitability, executability, landing/fill or live-money PASS.
 
 ## Immediate next work
 
-1. Run the persisted **read-only** structural diagnostic on the completed v40 run to surface the exact repeated Jupiter SELL provider error.
-2. Run a fresh **v41 120s structural smoke** with a new run key.
-3. Treat that v41 run as structural validation first; do **not** backfill any missed forward target.
-4. If systems latency returns to PASS and route accounting passes, freeze v41 plumbing.
-5. Only then start the next full forward cohort toward n>=30 per horizon.
-6. Keep detector/features/thresholds frozen until enough clean out-of-sample labels exist.
+Run one fresh v43 integrated cohort with a new run key. Keep the PC awake and do not start another market/collector process concurrently.
+
+After v43 completes:
+1. inspect same-run systems 11/11;
+2. inspect admitted decision count and provider missingness;
+3. inspect forward terminal coverage and target lateness;
+4. inspect per-horizon descriptive economics;
+5. compare with v40 microcohort without changing detector/features/thresholds;
+6. if descriptive sample is clean, design the next predeclared time-split/ablation analysis for wallet/hazard/flow incremental value.
 
 ## Shadow / live
 
-- systems canonical v37: **PASS**
-- v40 same-run systems: **FAIL**
-- Jupiter route: **PASS**
-- funded executable BUY: **BLOCKED_BY_FUNDING**
+- systems current: **PASS**
+- route-only research plumbing: **PASS**
 - on-chain hazard: **PASS**
-- wallet history: **LINEAGE CORRECT / OFFICIAL SAMPLE INCONCLUSIVE**
-- v40 route-only collector: **PASS**
-- v40 economics: **INCONCLUSIVE / observed negative microcohort**
-- v41 structural hardening: **CODE/CI PASS / LIVE PENDING**
+- funded executable BUY: **BLOCKED_BY_FUNDING**
+- wallet official history: **LINEAGE CORRECT / SAMPLE INCONCLUSIVE**
+- v40 economics: **INCONCLUSIVE / negative microcohort observed**
+- v43 economic cohort: **CODE/CI PASS / LIVE PENDING**
 - official decision/outcomes: **PENDING**
 - economic edge: **NOT ESTABLISHED**
 - shadow/live money: **NOT RELEASED**
