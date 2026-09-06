@@ -41,8 +41,8 @@ def _exit_horizon_from_purpose(purpose: str) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Read-only v41 structural diagnostic for a completed v40 route-research run. "
-            "Uses persisted SQLite evidence only; no RPC/Jupiter calls and no writes."
+            "Read-only structural diagnostic for route-research runs. Uses persisted SQLite "
+            "evidence only; no RPC/Jupiter calls and no writes."
         )
     )
     parser.add_argument("--run-key", required=True)
@@ -72,13 +72,10 @@ def main() -> int:
     ]
 
     entry_by_episode = {item.episode_key: item for item in entries}
-    exits_by_episode: dict[str, list] = defaultdict(list)
-    for item in exits:
-        exits_by_episode[item.episode_key].append(item)
 
     print("Crypto Copy Trader — Route Research Structural Diagnostic v41")
     print(
-        "Mode: READ ONLY — persisted v40/v37 evidence only; no provider calls, no backfill, no writes."
+        "Mode: READ ONLY — persisted hazard/Jupiter evidence only; no provider calls, no backfill, no writes."
     )
     print(f"run_key={run_key}")
     print("\nSELECTED / ENTRY ACCOUNTING")
@@ -132,6 +129,10 @@ def main() -> int:
             print(
                 f"     hazard_error={hazard.error_type or '-'}:{_one_line(hazard.error_message)}"
             )
+        if entry is not None and entry.status not in {"AVAILABLE", "STARTED"}:
+            print(
+                f"     entry_error={entry.error_type or '-'}:{_one_line(entry.error_message)}"
+            )
 
     selected = len(hazards)
     pipeline_terminal = terminal_hazard_exclusions + eligible_entry_terminal
@@ -154,6 +155,17 @@ def main() -> int:
         f"unexpected_entry_after_hazard_failure={unexpected_entry_after_hazard_failure}"
     )
 
+    entry_fingerprints: Counter[tuple[str, str]] = Counter()
+    for entry in entries:
+        if entry.status not in {"AVAILABLE", "STARTED"}:
+            entry_fingerprints[(entry.error_type or entry.status, _one_line(entry.error_message))] += 1
+    if not entry_fingerprints:
+        print("entry_provider_error_fingerprints={}")
+    else:
+        print("entry_provider_error_fingerprints=")
+        for (error_type, message), count in entry_fingerprints.most_common():
+            print(f"  count={count} error_type={error_type} message={message}")
+
     if not selected:
         entry_classification = "INCONCLUSIVE_NO_RECONSTRUCTABLE_SELECTED_SAMPLE"
     elif (
@@ -168,8 +180,8 @@ def main() -> int:
         entry_classification = "FAIL_ENTRY_OR_UPSTREAM_ACCOUNTING"
     print(f"entry_accounting_classification={entry_classification}")
     print(
-        "note=v40 historical classification is not rewritten. This diagnostic only distinguishes "
-        "an explicit terminal hazard exclusion from a genuinely missing eligible entry attempt."
+        "note=historical classifications are not rewritten. This diagnostic distinguishes explicit "
+        "upstream/provider missingness from genuinely missing eligible entry plumbing."
     )
 
     print("\nFORWARD PROVIDER ERRORS")
@@ -215,9 +227,8 @@ def main() -> int:
         )
     )
     print(
-        "Interpretation: a repeated provider error for the same episode at all three horizons is "
-        "persistent provider/route evidence for that token-sized route, not three independent "
-        "collector plumbing failures. The exact persisted error above must be used for diagnosis."
+        "Interpretation: repeated provider errors are explicit missingness. Forward repeated errors "
+        "for the same episode across all horizons are persistent route/provider evidence, not collector plumbing failures."
     )
     return 0
 
