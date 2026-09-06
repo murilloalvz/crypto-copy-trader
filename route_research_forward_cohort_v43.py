@@ -55,7 +55,7 @@ def _all_ints(pattern: str, text: str) -> tuple[int, ...]:
 
 
 def _dict_after(label: str, text: str) -> dict:
-    match = re.search(rf"{re.escape(label)}=(\{{[^\n]*\}})", text)
+    match = re.search(rf"{re.escape(label)}=(\{{.*?\}})", text)
     if not match:
         return {}
     try:
