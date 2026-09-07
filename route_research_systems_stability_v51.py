@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from dataclasses import dataclass
 import io
 import sys
 
@@ -26,6 +27,56 @@ class _Tee(io.TextIOBase):
     def flush(self) -> None:
         for stream in self._streams:
             stream.flush()
+
+
+@dataclass(frozen=True)
+class V51Verdict:
+    systems_pass: bool
+    collector_started: bool
+    v50_attribution_ok: bool
+    v51_present: bool
+    v51_instance_ok: bool
+    classification: str
+
+
+def classify_v51_output(output: str) -> V51Verdict:
+    """Keep the frozen systems gate and diagnostic trace-quality verdict orthogonal.
+
+    A timed run can legitimately have incomplete v50 ingress/normalization/reservation coverage
+    because unfinished work remains at the unchanged 120s deadline. That makes exact causal-clock
+    attribution incomplete; it does not erase the independently printed v43 systems result.
+    """
+
+    systems_pass = (
+        "result=11/11" in output
+        and "classification=FAIL_V43_SAME_RUN_SYSTEMS_GATE" not in output
+    )
+    collector_started = "V43 FORWARD COLLECTION START" in output
+    v50_attribution_ok = v50_gate.diagnostic_capture_complete_v50(output)
+    v51_present = "V51 STATEFUL-PRIORITY READY-QUEUE DIAGNOSTIC" in output
+    v51_instance_ok = "v51_scheduler_instance=missing" not in output
+
+    if collector_started:
+        classification = "FAIL_V51_SYSTEMS_ONLY_GUARD"
+    elif not v51_present or not v51_instance_ok:
+        classification = "FAIL_V51_DIAGNOSTIC_MISSING"
+    elif systems_pass and v50_attribution_ok:
+        classification = "PASS_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE"
+    elif systems_pass:
+        classification = "PASS_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE_DIAGNOSTIC_INCOMPLETE"
+    elif v50_attribution_ok:
+        classification = "FAIL_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE"
+    else:
+        classification = "FAIL_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE_DIAGNOSTIC_INCOMPLETE"
+
+    return V51Verdict(
+        systems_pass=systems_pass,
+        collector_started=collector_started,
+        v50_attribution_ok=v50_attribution_ok,
+        v51_present=v51_present,
+        v51_instance_ok=v51_instance_ok,
+        classification=classification,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,42 +143,40 @@ def main() -> int:
         v31.PASS_PUMP_PREPARE_WORKERS = original_pump_prepare_workers
         v43._cohort_schedule_audit = original_schedule_audit
 
-    output = capture.getvalue()
-    systems_pass = (
-        "result=11/11" in output
-        and "classification=FAIL_V43_SAME_RUN_SYSTEMS_GATE" not in output
-    )
-    collector_started = "V43 FORWARD COLLECTION START" in output
-    v50_attribution_ok = v50_gate.diagnostic_capture_complete_v50(output)
-    v51_present = "V51 STATEFUL-PRIORITY READY-QUEUE DIAGNOSTIC" in output
-    v51_instance_ok = "v51_scheduler_instance=missing" not in output
+    verdict = classify_v51_output(capture.getvalue())
 
     print("\nV51 SYSTEMS STABILITY GUARD")
     print(
-        f"systems_11_of_11={systems_pass} v50_causal_attribution_ok={v50_attribution_ok} "
-        f"v51_diagnostic_present={v51_present} v51_scheduler_instance_ok={v51_instance_ok} "
-        f"forward_collector_started={collector_started}"
+        f"systems_11_of_11={verdict.systems_pass} "
+        f"v50_causal_attribution_ok={verdict.v50_attribution_ok} "
+        f"v51_diagnostic_present={verdict.v51_present} "
+        f"v51_scheduler_instance_ok={verdict.v51_instance_ok} "
+        f"forward_collector_started={verdict.collector_started}"
     )
+    print(f"classification={verdict.classification}")
 
-    if collector_started:
-        print("classification=FAIL_V51_SYSTEMS_ONLY_GUARD")
+    if verdict.collector_started:
         return 2
-    if not v51_present or not v51_instance_ok or not v50_attribution_ok:
-        print("classification=FAIL_V51_DIAGNOSTIC")
+    if not verdict.v51_present or not verdict.v51_instance_ok:
         return 2
-    if not systems_pass:
-        print("classification=FAIL_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE")
+    if not verdict.systems_pass:
         print(
-            "Interpretation: v51 diagnostics were valid, but the unchanged same-run 11/11 "
-            "systems gate did not pass. Do not run v48."
+            "Interpretation: the unchanged same-run 11/11 systems gate did not pass. "
+            "v50 causal attribution is reported separately and may also be incomplete. Do not run v48."
         )
         return 2
+    if not verdict.v50_attribution_ok:
+        print(
+            "Interpretation: the unchanged systems gate passed, but exact v50 causal-clock "
+            "attribution was incomplete inside the frozen timed window. Preserve the systems PASS "
+            "as systems evidence; do not use the incomplete trace to choose another scheduling change."
+        )
+        return 0
 
-    print("classification=PASS_V51_STATEFUL_PRIORITY_SYSTEMS_PROFILE")
     print(
         "Interpretation: the unchanged systems gate passed while the v51 stateful-priority "
-        "scheduler and v50 causal-clock attribution were active. This is systems evidence only; "
-        "it does not validate Flow60 or any economic edge."
+        "scheduler and complete v50 causal-clock attribution were active. This is systems evidence "
+        "only; it does not validate Flow60 or any economic edge."
     )
     return 0
 
