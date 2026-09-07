@@ -13,7 +13,7 @@ Fluxo oficial:
 `market -> radar -> causal episode T0 -> flow/wallet/context -> executable entry/hazard -> official decision_as_of -> executable forward outcomes -> economic validation -> shadow`
 
 Trilha paralela sem funding:
-`fresh episode -> on-chain hazard -> route-only BUY -> research_decision_as_of -> route-only SELL +5/+15/+60 -> descriptive causal evaluation`
+`fresh episode -> on-chain hazard -> route-only BUY -> research_decision_as_of -> route-only SELL +5/+15/+60 -> causal economic evaluation`
 
 Status atual:
 - Pump acquisition: **PASS**
@@ -25,12 +25,13 @@ Status atual:
 - Route-only Jupiter research plumbing: **PASS**
 - v45 larger single acquisition 50/40: **REJECTED — SYSTEMS FAIL 10/11**
 - v46 dual prospective 40/30 subcohorts: **LIVE PASS / 2 OF 2 SUBCOHORTS PASS / AGGREGATE DESCRIPTIVE READY**
-- v47 offline causal feature review: **CODE/CI PASS / OFFLINE RUN PENDING**
+- v47 causal feature discovery: **OFFLINE PASS / ROBUSTNESS REVIEW COMPLETE**
+- v48 frozen prospective Flow60 holdout: **CODE/CI PASS / FRESH LIVE RUN PENDING**
 - Funded executable BUY assembly: **BLOCKED_BY_FUNDING**
 - Solana Tracker hazard: **BLOCKED_BY_PROVIDER_CREDITS**
 - Official `decision_as_of`: **PENDING / UNFROZEN**
 - Official executable forward outcomes: **PENDING**
-- Economic edge: **NOT ESTABLISHED**
+- Profitable economic edge: **NOT ESTABLISHED**
 - Shadow/live money: **NOT RELEASED**
 - Não iniciar coleta oficial de 12h ainda.
 
@@ -48,6 +49,8 @@ Status atual:
 - Não aumentar workers por tentativa; primeiro localizar o relógio dominante.
 - Features de wallet/hazard/flow permanecem descritivas até valor incremental out-of-sample.
 - Nenhum live money sem forward evidence robusta + gate explícito.
+- Discovery data nunca pode ser reapresentado como virgin holdout da regra descoberta nele.
+- Se v48 falhar ou ficar inconclusivo, não retunar bins nem trocar de hipótese usando o mesmo holdout.
 
 ## Detector congelado
 
@@ -63,7 +66,7 @@ Version: `market_opportunity_radar_v1_1_tx_aware`
 - com tx identity coverage 100%: >=4 unique fast tx
 - direction descritiva
 
-Nenhum threshold foi alterado pelos resultados v40-v47.
+Nenhum threshold do detector foi alterado pelos resultados econômicos v40-v48.
 
 ## Systems latency
 
@@ -87,19 +90,19 @@ Canonical v42 same-run PASS:
 - PumpSwap p95 3.302s
 - result **11/11**
 
-v44 also PASS at the frozen practical sampling size:
+v44 PASS no tamanho prático congelado:
 - coverage 99.8%
 - true backlog 0.222%
 - Pump p95 1.733s
 - PumpSwap p95 3.808s
 - result **11/11**
 
-v45 increased one acquisition from cap40 to cap50 and failed:
+v45 cap50 single acquisition foi rejeitado:
 - systems **10/11**
 - PumpSwap p95 **9.512s**
-- collector correctly did not start
+- collector corretamente não iniciou
 
-Conclusion: cap50 single-acquisition sampling is rejected. Do not relax the gate or increase workers to rescue it. Gain sample over time using v44-size acquisitions.
+Conclusão: não relaxar o gate nem aumentar workers para resgatar cap50. Ganhar amostra ao longo do tempo com aquisições v44-size.
 
 ## Funding / official executable path
 
@@ -112,7 +115,7 @@ Frozen official Jupiter BUY:
 - public taker only
 - no signing/execute
 
-Persisted readiness showed route availability but no assembled transaction because configured taker had insufficient funds. Official funded assemblability remains **BLOCKED_BY_FUNDING**.
+Readiness persistido mostrou rota disponível, mas nenhum transaction assembly por falta de saldo no taker configurado. Official funded assemblability permanece **BLOCKED_BY_FUNDING**.
 
 ## Hazard
 
@@ -125,13 +128,13 @@ Core:
 - supply
 - mint authority
 - freeze authority
-- Token-2022 metadata when exposed
+- Token-2022 metadata quando exposta
 
-`getTokenLargestAccounts` is optional auxiliary evidence and is **token-account concentration**, not holder/owner concentration.
+`getTokenLargestAccounts` é evidência auxiliar opcional de **token-account concentration**, não holder/owner concentration.
 
 ## Route-only causal research
 
-Funding-free research path only. It never freezes official `decision_as_of` and never signs/submits.
+Funding-free research path only. Nunca congela official `decision_as_of` e nunca assina/submete.
 
 Frozen semantics:
 - BUY: USDC -> token, taker=None, route-only/non-executable
@@ -139,9 +142,9 @@ Frozen semantics:
 - slippage parameter: 100bps
 - horizons: 300 / 900 / 3600 seconds
 - SELL: exact entry output amount token -> USDC, taker=None
-- missing Jupiter route remains explicit missingness
+- missing Jupiter route permanece missing explícito
 
-Provider pacing frozen from v44:
+Provider pacing congelado do v44:
 - hazard starts: 650ms
 - BUY starts: 1000ms
 - SELL starts: 250ms
@@ -149,7 +152,7 @@ Provider pacing frozen from v44:
 
 ## v40 microcohort
 
-First causal route-only microcohort, n10 per horizon. All horizons `INCONCLUSIVE_SAMPLE_LT_30`. Results were strongly negative/heavy-tailed and are retained only as early evidence; no detector tuning was allowed.
+Primeira microcoorte causal route-only, n10 por horizonte. Todos os horizontes `INCONCLUSIVE_SAMPLE_LT_30`. Resultados negativos/heavy-tailed retidos apenas como evidência inicial; detector não foi ajustado.
 
 ## v44 larger single valid cohort
 
@@ -161,21 +164,15 @@ Live `route-research-forward-cohort-20260906-44`:
 - collector terminal 117/117
 - target lateness p95 1s
 - lineage 0
-- all 24 forward errors were Jupiter HTTP400 `Failed to get quotes`, zero SELL429
 
 Economics:
 - 300s n35: mean -5.016%, median -4.082%, PF0.766
 - 900s n29: mean -14.497%, median -28.814%, PF0.653
 - 3600s n29: mean -36.457%, median -42.599%, PF0.245
 
-Overall remained inconclusive because 900/3600 had n29.
+Overall inconclusivo porque 900/3600 tinham n29.
 
-## v46 dual prospective subcohorts — canonical descriptive sample
-
-Files:
-- `route_research_forward_cohort_v46.py`
-- `src/route_research_multi_evaluation_v46.py`
-- `tests/test_route_research_forward_cohort_v46.py`
+## v46 dual prospective subcohorts — canonical discovery sample
 
 Base run:
 `route-research-forward-cohort-20260906-46`
@@ -185,11 +182,11 @@ Subcohorts:
 - `...-46-B`
 
 Protocol:
-- two complete v44-size subcohorts sequentially;
-- each cap40 / minimum30;
-- each independently requires systems11/11, >=30 decisions, terminal collector, lateness p95<=2s, lineage0;
-- one failed subcohort cannot be rescued by the other;
-- aggregation preserves run identity and missingness.
+- duas subcoortes v44-size completas e sequenciais;
+- cada uma cap40 / minimum30;
+- cada uma exige systems11/11, >=30 decisions, terminal collector, lateness p95<=2s, lineage0;
+- uma subcoorte falha não pode ser salva pela outra;
+- agregação preserva identidade e missingness.
 
 Live final result:
 - subcohorts passed: **2/2**
@@ -198,134 +195,199 @@ Live final result:
 - classification: **READY_FOR_DESCRIPTIVE_RESEARCH_REVIEW**
 
 Aggregate A+B:
-- 300s: scheduled79, AVAILABLE74, coverage93.7%, positive45.95%, mean -7.324%, median -0.233%, PF0.536, mean_without_best -9.309%
-- 900s: scheduled79, AVAILABLE69, coverage87.3%, positive56.52%, mean -1.458%, median +1.363%, PF0.932, mean_without_best -5.771%
-- 3600s: scheduled79, AVAILABLE66, coverage83.5%, positive39.39%, mean -27.359%, median -29.786%, PF0.371, mean_without_best -30.252%
+- 300s: AVAILABLE74, positive45.95%, mean -7.324%, median -0.233%, PF0.536, mean_without_best -9.309%
+- 900s: AVAILABLE69, positive56.52%, mean -1.458%, median +1.363%, PF0.932, mean_without_best -5.771%
+- 3600s: AVAILABLE66, positive39.39%, mean -27.359%, median -29.786%, PF0.371, mean_without_best -30.252%
 
-Subcohort B at 900s was mildly positive (n36, mean +1.927%, median +1.490%, PF1.087), while aggregate 900s remained slightly negative with PF<1. Therefore 900s is the only near-break-even horizon, but the evidence is **not a replicated positive edge**. 300s and 3600s remain clearly weak in the current unfiltered detector population.
+900s era o único horizonte próximo de break-even, mas ainda sem edge positivo replicado no detector cru.
 
-Economic edge remains **NOT ESTABLISHED**.
-
-## v47 offline causal feature review
-
-Protocol:
-`docs/route-research-offline-causal-feature-review-v47-protocol-2026-09-06.md`
+## v47 offline causal feature discovery — COMPLETE
 
 Files:
 - `src/route_research_feature_review_v47.py`
 - `route_research_feature_review_v47.py`
 - `tests/test_route_research_feature_review_v47.py`
+- `src/route_research_feature_robustness_v47.py`
+- `route_research_feature_robustness_v47.py`
+- `tests/test_route_research_feature_robustness_v47.py`
 
-Status: **CODE/CI PASS / OFFLINE RUN PENDING**.
+Protocols:
+- `docs/route-research-offline-causal-feature-review-v47-protocol-2026-09-06.md`
+- `docs/route-research-v47-candidate-robustness-protocol-2026-09-06.md`
 
-Purpose: use the already-complete v46 A/B sample for descriptive feature discovery without making a new provider call or changing the strategy.
+Causal dataset audit live:
+- rows_total 79
+- A 39 / B 40
+- lineage violations 0
+- missing decisions 0
+- missing episodes 0
+- missing hazard attempts 0
+- missing entry quotes 0
+- official decision mutations 0
+- classification **PASS_V47_CAUSAL_DATASET_AUDIT**
 
-Strict feature cutoff:
-`feature_observed_at <= research_decision_as_of`
+Zero-coverage features in v46 evidence:
+- `flow30_notional_imbalance_pct`
+- `flow30_return_pct`
+- `entry_liquidity_usd`
 
-The dataset is rebuilt causally at each persisted decision clock using existing dual-clock builders. Any later hazard/quote/flow evidence is rejected rather than backfilled.
+Não backfillar retrospectivamente. Melhorar observabilidade apenas para datasets futuros se necessário.
 
-Predeclared feature families:
+### v47 robustness conclusion
 
-Episode:
-- trigger kind
-- trigger direction
-- decision delay
+Dos 18 `SAME_DIRECTION_DESCRIPTIVE_ONLY` automáticos, a maior parte foi rejeitada como hipótese primária por redundância, baixo suporte, forma econômica instável ou dependência/outlier.
 
-Flow:
-- 30s event count
-- 30s buy share
-- 30s wallet identity coverage
-- 30s notional imbalance
-- 30s return
-- 60s event count
-- 300s event count
+Famílias redundantes:
+- `flow60_event_count` e `flow300_event_count` contam praticamente o mesmo fenômeno na amostra;
+- `hazard_token_2022` e `hazard_extensions_count` produziram splits equivalentes.
 
-Current wallet participation:
-- participant count
-- repeated event share
+Candidato escolhido para prospective validation:
+`flow60_event_count` no horizonte 900s.
 
-On-chain hazard:
-- mint authority present
-- freeze authority present
-- Token-2022
-- extensions count
+Discovery bins congelados pelo v47 value-only grouping:
+- LOW <=25
+- MID 26..47
+- HIGH >47
 
-Entry route surface:
-- price impact
-- liquidity when provider metadata exists
+Discovery 900s — LOW vs HIGH:
 
-Numeric bins are derived from **feature values only**, never returns. They are descriptive bins, not trading thresholds.
+A:
+- LOW n18, median +1.969%, PF1.179, mean +2.312%, mean_without_best -1.930%
+- HIGH n5, median -30.760%, PF0.416, mean -19.476%
 
-A feature comparison is marked `SAME_DIRECTION_DESCRIPTIVE_ONLY` only when comparable groups have >=5 AVAILABLE labels per group in both A and B and median-return separation points in the same direction in A, B and aggregate. Disagreement is explicit instability.
+B:
+- LOW n15, median +1.529%, PF2.905, mean +28.414%, mean_without_best +9.602%
+- HIGH n9, median -1.088%, PF0.346, mean -20.021%
 
-A/B are already observed and therefore are **not a virgin holdout** for a new rule. v47 may propose a hypothesis candidate, but cannot validate it. Any selected hypothesis must be frozen before a fresh v48 out-of-sample cohort.
+ALL:
+- LOW n33, median +1.529%, PF2.026, mean +14.177%, mean_without_best **+5.502%**
+- HIGH n14, median -15.924%, PF0.372, mean -19.826%, mean_without_best -26.234%
+
+Interpretação correta:
+- há uma hipótese causal/descritiva defensável de **flow saturation / move maturity**;
+- maior intensidade de eventos antes da decisão pode identificar movimentos já congestionados/maduros;
+- isso ainda NÃO é uma regra de trading e NÃO é edge validado;
+- v46/v47 são discovery e não podem validar a própria hipótese.
+
+Outros candidatos não são promovidos para v48 primário:
+- repeated-wallet 3600s: A HIGH continuou economicamente negativo e winner concentration elevada;
+- Token-2022: forte diferença 3600s, mas economic shape 900s não sustenta uma regra única e é redundante com extensions;
+- buy share: median direction não coincide de forma robusta com mean/PF em 900s;
+- entry price impact: semântica/sinal requer cuidado e os grupos permanecem economicamente fracos em vários horizontes;
+- decision delay: efeito pequeno/inconsistente fora de 300s.
+
+## v48 prospective Flow60 holdout — FROZEN BEFORE DATA
+
+Protocol:
+`docs/route-research-v48-prospective-flow60-holdout-protocol-2026-09-06.md`
+
+Files:
+- `src/route_research_prospective_holdout_v48.py`
+- `route_research_prospective_holdout_v48.py`
+- `tests/test_route_research_prospective_holdout_v48.py`
+
+Primary feature:
+`flow60_event_count`
+
+Frozen bins:
+- LOW <=25
+- MID 26..47
+- HIGH >47
+
+Primary horizon:
+- **900s only**
+
+Primary contrast:
+- **LOW vs HIGH**
+- MID é reportado, não faz parte do gate primário.
+- 300s e 3600s são diagnósticos e não podem resgatar um FAIL de 900s.
+
+Fresh acquisition:
+- usa exatamente o caminho dual v46 já validado;
+- run key deve ser nova;
+- preflight falha se qualquer outcome já existir em `-A` ou `-B`;
+- cada subcoorte continua cap40/minimum30 e precisa passar gates independentes.
+
+Primary support gate em 900s:
+- A: LOW >=5 AVAILABLE e HIGH >=5 AVAILABLE
+- B: LOW >=5 AVAILABLE e HIGH >=5 AVAILABLE
+
+Primary PASS exige TODOS:
+1. median LOW > HIGH em A;
+2. median LOW > HIGH em B;
+3. median LOW > HIGH em ALL;
+4. LOW median >0 em A e B;
+5. LOW PF >1 em A e B;
+6. aggregate LOW PF >1;
+7. aggregate LOW mean_without_best >0.
+
+Pass classification:
+`PASS_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
+
+Low support:
+`INCONCLUSIVE_V48_PRIMARY_SUPPORT`
+
+Adequate support but failed economics/replication:
+`FAIL_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
+
+Mesmo um PASS v48 é apenas prospective route-only hypothesis PASS. Ainda não libera official executable path, shadow ou live money.
 
 ## Immediate next work
 
-Run v47 OFFLINE over the completed v46 database:
+No PC:
 
-`python route_research_feature_review_v47.py --base-run-key route-research-forward-cohort-20260906-46`
+1. `git pull --ff-only`
+2. executar uma única fresh v48 run com nova run key:
 
-Interpretation order:
-1. causal dataset audit must pass with lineage0 and no official decision mutation;
-2. inspect feature coverage before interpreting effects;
-3. compare direction of median-return separation in A and B;
-4. reject unstable/low-support features;
-5. treat same-direction features only as hypothesis candidates;
-6. if one candidate is scientifically defensible, freeze it in a separate protocol before a fresh v48 holdout.
+`python route_research_prospective_holdout_v48.py --run-key route-research-prospective-holdout-20260906-48`
 
-Do not run another economic acquisition before reviewing v47 output.
+Enviar o output completo.
+
+Não rodar v47 novamente. Não rodar outra hipótese em paralelo. Não alterar bins 25/47, horizonte 900s, detector ou pacing durante a v48.
 
 ## Shadow / live
 
 - systems canonical v44-size path: **PASS**
 - v45 cap50 single path: **REJECTED — SYSTEMS FAIL**
-- v46 causal sample: **DESCRIPTIVE READY**
-- v47: **CODE/CI PASS / OFFLINE RUN PENDING**
+- v46 causal sample: **DISCOVERY READY**
+- v47 discovery/robustness: **COMPLETE**
+- v48 frozen prospective hypothesis: **CODE/CI PASS / FRESH DATA PENDING**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official decision/outcomes: **PENDING**
-- economic edge: **NOT ESTABLISHED**
+- profitable economic edge: **NOT ESTABLISHED**
 - shadow/live money: **NOT RELEASED**
 
 ## End-of-chat handoff — continue from here
 
-This section exists specifically so a new chat can continue without reconstructing this conversation.
+Do not reopen feature discovery on v46/v47 before fresh v48.
 
-Current remote branch head before this handoff update:
-- `08acc8bf6ba992818ade7e3c46ab0169bc48a7f8`
-- commit message: `docs: advance context through v46 live and v47 review`
-- GitHub Actions Unit tests run **683: SUCCESS**.
+Scientific sequence now is fixed:
+`v46 discovery sample -> v47 causal feature discovery + robustness -> frozen flow60 hypothesis -> fresh v48 holdout`.
 
-v47 implementation already present on the branch:
-- causal/offline analysis core;
-- CLI;
-- protocol document;
-- unit tests covering causal cutoff and return-independent numeric binning;
-- no provider call, no signing, no execution, no official decision mutation.
+v48 hypothesis was registered in code/docs before fresh data:
+- feature `flow60_event_count`
+- LOW <=25 / MID 26..47 / HIGH >47
+- primary horizon 900s
+- LOW-vs-HIGH
+- strict replication + positive economic-shape + heavy-tail gate.
 
-Next session must **not** redesign v47 and must **not** start v48 first.
+Latest v48 code/test commit before this context update:
+- `b937f56dd7e6c986ce4c62d19761b346dd11c0db`
+- commit: `test: cover frozen v48 prospective gate`
+- GitHub Actions Unit tests run 692: **SUCCESS**.
 
-On the PC:
-1. `git pull --ff-only`
-2. run exactly:
-   `python route_research_feature_review_v47.py --base-run-key route-research-forward-cohort-20260906-46`
-3. send the complete v47 output back for review.
+Next session/action:
+1. pull latest branch;
+2. run fresh `route_research_prospective_holdout_v48.py` with an unused run key;
+3. send complete output;
+4. classify PASS / FAIL / INCONCLUSIVE exactly from pre-registered gate;
+5. do not retune on the same holdout.
 
-Review requirements for the next chat:
-- confirm causal dataset/lineage audit first;
-- report feature coverage/missingness;
-- compare A and B separately before aggregate;
-- identify only same-direction descriptive hypotheses with adequate support;
-- explicitly reject unstable or low-support features;
-- do **not** convert A/B discoveries into validated trading rules;
-- do **not** alter frozen detector thresholds from v47;
-- if one hypothesis survives, freeze its exact definition before a fresh v48 prospective holdout.
-
-Scientific state at chat handoff:
+Scientific state:
 - systems engineering: **proven at frozen v44-size path**;
-- causal route-only sample: **descriptive-ready via v46**;
-- v47 feature discovery: **implementation complete, offline data review still pending**;
+- causal route-only discovery sample: **complete via v46**;
+- v47 feature discovery + heavy-tail review: **complete**;
+- one prospective hypothesis: **frozen before v48 data**;
 - profitable economic edge: **not established**;
 - funded executable path: **blocked by funding**;
 - official executable outcomes/shadow/live: **not released**.
