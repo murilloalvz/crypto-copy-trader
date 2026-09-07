@@ -75,6 +75,49 @@ Top blockers are reported with:
 - total successor barrier time;
 - maximum successor barrier time.
 
+## First live v50 attempt — systems evidence valid, attribution invalid
+
+Run:
+`route-research-systems-diagnostic-20260907-50`
+
+The underlying systems path passed the unchanged v43 gate **11/11**:
+
+- coverage 100.0%
+- true backlog 0%
+- Pump p95 3.324s
+- PumpSwap p95 3.179s
+- drops 0
+- worker errors 0
+- hydration budget skips 0
+- reservation superset violations 0
+
+This is valid same-run systems evidence for the v49 scheduling profile.
+
+However, the initial v50 tracer output was incomplete:
+
+- stream ingress observed: 2230 versus 4802 PumpSwap notifications processed;
+- normalization observed: 0;
+- reservations attributed: 413;
+- attributed rows: 0;
+- `dominant_clock=insufficient_trace`.
+
+Therefore the causal-clock attribution from that attempt is **invalid** even though the systems 11/11 result remains valid independently.
+
+Root causes in diagnostic instrumentation:
+
+1. notification correlation used `id(notification)` without retaining the notification object, allowing CPython object-id reuse during a high-throughput run;
+2. v20 installs its own indexed normalization wrapper into v19 and calls a normalization primitive imported into the v20 module by value, bypassing the original v50 hook.
+
+Corrections:
+
+- retain each notification object for the lifetime of the trace so its `id()` cannot be recycled;
+- instrument both the v19 entry point and the lower v20 normalization primitive;
+- add `trace_attribution_complete=True/False`;
+- require complete ingress/normalization/reservation/submit-or-skip attribution before accepting `dominant_clock`;
+- make the systems diagnostic guard fail closed with `FAIL_V50_DIAGNOSTIC_INCOMPLETE` on an incomplete trace.
+
+No market, detector, persistence, FIFO, provider or economic semantics changed in this correction.
+
 ## Interpretation
 
 v50 is diagnostic only. `dominant_clock` is a descriptive attribution, not a new pass/fail threshold.
@@ -83,6 +126,8 @@ If `global_sequence_barrier` dominates, the next engineering task is to design a
 
 If another clock dominates, change only that measured stage.
 
+A `dominant_clock` value is scientifically usable only when `trace_attribution_complete=True`.
+
 ## Scientific guard
 
-Do not run v48 while v50/v49 systems evidence is unresolved. Do not inspect or use prospective Flow60 economics to tune systems.
+Do not run v48 while the corrected v50 causal attribution is unresolved. The latest live run established same-run systems 11/11 for the v49 scheduling profile, but the remaining diagnostic question is still which causal clock produced the residual tail. Do not inspect or use prospective Flow60 economics to tune systems.
