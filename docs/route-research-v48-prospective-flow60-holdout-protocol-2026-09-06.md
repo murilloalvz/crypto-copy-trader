@@ -1,7 +1,7 @@
 # Route Research v48 — Prospective Flow60 Holdout Protocol
 
 Date: 2026-09-06
-Amended: 2026-09-07 after prospective v53 systems validation
+Amended: 2026-09-07 after prospective v54 systems validation
 Mode: **PAPER / RESEARCH / READ ONLY**
 
 ## Purpose
@@ -48,29 +48,35 @@ The **cohort/economic protocol remains the v46 dual-subcohort design**:
 - SELL remains exact entry output amount;
 - each subcohort must pass its existing systems/collector/lineage gates independently.
 
-### Systems scheduling amendment frozen before economic holdout collection
+### Systems scheduling amendment frozen before new economic holdout data
 
-The first fresh v48 attempt was aborted before forward collection because its systems gate failed. Subsequent v49-v53 work was systems-only and generated **no Flow60 economic verdict**.
+The v48 attempt using the v53 acquisition profile reached subcohort B but B failed the unchanged systems gate before B forward collection. The whole `route-research-prospective-holdout-20260907-48v53` base is burned for validation and no A economics may be reused to tune or rescue the hypothesis.
 
-On 2026-09-07 the prospectively defined v53 systems-only run `route-research-systems-stability-20260907-53` passed the unchanged 11-gate systems profile with:
+Same-run evidence localized the instability to same-pool resolver ownership rather than global resolution capacity: demand pool-lock wait was high while demand resolution-capacity wait remained 0ms. Because admitted v53 ingress prefetch still called the authoritative resolver, speculative work could own the same per-pool lock needed by later causal normalization.
+
+v54 removed only that speculative ownership. Ingress candidate-pool observation remains diagnostic, but speculative prefetch schedules zero resolver tasks and never calls `resolver.resolve`, acquires pool locks/capacity, consumes hydration budget, persists mappings, reserves assets, or creates detector evidence. Authoritative normalization is unchanged.
+
+On 2026-09-07 the fresh systems-only run `route-research-systems-stability-20260907-54` passed the unchanged 11-gate systems profile with:
 
 - systems result `11/11`;
-- radar coverage 100.0%;
-- true backlog 0.047%;
-- Pump p95 1867.4ms;
-- PumpSwap p95 2540.6ms;
+- radar coverage 98.1%;
+- true backlog 1.913%;
+- Pump p95 1906.1ms;
+- PumpSwap p95 1625.9ms;
 - zero worker errors, drops, hydration budget skips and reservation superset violations;
-- complete v50 causal attribution;
+- v54 prefetch scheduled 0 resolver tasks and skipped all 3890 speculative candidates;
 - no forward economic collector.
 
-Therefore the acquisition implementation for the still-uncollected v48 economic holdout is amended to use the **validated v53 systems scheduling profile** underneath the unchanged v46/v44/v43 cohort protocol.
+The v50 causal trace was incomplete at the frozen deadline, so no exact dominant causal clock is inferred from that run. The systems PASS is independent of that instrumentation completeness.
+
+Therefore any subsequent untouched v48 holdout acquisition uses the **validated v54 demand-only systems profile** underneath the unchanged v46/v44/v43 cohort protocol.
 
 Frozen systems-profile changes inherited by v48 acquisition:
 
-- Pump prepare workers = 20 (measured v49 capacity profile);
+- Pump prepare workers = 20;
 - v51 stateful-ready priority over already-proven audit-only continuation work;
 - v52 existing 3s PumpSwap RPC timeout enforced as hedge decision wall deadline without hidden network oversubscription;
-- v53 speculative ingress prefetch is opportunistic-only and cannot queue behind a busy same-pool lock or saturated expensive-resolution semaphore;
+- v54 speculative ingress resolver admission disabled; authoritative demand resolution unchanged;
 - global reservation ordering, same-asset FIFO, replay semantics, detector semantics and causal clocks remain unchanged.
 
 This amendment changes **systems scheduling only**. It does not change:
@@ -87,7 +93,7 @@ This amendment changes **systems scheduling only**. It does not change:
 - forward outcome definition;
 - v48 primary evaluator.
 
-The v48 runner installs the v53 acquisition entry point only for the v46 acquisition call and restores the original globals afterward. Regression tests must enforce that restoration and the frozen economic constants above.
+The v48 runner installs the v54 acquisition entry point only for the v46 acquisition call and restores the original globals afterward. Regression tests enforce that restoration and the frozen economic constants above.
 
 A run key must be fresh. Existing persisted outcomes under either `-A` or `-B` cause fail-closed preflight rejection.
 
