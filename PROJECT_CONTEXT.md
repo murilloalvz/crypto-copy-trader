@@ -287,3 +287,45 @@ Do not run another economic acquisition before reviewing v47 output.
 - official decision/outcomes: **PENDING**
 - economic edge: **NOT ESTABLISHED**
 - shadow/live money: **NOT RELEASED**
+
+## End-of-chat handoff — continue from here
+
+This section exists specifically so a new chat can continue without reconstructing this conversation.
+
+Current remote branch head before this handoff update:
+- `08acc8bf6ba992818ade7e3c46ab0169bc48a7f8`
+- commit message: `docs: advance context through v46 live and v47 review`
+- GitHub Actions Unit tests run **683: SUCCESS**.
+
+v47 implementation already present on the branch:
+- causal/offline analysis core;
+- CLI;
+- protocol document;
+- unit tests covering causal cutoff and return-independent numeric binning;
+- no provider call, no signing, no execution, no official decision mutation.
+
+Next session must **not** redesign v47 and must **not** start v48 first.
+
+On the PC:
+1. `git pull --ff-only`
+2. run exactly:
+   `python route_research_feature_review_v47.py --base-run-key route-research-forward-cohort-20260906-46`
+3. send the complete v47 output back for review.
+
+Review requirements for the next chat:
+- confirm causal dataset/lineage audit first;
+- report feature coverage/missingness;
+- compare A and B separately before aggregate;
+- identify only same-direction descriptive hypotheses with adequate support;
+- explicitly reject unstable or low-support features;
+- do **not** convert A/B discoveries into validated trading rules;
+- do **not** alter frozen detector thresholds from v47;
+- if one hypothesis survives, freeze its exact definition before a fresh v48 prospective holdout.
+
+Scientific state at chat handoff:
+- systems engineering: **proven at frozen v44-size path**;
+- causal route-only sample: **descriptive-ready via v46**;
+- v47 feature discovery: **implementation complete, offline data review still pending**;
+- profitable economic edge: **not established**;
+- funded executable path: **blocked by funding**;
+- official executable outcomes/shadow/live: **not released**.
