@@ -11,6 +11,7 @@ from src.pumpswap_sequence_barrier_trace_v50 import (
 )
 import unified_market_execution_quote_smoke_v31 as v31
 import unified_market_latency_smoke_v19 as v19
+import unified_market_latency_smoke_v20 as v20
 import unified_market_latency_smoke_v30 as v30
 import unified_market_route_research_smoke_v49 as v49
 
@@ -34,16 +35,17 @@ def _short_assets(assets: tuple[str, ...]) -> str:
 async def run_smoke_v50(**kwargs) -> None:
     """Observe v49 without changing scheduling and attribute PumpSwap causal clocks.
 
-    v50 is diagnostic-only. It wraps stream ingress, normalization completion and the existing
-    ReadyAssetScheduler lifecycle to reconstruct the strict global reservation watermark. No
-    detector/provider/FIFO/as-of/reservation decision is changed. v49 ingress prefetch and the
+    v50 is diagnostic-only. It wraps stream ingress, the v20 normalization primitive and the
+    existing ReadyAssetScheduler lifecycle to reconstruct the strict global reservation watermark.
+    No detector/provider/FIFO/as-of/reservation decision is changed. v49 ingress prefetch and the
     frozen v42 research path remain the executed system.
     """
 
     trace = PumpSwapSequenceBarrierTraceV50()
 
     original_stream_factory = v19.iter_pumpswap_log_notifications
-    original_begin = v19.begin_pumpswap_notification_normalized_v5
+    original_v19_begin = v19.begin_pumpswap_notification_normalized_v5
+    original_v20_begin = v20.begin_pumpswap_notification_normalized_v5
     scheduler_class = ready_scheduler_module.ReadyAssetScheduler
     original_reserve = scheduler_class.reserve
     original_submit = scheduler_class.submit
@@ -60,8 +62,16 @@ async def run_smoke_v50(**kwargs) -> None:
         finally:
             await stream.aclose()
 
-    async def traced_begin(notification, *args, **begin_kwargs):
-        handle = await original_begin(notification, *args, **begin_kwargs)
+    async def traced_v19_begin(notification, *args, **begin_kwargs):
+        handle = await original_v19_begin(notification, *args, **begin_kwargs)
+        trace.observe_normalization(notification, handle)
+        return handle
+
+    async def traced_v20_begin(notification, *args, **begin_kwargs):
+        # v20 installs its own indexed_begin into v19 before the timed run. That wrapper calls the
+        # function imported into the v20 module by value, so hook that lower primitive too. This is
+        # observational only; the exact original arguments/result are preserved.
+        handle = await original_v20_begin(notification, *args, **begin_kwargs)
         trace.observe_normalization(notification, handle)
         return handle
 
@@ -97,7 +107,8 @@ async def run_smoke_v50(**kwargs) -> None:
         return result
 
     v19.iter_pumpswap_log_notifications = tracking_stream_factory
-    v19.begin_pumpswap_notification_normalized_v5 = traced_begin
+    v19.begin_pumpswap_notification_normalized_v5 = traced_v19_begin
+    v20.begin_pumpswap_notification_normalized_v5 = traced_v20_begin
     scheduler_class.reserve = traced_reserve
     scheduler_class.submit = traced_submit
     scheduler_class.skip = traced_skip
@@ -107,7 +118,8 @@ async def run_smoke_v50(**kwargs) -> None:
         await _BASE_V49_RUN_SMOKE(**kwargs)
     finally:
         v19.iter_pumpswap_log_notifications = original_stream_factory
-        v19.begin_pumpswap_notification_normalized_v5 = original_begin
+        v19.begin_pumpswap_notification_normalized_v5 = original_v19_begin
+        v20.begin_pumpswap_notification_normalized_v5 = original_v20_begin
         scheduler_class.reserve = original_reserve
         scheduler_class.submit = original_submit
         scheduler_class.skip = original_skip
@@ -130,6 +142,13 @@ async def run_smoke_v50(**kwargs) -> None:
         for row in rows
         if row.submit_to_dependency_ready_seconds is not None
     ]
+    attribution_complete = (
+        snapshot.ingress_count > 0
+        and snapshot.normalization_count == snapshot.ingress_count
+        and snapshot.reservation_count == snapshot.ingress_count
+        and snapshot.submit_or_skip_count == snapshot.reservation_count
+        and len(rows) == snapshot.ingress_count
+    )
 
     print("\nV50 PUMPSWAP CAUSAL CLOCK ATTRIBUTION DIAGNOSTIC")
     print(
@@ -137,6 +156,7 @@ async def run_smoke_v50(**kwargs) -> None:
         f"reservations={snapshot.reservation_count} submit_or_skip={snapshot.submit_or_skip_count} "
         f"dependency_ready={snapshot.ready_count} attributed_rows={len(rows)}"
     )
+    print(f"trace_attribution_complete={attribution_complete}")
     print(
         f"self_ingress_to_normalization_ms {v19._latency_summary_ms(self_normalization)}"
     )
@@ -175,7 +195,8 @@ async def run_smoke_v50(**kwargs) -> None:
         "v50_note=global_prefix_normalization_barrier is the wait imposed on an already-normalized "
         "successor by an earlier ingress sequence whose normalization completed later. "
         "post_prefix_reservation_coordinator is residual coordinator delay after every required "
-        "predecessor normalization is available. This instrumentation is observational only."
+        "predecessor normalization is available. trace_attribution_complete must be True before "
+        "the dominant-clock classification is accepted. This instrumentation is observational only."
     )
 
 
