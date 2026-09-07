@@ -17,6 +17,7 @@ import unified_market_route_research_smoke_v49 as v49
 
 
 _BASE_V49_RUN_SMOKE = v49.run_smoke_v49
+V50_MIN_LIFECYCLE_SUBMIT_COVERAGE_PCT = 95.0
 
 
 def _short_signature(value: str) -> str:
@@ -30,6 +31,45 @@ def _short_assets(assets: tuple[str, ...]) -> str:
     if not assets:
         return "none"
     return ",".join(f"{asset[:10]}…" if len(asset) > 10 else asset for asset in assets)
+
+
+def _capture_quality_v50(snapshot) -> tuple[bool, bool, float, bool]:
+    """Return barrier completeness, lifecycle completeness/coverage and clock acceptability.
+
+    v19 intentionally stops/cancels timed workers at the 120s systems deadline. v50 must not add a
+    post-deadline drain because that would change the frozen systems-window semantics. Exact
+    ingress->normalization->reservation coverage is required to attribute the global reservation
+    watermark. Submit/skip is a later lifecycle stage; >=95% coverage is required before comparing
+    its tail with the fully observed reservation clocks.
+    """
+
+    rows = len(snapshot.rows)
+    barrier_complete = (
+        snapshot.ingress_count > 0
+        and snapshot.normalization_count == snapshot.ingress_count
+        and snapshot.reservation_count == snapshot.ingress_count
+        and rows == snapshot.ingress_count
+    )
+    lifecycle_complete = (
+        snapshot.reservation_count > 0
+        and snapshot.submit_or_skip_count == snapshot.reservation_count
+    )
+    lifecycle_submit_coverage_pct = (
+        100.0 * snapshot.submit_or_skip_count / snapshot.reservation_count
+        if snapshot.reservation_count
+        else 0.0
+    )
+    clock_acceptable = (
+        barrier_complete
+        and lifecycle_submit_coverage_pct >= V50_MIN_LIFECYCLE_SUBMIT_COVERAGE_PCT
+        and dominant_clock_v50(snapshot) != "insufficient_trace"
+    )
+    return (
+        barrier_complete,
+        lifecycle_complete,
+        lifecycle_submit_coverage_pct,
+        clock_acceptable,
+    )
 
 
 async def run_smoke_v50(**kwargs) -> None:
@@ -142,13 +182,13 @@ async def run_smoke_v50(**kwargs) -> None:
         for row in rows
         if row.submit_to_dependency_ready_seconds is not None
     ]
-    attribution_complete = (
-        snapshot.ingress_count > 0
-        and snapshot.normalization_count == snapshot.ingress_count
-        and snapshot.reservation_count == snapshot.ingress_count
-        and snapshot.submit_or_skip_count == snapshot.reservation_count
-        and len(rows) == snapshot.ingress_count
-    )
+    (
+        barrier_attribution_complete,
+        lifecycle_attribution_complete,
+        lifecycle_submit_coverage_pct,
+        causal_clock_attribution_acceptable,
+    ) = _capture_quality_v50(snapshot)
+    dominant_clock = dominant_clock_v50(snapshot)
 
     print("\nV50 PUMPSWAP CAUSAL CLOCK ATTRIBUTION DIAGNOSTIC")
     print(
@@ -156,7 +196,12 @@ async def run_smoke_v50(**kwargs) -> None:
         f"reservations={snapshot.reservation_count} submit_or_skip={snapshot.submit_or_skip_count} "
         f"dependency_ready={snapshot.ready_count} attributed_rows={len(rows)}"
     )
-    print(f"trace_attribution_complete={attribution_complete}")
+    print(
+        f"barrier_attribution_complete={barrier_attribution_complete} "
+        f"lifecycle_attribution_complete={lifecycle_attribution_complete} "
+        f"lifecycle_submit_coverage_pct={lifecycle_submit_coverage_pct:.3f} "
+        f"causal_clock_attribution_acceptable={causal_clock_attribution_acceptable}"
+    )
     print(
         f"self_ingress_to_normalization_ms {v19._latency_summary_ms(self_normalization)}"
     )
@@ -176,7 +221,7 @@ async def run_smoke_v50(**kwargs) -> None:
     print(
         f"submit_to_dependency_ready_ms {v19._latency_summary_ms(submit_to_ready)}"
     )
-    print(f"dominant_clock={dominant_clock_v50(snapshot)}")
+    print(f"dominant_clock={dominant_clock}")
 
     print("top_global_sequence_blockers:")
     for blocker in snapshot.blockers[:10]:
@@ -193,10 +238,12 @@ async def run_smoke_v50(**kwargs) -> None:
 
     print(
         "v50_note=global_prefix_normalization_barrier is the wait imposed on an already-normalized "
-        "successor by an earlier ingress sequence whose normalization completed later. "
-        "post_prefix_reservation_coordinator is residual coordinator delay after every required "
-        "predecessor normalization is available. trace_attribution_complete must be True before "
-        "the dominant-clock classification is accepted. This instrumentation is observational only."
+        "successor by an earlier ingress sequence whose normalization completed later. Exact "
+        "ingress/normalization/reservation coverage is required for barrier attribution. Later "
+        "submit/skip coverage may be <100% only because the frozen 120s systems deadline cancels "
+        "remaining timed work; >=95% is required before causal clock comparison is accepted. No "
+        "post-deadline drain is added because that would change systems-gate semantics. This "
+        "instrumentation is observational only."
     )
 
 
