@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import threading
 import time
 from typing import Any
@@ -38,6 +38,8 @@ class SequenceBarrierRowV50:
 @dataclass(frozen=True)
 class BlockerSummaryV50:
     blocker_sequence: int
+    blocker_signature: str
+    blocker_assets: tuple[str, ...]
     blocked_successors: int
     total_successor_barrier_seconds: float
     max_successor_barrier_seconds: float
@@ -236,6 +238,8 @@ class PumpSwapSequenceBarrierTraceV50:
             blockers.append(
                 BlockerSummaryV50(
                     blocker_sequence=blocker_sequence,
+                    blocker_signature=trace.signature,
+                    blocker_assets=trace.assets,
                     blocked_successors=len(waits),
                     total_successor_barrier_seconds=sum(waits),
                     max_successor_barrier_seconds=max(waits, default=0.0),
