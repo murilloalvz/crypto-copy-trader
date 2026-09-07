@@ -43,7 +43,7 @@ That extended external wait is enough for one sequence hole to block many alread
 
 ## v52 amendment
 
-v52 changes **only the wall-clock acceptance window of one hedged unknown-pool batch**.
+v52 changes **only the wall-clock decision availability of one hedged unknown-pool batch**.
 
 Frozen rule:
 
@@ -54,10 +54,25 @@ Frozen rule:
 - endpoint errors remain explicit;
 - if no valid response arrives before the wall deadline, the existing resolver failure/unresolved path is used;
 - no retry or later backfill is added;
-- late endpoint completion is not accepted as evidence for the already-timed-out notification;
+- late endpoint completion is not accepted as evidence for an already-decided notification;
 - existing negative-cache, hydration-budget and single-flight semantics remain in force.
 
-This makes the declared RPC timeout a true end-to-end wall bound for the hedge instead of merely a per-transport timeout.
+### Decision time versus transport cleanup
+
+Python/urllib work that is already running cannot be force-cancelled safely. v52 therefore separates two clocks:
+
+1. **decision availability** — item futures receive the winning identity, explicit all-failed error, or explicit wall-deadline error as soon as that decision is knowable;
+2. **transport cleanup** — after publishing that decision, `_fetch_batch` retains the inherited v41 parallel-batch slot until every already-started hedge transport actually returns.
+
+This rule applies symmetrically to:
+
+- a fast winner with a slow losing peer;
+- a deadline failure with a still-running peer;
+- ordinary all-fast-failed hedges.
+
+A queued future that never started may be cancelled. A running transport is drained rather than treated as cancelled.
+
+This preserves the fixed real RPC concurrency budget. Publishing a quick decision must never silently create extra simultaneous transports beyond the v41 capacity profile.
 
 ## What v52 does NOT change
 
@@ -93,32 +108,37 @@ v52 must print at least:
 
 - `hedge_wall_deadline_seconds`
 - `hedge_wall_deadline_expirations`
-- `hedge_fetch_ms` p50/p95/max
+- `hedge_fetch_ms` p50/p95/max — decision availability, excluding post-decision cleanup
+- `hedge_cleanup_ms` p50/p95/max — time the inherited v41 batch slot remains retained after decision while running transports drain
 - inherited hedged calls / endpoint requests / all-failed counts
 - inherited v41 batch service diagnostics
 - v50 causal-clock diagnostics
 - v51 stateful/demoted ready-lane diagnostics
 - unchanged v43 11-gate result
 
+The v52 systems guard fails closed if the v52 diagnostic or `hedge_cleanup_ms` telemetry is missing.
+
 ## Unit/regression requirements before live
 
 Tests must prove:
 
-1. a valid fast hedge still wins immediately;
-2. a fast failure plus a hung peer returns by the configured overall wall deadline rather than waiting for the hung peer;
-3. no valid response before deadline yields explicit `SolanaRPCError` to every batch item;
-4. a valid response inside the deadline is accepted;
-5. endpoint calls remain `max_attempts=1`;
-6. the v52 resolver remains a drop-in v41 resolver and does not increase `max_concurrent_resolutions`;
-7. the v52 smoke installs/restores the resolver patch;
-8. v51 scheduler semantics/tests remain unchanged;
-9. Flow60/economic evaluator code is untouched.
+1. a valid fast hedge publishes its result without waiting for a slow peer to finish;
+2. that same fast-winner batch keeps its v41 batch slot until the already-running losing transport finishes;
+3. a fast failure plus a hung peer publishes explicit unresolved/error at the configured overall wall deadline rather than making the notification wait for the hung peer;
+4. a timed-out running transport keeps the v41 batch slot until it really finishes, so a later batch cannot silently oversubscribe the network budget;
+5. every item in a timed-out batch receives explicit `SolanaRPCError`;
+6. a valid response inside the deadline is accepted;
+7. endpoint calls remain the inherited `max_attempts=1` primitive;
+8. the v52 resolver remains a drop-in v41 resolver and does not increase `max_concurrent_resolutions`;
+9. the v52 smoke installs/restores the resolver patch and emits decision + cleanup diagnostics;
+10. v51 scheduler semantics/tests remain unchanged;
+11. Flow60/economic evaluator code is untouched.
 
 ## Live gate
 
 Use one fresh systems-only run key after CI.
 
-A v52 systems PASS requires the unchanged v43 same-run result **11/11**, no forward collector, v52 diagnostic present and no scheduler/resolver fatal error.
+A v52 systems PASS requires the unchanged v43 same-run result **11/11**, no forward collector, v52 diagnostic present, `hedge_cleanup_ms` telemetry present and no scheduler/resolver fatal error.
 
 v50 exact trace completeness is diagnostic evidence and remains separate from the systems verdict; a frozen-deadline partial trace must not overwrite the independent 11/11 or 10/11 systems result.
 
