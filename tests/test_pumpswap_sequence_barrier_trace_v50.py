@@ -26,6 +26,22 @@ def _reservation(reservation_id: int, created: float, asset: str, ticket: int):
 
 
 class PumpSwapSequenceBarrierTraceV50Tests(unittest.TestCase):
+    def test_ingress_retains_notification_identity_under_high_churn(self):
+        trace = PumpSwapSequenceBarrierTraceV50()
+        for index in range(5000):
+            trace.observe_ingress(
+                _notification(f"sig{index}"),
+                observed_monotonic=float(index),
+            )
+
+        snapshot = trace.snapshot()
+        self.assertEqual(snapshot.ingress_count, 5000)
+        self.assertEqual(len(trace._sequence_by_notification_id), 5000)
+        self.assertEqual(len(trace._by_sequence), 5000)
+        self.assertTrue(
+            all(item.notification_ref is not None for item in trace._by_sequence.values())
+        )
+
     def test_prefix_blocker_attributes_successor_wait_to_late_predecessor(self):
         trace = PumpSwapSequenceBarrierTraceV50()
         n0 = _notification("sig0")
