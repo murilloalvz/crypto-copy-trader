@@ -53,7 +53,10 @@ class UnifiedMarketRouteResearchSmokeV50InstrumentationTests(unittest.IsolatedAs
             text,
         )
         self.assertIn("attributed_rows=1", text)
-        self.assertIn("trace_attribution_complete=True", text)
+        self.assertIn("barrier_attribution_complete=True", text)
+        self.assertIn("lifecycle_attribution_complete=True", text)
+        self.assertIn("lifecycle_submit_coverage_pct=100.000", text)
+        self.assertIn("causal_clock_attribution_acceptable=True", text)
         self.assertNotIn("dominant_clock=insufficient_trace", text)
 
 
