@@ -26,7 +26,8 @@ Status atual:
 - v45 larger single acquisition 50/40: **REJECTED — SYSTEMS FAIL 10/11**
 - v46 dual prospective 40/30 subcohorts: **LIVE PASS / 2 OF 2 SUBCOHORTS PASS / AGGREGATE DESCRIPTIVE READY**
 - v47 causal feature discovery: **OFFLINE PASS / ROBUSTNESS REVIEW COMPLETE**
-- v48 frozen prospective Flow60 holdout: **CODE/CI PASS / FRESH LIVE RUN PENDING**
+- v48 frozen prospective Flow60 holdout: **HYPOTHESIS FROZEN / FIRST FRESH ATTEMPT ABORTED BEFORE ECONOMIC EVALUATION — SYSTEMS 9/11**
+- v49 systems stabilization: **CODE/CI PASS / LIVE SYSTEMS-ONLY VALIDATION PENDING**
 - Funded executable BUY assembly: **BLOCKED_BY_FUNDING**
 - Solana Tracker hazard: **BLOCKED_BY_PROVIDER_CREDITS**
 - Official `decision_as_of`: **PENDING / UNFROZEN**
@@ -51,6 +52,8 @@ Status atual:
 - Nenhum live money sem forward evidence robusta + gate explícito.
 - Discovery data nunca pode ser reapresentado como virgin holdout da regra descoberta nele.
 - Se v48 falhar ou ficar inconclusivo, não retunar bins nem trocar de hipótese usando o mesmo holdout.
+- Run abortada por systems antes do collector não pode ser reinterpretada como verdict econômico.
+- A run key da primeira tentativa v48 fica preservada/queimada; não reutilizar.
 
 ## Detector congelado
 
@@ -66,7 +69,7 @@ Version: `market_opportunity_radar_v1_1_tx_aware`
 - com tx identity coverage 100%: >=4 unique fast tx
 - direction descritiva
 
-Nenhum threshold do detector foi alterado pelos resultados econômicos v40-v48.
+Nenhum threshold do detector foi alterado pelos resultados econômicos v40-v49.
 
 ## Systems latency
 
@@ -102,7 +105,37 @@ v45 cap50 single acquisition foi rejeitado:
 - PumpSwap p95 **9.512s**
 - collector corretamente não iniciou
 
-Conclusão: não relaxar o gate nem aumentar workers para resgatar cap50. Ganhar amostra ao longo do tempo com aquisições v44-size.
+Primeira tentativa fresh v48 (`route-research-prospective-holdout-20260906-48-A`) foi abortada por systems:
+- coverage **97.3%** — PASS
+- true backlog **2.667%** — PASS
+- Pump radar p95 **6.498s** — FAIL
+- PumpSwap causal pipeline p95 **8.898s** — FAIL
+- result **9/11**
+- worker errors 0
+- drops 0
+- hydration budget skips 0
+- reservation superset violations 0
+- forward economic collector **não iniciou**
+- Flow60 hypothesis **não foi avaliada**.
+
+Dominant clocks da tentativa abortada:
+- Pump arrival ~= 1918/120 = **15.98 notif/s**;
+- Pump prepare service p95 **918.8ms** com 12 workers => capacidade p95 ~= **13.06 notif/s**, abaixo da chegada;
+- PumpSwap terminou com **108 prepared items waiting reservation**;
+- PumpSwap normalization-to-reservation p95 **6.320s**;
+- PumpSwap ingress-to-reservation p95 **8.881s**;
+- SQLite writer/result e detector DB-read permaneceram bem menores que o relógio dominante;
+- conclusão: Pump estava tail-underprovisioned e PumpSwap sofreu global ingress reservation head-of-line por sequence holes de pool identity resolution.
+
+v49 systems scheduling amendment, preregistrado antes do próximo live:
+- Pump prepare workers: **12 -> 20**, dimensionado pela capacidade medida, sem alterar detector;
+- PumpSwap immutable pool identity resolution começa em ingress via prefetch;
+- prefetch usa o **mesmo resolver**, cache/history, per-pool single-flight, hydration budget, hedging e explicit unresolved semantics;
+- prefetch não persiste trade, não cria reservation, não detecta trigger, não muta episódio, não reordena FIFO e não faz retry/backfill;
+- authoritative normalization/persistence continua no path original;
+- `route_research_systems_stability_v49.py` bloqueia deliberadamente o forward SELL collector e valida somente o gate systems 11/11.
+
+Conclusão: não relaxar gate, não rerollar v48 até conseguir systems evidence independente. Primeiro rodar uma única v49 systems-only fresh.
 
 ## Funding / official executable path
 
@@ -303,10 +336,10 @@ Primary contrast:
 - 300s e 3600s são diagnósticos e não podem resgatar um FAIL de 900s.
 
 Fresh acquisition:
-- usa exatamente o caminho dual v46 já validado;
 - run key deve ser nova;
-- preflight falha se qualquer outcome já existir em `-A` ou `-B`;
-- cada subcoorte continua cap40/minimum30 e precisa passar gates independentes.
+- cada subcoorte continua cap40/minimum30 e precisa passar gates independentes;
+- qualquer systems FAIL antes do collector deixa a hipótese economicamente NOT_EVALUATED;
+- o profile systems usado no próximo v48 só pode mudar após v49 systems-only PASS.
 
 Primary support gate em 900s:
 - A: LOW >=5 AVAILABLE e HIGH >=5 AVAILABLE
@@ -332,26 +365,77 @@ Adequate support but failed economics/replication:
 
 Mesmo um PASS v48 é apenas prospective route-only hypothesis PASS. Ainda não libera official executable path, shadow ou live money.
 
+### First fresh v48 attempt — SYSTEMS ABORT, NO ECONOMIC VERDICT
+
+Base attempted run key:
+`route-research-prospective-holdout-20260906-48`
+
+Only A acquisition started. Same-run systems gate returned **9/11** because Pump and PumpSwap p95 exceeded 5s. v46 correctly stopped fail-closed before B and before forward economic collection.
+
+Classification:
+- acquisition: `FAIL_V48_FROZEN_V46_ACQUISITION_PATH`
+- Flow60 hypothesis: **NOT_EVALUATED**
+- economic edge: **NOT ESTABLISHED**
+
+Do not reuse this run key and do not inspect/repurpose it as a prospective economic holdout.
+
+## v49 systems stability — CODE/CI PASS, LIVE PENDING
+
+Protocol:
+`docs/route-research-v49-systems-stability-protocol-2026-09-07.md`
+
+Files:
+- `src/pumpswap_ingress_prefetch_v49.py`
+- `unified_market_route_research_smoke_v49.py`
+- `route_research_systems_stability_v49.py`
+- `tests/test_pumpswap_ingress_prefetch_v49.py`
+
+Purpose:
+- attack the two measured systems clocks only;
+- validate amended scheduling without collecting forward SELL labels;
+- preserve Flow60 hypothesis as virgin with respect to a completed forward holdout.
+
+v49 PASS requires the unchanged v43 same-run systems gate **11/11**.
+
+Classifications:
+- `PASS_V49_SYSTEMS_STABILITY_PROFILE`
+- `FAIL_V49_SYSTEMS_STABILITY_PROFILE`
+- `FAIL_V49_SYSTEMS_ONLY_GUARD`
+
+A v49 PASS is systems evidence only. It does not validate route-only profitability, Flow60, executable fills, shadow or live money.
+
 ## Immediate next work
 
 No PC:
 
 1. `git pull --ff-only`
-2. executar uma única fresh v48 run com nova run key:
+2. executar uma única fresh v49 systems-only run:
 
-`python route_research_prospective_holdout_v48.py --run-key route-research-prospective-holdout-20260906-48`
+`python route_research_systems_stability_v49.py --run-key route-research-systems-stability-20260907-49`
 
 Enviar o output completo.
 
-Não rodar v47 novamente. Não rodar outra hipótese em paralelo. Não alterar bins 25/47, horizonte 900s, detector ou pacing durante a v48.
+**Não rodar v48 novamente ainda.** Não alterar bins 25/47, horizonte 900s, detector, provider pacing ou economic gate.
+
+Se v49 PASS 11/11:
+1. registrar o live systems PASS;
+2. wirear o profile v49 validado no acquisition path do v48 sem mudar a hipótese;
+3. usar uma **nova** v48 base run key;
+4. só então coletar o verdadeiro prospective holdout.
+
+Se v49 FAIL:
+- manter Flow60 congelada e NOT_EVALUATED;
+- usar os novos diagnostics para localizar o relógio dominante restante;
+- não rerollar v48.
 
 ## Shadow / live
 
-- systems canonical v44-size path: **PASS**
-- v45 cap50 single path: **REJECTED — SYSTEMS FAIL**
+- systems canonical historical v44-size path: **PASS**
+- first v48 fresh attempt: **SYSTEMS ABORT 9/11 / NO ECONOMIC VERDICT**
+- v49 systems amendment: **CODE/CI PASS / LIVE SYSTEMS-ONLY PENDING**
 - v46 causal sample: **DISCOVERY READY**
 - v47 discovery/robustness: **COMPLETE**
-- v48 frozen prospective hypothesis: **CODE/CI PASS / FRESH DATA PENDING**
+- v48 frozen prospective hypothesis: **FROZEN / PROSPECTIVELY UNTESTED ECONOMICALLY**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official decision/outcomes: **PENDING**
 - profitable economic edge: **NOT ESTABLISHED**
@@ -359,35 +443,34 @@ Não rodar v47 novamente. Não rodar outra hipótese em paralelo. Não alterar b
 
 ## End-of-chat handoff — continue from here
 
-Do not reopen feature discovery on v46/v47 before fresh v48.
+Do not reopen feature discovery on v46/v47 and do not rerun v48 before v49 live systems validation.
 
-Scientific sequence now is fixed:
-`v46 discovery sample -> v47 causal feature discovery + robustness -> frozen flow60 hypothesis -> fresh v48 holdout`.
+Scientific sequence is now:
+`v46 discovery sample -> v47 causal feature discovery + robustness -> frozen Flow60 hypothesis -> first v48 acquisition abort (systems only) -> v49 systems-only stabilization -> fresh v48 holdout if v49 PASS`.
 
-v48 hypothesis was registered in code/docs before fresh data:
+Frozen v48 hypothesis remains exactly:
 - feature `flow60_event_count`
 - LOW <=25 / MID 26..47 / HIGH >47
 - primary horizon 900s
 - LOW-vs-HIGH
 - strict replication + positive economic-shape + heavy-tail gate.
 
-Latest v48 code/test commit before this context update:
-- `b937f56dd7e6c986ce4c62d19761b346dd11c0db`
-- commit: `test: cover frozen v48 prospective gate`
-- GitHub Actions Unit tests run 692: **SUCCESS**.
+v49 implementation was committed before live validation and GitHub Actions compile/unit tests passed at head before this context update.
 
 Next session/action:
 1. pull latest branch;
-2. run fresh `route_research_prospective_holdout_v48.py` with an unused run key;
+2. run fresh `route_research_systems_stability_v49.py` with run key `route-research-systems-stability-20260907-49`;
 3. send complete output;
-4. classify PASS / FAIL / INCONCLUSIVE exactly from pre-registered gate;
-5. do not retune on the same holdout.
+4. classify systems PASS/FAIL only;
+5. do not inspect this diagnostic as economic evidence;
+6. only on v49 PASS prepare a new fresh v48 acquisition key.
 
 Scientific state:
-- systems engineering: **proven at frozen v44-size path**;
+- historical systems engineering: **proven at prior v44-size path, but latest first v48 attempt exposed a load-sensitive regression**;
+- v49 amended systems profile: **code/CI proven, live not yet proven**;
 - causal route-only discovery sample: **complete via v46**;
 - v47 feature discovery + heavy-tail review: **complete**;
-- one prospective hypothesis: **frozen before v48 data**;
+- one prospective Flow60 hypothesis: **frozen and not economically evaluated prospectively yet**;
 - profitable economic edge: **not established**;
 - funded executable path: **blocked by funding**;
 - official executable outcomes/shadow/live: **not released**.
