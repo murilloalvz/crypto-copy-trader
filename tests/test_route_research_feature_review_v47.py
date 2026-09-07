@@ -98,7 +98,7 @@ class RouteResearchFeatureReviewV47Tests(unittest.TestCase):
             rows.append(_row(cohort="A", index=i, feature_value=0, label=-10.0))
             rows.append(_row(cohort="A", index=i + 5, feature_value=1, label=10.0))
             rows.append(_row(cohort="B", index=i, feature_value=0, label=10.0))
-            rows.append(_row(cohort="B", index=i + 5, feature_value=1, label=-10.0))
+            rows.append(_row(cohort="B", index=i + 5, feature_value=1, label=-5.0))
         definition = FeatureDefinitionV47("x", "test", "numeric")
         grouping = grouping_for_feature_v47(rows=tuple(rows), definition=definition)
         effect = effect_for_feature_v47(
