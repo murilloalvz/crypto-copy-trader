@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import threading
 import time
 from typing import Any
@@ -13,6 +13,7 @@ class SequenceTraceV50:
     notification_id: int
     signature: str
     ingress_monotonic: float
+    notification_ref: Any = field(default=None, repr=False, compare=False)
     normalization_completed_monotonic: float | None = None
     reservation_created_monotonic: float | None = None
     submit_monotonic: float | None = None
@@ -73,6 +74,10 @@ class PumpSwapSequenceBarrierTraceV50:
     of normalization completion times for sequences ``0..i``. A later-normalized predecessor that
     owns that prefix maximum is the exact global watermark blocker for already-normalized
     successors. This tracer records timestamps only; it never participates in scheduling.
+
+    Notification objects are retained for the lifetime of the trace. The tracer correlates later
+    normalization callbacks by ``id(notification)``; retaining the object prevents CPython from
+    recycling an old object id for a later stream notification during a high-throughput run.
     """
 
     def __init__(self) -> None:
@@ -105,6 +110,7 @@ class PumpSwapSequenceBarrierTraceV50:
                 notification_id=notification_id,
                 signature=signature,
                 ingress_monotonic=now,
+                notification_ref=notification,
             )
             return sequence
 
