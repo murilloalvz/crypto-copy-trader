@@ -67,7 +67,32 @@ class PumpSwapSequenceBarrierTraceV50Tests(unittest.TestCase):
             snapshot.blockers[0].total_successor_barrier_seconds,
             2.0,
         )
+
+    def test_dominant_clock_detects_global_barrier_with_tail_support(self):
+        trace = PumpSwapSequenceBarrierTraceV50()
+        notifications = [_notification(f"sig{index}") for index in range(30)]
+        for index, notification in enumerate(notifications):
+            trace.observe_ingress(notification, observed_monotonic=index * 0.01)
+
+        trace.observe_normalization(notifications[0], _handle(1.0))
+        trace.observe_normalization(notifications[1], _handle(4.0))
+        for index in range(2, 30):
+            trace.observe_normalization(notifications[index], _handle(2.0 + index * 0.001))
+
+        trace.observe_reservation(_reservation(0, 1.01, "A0", 0))
+        trace.observe_reservation(_reservation(1, 4.01, "A1", 0))
+        for index in range(2, 30):
+            reservation = _reservation(index, 4.01 + index * 0.0001, f"A{index}", 0)
+            trace.observe_reservation(reservation)
+            trace.observe_submit_or_skip(
+                reservation,
+                disposition="submit",
+                observed_monotonic=4.02 + index * 0.0001,
+            )
+
+        snapshot = trace.snapshot()
         self.assertEqual(dominant_clock_v50(snapshot), "global_sequence_barrier")
+        self.assertGreaterEqual(snapshot.blockers[0].blocked_successors, 20)
 
     def test_self_slow_item_is_not_counted_as_blocked_successor(self):
         trace = PumpSwapSequenceBarrierTraceV50()
