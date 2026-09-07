@@ -37,6 +37,7 @@ class V52Verdict:
     v50_attribution_ok: bool
     v51_present: bool
     v52_present: bool
+    v52_cleanup_present: bool
     v52_instance_ok: bool
     classification: str
 
@@ -50,11 +51,17 @@ def classify_v52_output(output: str) -> V52Verdict:
     v50_attribution_ok = v50_gate.diagnostic_capture_complete_v50(output)
     v51_present = "V51 STATEFUL-PRIORITY READY-QUEUE DIAGNOSTIC" in output
     v52_present = "V52 PUMPSWAP HEDGED RPC WALL-DEADLINE DIAGNOSTIC" in output
+    v52_cleanup_present = "hedge_cleanup_ms" in output
     v52_instance_ok = "v52_resolver_instance=missing" not in output
 
     if collector_started:
         classification = "FAIL_V52_SYSTEMS_ONLY_GUARD"
-    elif not v51_present or not v52_present or not v52_instance_ok:
+    elif (
+        not v51_present
+        or not v52_present
+        or not v52_cleanup_present
+        or not v52_instance_ok
+    ):
         classification = "FAIL_V52_DIAGNOSTIC_MISSING"
     elif systems_pass and v50_attribution_ok:
         classification = "PASS_V52_HEDGE_WALL_DEADLINE_SYSTEMS_PROFILE"
@@ -71,6 +78,7 @@ def classify_v52_output(output: str) -> V52Verdict:
         v50_attribution_ok=v50_attribution_ok,
         v51_present=v51_present,
         v52_present=v52_present,
+        v52_cleanup_present=v52_cleanup_present,
         v52_instance_ok=v52_instance_ok,
         classification=classification,
     )
@@ -148,6 +156,7 @@ def main() -> int:
         f"v50_causal_attribution_ok={verdict.v50_attribution_ok} "
         f"v51_diagnostic_present={verdict.v51_present} "
         f"v52_diagnostic_present={verdict.v52_present} "
+        f"v52_cleanup_present={verdict.v52_cleanup_present} "
         f"v52_resolver_instance_ok={verdict.v52_instance_ok} "
         f"forward_collector_started={verdict.collector_started}"
     )
@@ -155,7 +164,12 @@ def main() -> int:
 
     if verdict.collector_started:
         return 2
-    if not verdict.v51_present or not verdict.v52_present or not verdict.v52_instance_ok:
+    if (
+        not verdict.v51_present
+        or not verdict.v52_present
+        or not verdict.v52_cleanup_present
+        or not verdict.v52_instance_ok
+    ):
         return 2
     if not verdict.systems_pass:
         print(
@@ -172,8 +186,8 @@ def main() -> int:
 
     print(
         "Interpretation: the unchanged systems gate passed with v51 ready priority and v52's "
-        "configured RPC wall deadline active. This is systems evidence only; it does not validate "
-        "Flow60 or any economic edge."
+        "configured RPC wall deadline active without hidden hedge-slot oversubscription. This is "
+        "systems evidence only; it does not validate Flow60 or any economic edge."
     )
     return 0
 
