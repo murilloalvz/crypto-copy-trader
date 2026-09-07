@@ -15,6 +15,11 @@ import unified_market_route_research_smoke_v42 as v42
 
 
 V49_PUMP_PREPARE_WORKERS = 20
+# Keep an immutable reference to the canonical v42 entry point. The systems-only runner
+# temporarily monkey-patches the v42 module object visible through v43; because Python modules
+# are singletons, calling v42.run_smoke_v42 from inside this wrapper would otherwise recurse
+# back into run_smoke_v49 indefinitely.
+_BASE_V42_RUN_SMOKE = v42.run_smoke_v42
 
 
 async def run_smoke_v49(**kwargs) -> None:
@@ -40,7 +45,7 @@ async def run_smoke_v49(**kwargs) -> None:
 
     v19.iter_pumpswap_log_notifications = _wrapped_stream_factory
     try:
-        await v42.run_smoke_v42(**kwargs)
+        await _BASE_V42_RUN_SMOKE(**kwargs)
     finally:
         v19.iter_pumpswap_log_notifications = original_stream_factory
         await prefetcher.drain(
