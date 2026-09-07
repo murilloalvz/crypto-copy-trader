@@ -20,17 +20,15 @@ Status atual:
 - PumpSwap acquisition + causal resolution: **PASS**
 - Detector / episode / replay hardening: **PASS**
 - Unified Market Latency v42: **FORMAL PASS 11/11**
-- Route-research plumbing: **PASS**
+- v44-size provider-paced acquisition path: **SYSTEMS PASS 11/11**
 - Solana RPC minimal hazard v37 semantics: **PASS**
-- Jupiter route-only plumbing: **PASS**
-- v43 integrated cohort: **LIVE SYSTEMS PASS 11/11 / SAMPLE INCONCLUSIVE 18<30**
-- v44 provider-paced cohort: **LIVE SYSTEMS PASS 11/11 / 39 DECISIONS / FORWARD COMPLETE / OVERALL INCONCLUSIVE**
-- v45 larger single cohort: **LIVE SYSTEMS FAIL 10/11 — PumpSwap p95 9.512s; collector correctly not started**
-- v46 dual prospective v44-size subcohorts: **CODE/CI PASS / LIVE PENDING**
+- Route-only Jupiter research plumbing: **PASS**
+- v45 larger single acquisition 50/40: **REJECTED — SYSTEMS FAIL 10/11**
+- v46 dual prospective 40/30 subcohorts: **LIVE PASS / 2 OF 2 SUBCOHORTS PASS / AGGREGATE DESCRIPTIVE READY**
+- v47 offline causal feature review: **CODE/CI PASS / OFFLINE RUN PENDING**
 - Funded executable BUY assembly: **BLOCKED_BY_FUNDING**
-- Solana Tracker hazard v36: **BLOCKED_BY_PROVIDER_CREDITS**
-- Wallet history v38: **strict lineage correct / official sample inconclusive**
-- Official `decision_as_of`: **PENDING**
+- Solana Tracker hazard: **BLOCKED_BY_PROVIDER_CREDITS**
+- Official `decision_as_of`: **PENDING / UNFROZEN**
 - Official executable forward outcomes: **PENDING**
 - Economic edge: **NOT ESTABLISHED**
 - Shadow/live money: **NOT RELEASED**
@@ -39,7 +37,7 @@ Status atual:
 ## Invariantes congelados
 
 - Histórico exploratório de P&L não é prova causal de edge.
-- Detector/estratégia/coorte não mudam por resultado econômico pequeno ou conveniente.
+- Detector/estratégia não mudam por resultado econômico pequeno ou conveniente.
 - Wallet é evidência pós-episódio, nunca acquisition whitelist.
 - `route available != assemblable transaction != landed transaction != fill`.
 - Route-only outcome não é wallet realized P&L.
@@ -47,7 +45,7 @@ Status atual:
 - Primeiro trigger-to-episode **persistido** permanece canônico.
 - No retroactive enrollment / no backfill.
 - PASS de systems latency não significa profitability PASS.
-- Não aumentar workers por tentativa; localizar primeiro o relógio dominante.
+- Não aumentar workers por tentativa; primeiro localizar o relógio dominante.
 - Features de wallet/hazard/flow permanecem descritivas até valor incremental out-of-sample.
 - Nenhum live money sem forward evidence robusta + gate explícito.
 
@@ -65,11 +63,11 @@ Version: `market_opportunity_radar_v1_1_tx_aware`
 - com tx identity coverage 100%: >=4 unique fast tx
 - direction descritiva
 
-Nenhum threshold foi alterado pelos resultados v40-v46.
+Nenhum threshold foi alterado pelos resultados v40-v47.
 
-## Systems latency gate
+## Systems latency
 
-ALL:
+Gate congelado ALL:
 1. no worker/traceback errors
 2. drops 0
 3. reference asset episodes 0
@@ -82,36 +80,30 @@ ALL:
 10. replay/audit sem fatal corruption
 11. reservation superset violations 0
 
-Canonical same-run PASS v42:
-- received 6823
-- processed 6823
+Canonical v42 same-run PASS:
 - coverage 100.0%
 - true backlog 0%
 - Pump p95 1.842s
-- PumpSwap pipeline p95 3.302s
-- errors/drops/reference/budget/superset = 0
+- PumpSwap p95 3.302s
+- result **11/11**
 
-v44 também manteve systems PASS 11/11:
-- received 4507
+v44 also PASS at the frozen practical sampling size:
 - coverage 99.8%
 - true backlog 0.222%
 - Pump p95 1.733s
 - PumpSwap p95 3.808s
+- result **11/11**
 
-v45 single-cohort 50/40 live:
-- systems **FAIL 10/11**
-- coverage 99.7%
-- true backlog 0.311%
-- Pump p95 2.732s PASS
-- PumpSwap p95 **9.512s FAIL**
-- hazard starts 50; entry starts 47
-- collector did not start
+v45 increased one acquisition from cap40 to cap50 and failed:
+- systems **10/11**
+- PumpSwap p95 **9.512s**
+- collector correctly did not start
 
-Interpretation: increasing one acquisition from cap40 to cap50 is not operationally neutral under the current machine/provider side-work profile. The v45 cohort must not be used as economic evidence. Do not raise workers or relax the latency gate to rescue it.
+Conclusion: cap50 single-acquisition sampling is rejected. Do not relax the gate or increase workers to rescue it. Gain sample over time using v44-size acquisitions.
 
-## Funding / official executable entry
+## Funding / official executable path
 
-Frozen Jupiter official entry:
+Frozen official Jupiter BUY:
 - provider `jupiter_swap_v2_order`
 - purpose `entry_executable_buy_v1`
 - USDC input
@@ -120,191 +112,177 @@ Frozen Jupiter official entry:
 - public taker only
 - no signing/execute
 
-Persisted earlier diagnostic:
-- routes 12/12
-- assembled tx 0/12
-- reason 12/12 `Insufficient funds`
-
-Funded assemblability remains **BLOCKED_BY_FUNDING**.
+Persisted readiness showed route availability but no assembled transaction because configured taker had insufficient funds. Official funded assemblability remains **BLOCKED_BY_FUNDING**.
 
 ## Hazard
 
-v37 provider `solana_rpc_mint_hazard_v1 / token_hazard_minimal_v1` remains the minimal validated provider.
-Core: token program, decimals, supply, mint authority, freeze authority, Token-2022 metadata when exposed.
+Validated free provider:
+`solana_rpc_mint_hazard_v1 / token_hazard_minimal_v1`
+
+Core:
+- token program
+- decimals
+- supply
+- mint authority
+- freeze authority
+- Token-2022 metadata when exposed
 
 `getTokenLargestAccounts` is optional auxiliary evidence and is **token-account concentration**, not holder/owner concentration.
 
-## Wallet market-first history v38
+## Route-only causal research
 
-Strict pre-T0 official lineage only. Legacy Discovery/Copyability, leaderboard PnL, exploratory v2/v3 and later backfill are forbidden as official labels.
+Funding-free research path only. It never freezes official `decision_as_of` and never signs/submits.
 
-Persisted diagnostic:
-- 12 episodes
-- 194 participant-wallet observations
-- 0 prior official decisions
-- 0 eligible labels
-- 0 associations
-- `INCONCLUSIVE_NO_OFFICIAL_MARKET_FIRST_HISTORY_SAMPLE`
+Frozen semantics:
+- BUY: USDC -> token, taker=None, route-only/non-executable
+- notional: US$25
+- slippage parameter: 100bps
+- horizons: 300 / 900 / 3600 seconds
+- SELL: exact entry output amount token -> USDC, taker=None
+- missing Jupiter route remains explicit missingness
 
-Correct missingness, not strategy failure.
+Provider pacing frozen from v44:
+- hazard starts: 650ms
+- BUY starts: 1000ms
+- SELL starts: 250ms
+- no retry/backfill
 
-## v40 first causal route-only microcohort
+## v40 microcohort
 
-Collector PASS:
-- 33 scheduled
-- 30 AVAILABLE
-- 10 AVAILABLE per 300/900/3600 horizon
+First causal route-only microcohort, n10 per horizon. All horizons `INCONCLUSIVE_SAMPLE_LT_30`. Results were strongly negative/heavy-tailed and are retained only as early evidence; no detector tuning was allowed.
+
+## v44 larger single valid cohort
+
+Live `route-research-forward-cohort-20260906-44`:
+- systems 11/11
+- hazard 40/40 AVAILABLE
+- entry 39/40 AVAILABLE
+- 39 decisions / 117 schedules
+- collector terminal 117/117
 - target lateness p95 1s
-- no collector/executable-semantic errors
+- lineage 0
+- all 24 forward errors were Jupiter HTTP400 `Failed to get quotes`, zero SELL429
 
-Economics, route-only only:
-- 300s n10: positive40%, mean -22.788%, median -32.044%, PF0.412, best +138.698%, mean without best -40.731%
-- 900s n10: positive10%, mean -47.031%, median -50.019%, PF0.049
-- 3600s n10: positive10%, mean -53.070%, median -50.184%, PF0.052
+Economics:
+- 300s n35: mean -5.016%, median -4.082%, PF0.766
+- 900s n29: mean -14.497%, median -28.814%, PF0.653
+- 3600s n29: mean -36.457%, median -42.599%, PF0.245
 
-All horizons: **INCONCLUSIVE_SAMPLE_LT_30**. No threshold tuning from this microcohort.
+Overall remained inconclusive because 900/3600 had n29.
 
-## v41 / v42 structural resolution
-
-v41 fixed terminal accounting and hidden one-lane PumpSwap hydration transport. v42 added eager submit-time demotion using the exact existing continuation proof for pending work only.
-
-v42 live: **systems PASS 11/11 + route plumbing PASS**.
-
-No further latency optimization without new evidence.
-
-## v43 integrated forward economic cohort
-
-Protocol: `docs/route-only-forward-economic-cohort-v43-protocol-2026-09-06.md`
-
-Frozen defaults:
-- acquisition 120s
-- predeclared cap 40
-- minimum clean research decisions 30
-- route-only BUY $25 / 100bps
-- exact horizons 300/900/3600s
-- target lateness descriptive gate p95 <=2s
-
-Live run `route-research-forward-cohort-20260906-43`:
-- systems PASS 11/11
-- selected 40
-- hazard AVAILABLE 25 / PROVIDER_ERROR 15
-- all 15 hazard errors = Solana public RPC HTTP 429 Too Many Requests
-- entry eligible 25
-- entry AVAILABLE 18 / PROVIDER_ERROR 7
-- all 7 entry errors = Jupiter `/order` HTTP 429 API Gateway Too Many Requests
-- decisions frozen 18
-- schedules 54
-- classification `INCONCLUSIVE_V43_COHORT_LT_MINIMUM`
-- collector correctly did **not** start
-
-Conclusion: v43 undersizing was provider throttling, not detector/plumbing/economic evidence.
-
-## v44 provider-paced cohort — live complete
-
-Files:
-- `src/provider_start_pacer_v44.py`
-- `route_research_forward_cohort_v44.py`
-- `tests/test_provider_start_pacer_v44.py`
-
-Frozen pacing:
-- Solana hazard starts: 650ms apart
-- Jupiter route-only BUY starts: 1000ms apart
-- Jupiter route-only SELL starts: 250ms apart
-
-Live run `route-research-forward-cohort-20260906-44`:
-- systems PASS 11/11
-- selected 40
-- hazard AVAILABLE 40 / PROVIDER_ERROR 0
-- entry AVAILABLE 39 / PROVIDER_ERROR 1
-- residual entry failure = Jupiter 429
-- research decisions 39
-- schedules 117
-- collector submitted 117 / terminal 117
-- collector errors 0
-- executable semantic violations 0
-- target lateness p95 1s / max 1s
-- lineage violations 0
-
-Forward availability:
-- 300s: 35 AVAILABLE / 4 PROVIDER_ERROR = 89.7%
-- 900s: 29 AVAILABLE / 10 PROVIDER_ERROR = 74.4%
-- 3600s: 29 AVAILABLE / 10 PROVIDER_ERROR = 74.4%
-
-Persisted forward diagnostic:
-- all 24 forward errors = Jupiter `/order` HTTP 400 `Failed to get quotes`
-- **zero SELL 429**
-- repeated persistent failures across all horizons for four episodes
-- these are legitimate route/provider missingness, not collector plumbing failure
-
-Descriptive route-only economics:
-- 300s n35: positive48.57%, mean -5.016%, median -4.082%, PF0.766, best +246.881%, worst -99.914%, mean without best -12.425%
-- 900s n29: positive31.03%, mean -14.497%, median -28.814%, PF0.653, best +685.875%, worst -99.996%, mean without best -39.511%
-- 3600s n29: positive24.14%, mean -36.457%, median -42.599%, PF0.245, best +98.456%, worst -99.997%, mean without best -41.276%
-
-Classifications:
-- 300s: `DESCRIPTIVE_SAMPLE_READY_FOR_ANALYSIS`
-- 900s: `INCONCLUSIVE_SAMPLE_LT_30`
-- 3600s: `INCONCLUSIVE_SAMPLE_LT_30`
-- overall: `INCONCLUSIVE_V43_FORWARD_COHORT`
-
-Interpretation: first larger causal sample remains economically negative/heavy-tailed. Do not tune strategy from v44.
-
-## v45 larger single cohort — live systems failure
-
-Files:
-- `route_research_forward_cohort_v45.py`
-- `tests/test_route_research_forward_cohort_v45.py`
-
-Live result:
-- single acquisition cap 50 / minimum decisions 40
-- same-run systems 10/11
-- PumpSwap p95 9.512s >5s
-- hazard starts 50; entry starts 47
-- forward collector correctly did not start
-
-Conclusion: **v45 is rejected as the sampling path**. A larger single concurrent acquisition changes operational load enough to violate the frozen systems gate.
-
-## v46 dual prospective v44-size subcohorts
+## v46 dual prospective subcohorts — canonical descriptive sample
 
 Files:
 - `route_research_forward_cohort_v46.py`
 - `src/route_research_multi_evaluation_v46.py`
 - `tests/test_route_research_forward_cohort_v46.py`
 
-Status: **CODE/CI PASS / LIVE PENDING**.
+Base run:
+`route-research-forward-cohort-20260906-46`
+
+Subcohorts:
+- `...-46-A`
+- `...-46-B`
 
 Protocol:
-- one command derives two fresh run keys: `<base>-A` and `<base>-B`;
-- runs **two complete v44 subcohorts sequentially**;
-- each subcohort keeps cap40 / minimum30;
-- each independently must have systems 11/11, >=30 decisions, terminal collector, target lateness p95 <=2s and lineage violations 0;
-- if A fails, B is not used to rescue it; execution stops fail-closed;
-- if both pass, evaluation aggregates the persisted A+B outcomes while preserving original run keys and explicit missingness;
-- aggregate readiness still requires >=30 AVAILABLE labels at each horizon and zero lineage violations.
+- two complete v44-size subcohorts sequentially;
+- each cap40 / minimum30;
+- each independently requires systems11/11, >=30 decisions, terminal collector, lateness p95<=2s, lineage0;
+- one failed subcohort cannot be rescued by the other;
+- aggregation preserves run identity and missingness.
 
-Everything else remains frozen: detector, $25 route-only BUY, 100bps, 300/900/3600s, v44 pacing, no retry/backfill.
+Live final result:
+- subcohorts passed: **2/2**
+- aggregate lineage violations: **0**
+- descriptive-ready horizons: **3/3**
+- classification: **READY_FOR_DESCRIPTIVE_RESEARCH_REVIEW**
 
-Reason for v46: gain statistical sample by **time-separated independent cohorts**, not by increasing one hot-path acquisition above the systems capacity demonstrated by v44/v45.
+Aggregate A+B:
+- 300s: scheduled79, AVAILABLE74, coverage93.7%, positive45.95%, mean -7.324%, median -0.233%, PF0.536, mean_without_best -9.309%
+- 900s: scheduled79, AVAILABLE69, coverage87.3%, positive56.52%, mean -1.458%, median +1.363%, PF0.932, mean_without_best -5.771%
+- 3600s: scheduled79, AVAILABLE66, coverage83.5%, positive39.39%, mean -27.359%, median -29.786%, PF0.371, mean_without_best -30.252%
+
+Subcohort B at 900s was mildly positive (n36, mean +1.927%, median +1.490%, PF1.087), while aggregate 900s remained slightly negative with PF<1. Therefore 900s is the only near-break-even horizon, but the evidence is **not a replicated positive edge**. 300s and 3600s remain clearly weak in the current unfiltered detector population.
+
+Economic edge remains **NOT ESTABLISHED**.
+
+## v47 offline causal feature review
+
+Protocol:
+`docs/route-research-offline-causal-feature-review-v47-protocol-2026-09-06.md`
+
+Files:
+- `src/route_research_feature_review_v47.py`
+- `route_research_feature_review_v47.py`
+- `tests/test_route_research_feature_review_v47.py`
+
+Status: **CODE/CI PASS / OFFLINE RUN PENDING**.
+
+Purpose: use the already-complete v46 A/B sample for descriptive feature discovery without making a new provider call or changing the strategy.
+
+Strict feature cutoff:
+`feature_observed_at <= research_decision_as_of`
+
+The dataset is rebuilt causally at each persisted decision clock using existing dual-clock builders. Any later hazard/quote/flow evidence is rejected rather than backfilled.
+
+Predeclared feature families:
+
+Episode:
+- trigger kind
+- trigger direction
+- decision delay
+
+Flow:
+- 30s event count
+- 30s buy share
+- 30s wallet identity coverage
+- 30s notional imbalance
+- 30s return
+- 60s event count
+- 300s event count
+
+Current wallet participation:
+- participant count
+- repeated event share
+
+On-chain hazard:
+- mint authority present
+- freeze authority present
+- Token-2022
+- extensions count
+
+Entry route surface:
+- price impact
+- liquidity when provider metadata exists
+
+Numeric bins are derived from **feature values only**, never returns. They are descriptive bins, not trading thresholds.
+
+A feature comparison is marked `SAME_DIRECTION_DESCRIPTIVE_ONLY` only when comparable groups have >=5 AVAILABLE labels per group in both A and B and median-return separation points in the same direction in A, B and aggregate. Disagreement is explicit instability.
+
+A/B are already observed and therefore are **not a virgin holdout** for a new rule. v47 may propose a hypothesis candidate, but cannot validate it. Any selected hypothesis must be frozen before a fresh v48 out-of-sample cohort.
 
 ## Immediate next work
 
-Run one fresh v46 base cohort with no concurrent market/collector process. Keep the PC awake for both sequential subcohorts.
+Run v47 OFFLINE over the completed v46 database:
+
+`python route_research_feature_review_v47.py --base-run-key route-research-forward-cohort-20260906-46`
 
 Interpretation order:
-1. subcohort A must independently pass systems/collection gates;
-2. subcohort B must independently pass the same gates;
-3. preserve all `Failed to get quotes` missingness;
-4. inspect aggregate n/coverage per horizon;
-5. only if all three aggregate horizons are descriptive-ready, compare aggregate economics against v40/v44 without changing detector/features/thresholds.
+1. causal dataset audit must pass with lineage0 and no official decision mutation;
+2. inspect feature coverage before interpreting effects;
+3. compare direction of median-return separation in A and B;
+4. reject unstable/low-support features;
+5. treat same-direction features only as hypothesis candidates;
+6. if one candidate is scientifically defensible, freeze it in a separate protocol before a fresh v48 holdout.
+
+Do not run another economic acquisition before reviewing v47 output.
 
 ## Shadow / live
 
-- systems current canonical path: **PASS at v44-size acquisition**
-- v45 single larger acquisition: **REJECTED — SYSTEMS FAIL**
-- v46: **CODE/CI PASS / LIVE PENDING**
-- route-only research plumbing: **PASS**
-- on-chain hazard semantics: **PASS**
-- v44 economics: **OVERALL INCONCLUSIVE / NEGATIVE-HEAVY-TAILED OBSERVATION**
+- systems canonical v44-size path: **PASS**
+- v45 cap50 single path: **REJECTED — SYSTEMS FAIL**
+- v46 causal sample: **DESCRIPTIVE READY**
+- v47: **CODE/CI PASS / OFFLINE RUN PENDING**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official decision/outcomes: **PENDING**
 - economic edge: **NOT ESTABLISHED**
