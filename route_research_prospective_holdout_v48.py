@@ -4,6 +4,7 @@ import argparse
 import math
 import sys
 
+import route_research_forward_cohort_v43 as v43
 import route_research_forward_cohort_v46 as v46
 from src.opportunity_route_research_store import load_route_research_outcomes
 from src.route_research_feature_review_v47 import build_feature_dataset_v47
@@ -17,13 +18,21 @@ from src.route_research_prospective_holdout_v48 import (
     group_metrics_v48,
     primary_gate_v48,
 )
+import unified_market_execution_quote_smoke_v31 as v31
+import unified_market_route_research_smoke_v49 as v49
+import unified_market_route_research_smoke_v53 as v53
+
+
+V48_VALIDATED_SYSTEMS_PROFILE = "v53_opportunistic_prefetch"
+V48_VALIDATED_PUMP_PREPARE_WORKERS = v49.V49_PUMP_PREPARE_WORKERS
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "v48 fresh prospective holdout for the pre-registered flow60 hypothesis. "
-            "PAPER / RESEARCH / READ ONLY; acquisition delegates to frozen v46 dual-cohort path."
+            "PAPER / RESEARCH / READ ONLY; frozen v46 A/B cohort/economic protocol with the "
+            "prospectively validated v53 systems scheduling profile."
         )
     )
     parser.add_argument("--run-key", required=True, help="Fresh base run key; -A and -B are appended")
@@ -48,8 +57,21 @@ def _fresh_run_preflight(run_keys: tuple[str, str]) -> bool:
 
 
 def _run_v46(args, base: str) -> int:
+    """Run the frozen v46 cohort protocol on the validated v53 systems scheduling path.
+
+    The amendment is deliberately scoped below the v46/v44/v43 cohort/economic logic: v53 replaces
+    only the v42 systems smoke entry point used during acquisition, and the measured Pump prepare
+    worker count is set to the validated v49/v53 value. Both globals are restored even on failure.
+    Detector thresholds, provider pacing, cohort cap/minimum, horizons, route notional/slippage,
+    forward collector and the v48 evaluator remain unchanged.
+    """
+
     original_argv = list(sys.argv)
+    original_v42_run = v43.v42.run_smoke_v42
+    original_pump_prepare_workers = v31.PASS_PUMP_PREPARE_WORKERS
     try:
+        v43.v42.run_smoke_v42 = v53.run_smoke_v53
+        v31.PASS_PUMP_PREPARE_WORKERS = V48_VALIDATED_PUMP_PREPARE_WORKERS
         sys.argv = [
             "route_research_forward_cohort_v46.py",
             "--run-key",
@@ -64,6 +86,8 @@ def _run_v46(args, base: str) -> int:
         return int(v46.main())
     finally:
         sys.argv = original_argv
+        v43.v42.run_smoke_v42 = original_v42_run
+        v31.PASS_PUMP_PREPARE_WORKERS = original_pump_prepare_workers
 
 
 def _print_metrics(rows) -> None:
@@ -118,6 +142,11 @@ def main() -> int:
         f"minimum_available_support_per_subcohort=LOW>={V48_MIN_GROUP_SUPPORT_PER_SUBCOHORT} "
         f"HIGH>={V48_MIN_GROUP_SUPPORT_PER_SUBCOHORT}"
     )
+    print(
+        f"systems_profile={V48_VALIDATED_SYSTEMS_PROFILE} "
+        f"pump_prepare_workers={V48_VALIDATED_PUMP_PREPARE_WORKERS} "
+        "cohort_protocol=v46_frozen economic_evaluator=v48_frozen"
+    )
     print(f"base_run_key={base} run_keys={run_keys}")
 
     if not _fresh_run_preflight(run_keys):
@@ -130,7 +159,10 @@ def main() -> int:
     if acquisition_result != 0:
         print("\nV48 ACQUISITION GATE")
         print("classification=FAIL_V48_FROZEN_V46_ACQUISITION_PATH")
-        print("Interpretation: no economic hypothesis verdict because the frozen acquisition/system path did not pass.")
+        print(
+            "Interpretation: no economic hypothesis verdict because the frozen v46 cohort protocol "
+            "on the validated v53 systems profile did not pass."
+        )
         return 2
 
     dataset = build_feature_dataset_v47(acquisition_run_keys=run_keys)
