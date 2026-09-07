@@ -28,11 +28,12 @@ class _Tee(io.TextIOBase):
 
 
 def diagnostic_capture_complete_v50(output: str) -> bool:
-    """Accept v50 attribution only when the tracer explicitly proves full coverage."""
+    """Accept v50 only when exact barrier coverage and >=95% later lifecycle coverage are proven."""
 
     return (
         "V50 PUMPSWAP CAUSAL CLOCK ATTRIBUTION DIAGNOSTIC" in output
-        and "trace_attribution_complete=True" in output
+        and "barrier_attribution_complete=True" in output
+        and "causal_clock_attribution_acceptable=True" in output
         and "dominant_clock=insufficient_trace" not in output
     )
 
@@ -125,16 +126,18 @@ def main() -> int:
     if not diagnostic_complete:
         print("classification=FAIL_V50_DIAGNOSTIC_INCOMPLETE")
         print(
-            "Interpretation: the same-run systems result remains valid on its own, but no causal "
-            "clock attribution may be accepted from an incomplete v50 trace."
+            "Interpretation: the same-run systems result remains valid on its own, but causal "
+            "clock attribution requires exact ingress/normalization/reservation coverage plus "
+            "at least 95% submit/skip coverage inside the unchanged timed window."
         )
         return 2
 
     print("classification=PASS_V50_DIAGNOSTIC_CAPTURE")
     print(
-        "Interpretation: v50 successfully captured complete observational causal-clock attribution. "
-        "The same-run 11/11 result, if present, remains a separate systems result; v50 itself "
-        "does not validate Flow60 or any economic edge."
+        "Interpretation: v50 captured exact global-barrier attribution and sufficient later "
+        "lifecycle coverage for causal-clock comparison without extending the frozen systems "
+        "deadline. The same-run 11/11 result remains separate systems evidence; v50 itself does "
+        "not validate Flow60 or any economic edge."
     )
     return 0
 
