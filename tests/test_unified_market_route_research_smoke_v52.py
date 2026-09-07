@@ -29,6 +29,7 @@ class UnifiedMarketRouteResearchSmokeV52Tests(unittest.IsolatedAsyncioTestCase):
                     wall_deadline_seconds=3.0,
                     deadline_expirations=1,
                     fetch_seconds=(0.1, 2.9, 3.0),
+                    cleanup_seconds=(0.0, 0.2, 1.4),
                 ),
             )
             DeadlineBoundedParallelHedgedResolverV52.last_instance = fake
@@ -50,6 +51,9 @@ class UnifiedMarketRouteResearchSmokeV52Tests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("V52 PUMPSWAP HEDGED RPC WALL-DEADLINE DIAGNOSTIC", text)
         self.assertIn("hedge_wall_deadline_seconds=3.000", text)
         self.assertIn("hedge_wall_deadline_expirations=1", text)
+        self.assertIn("hedge_fetch_ms", text)
+        self.assertIn("hedge_cleanup_ms", text)
+        self.assertIn("post-decision retention", text)
         self.assertNotIn("v52_resolver_instance=missing", text)
 
     def test_v52_keeps_immutable_reference_to_v51_runner(self):
