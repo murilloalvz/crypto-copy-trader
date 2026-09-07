@@ -25,7 +25,8 @@ Fluxo:
 - v50 + v50b: v49-profile **11/11** systems passes
 - v50b dominant clock: `global_sequence_barrier`
 - v50c: **SYSTEMS FAIL 10/11**, valid attribution, dominant clock `per_asset_dependency`
-- v51 stateful-priority finalizer amendment: **PREREGISTERED / IMPLEMENTED / CI PASS / LIVE PENDING**
+- v51 stateful-priority finalizer: **IMPLEMENTED / CI PASS / LIVE FAIL 10/11**
+- v51 live failure dominant measured clock: `global_sequence_barrier`; trace attribution incomplete because 24 reservation-order items remained at the frozen deadline
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -69,19 +70,12 @@ Systems **11/11**:
 - true backlog 0.482%
 - Pump p95 1.838s
 - PumpSwap p95 4.002s
-
-Dominant clock:
-`global_sequence_barrier`
-
-Key p95:
-- global barrier 3550.7ms
-- reservation->submit 996.0ms
-- submit->dependency-ready 672.4ms
+- dominant clock `global_sequence_barrier`
+- global barrier p95 3550.7ms
+- reservation->submit p95 996.0ms
+- submit->dependency-ready p95 672.4ms
 
 ### v50c
-
-Run:
-`route-research-systems-diagnostic-20260907-50c`
 
 Load:
 - PumpSwap 7141 / 120s
@@ -107,61 +101,26 @@ p95 clocks:
 - submit->dependency-ready **12988.4ms**
 - finalize ready queue **9466.5ms**
 - finalizer service only 1.2ms
+- dominant clock `per_asset_dependency`
 
-Dominant clock:
-`per_asset_dependency`
-
-v42/v34 evidence:
-- demoted pending jobs 625
-- only 12 assets accounted for 50% of causal wait
-- 42 accounted for 90%
-- max waiting jobs on one asset 27
-
-Conclusion: v49 reduced the upstream normalization barrier enough that a downstream scheduling problem became dominant under high PumpSwap load.
+This proved that under high PumpSwap load a downstream ready/dependency bottleneck could dominate after the earlier upstream barrier had shrunk.
 
 ## v51 stateful-priority finalizer
 
 Protocol:
 `docs/route-research-v51-stateful-priority-finalizer-protocol-2026-09-07.md`
 
-Files:
-- `src/pumpswap_stateful_priority_scheduler_v51.py`
-- `unified_market_route_research_smoke_v51.py`
-- `route_research_systems_stability_v51.py`
-- `tests/test_pumpswap_stateful_priority_scheduler_v51.py`
-- `tests/test_unified_market_route_research_smoke_v51.py`
-
-### Code-level finding
-
-v34/v42 already proves some pending followers are continuation-only. On demotion it:
-- removes them from stateful dependency indexes;
-- converts their per-asset ticket to causal skip;
-- advances only contiguous skipped tickets;
-- retains finalizer ack only for audit/hit visibility;
-- then enqueues those already-demoted audits into the same ready queue as genuinely stateful work.
-
-v19 has one PumpSwap finalizer consumer. Therefore a burst of demoted continuation audits can sit ahead of an unrelated stateful opener. Delaying that opener delays episode-cache proof for its own followers, recursively increasing same-asset dependency waits.
-
-The continuation path is safe to defer relative to stateful work because, after the inherited v34 proof succeeds, v27 only reads the immutable episode cache and enqueues append-only continuation audit. It cannot open/reshape an episode.
-
-### v51 amendment
-
-v51 changes **ready-work selection only**:
+v51 changes ready-work selection only:
 - one PumpSwap finalizer remains;
 - one shared stateful commit executor remains;
 - reservation/FIFO/completed cursors unchanged;
 - global reservation order unchanged;
 - detector/replay/as-of/provider/economics unchanged;
-- stateful-ready work gets priority 0;
-- already-demoted audit-only work gets priority 1;
-- FIFO is stable within each priority via insertion sequence.
+- stateful-ready work gets priority over already-demoted audit-only work;
+- FIFO remains stable within each priority.
 
-No additional finalizer workers were added. No parallel stateful commits were introduced.
-
-### Regression proof
-
-CI passed with tests proving:
-- stateful work overtakes a backlog of **625** already-demoted audits;
+Regression CI proves:
+- stateful work overtakes a backlog of 625 already-demoted audits;
 - stateful FIFO remains stable;
 - demoted audit FIFO remains stable;
 - ambiguous same-asset followers cannot overtake predecessors;
@@ -169,7 +128,55 @@ CI passed with tests proving:
 - ready backlog counts both classes;
 - wrapper installs/restores scheduler globals.
 
-This is a semantic scheduling proof, not a profitability result.
+### v51 live — 2026-09-07
+
+Run:
+`route-research-systems-stability-20260907-51`
+
+Load:
+- PumpSwap received 1570
+- Pump received 1230
+- radar coverage 99.1%
+- true backlog 0.929%
+- no worker errors / drops / hydration budget skips / reservation superset violations
+- no forward collector
+
+Systems gate:
+- Pump p95 1577.1ms — PASS
+- PumpSwap p95 **7658.1ms — FAIL**
+- result **10/11**
+
+v51 lane telemetry:
+- stateful enqueued/dequeued 51/51
+- demoted enqueued/dequeued 66/66
+- stateful overtakes demoted 35
+- stateful ready wait p95 2017.0ms
+- demoted ready wait p95 3397.6ms
+- ready backlogs drained to zero
+
+Interpretation: the v51 priority mechanism is active and removes the v50c-style 9.47s ready-queue p95 in this run, but it does not solve the separate upstream global reservation watermark.
+
+v50 tracer in the same run:
+- ingress 1570
+- normalization 1568
+- reservations/rows 1544
+- submit/skip 1544
+- barrier_attribution_complete=False because 24 reservation-order items remained at deadline
+- self ingress->normalization p95 461.2ms
+- global prefix normalization barrier p95 **7654.6ms**
+- post-prefix coordinator p95 233.3ms
+- reservation->submit p95 844.8ms
+- submit->dependency-ready p95 2118.0ms
+- descriptive dominant clock `global_sequence_barrier`
+
+Top blockers include normalization outliers around 6-10.5s that stall tens to >100 already-normalized successors. The worst listed blocker held 104 successors with 7.88s own normalization latency.
+
+Scientific conclusion: v51 addresses one measured downstream HOL mechanism, but systems stability still fails because the architecture retains a second, independent HOL mechanism: the global ingress-sequence reservation watermark. A single slow/unresolved earlier normalization can delay unrelated later assets.
+
+Important diagnostic semantics fix after this run:
+- v51 wrapper now reports the frozen systems verdict independently from v50 trace completeness;
+- incomplete exact v50 attribution no longer relabels an otherwise valid systems PASS/FAIL as merely `FAIL_V51_DIAGNOSTIC`;
+- this is reporting correctness only and does not alter scheduling.
 
 ## Frozen v48 prospective Flow60 hypothesis
 
@@ -214,27 +221,14 @@ This hypothesis remains prospectively untested economically.
 
 ## Immediate next action
 
-**Do not run v48. Do not rerun v50.**
+**Do not run v48. Do not rerun v51 blindly.**
 
-Pull latest and run one fresh v51 systems-only validation:
+The next systems task must target the measured global reservation watermark, not worker counts or detector/economic semantics.
 
-`python route_research_systems_stability_v51.py --run-key route-research-systems-stability-20260907-51`
-
-v51 PASS requires:
-- unchanged systems gate **11/11**;
-- no forward collector;
-- valid v50 causal attribution;
-- v51 scheduler diagnostic present;
-- no scheduler/instrumentation fatal error.
-
-If PASS:
-1. freeze v51 as the validated acquisition systems profile;
-2. wire it into a new v48 acquisition wrapper without changing the v48 evaluator;
-3. regression-test Flow60 bins/horizon/gate and provider pacing;
-4. CI;
-5. use a completely fresh v48 base run key;
-6. collect the true prospective holdout.
-
-If FAIL:
-- do not reroll v48;
-- inspect v51 lane telemetry and v50 clocks from that same run before any further change.
+Required design proof before implementation:
+1. identify the earliest immutable PumpSwap conflict-domain key available at ingress (prefer pool identity if the protocol guarantees one pool maps immutably to one traded token/reference pair);
+2. prove whether notifications from different conflict domains can reserve independently without allowing a later same-token notification to overtake an earlier unresolved one;
+3. preserve CreatePool lifecycle ordering, multi-asset safety, exact replay semantics, and reservation superset checks;
+4. replace the global watermark only with a narrower proven-safe conflict-domain watermark;
+5. add adversarial tests where an earlier unresolved notification later resolves to the same asset as a successor;
+6. CI and one systems-only live validation before v48.
