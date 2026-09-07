@@ -26,7 +26,7 @@ Fluxo:
 - v50c: **SYSTEMS FAIL 10/11**, valid attribution, dominant clock `per_asset_dependency`
 - v51 stateful-priority finalizer: **IMPLEMENTED / CI PASS / LIVE FAIL 10/11**
 - v52 hedged RPC wall-deadline: **IMPLEMENTED / CI PASS / LIVE FAIL 10/11**
-- v53 opportunistic prefetch + resolver wait telemetry: **IMPLEMENTED / CI PENDING / LIVE NOT STARTED**
+- v53 opportunistic prefetch + resolver wait telemetry: **IMPLEMENTED / CI PASS / LIVE NOT STARTED**
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -135,6 +135,8 @@ The same resolver is shared by optional prefetch and authoritative normalization
 Protocol:
 `docs/route-research-v53-opportunistic-prefetch-protocol-2026-09-07.md`
 
+CI covering all v53 code/tests at `417d17ee986dea5745473e593d38e53b32c556e5`: **PASS**.
+
 v53 does **not** change authoritative normalization.
 
 It changes only optional v49 ingress prefetch admission:
@@ -214,9 +216,7 @@ This hypothesis remains prospectively untested economically.
 
 **Do not run v48. Do not rerun v52.**
 
-First require CI green for v53 code/tests.
-
-After CI PASS, run exactly one fresh systems-only v53:
+Run exactly one fresh systems-only v53 after pulling the current branch:
 
 `python route_research_systems_stability_v53.py --run-key route-research-systems-stability-20260907-53`
 
