@@ -27,6 +27,16 @@ class _Tee(io.TextIOBase):
             stream.flush()
 
 
+def diagnostic_capture_complete_v50(output: str) -> bool:
+    """Accept v50 attribution only when the tracer explicitly proves full coverage."""
+
+    return (
+        "V50 PUMPSWAP CAUSAL CLOCK ATTRIBUTION DIAGNOSTIC" in output
+        and "trace_attribution_complete=True" in output
+        and "dominant_clock=insufficient_trace" not in output
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -99,11 +109,12 @@ def main() -> int:
     )
     collector_started = "V43 FORWARD COLLECTION START" in output
     diagnostic_present = "V50 PUMPSWAP CAUSAL CLOCK ATTRIBUTION DIAGNOSTIC" in output
+    diagnostic_complete = diagnostic_capture_complete_v50(output)
 
     print("\nV50 SYSTEMS DIAGNOSTIC GUARD")
     print(
         f"systems_11_of_11={systems_pass} diagnostic_present={diagnostic_present} "
-        f"forward_collector_started={collector_started}"
+        f"diagnostic_complete={diagnostic_complete} forward_collector_started={collector_started}"
     )
     if collector_started:
         print("classification=FAIL_V50_SYSTEMS_ONLY_GUARD")
@@ -111,10 +122,17 @@ def main() -> int:
     if not diagnostic_present:
         print("classification=FAIL_V50_DIAGNOSTIC_MISSING")
         return 2
+    if not diagnostic_complete:
+        print("classification=FAIL_V50_DIAGNOSTIC_INCOMPLETE")
+        print(
+            "Interpretation: the same-run systems result remains valid on its own, but no causal "
+            "clock attribution may be accepted from an incomplete v50 trace."
+        )
+        return 2
 
     print("classification=PASS_V50_DIAGNOSTIC_CAPTURE")
     print(
-        "Interpretation: v50 successfully captured observational causal-clock attribution. "
+        "Interpretation: v50 successfully captured complete observational causal-clock attribution. "
         "The same-run 11/11 result, if present, remains a separate systems result; v50 itself "
         "does not validate Flow60 or any economic edge."
     )
