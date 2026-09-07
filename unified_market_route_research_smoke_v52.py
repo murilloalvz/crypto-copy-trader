@@ -15,11 +15,13 @@ _BASE_V51_RUN_SMOKE = v51.run_smoke_v51
 
 
 async def run_smoke_v52(**kwargs) -> None:
-    """Run v51 with a true wall-clock bound on PumpSwap hedged unknown-pool RPC batches.
+    """Run v51 with a true wall-clock bound on PumpSwap hedged unknown-pool RPC decisions.
 
     The configured resolver timeout is reused verbatim; no new threshold is introduced. All v49
     prefetch, v50 tracing, v51 ready-priority, global reservation ordering, per-asset FIFO and
-    detector/research semantics remain unchanged.
+    detector/research semantics remain unchanged. Decisions are published at the wall deadline or
+    earlier winner, while already-running hedge transports retain the inherited v41 batch slot until
+    they actually finish so the fixed RPC concurrency budget is not silently exceeded.
     """
 
     original_parallel_resolver = v41.ParallelHedgedBatchedBoundedResolverV41
@@ -47,11 +49,12 @@ async def run_smoke_v52(**kwargs) -> None:
         f"hedged_all_failed={resolver.hedged_all_failed} "
         f"network_batch_calls={resolver.network_batch_calls}"
     )
+    print(f"hedge_fetch_ms {v19._latency_summary_ms(list(snapshot.fetch_seconds))}")
+    print(f"hedge_cleanup_ms {v19._latency_summary_ms(list(snapshot.cleanup_seconds))}")
     print(
-        f"hedge_fetch_ms {v19._latency_summary_ms(list(snapshot.fetch_seconds))}"
-    )
-    print(
-        "v52_note=the wall deadline equals the already-configured PumpSwap RPC timeout. "
+        "v52_note=hedge_fetch_ms measures decision availability; hedge_cleanup_ms measures post-"
+        "decision retention of the inherited v41 batch slot while already-running non-cancellable "
+        "transports drain. The wall deadline equals the already-configured PumpSwap RPC timeout. "
         "No global reservation/FIFO/detector/provider/economic rule changes; a batch without a "
         "valid identity inside that deadline follows the existing explicit unresolved path."
     )
