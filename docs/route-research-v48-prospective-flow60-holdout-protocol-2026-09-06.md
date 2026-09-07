@@ -1,6 +1,7 @@
 # Route Research v48 — Prospective Flow60 Holdout Protocol
 
 Date: 2026-09-06
+Amended: 2026-09-07 after prospective v53 systems validation
 Mode: **PAPER / RESEARCH / READ ONLY**
 
 ## Purpose
@@ -9,7 +10,7 @@ v48 is a fresh prospective holdout for exactly one hypothesis discovered descrip
 
 v46 A/B and every v47 output are discovery data. They are **not** validation data for this hypothesis.
 
-No detector threshold, acquisition rule, route notional, slippage, horizon, provider pacing, official decision, signing, execution, or live-money behavior is changed by v48.
+No detector threshold, economic hypothesis, route notional, slippage, horizon, provider pacing, official decision, signing, execution, or live-money behavior is changed by v48.
 
 ## Frozen primary hypothesis
 
@@ -35,10 +36,9 @@ This is a route-only market-opportunity hypothesis. It is not a trading rule, fi
 
 ## Frozen acquisition design
 
-v48 delegates acquisition to the already-validated v46 dual-subcohort path:
+The **cohort/economic protocol remains the v46 dual-subcohort design**:
 
 - two sequential fresh subcohorts A and B;
-- each uses the frozen v44-size systems path;
 - cap 40 / minimum 30 research decisions per subcohort;
 - hazard start interval 650ms;
 - entry start interval 1000ms;
@@ -47,6 +47,47 @@ v48 delegates acquisition to the already-validated v46 dual-subcohort path:
 - route-only BUY remains USDC -> token, US$25, 100bps, no taker/signing/submission;
 - SELL remains exact entry output amount;
 - each subcohort must pass its existing systems/collector/lineage gates independently.
+
+### Systems scheduling amendment frozen before economic holdout collection
+
+The first fresh v48 attempt was aborted before forward collection because its systems gate failed. Subsequent v49-v53 work was systems-only and generated **no Flow60 economic verdict**.
+
+On 2026-09-07 the prospectively defined v53 systems-only run `route-research-systems-stability-20260907-53` passed the unchanged 11-gate systems profile with:
+
+- systems result `11/11`;
+- radar coverage 100.0%;
+- true backlog 0.047%;
+- Pump p95 1867.4ms;
+- PumpSwap p95 2540.6ms;
+- zero worker errors, drops, hydration budget skips and reservation superset violations;
+- complete v50 causal attribution;
+- no forward economic collector.
+
+Therefore the acquisition implementation for the still-uncollected v48 economic holdout is amended to use the **validated v53 systems scheduling profile** underneath the unchanged v46/v44/v43 cohort protocol.
+
+Frozen systems-profile changes inherited by v48 acquisition:
+
+- Pump prepare workers = 20 (measured v49 capacity profile);
+- v51 stateful-ready priority over already-proven audit-only continuation work;
+- v52 existing 3s PumpSwap RPC timeout enforced as hedge decision wall deadline without hidden network oversubscription;
+- v53 speculative ingress prefetch is opportunistic-only and cannot queue behind a busy same-pool lock or saturated expensive-resolution semaphore;
+- global reservation ordering, same-asset FIFO, replay semantics, detector semantics and causal clocks remain unchanged.
+
+This amendment changes **systems scheduling only**. It does not change:
+
+- detector version or thresholds;
+- Flow60 feature definition;
+- LOW/MID/HIGH cutoffs;
+- 900s primary horizon;
+- LOW-vs-HIGH primary contrast;
+- support minimums;
+- provider pacing;
+- cohort cap/minimum;
+- route notional/slippage;
+- forward outcome definition;
+- v48 primary evaluator.
+
+The v48 runner installs the v53 acquisition entry point only for the v46 acquisition call and restores the original globals afterward. Regression tests must enforce that restoration and the frozen economic constants above.
 
 A run key must be fresh. Existing persisted outcomes under either `-A` or `-B` cause fail-closed preflight rejection.
 
