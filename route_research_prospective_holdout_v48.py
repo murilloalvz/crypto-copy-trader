@@ -20,10 +20,10 @@ from src.route_research_prospective_holdout_v48 import (
 )
 import unified_market_execution_quote_smoke_v31 as v31
 import unified_market_route_research_smoke_v49 as v49
-import unified_market_route_research_smoke_v53 as v53
+import unified_market_route_research_smoke_v54 as v54
 
 
-V48_VALIDATED_SYSTEMS_PROFILE = "v53_opportunistic_prefetch"
+V48_VALIDATED_SYSTEMS_PROFILE = "v54_demand_only_resolution"
 V48_VALIDATED_PUMP_PREPARE_WORKERS = v49.V49_PUMP_PREPARE_WORKERS
 
 
@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "v48 fresh prospective holdout for the pre-registered flow60 hypothesis. "
             "PAPER / RESEARCH / READ ONLY; frozen v46 A/B cohort/economic protocol with the "
-            "prospectively validated v53 systems scheduling profile."
+            "prospectively validated v54 demand-only systems profile."
         )
     )
     parser.add_argument("--run-key", required=True, help="Fresh base run key; -A and -B are appended")
@@ -57,11 +57,11 @@ def _fresh_run_preflight(run_keys: tuple[str, str]) -> bool:
 
 
 def _run_v46(args, base: str) -> int:
-    """Run the frozen v46 cohort protocol on the validated v53 systems scheduling path.
+    """Run the frozen v46 cohort protocol on the validated v54 systems scheduling path.
 
-    The amendment is deliberately scoped below the v46/v44/v43 cohort/economic logic: v53 replaces
+    The amendment is deliberately scoped below the v46/v44/v43 cohort/economic logic: v54 replaces
     only the v42 systems smoke entry point used during acquisition, and the measured Pump prepare
-    worker count is set to the validated v49/v53 value. Both globals are restored even on failure.
+    worker count remains the validated v49+ value. Both globals are restored even on failure.
     Detector thresholds, provider pacing, cohort cap/minimum, horizons, route notional/slippage,
     forward collector and the v48 evaluator remain unchanged.
     """
@@ -70,7 +70,7 @@ def _run_v46(args, base: str) -> int:
     original_v42_run = v43.v42.run_smoke_v42
     original_pump_prepare_workers = v31.PASS_PUMP_PREPARE_WORKERS
     try:
-        v43.v42.run_smoke_v42 = v53.run_smoke_v53
+        v43.v42.run_smoke_v42 = v54.run_smoke_v54
         v31.PASS_PUMP_PREPARE_WORKERS = V48_VALIDATED_PUMP_PREPARE_WORKERS
         sys.argv = [
             "route_research_forward_cohort_v46.py",
@@ -161,7 +161,7 @@ def main() -> int:
         print("classification=FAIL_V48_FROZEN_V46_ACQUISITION_PATH")
         print(
             "Interpretation: no economic hypothesis verdict because the frozen v46 cohort protocol "
-            "on the validated v53 systems profile did not pass."
+            "on the validated v54 systems profile did not pass."
         )
         return 2
 
