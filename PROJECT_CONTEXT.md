@@ -22,12 +22,11 @@ Fluxo:
 - v48 prospective Flow60 holdout: **FROZEN / ECONOMICALLY NOT_EVALUATED**
 - first fresh v48 attempt: **SYSTEMS ABORT 9/11 BEFORE FORWARD COLLECTION**
 - v49 scheduling amendment: implemented / CI pass
-- v50 + v50b: v49-profile **11/11** systems passes
-- v50b descriptive/provisional dominant clock: `global_sequence_barrier`; formal acceptance was limited by incomplete exact trace at snapshot
+- v50 + v50b: v49-profile historical **11/11** systems passes
 - v50c: **SYSTEMS FAIL 10/11**, valid attribution, dominant clock `per_asset_dependency`
 - v51 stateful-priority finalizer: **IMPLEMENTED / CI PASS / LIVE FAIL 10/11**
-- v51 live failure dominant measured clock: `global_sequence_barrier`; trace attribution incomplete because 24 reservation-order items remained at the frozen deadline
-- v52 hedged RPC wall-deadline amendment: **IMPLEMENTED / CI PASS / LIVE SYSTEMS-ONLY VALIDATION PENDING**
+- v52 hedged RPC wall-deadline: **IMPLEMENTED / CI PASS / LIVE FAIL 10/11**
+- v53 opportunistic prefetch + resolver wait telemetry: **IMPLEMENTED / CI PENDING / LIVE NOT STARTED**
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -49,186 +48,123 @@ ALL must pass:
 
 Do not relax the 5s threshold.
 
-## v49 scheduling amendment
-
-Systems-only changes:
-- Pump prepare workers 12 -> 20 from measured capacity;
-- PumpSwap immutable pool identity prefetch begins at ingress;
-- same resolver/cache/history/single-flight/hydration budget/hedging;
-- canonical normalization, persistence, reservation, FIFO, detector and research semantics unchanged.
-
-## v50 causal clock evidence
-
-Attribution acceptance:
-- exact ingress/normalization/reservation/attributed-row coverage for global barrier;
-- submit/skip coverage >=95% for later lifecycle comparison;
-- no post-deadline drain.
-
-### v50b
-
-Systems **11/11**:
-- coverage 99.5%
-- true backlog 0.482%
-- Pump p95 1.838s
-- PumpSwap p95 4.002s
-- global barrier p95 3550.7ms
-- reservation->submit p95 996.0ms
-- submit->dependency-ready p95 672.4ms
-
-The printed/descriptive clock pointed strongly to `global_sequence_barrier`, but exact trace completeness at the snapshot was not sufficient for formal dominant-clock acceptance.
+## v50/v51 systems evidence
 
 ### v50c
 
-Load:
-- PumpSwap 7141 / 120s
-- Pump 2161 / 120s
-
-Systems:
+- PumpSwap received 7141 / 120s
 - coverage 98.9%
 - true backlog 1.097%
-- Pump p95 2077.4ms — PASS
-- PumpSwap p95 **15507.9ms — FAIL**
+- Pump p95 2.077s — PASS
+- PumpSwap p95 **15.508s — FAIL**
 - result **10/11**
-- no forward collector
-
-Attribution:
-- ingress/normalization/reservation/rows 7141/7141
-- submit/skip 7039/7141 = 98.572%
-- causal attribution acceptable
-
-p95 clocks:
-- self normalization 277.4ms
-- global sequence barrier 1699.0ms
-- reservation->submit 1208.5ms
-- submit->dependency-ready **12988.4ms**
-- finalize ready queue **9466.5ms**
-- finalizer service only 1.2ms
+- exact causal attribution accepted
+- submit->dependency-ready p95 **12.988s**
+- finalize ready queue p95 **9.467s**
 - dominant clock `per_asset_dependency`
 
-This proved that under high PumpSwap load a downstream ready/dependency bottleneck could dominate after the earlier upstream barrier had shrunk.
+### v51
 
-## v51 stateful-priority finalizer
+v51 gives stateful-ready work priority over already-demoted continuation audit while keeping one finalizer, one stateful commit executor, same-asset FIFO and global reservation order unchanged.
 
-Protocol:
-`docs/route-research-v51-stateful-priority-finalizer-protocol-2026-09-07.md`
-
-v51 changes ready-work selection only:
-- one PumpSwap finalizer remains;
-- one shared stateful commit executor remains;
-- reservation/FIFO/completed cursors unchanged;
-- global reservation order unchanged;
-- detector/replay/as-of/provider/economics unchanged;
-- stateful-ready work gets priority over already-demoted audit-only work;
-- FIFO remains stable within each priority.
-
-Regression CI proves:
-- stateful work overtakes a backlog of 625 already-demoted audits;
-- stateful FIFO remains stable;
-- demoted audit FIFO remains stable;
-- ambiguous same-asset followers cannot overtake predecessors;
-- multi-asset work waits for every required cursor;
-- ready backlog counts both classes;
-- wrapper installs/restores scheduler globals.
-
-### v51 live — 2026-09-07
-
-Run:
+Live run:
 `route-research-systems-stability-20260907-51`
 
-Load:
 - PumpSwap received 1570
-- Pump received 1230
-- radar coverage 99.1%
+- coverage 99.1%
 - true backlog 0.929%
-- no worker errors / drops / hydration budget skips / reservation superset violations
-- no forward collector
-
-Systems gate:
-- Pump p95 1577.1ms — PASS
-- PumpSwap p95 **7658.1ms — FAIL**
+- Pump p95 1.577s — PASS
+- PumpSwap p95 **7.658s — FAIL**
 - result **10/11**
+- stateful ready wait p95 2.017s
+- demoted ready wait p95 3.398s
+- global prefix normalization barrier p95 **7.655s**
 
-v51 lane telemetry:
-- stateful enqueued/dequeued 51/51
-- demoted enqueued/dequeued 66/66
-- stateful overtakes demoted 35
-- stateful ready wait p95 2017.0ms
-- demoted ready wait p95 3397.6ms
-- ready backlogs drained to zero
+Interpretation: v51 reduced the earlier downstream ready-queue HOL, but a separate upstream normalization/reservation HOL remained.
 
-Interpretation: the v51 priority mechanism is active and removes the v50c-style 9.47s ready-queue p95 in this run, but it does not solve the separate upstream global reservation watermark.
-
-v50 tracer in the same run:
-- ingress 1570
-- normalization 1568
-- reservations/rows 1544
-- submit/skip 1544
-- barrier_attribution_complete=False because 24 reservation-order items remained at deadline
-- self ingress->normalization p95 461.2ms
-- global prefix normalization barrier p95 **7654.6ms**
-- post-prefix coordinator p95 233.3ms
-- reservation->submit p95 844.8ms
-- submit->dependency-ready p95 2118.0ms
-- descriptive dominant clock `global_sequence_barrier`
-
-Top blockers include normalization outliers around 6-10.5s that stall tens to >100 already-normalized successors. The worst listed blocker held 104 successors with 7.88s own normalization latency.
-
-Scientific conclusion: v51 addresses one measured downstream HOL mechanism, but systems stability still fails because the architecture retains a second, independent HOL mechanism: the global ingress-sequence reservation watermark. A single slow/unresolved earlier normalization can delay unrelated later assets.
-
-Important diagnostic semantics fix after this run:
-- v51 wrapper reports the frozen systems verdict independently from v50 trace completeness;
-- incomplete exact v50 attribution does not relabel an otherwise valid systems PASS/FAIL as merely a diagnostic failure;
-- this is reporting correctness only and does not alter scheduling.
-
-## v52 hedged RPC wall-deadline amendment
+## v52 hedged RPC wall-deadline
 
 Protocol:
 `docs/route-research-v52-hedged-rpc-wall-deadline-protocol-2026-09-07.md`
 
-Safety investigation rejected replacing token-level conflict ordering with per-pool FIFO because the repository does not prove `token_mint -> exactly one PumpSwap pool`. A causal-availability watermark redesign remains deferred rather than assumed safe.
+v52 makes the existing 3s PumpSwap RPC timeout a true decision wall-clock bound for each hedged unknown-pool batch while preserving real network capacity until any already-running non-cancellable loser transport drains.
 
-Measured upstream gap:
-- PumpSwap RPC timeout configured at 3s;
-- v51 parallel hydration service p95 4.353s / max 6.981s;
-- `SolanaClient.call` may perform a TLS fallback transport inside one logical endpoint attempt;
-- v33/v41 had no wall deadline around the hedge as a whole.
+Live run:
+`route-research-systems-stability-20260907-52`
 
-v52 keeps the existing 3s configuration and adds no tuned threshold.
+Systems:
+- elapsed 120.1s
+- PumpSwap received 3161
+- Pump received 1660
+- coverage 97.1%
+- true backlog 2.945%
+- Pump p95 1.482s — PASS
+- PumpSwap p95 **7.981s — FAIL**
+- result **10/11**
+- no worker errors / drops / hydration-budget skips / reservation-superset violations
+- no forward collector
 
-Frozen v52 decision contract:
-- first valid hedge response inside `client.timeout` wins;
-- no valid response by the same configured timeout -> explicit existing resolver failure/unresolved path;
-- endpoint primitive remains inherited `max_attempts=1`;
-- no late result is accepted for an already-decided notification;
-- no retry/backfill is added.
+v52 transport evidence:
+- wall deadline 3.000s
+- deadline expirations **0**
+- hedge fetch p95 **431.8ms**, max 663.6ms
+- hedge cleanup p95 221.9ms, max 587.1ms
+- v41 batch service p95 493.6ms, max 809.4ms
 
-Capacity-safety contract:
-- item futures are completed at decision time;
-- a running Python/urllib hedge transport is not treated as cancellable;
-- the inherited v41 parallel-batch slot remains occupied until every already-started hedge transport actually returns;
-- this applies to both a fast winner with slow loser and a deadline failure with slow peer;
-- therefore fast decision publication cannot silently exceed the fixed real RPC concurrency budget.
+But normalization remained slow:
+- self ingress->normalization p95 894.0ms, max **13.044s**
+- global prefix normalization barrier p95 **5.786s**, max 12.166s
+- normalization->reservation reconstructed p95 5.788s
+- descriptive dominant clock `global_sequence_barrier`
 
-Diagnostics:
-- `hedge_fetch_ms` = decision availability clock;
-- `hedge_cleanup_ms` = post-decision batch-slot retention while running transports drain;
-- v52 guard fails closed if cleanup telemetry is missing.
+Important conclusion:
+**the external hedged RPC transport itself does not explain the 8-13s normalization tails in v52.** The v52 working hypothesis is rejected for this run.
 
-Regression CI proves:
-- fast winner is published before slow loser cleanup;
-- fast-winner batch remains alive through loser cleanup;
-- deadline publishes explicit error without waiting for slow peer cleanup;
-- a timed-out orphan retains the only test batch slot and blocks a later batch until cleanup;
-- timed-out multi-item batch marks every item explicitly failed;
-- valid inside-deadline response remains accepted;
-- all-fast-failed semantics remain explicit;
-- endpoint call primitive remains inherited from v33;
-- wrapper installs/restores the resolver and prints decision + cleanup telemetry;
-- systems guard fails closed when cleanup telemetry is missing.
+Additional resolver/prefetch evidence:
+- v49 prefetch scheduled 2629
+- prefetch coalesced inflight 544
+- singleflight waits 204
+- network hydrations 242
+- historical pool hits 157
 
-CI code/test head `9aa6ebc3c7636798cc2a50190b64ad87394161e8`: **PASS**.
+The same resolver is shared by optional prefetch and authoritative normalization. Its ordering is:
+`causal cache -> per-pool lock -> global resolution semaphore -> canonical resolver work`.
 
-No live v52 systems verdict exists yet.
+## v53 opportunistic prefetch
+
+Protocol:
+`docs/route-research-v53-opportunistic-prefetch-protocol-2026-09-07.md`
+
+v53 does **not** change authoritative normalization.
+
+It changes only optional v49 ingress prefetch admission:
+1. causal cache hit remains free;
+2. if the same pool is already resolving, speculative prefetch skips instead of waiting;
+3. if the inherited global expensive-resolution semaphore has no immediate slot, speculative prefetch skips instead of joining the capacity queue;
+4. otherwise it calls the exact existing `resolver.resolve` path.
+
+A skipped prefetch does not:
+- count as unresolved canonical trade;
+- set negative cache;
+- consume hydration budget;
+- persist mapping;
+- reserve assets;
+- create detector evidence.
+
+Why: optional speculative work must not queue ahead of causal normalization demand. This is narrower and safer than replacing the global reservation watermark.
+
+### v53 same-run diagnostics
+
+v53 also instruments the unchanged resolver synchronization path observationally:
+- demand total resolve latency;
+- prefetch total resolve latency;
+- demand/prefetch per-pool lock wait;
+- demand/prefetch resolution-capacity wait;
+- capacity waiter high-water;
+- hot pools by accumulated lock wait;
+- prefetch admitted/skipped-capacity/skipped-pool-busy.
+
+This is designed so one live v53 run remains diagnostic even if systems still fail.
 
 ## Frozen v48 prospective Flow60 hypothesis
 
@@ -270,17 +206,20 @@ This hypothesis remains prospectively untested economically.
 - no post-hoc v48 retuning
 - systems-aborted run before collector produces no economic verdict
 - no live money without robust forward evidence
-- an RPC decision deadline does not authorize hidden network oversubscription
-- do not replace global ordering unless the narrower conflict domain is proven safe
+- no hidden RPC oversubscription
+- do not replace global ordering unless a narrower conflict domain is proven safe
+- optional prefetch may be skipped; authoritative normalization may not be skipped
 
 ## Immediate next action
 
-**Do not run v48 yet. Do not rerun v51.**
+**Do not run v48. Do not rerun v52.**
 
-Run exactly one fresh **v52 systems-only** validation after pulling the current branch:
+First require CI green for v53 code/tests.
 
-`python route_research_systems_stability_v52.py --run-key route-research-systems-stability-20260907-52`
+After CI PASS, run exactly one fresh systems-only v53:
 
-Interpretation:
-- if unchanged systems gate = **11/11**, no forward collector, v52 diagnostic + cleanup telemetry present: stop latency tuning and wire the validated profile into the frozen v48 acquisition path;
-- if systems gate fails: Flow60 remains `NOT_EVALUATED`; do not relax 5s or reroll blindly; use same-run v50/v51/v52 clocks to decide whether the deferred causal-availability watermark redesign is actually required.
+`python route_research_systems_stability_v53.py --run-key route-research-systems-stability-20260907-53`
+
+Decision:
+- 11/11 + no forward collector + v51/v52/v53 diagnostics present -> stop latency tuning and wire the validated profile into frozen v48 acquisition;
+- fail -> do not reroll blindly; classify the same-run remaining delay using demand pool-lock wait, demand capacity wait and total resolver latency before any further architecture change.
