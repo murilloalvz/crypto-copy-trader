@@ -13,6 +13,8 @@ from typing import Any, Awaitable, Callable
 
 @dataclass(frozen=True)
 class CrossSourceCommitLaneSnapshot:
+    pump_workers: int
+    pumpswap_workers: int
     pump_calls: int
     pumpswap_calls: int
     fallback_calls: int
@@ -45,26 +47,29 @@ def _prepared_source(prepared: Any) -> str | None:
 
 
 class CrossSourceTokenCommitLanes:
-    """Two bounded stateful commit lanes with shared per-token serialization.
+    """Bounded source commit lanes with shared per-token serialization.
 
-    The inherited v22 path uses one global one-thread executor for both Pump and
-    PumpSwap stateful trigger finalization. That is conservative but also serializes
-    unrelated token episodes. This coordinator keeps one FIFO executor per source so
-    unrelated Pump and PumpSwap tokens can make progress concurrently, while all jobs
-    touching the same trigger token acquire the same process-local token lock.
+    Defaults preserve Tailfix-v1 behavior: one Pump worker and one PumpSwap worker. Later systems
+    profiles may raise a lane's worker count only when the caller also supplies enough independent
+    ready work. Every trigger token is still protected by one process-local lock shared across both
+    sources, so increasing lane capacity never permits same-token concurrent finalization.
 
-    Multi-token jobs acquire the complete sorted token set, which prevents deadlocks and
-    preserves overlap serialization. Unknown/non-stateful call shapes fail back to the
-    inherited runner instead of receiving speculative concurrency.
+    Multi-token jobs acquire the complete sorted token set, preventing deadlocks and preserving
+    overlap serialization. Unknown/non-stateful call shapes fail back to the inherited runner rather
+    than receiving speculative concurrency.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, pump_workers: int = 1, pumpswap_workers: int = 1) -> None:
+        if pump_workers <= 0 or pumpswap_workers <= 0:
+            raise ValueError("commit lane worker counts must be positive")
+        self.pump_workers = int(pump_workers)
+        self.pumpswap_workers = int(pumpswap_workers)
         self._pump_executor = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=self.pump_workers,
             thread_name_prefix="market-radar-pump-token-lane",
         )
         self._pumpswap_executor = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=self.pumpswap_workers,
             thread_name_prefix="market-radar-pumpswap-token-lane",
         )
         self._registry_lock = threading.Lock()
@@ -166,9 +171,6 @@ class CrossSourceTokenCommitLanes:
         source = _prepared_source(prepared) if prepared is not None else None
         token_keys = _trigger_token_keys(prepared) if prepared is not None else ()
 
-        # v54's stateful-only path should reach this runner only for trigger-bearing
-        # PreparedPumpRadarV5 / PreparedPumpSwapRadarV5 values. Anything else keeps the
-        # inherited single-executor behavior rather than guessing at concurrency safety.
         if executor is None or source is None or not token_keys:
             with self._stats_lock:
                 self._counts["fallback_calls"] += 1
@@ -203,6 +205,8 @@ class CrossSourceTokenCommitLanes:
     def snapshot(self) -> CrossSourceCommitLaneSnapshot:
         with self._stats_lock:
             return CrossSourceCommitLaneSnapshot(
+                pump_workers=self.pump_workers,
+                pumpswap_workers=self.pumpswap_workers,
                 pump_calls=self._counts["pump_calls"],
                 pumpswap_calls=self._counts["pumpswap_calls"],
                 fallback_calls=self._counts["fallback_calls"],
