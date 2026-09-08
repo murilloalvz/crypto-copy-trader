@@ -22,6 +22,10 @@ class ResolverStageSnapshotV3:
     pool_lock_hold_seconds: tuple[float, ...]
     total_resolve_seconds: tuple[float, ...]
     durable_mapping_writes: int
+    mapping_sync_started: int
+    mapping_sync_admitted: int
+    mapping_sync_completed: int
+    mapping_sync_inflight: int
     current_store_hits: int
     historical_store_hits: int
     network_resolutions: int
@@ -46,6 +50,11 @@ class AsyncDurablePoolResolutionMixinV3:
     causal prerequisite for normalization/reservation. The gate still has one physical writer and
     the resolver's existing concurrency ceiling bounds how many identity writers can contend. Reads
     remain outside that writer gate and concurrent under WAL.
+
+    The sync-side counters intentionally live inside the worker thread. ``asyncio.to_thread`` work
+    is not forcibly stopped when its awaiting coroutine is cancelled at the frozen systems deadline,
+    so these counters distinguish a durable write that actually reached SQLite admission from a
+    publication acknowledgement that the cancelled coroutine never got to record.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -78,17 +87,24 @@ class AsyncDurablePoolResolutionMixinV3:
         observed_at: int,
         source_provider: str,
     ) -> None:
-        # Call the store module directly so V28's by-value monkey patches cannot accidentally nest
-        # the same non-reentrant admission gate. Resolution priority changes admission only.
-        with sqlite_write_admission(RESOLUTION_PRIORITY):
-            pumpswap_pool_store.record_pumpswap_pool_mapping(
-                acquisition_run_key=self.acquisition_run_key,
-                pool_address=pool,
-                base_mint=base_mint,
-                quote_mint=quote_mint,
-                observed_at=int(observed_at),
-                source_provider=source_provider,
-            )
+        self._v3_count("mapping_sync_started")
+        self._v3_count("mapping_sync_inflight")
+        try:
+            # Call the store module directly so V28's by-value monkey patches cannot accidentally
+            # nest the same non-reentrant admission gate. Resolution priority changes admission only.
+            with sqlite_write_admission(RESOLUTION_PRIORITY):
+                self._v3_count("mapping_sync_admitted")
+                pumpswap_pool_store.record_pumpswap_pool_mapping(
+                    acquisition_run_key=self.acquisition_run_key,
+                    pool_address=pool,
+                    base_mint=base_mint,
+                    quote_mint=quote_mint,
+                    observed_at=int(observed_at),
+                    source_provider=source_provider,
+                )
+            self._v3_count("mapping_sync_completed")
+        finally:
+            self._v3_count("mapping_sync_inflight", -1)
 
     async def _v3_current_mapping(self, pool: str, decision_time: int):
         return await self._v3_to_thread(
@@ -257,6 +273,10 @@ class AsyncDurablePoolResolutionMixinV3:
                 durable_mapping_writes=int(
                     self._v3_stage_counts["durable_mapping_writes"]
                 ),
+                mapping_sync_started=int(self._v3_stage_counts["mapping_sync_started"]),
+                mapping_sync_admitted=int(self._v3_stage_counts["mapping_sync_admitted"]),
+                mapping_sync_completed=int(self._v3_stage_counts["mapping_sync_completed"]),
+                mapping_sync_inflight=int(self._v3_stage_counts["mapping_sync_inflight"]),
                 current_store_hits=int(self._v3_stage_counts["current_store_hits"]),
                 historical_store_hits=int(
                     self._v3_stage_counts["historical_store_hits"]
