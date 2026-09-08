@@ -7,9 +7,9 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Repositório: `murilloalvz/crypto-copy-trader`
 - Branch relevante: `feat/exit-engine-v1`
 - Modo: **PAPER / RESEARCH / READ ONLY**
-- Tese ativa: **market-first Solana Opportunity Intelligence / Opportunity Engine**
+- Tese ativa: **market-first Opportunity Intelligence / Opportunity Engine**, com Solana como laboratório validado e preparação multichain nas bordas
 - Fluxo: `market -> radar -> causal episode -> enrichment -> research decision -> forward outcomes -> economic validation -> shadow`
-- Detector permanece congelado.
+- Detector Solana permanece congelado.
 
 ## Status atual
 
@@ -23,10 +23,13 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - Flow60 hypothesis: **REJECTED PROSPECTIVELY; DO NOT RETUNE OR REUSE**
 - v55 Causal Early-Opportunity Discovery: **IMPLEMENTED / PROTOCOL PRE-REGISTERED / FRESH LIVE RUN STARTED BY USER / RESULT PENDING**
 - v55 candidate-selection bridge: **PRE-REGISTERED BEFORE RESULT REVIEW / DETERMINISTIC RANKING IMPLEMENTED**
-- v56 Exceptional Trade Pre-Entry: **CAUSAL RESEARCH SCAFFOLD IMPLEMENTED / CI GREEN / NO ECONOMIC STUDY YET**
-- v57 Market-First Social Evidence: **CAUSAL EVIDENCE BRIDGE IMPLEMENTED / TESTS GREEN / NO LIVE SOCIAL PROVIDER OR ECONOMIC TEST**
+- v56 Exceptional Trade Pre-Entry: **CAUSAL RESEARCH SCAFFOLD IMPLEMENTED / NO ECONOMIC STUDY YET**
+- v57 Market-First Social Evidence: **CAUSAL EVIDENCE BRIDGE IMPLEMENTED / NO LIVE SOCIAL PROVIDER OR ECONOMIC TEST**
+- v58 Market-First Exit Geometry: **PURE ROUTE-PATH MEASUREMENT IMPLEMENTED / TESTS GREEN / NO EXIT POLICY TUNING**
+- v59 Multichain Market Contract: **CHAIN-AWARE IDENTITY + EDGE-ADAPTER SCAFFOLD IMPLEMENTED / NO SECOND LIVE COLLECTOR**
+- v60 Opportunity Wallet Convergence: **CAUSAL PRE-FROZEN-COHORT EVIDENCE SCAFFOLD IMPLEMENTED / NO ECONOMIC CLAIM**
+- multichain market research memo: **CURRENT 2026 MARKET MAP RECORDED / ROBINHOOD-PONS PRIORITIZED AS NEXT INDEPENDENT LAB**
 - participation-structure research boundary: **DOCUMENTED; NOT A MANIPULATION DETECTOR**
-- market-first exit research: **LEGACY WAVE ENGINE AUDITED / CURRENT LINEAGE GAP DOCUMENTED / NO EXIT TUNING**
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -170,7 +173,7 @@ Forbidden in v55:
 - dropping losers
 - favorable subcohort selection
 - reusing v55 A/B as future holdout
-- injecting v56/v57 evidence into the already-running experiment
+- injecting v56/v57/v58/v59/v60 evidence into the already-running experiment
 
 ## v55 candidate selection -> future holdout bridge — PRE-REGISTERED BEFORE RESULTS
 
@@ -229,6 +232,8 @@ Frozen descriptive pre-entry windows:
 
 Participation structure is computed only with adequate/complete identity coverage where required. Outcome/P&L labels are deliberately absent from the feature builder.
 
+Historical-backfill boundary: a trade reconstructed today cannot be assigned a fake historical `observed_at` and presented as causal evidence. Historical exceptional-trade reconstruction is discovery-only unless an archival source proves what was actually available at the historical decision time. True causal exceptional-trade validation requires forward monitoring or another source with preserved knowledge-time lineage.
+
 The exceptional outcome definition is intentionally **not registered yet**. A future comparison study must pre-register the target universe, outcome label, controls/placebos, dependence rules, sample support, feature set and statistic before labels are joined.
 
 v56 proves only causal snapshot semantics. It does not prove exceptional trades are predictable or copyable.
@@ -256,6 +261,86 @@ The repository still has no approved live social provider in this protocol. Exis
 
 v57 is not part of v55 and cannot be used to rescue or reinterpret its outcome.
 
+## v58 Market-First Exit Geometry — pure measurement only
+
+Protocol:
+`docs/market-first-exit-v58-geometry-protocol-2026-09-08.md`
+
+Code:
+- `src/market_first_exit_geometry_v58.py`
+- `tests/test_market_first_exit_geometry_v58.py`
+
+Purpose:
+Define the route-compatible post-entry geometry needed by the market-first generation before any exit policy or dense collector is authorized.
+
+AVAILABLE path points require causal route-only BUY/SELL lineage, same token/direction semantics and, when raw amounts exist, exact SELL token input equal to the BUY raw token output.
+
+Measured descriptively:
+- coverage
+- MFE / MAE
+- time to observed MFE / MAE
+- last observed route return
+- peak-to-last giveback
+- last-point MFE capture when defined
+- maximum available-observation gap
+
+Missing provider observations remain missing, stay in the coverage denominator and are never converted to zero, interpolated, forward-filled or backfilled.
+
+v58 defines no stop loss, take profit, trailing stop, holding horizon, cadence, winning policy or economic PASS gate. Entry selection and exit research remain separate.
+
+## v59 Multichain Market Intelligence — identity + adapter scaffold
+
+Protocol:
+`docs/multichain-market-intelligence-v59-protocol-2026-09-08.md`
+
+Code:
+- `src/multichain_market_contract_v59.py`
+- `tests/test_multichain_market_contract_v59.py`
+
+Market research memo:
+`docs/memecoin-market-research-multichain-2026-09-08.md`
+
+Architecture rule:
+`chain-specific stream -> edge adapter -> canonical chain-aware observation -> future shared intelligence`.
+
+Do not refactor or mutate the validated Solana v55 path merely to make it generic.
+
+Current research priority:
+1. Solana remains the active validated laboratory.
+2. Robinhood Chain / Pons is the next independent research target because its EVM/Arbitrum environment, explicit bonding-curve -> graduation -> Uniswap v4 lifecycle and observed participation structure differ materially from Solana.
+3. BNB Chain / Four.meme is a secondary replication environment.
+4. Base remains technically convenient but lower priority at current activity levels.
+
+Canonical v59 identity includes chain namespace/reference + native asset address + namespaced native event identity. EVM addresses are normalized; Solana observations are wrapped without semantic mutation.
+
+Lifecycle vocabulary preserves `market_started`, `pool_created`, `graduated`, and `venue_changed`. A Pons graduation must remain a graduation event rather than being forced into Solana-era market-start semantics.
+
+Cross-chain threshold equivalence is **not assumed**. Before economic comparison, audit event definition, signer/router wallet semantics, tx deduplication, lifecycle clock, USD notional, latency, missingness, venue coverage and quote/execution semantics independently per chain.
+
+No Robinhood/BNB/Base live acquisition or economic test is authorized while v55 is active.
+
+## v60 Opportunity Wallet Convergence — causal scaffold only
+
+Protocol:
+`docs/opportunity-wallet-convergence-v60-protocol-2026-09-08.md`
+
+Code:
+- `src/opportunity_wallet_convergence_v60.py`
+- `tests/test_opportunity_wallet_convergence_v60.py`
+
+Research order remains market-first:
+`radar -> episode -> ask whether a pre-frozen wallet cohort participated`.
+
+Cohort membership must be frozen strictly before episode `as_of`. A wallet that becomes profitable, famous or leaderboard-eligible later cannot be retroactively counted.
+
+The v60 feature builder reads no PnL. It reports descriptive cohort events, unique buy/sell wallets, repetition, strategy-signature diversity when complete, cohort share of known-wallet events, timing offsets and explicit wallet-identity coverage.
+
+Public profitable-wallet addresses recorded in the v60 protocol are **research seeds only**, not an approved copy-trading list. Before prospective use, the project must independently reconstruct each member's pre-period evidence and freeze a cohort.
+
+Multiple addresses are not automatically independent traders. Strategy-signature diversity is descriptive; funding/deployer/transfer-graph evidence is required before claiming economic independence.
+
+Future economic study requires controls: same-wallet ordinary/losing entries, episodes without cohort participation, behaviorally comparable placebo wallets and archetype balancing. v60 is not part of v55 and cannot rescue its result.
+
 ## Participation-structure research boundary
 
 Design:
@@ -267,16 +352,32 @@ Transaction-level wallet metrics such as breadth, repetition, top-wallet event s
 
 Do not call these metrics wash trading, sybil activity, insider coordination, organic demand or manipulation without a separately validated semantic study and stronger evidence.
 
-## Market-first exit research boundary
+Current largest integrity gap: explicit deployer/funder/transfer-graph evidence. External Solana research motivates this direction, but the project currently lacks a generic transfer/funding lineage store. Do not infer funding links from swap participation alone.
 
-Design:
-`docs/market-first-exit-research-gap-2026-09-07.md`
+## Working market-edge map — research hypotheses, not strategy rules
+
+Current external and internal evidence prioritizes these independent research families after v55:
+
+1. **Cross-archetype wallet convergence** — prepared by v60.
+2. **Participation-breadth acceleration** — current v55 family.
+3. **Lifecycle stage / graduation dynamics** — especially suitable for future Pons research under v59.
+4. **Deployer/funding-graph integrity** — strongest current semantic gap before calling activity coordinated/manipulative.
+5. **Staged exit / runner preservation** — geometry prepared by v58; no policy tuning yet.
+6. **Causal social-attention confirmation** — bridge prepared by v57; no live provider yet.
+7. **Cross-chain regime/attention migration** — architecture prepared by v59; no economic test yet.
+
+Working definition of the sought-after edge:
+`movement begins + buyer breadth expands + participation is not dominated by suspicious linked activity + multiple pre-frozen high-quality wallet archetypes participate + lifecycle stage still leaves room + route remains executable + exit preserves rare right-tail winners`.
+
+This is a research map only. Each component must prove incremental value independently and prospectively before combinations are considered.
+
+## Market-first exit research boundary
 
 The existing `exit_engine_v1` is a useful legacy Wave laboratory tied to `wave_signals`, `WAVE_STRATEGY_VERSION` and GeckoTerminal/candle observation. Its metrics already include MFE, MAE, MFE captured, winner dependence and paired policy evaluation.
 
 It is **not** the authoritative exit path for current market-first route-research decisions. Silently converting v55 episodes into Wave signals would conflate entry semantics, clocks, provider evidence and lineage.
 
-Do not tune a new TP/SL/trailing parameter now. A future market-first exit study first needs a route-compatible path-observation contract with explicit `observed_at`, route SELL semantics, provider missingness and MFE/MAE/peak-giveback geometry. That work should start only after entry-selection evidence warrants the extra provider/runtime budget.
+v58 now defines the provider-neutral route-path geometry needed before a new market-first exit collector. Do not tune a TP/SL/trailing parameter until entry-selection evidence warrants a separately pre-registered dense path experiment.
 
 ## Scientific invariants
 
@@ -299,10 +400,17 @@ Do not tune a new TP/SL/trailing parameter now. A future market-first exit study
 - only v55 rank #1 may advance to one fresh holdout; rank #2 cannot rescue its failure
 - v56 outcome labels remain separate from pre-entry feature construction
 - v56 same-second target activity is excluded
+- historical chain backfill cannot be relabeled as historical causal `observed_at`
 - participation concentration/repetition != manipulation proof
 - social `created_at` != causal availability; collector `observed_at` is authoritative
 - v57 exact mint linkage only
 - old Wave exit results do not validate market-first exit behavior
+- v58 missing path observations are never interpolated or converted to zero
+- chain-aware identity != cross-chain threshold equivalence
+- non-Solana adapters cannot contaminate the running Solana v55 sample
+- wallet convergence is post-episode evidence only and cohort membership must predate the episode
+- distinct wallet addresses != proven independent traders
+- public profitable-wallet leaderboards are discovery seeds, not copy whitelists
 - no second live economic acquisition while v55 is active
 
 ## Immediate next action
@@ -319,4 +427,4 @@ When v55 completes:
 4. register one separate fresh 900s holdout before collecting validation data;
 5. if no candidate survives, do not loosen v55 rules.
 
-v56/v57/exit-boundary work is preparatory scaffolding only and must not influence the running v55 result.
+v56-v60 work is preparatory scaffolding only and must not influence the running v55 result. Robinhood/Pons, funding-graph, social, wallet-convergence and exit work remain separate research tracks until individually audited and prospectively validated.
