@@ -225,6 +225,15 @@ result correlation, per-asset dependency p95, top-hot-asset concentration, and p
 No V7 structural correction is authorized until a systems-only run proves an avoidable cause while
 the V6 same-asset and fail-closed invariants remain green.
 
+### Tailfix V8 — authoritative writer HOL correction
+
+V8 keeps V6 partial-order semantics and makes the existing authoritative PumpSwap batch enter the
+shared SQLite admission gate as `CAUSAL`; resolver mapping writes remain `RESOLUTION` under the
+existing bounded fairness rule. The physical PumpSwap writer remains one dedicated thread. V8 also
+groups canonical affected-token readback for batches with distinct transaction keys, while duplicate
+transaction keys retain per-item readback for replay correctness. Continuation/audit persistence is
+not mixed into this authoritative queue.
+
 ### Deterministic V5/V6 requirements before live
 
 Tests must prove:

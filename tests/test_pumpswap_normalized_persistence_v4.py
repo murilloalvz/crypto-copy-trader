@@ -88,6 +88,37 @@ class PumpSwapNormalizedPersistenceV4Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(telemetry), 1)
         self.assertEqual(writer.batch_sizes, [1])
 
+    async def test_distinct_transactions_share_authoritative_canonical_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "normalized-v4-distinct-batch.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                writer = PumpSwapSQLiteThreadedMicrobatchWriter(
+                    batch_size=2,
+                    max_wait_ms=25,
+                )
+                results = await asyncio.gather(
+                    persist_pumpswap_notification_normalized_v4(
+                        _notification("sig-1"),
+                        acquisition_run_key="run",
+                        resolver=_FakeResolver("run"),
+                        writer=writer,
+                    ),
+                    persist_pumpswap_notification_normalized_v4(
+                        _notification("sig-2"),
+                        acquisition_run_key="run",
+                        resolver=_FakeResolver("run"),
+                        writer=writer,
+                    ),
+                )
+                await writer.close(cancel_pending=False)
+
+        self.assertEqual(writer.batch_sizes, [2])
+        self.assertEqual(
+            [result.affected_tokens for result in results],
+            [("TOKEN",), ("TOKEN",)],
+        )
+        self.assertTrue(all(result.newly_persisted_trades == 1 for result in results))
+
     async def test_writer_keeps_draining_while_event_loop_is_blocked(self):
         thread_names: list[str] = []
 

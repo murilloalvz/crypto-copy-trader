@@ -359,13 +359,28 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
 def _persist_prepared_batch_db_stage(
     prepared_items: tuple[PreparedPumpSwapPersistenceV3, ...],
 ) -> tuple[tuple[PumpSwapNormalizedPersistResult, ...], float, float]:
-    """Persist a batch in one SQLite transaction while preserving per-item replay semantics."""
+    """Persist a batch in one SQLite transaction while preserving per-item replay semantics.
+
+    The canonical transaction readback is the authoritative result needed before detector
+    publication. For the normal case where every batch item has a distinct transaction key, one
+    indexed ``IN`` read replaces one read per item. Batches containing a duplicate transaction key
+    keep the legacy per-item readback because the first duplicate must not observe rows written by
+    its later replay in the same transaction. This is a database-operation reduction only; writes,
+    conflict resolution, commit ordering and returned per-item results remain unchanged.
+    """
 
     if not prepared_items:
         return (), time.perf_counter(), time.perf_counter()
     ensure_market_observation_schema()
     writer_started = time.perf_counter()
-    results: list[PumpSwapNormalizedPersistResult] = []
+    item_counts: list[
+        tuple[int, int, int, tuple[str, ...] | None, PreparedPumpSwapPersistenceV3]
+    ] = []
+    transaction_keys = [prepared.transaction_key for prepared in prepared_items]
+    batch_transaction_keys_are_unique = (
+        len({prepared.acquisition_run_key for prepared in prepared_items}) == 1
+        and len(transaction_keys) == len(set(transaction_keys))
+    )
     with connection() as conn:
         for prepared in prepared_items:
             newly_persisted_lifecycle = 0
@@ -389,14 +404,61 @@ def _persist_prepared_batch_db_stage(
                 else:
                     duplicates += 1
 
+            immediate_affected_tokens: tuple[str, ...] | None = None
+            if not batch_transaction_keys_are_unique:
+                rows = conn.execute(
+                    """SELECT token_mint
+                    FROM market_trade_observations
+                    WHERE acquisition_run_key=? AND transaction_key=? AND venue='pumpswap'
+                    ORDER BY token_mint, id""",
+                    (prepared.acquisition_run_key, prepared.transaction_key),
+                ).fetchall()
+                immediate_affected_tokens = tuple(
+                    sorted({str(row["token_mint"]) for row in rows})
+                )
+            item_counts.append(
+                (
+                    inserted,
+                    duplicates,
+                    newly_persisted_lifecycle,
+                    immediate_affected_tokens,
+                    prepared,
+                )
+            )
+
+        affected_by_transaction: dict[str, tuple[str, ...]] = {}
+        if batch_transaction_keys_are_unique:
+            placeholders = ",".join("?" for _ in transaction_keys)
             rows = conn.execute(
-                """SELECT token_mint
+                f"""SELECT transaction_key, token_mint
                 FROM market_trade_observations
-                WHERE acquisition_run_key=? AND transaction_key=? AND venue='pumpswap'
-                ORDER BY token_mint, id""",
-                (prepared.acquisition_run_key, prepared.transaction_key),
+                WHERE acquisition_run_key=? AND transaction_key IN ({placeholders})
+                  AND venue='pumpswap'
+                ORDER BY transaction_key, token_mint, id""",
+                (prepared_items[0].acquisition_run_key, *transaction_keys),
             ).fetchall()
-            affected_tokens = tuple(sorted({str(row["token_mint"]) for row in rows}))
+            grouped: dict[str, list[str]] = {}
+            for row in rows:
+                grouped.setdefault(str(row["transaction_key"]), []).append(
+                    str(row["token_mint"])
+                )
+            affected_by_transaction = {
+                transaction_key: tuple(sorted(set(tokens)))
+                for transaction_key, tokens in grouped.items()
+            }
+
+        results: list[PumpSwapNormalizedPersistResult] = []
+        for (
+            inserted,
+            duplicates,
+            newly_persisted_lifecycle,
+            immediate_affected_tokens,
+            prepared,
+        ) in item_counts:
+            if batch_transaction_keys_are_unique:
+                affected_tokens = affected_by_transaction.get(prepared.transaction_key, ())
+            else:
+                affected_tokens = immediate_affected_tokens or ()
             results.append(
                 PumpSwapNormalizedPersistResult(
                     newly_persisted_trades=inserted,
