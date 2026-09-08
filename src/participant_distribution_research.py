@@ -9,7 +9,7 @@ from src.market_opportunity_radar import MarketTradeObservation
 
 
 PARTICIPANT_DISTRIBUTION_RESEARCH_VERSION = (
-    "participant_distribution_research_v1_causal_event_structure"
+    "participant_distribution_research_v1_1_dual_clock_event_structure"
 )
 
 _EPISTEMIC_CAUTIONS = (
@@ -23,8 +23,9 @@ _EPISTEMIC_CAUTIONS = (
 class ParticipantDistributionWindow:
     """Score-free participant-distribution evidence known by one causal cutoff.
 
-    The builder intentionally exposes raw descriptive structure only. It does not assign an
-    economic direction, threshold, label, score, or entry decision.
+    ``market_anchor_time`` determines market-window membership while ``as_of`` is the knowledge
+    cutoff. Keeping those clocks separate lets future market-first research anchor a window to an
+    episode T0 while allowing only observations actually known by the research decision.
 
     Structural buyer metrics are emitted only when every BUY event in the window has wallet
     identity. Computing concentration on a selected known-wallet subset would systematically
@@ -34,6 +35,7 @@ class ParticipantDistributionWindow:
 
     method_version: str
     token_mint: str
+    market_anchor_time: int
     as_of: int
     window_seconds: int
     market_event_count: int
@@ -103,32 +105,40 @@ def build_participant_distribution_window(
     as_of: int,
     window_seconds: int,
     observations: Iterable[MarketTradeObservation],
+    market_anchor_time: int | None = None,
 ) -> ParticipantDistributionWindow:
     """Measure causal participant distribution without changing radar or research decisions.
 
     Dual-clock inclusion rule:
-    - market membership: ``as_of - window_seconds < chain_time <= as_of``;
+    - market membership: ``market_anchor - window_seconds < chain_time <= market_anchor``;
     - knowledge membership: ``observed_at <= as_of``.
 
-    A historical event discovered after ``as_of`` therefore cannot be backfilled into the
-    feature. Observations for other tokens are ignored after validation.
+    ``market_anchor_time`` defaults to ``as_of`` for backward compatibility. Future interaction
+    research should normally use episode T0 as the market anchor and research_decision_as_of as
+    ``as_of``. This prevents pipeline latency from shifting the market window.
     """
 
     token = _required(token_mint, "token_mint")
-    cutoff = int(as_of)
+    knowledge_cutoff = int(as_of)
+    anchor = knowledge_cutoff if market_anchor_time is None else int(market_anchor_time)
     window = int(window_seconds)
-    if cutoff < 0:
-        raise ValueError("as_of must be non-negative")
+    if knowledge_cutoff < 0 or anchor < 0:
+        raise ValueError("market and knowledge timestamps must be non-negative")
+    if anchor > knowledge_cutoff:
+        raise ValueError("market_anchor_time cannot be after knowledge as_of")
     if window <= 0:
         raise ValueError("window_seconds must be positive")
 
-    lower_bound = cutoff - window
+    lower_bound = anchor - window
     eligible: list[MarketTradeObservation] = []
     for item in observations:
         _validate_trade(item)
         if item.token_mint != token:
             continue
-        if lower_bound < int(item.chain_time) <= cutoff and int(item.observed_at) <= cutoff:
+        if (
+            lower_bound < int(item.chain_time) <= anchor
+            and int(item.observed_at) <= knowledge_cutoff
+        ):
             eligible.append(item)
 
     eligible.sort(
@@ -187,7 +197,8 @@ def build_participant_distribution_window(
     return ParticipantDistributionWindow(
         method_version=PARTICIPANT_DISTRIBUTION_RESEARCH_VERSION,
         token_mint=token,
-        as_of=cutoff,
+        market_anchor_time=anchor,
+        as_of=knowledge_cutoff,
         window_seconds=window,
         market_event_count=len(eligible),
         buy_event_count=len(buys),
