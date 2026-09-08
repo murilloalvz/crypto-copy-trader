@@ -116,6 +116,7 @@ class PonsLaunchQualityEvidenceV67:
     early_unique_seller_count: int | None
     early_repeated_wallet_event_share_pct: float | None
     reserve_progress_pct: float | None
+    opening_tax_recipient_address: str | None
     current_opening_tax_bps: int | None
     data_quality_flags: tuple[str, ...]
     evidence_sha256: str
@@ -259,7 +260,7 @@ def build_pons_launch_quality_evidence_v67(
 
     Every optional family degrades to missing when provenance is incomplete or unavailable by
     ``as_of``. Opening-tax evidence has an additional hard gate: the exact read capability must be
-    authoritative in the v66 deployment attestation. No Bodkin/source score or threshold is used.
+    authoritative in the v66 deployment attestation. No third-party score/threshold is imported.
     """
 
     cutoff = int(as_of)
@@ -365,6 +366,7 @@ def build_pons_launch_quality_evidence_v67(
         if progress is None:
             flags.append("curve_progress_unavailable")
 
+    opening_tax_recipient = None
     current_tax = None
     if opening_tax is not None:
         _validate_opening_tax(opening_tax)
@@ -373,9 +375,43 @@ def build_pons_launch_quality_evidence_v67(
         if opening_tax.observed_at > cutoff or opening_tax.chain_time > cutoff:
             raise ValueError("opening-tax evidence postdates as_of")
         if capability_authoritative_for_read_v66(deployment, opening_tax.capability_name):
+            opening_tax_recipient = _address(opening_tax.recipient_address, "recipient_address")
             current_tax = int(opening_tax.opening_tax_bps)
         else:
             flags.append("opening_tax_capability_not_authoritative")
+
+    provenance = {
+        "static": {
+            "reference": static.evidence_reference,
+            "launch_block_number": static.launch_block_number,
+            "launch_chain_time": static.launch_chain_time,
+            "launch_observed_at": static.launch_observed_at,
+            "evidence_observed_at": static.evidence_observed_at,
+        },
+        "deployer_history": None if deployer_history is None else {
+            "reference": deployer_history.evidence_reference,
+            "before_block_number": deployer_history.before_block_number,
+            "history_observed_at": deployer_history.history_observed_at,
+            "history_complete": deployer_history.history_complete,
+        },
+        "fingerprint_history": None if fingerprint_history is None else {
+            "reference": fingerprint_history.evidence_reference,
+            "key": fingerprint_history.fingerprint_key,
+            "before_chain_time": fingerprint_history.before_chain_time,
+            "history_observed_at": fingerprint_history.history_observed_at,
+            "window_seconds": fingerprint_history.window_seconds,
+            "evidence_complete": fingerprint_history.evidence_complete,
+        },
+        "early_activity_as_of": None if early_activity is None else early_activity.as_of,
+        "curve_progress_as_of": None if curve_progress is None else curve_progress.as_of,
+        "opening_tax": None if opening_tax is None else {
+            "reference": opening_tax.evidence_reference,
+            "recipient": _address(opening_tax.recipient_address, "recipient_address"),
+            "chain_time": opening_tax.chain_time,
+            "observed_at": opening_tax.observed_at,
+            "capability": opening_tax.capability_name,
+        },
+    }
 
     payload = {
         "method_version": PONS_LAUNCH_QUALITY_EVIDENCE_VERSION,
@@ -404,8 +440,10 @@ def build_pons_launch_quality_evidence_v67(
         "early_unique_seller_count": early_unique_sellers,
         "early_repeated_wallet_event_share_pct": early_repeat,
         "reserve_progress_pct": progress,
+        "opening_tax_recipient_address": opening_tax_recipient,
         "current_opening_tax_bps": current_tax,
         "data_quality_flags": sorted(set(flags)),
+        "provenance": provenance,
     }
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -438,6 +476,7 @@ def build_pons_launch_quality_evidence_v67(
         early_unique_seller_count=early_unique_sellers,
         early_repeated_wallet_event_share_pct=early_repeat,
         reserve_progress_pct=progress,
+        opening_tax_recipient_address=opening_tax_recipient,
         current_opening_tax_bps=current_tax,
         data_quality_flags=tuple(sorted(set(flags))),
         evidence_sha256=digest,
