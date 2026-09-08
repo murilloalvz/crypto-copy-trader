@@ -24,10 +24,13 @@ class SQLiteWriteAdmissionSnapshot:
     resolution_wait_seconds: tuple[float, ...]
     causal_wait_seconds: tuple[float, ...]
     audit_wait_seconds: tuple[float, ...]
+    resolution_fairness_blocks: int
+    max_consecutive_resolution_grants: int
+    resolution_max_consecutive_when_causal_waiting: int | None
 
 
 class PrioritizedSQLiteWriteAdmission:
-    """Serialize SQLite writers with bounded resolution > causal > audit priority.
+    """Serialize SQLite writers with explicit priority and optional bounded fairness.
 
     SQLite/WAL still has one physical writer. Letting independent writer threads race for that lock
     turns queueing into opaque ``busy_timeout`` latency. This gate makes writer ownership explicit:
@@ -38,15 +41,34 @@ class PrioritizedSQLiteWriteAdmission:
       long collection cannot grow audit memory without bound;
     * readers never touch this gate and remain concurrent under WAL.
 
-    Resolution priority changes admission order only. It does not change transaction semantics,
-    canonical mapping rules, replay/as-of behavior, or the physical one-writer ceiling. Expensive
-    resolution itself remains separately bounded by the resolver capacity.
+    ``resolution_max_consecutive_when_causal_waiting`` is disabled by default so historical v28/v3
+    behavior stays unchanged. A later systems-only profile may set a positive value to prevent an
+    unbounded stream of high-priority identity writes from starving the causal observation writer.
+    The option changes only admission order: there is still exactly one active SQLite writer and no
+    transaction, replay, as-of, detector or FIFO semantics change.
     """
 
-    def __init__(self, *, audit_max_starvation_seconds: float = 0.5) -> None:
+    def __init__(
+        self,
+        *,
+        audit_max_starvation_seconds: float = 0.5,
+        resolution_max_consecutive_when_causal_waiting: int | None = None,
+    ) -> None:
         if audit_max_starvation_seconds <= 0:
             raise ValueError("audit_max_starvation_seconds must be positive")
+        if (
+            resolution_max_consecutive_when_causal_waiting is not None
+            and resolution_max_consecutive_when_causal_waiting <= 0
+        ):
+            raise ValueError(
+                "resolution_max_consecutive_when_causal_waiting must be positive or None"
+            )
         self.audit_max_starvation_seconds = float(audit_max_starvation_seconds)
+        self.resolution_max_consecutive_when_causal_waiting = (
+            int(resolution_max_consecutive_when_causal_waiting)
+            if resolution_max_consecutive_when_causal_waiting is not None
+            else None
+        )
         self._condition = threading.Condition()
         self._active = False
         self._resolution_waiters = 0
@@ -62,6 +84,17 @@ class PrioritizedSQLiteWriteAdmission:
         self._resolution_wait_seconds: deque[float] = deque(maxlen=100_000)
         self._causal_wait_seconds: deque[float] = deque(maxlen=100_000)
         self._audit_wait_seconds: deque[float] = deque(maxlen=100_000)
+        self._consecutive_resolution_grants = 0
+        self._max_consecutive_resolution_grants = 0
+        self._resolution_fairness_blocks = 0
+
+    def _resolution_must_yield_to_causal(self) -> bool:
+        limit = self.resolution_max_consecutive_when_causal_waiting
+        return (
+            limit is not None
+            and self._causal_waiters > 0
+            and self._consecutive_resolution_grants >= limit
+        )
 
     @contextmanager
     def acquire(self, priority: str):
@@ -71,6 +104,7 @@ class PrioritizedSQLiteWriteAdmission:
 
         started = time.perf_counter()
         forced_after_starvation = False
+        fairness_block_recorded = False
         with self._condition:
             if normalized == RESOLUTION_PRIORITY:
                 self._resolution_waiters += 1
@@ -79,9 +113,25 @@ class PrioritizedSQLiteWriteAdmission:
                     self._resolution_waiters,
                 )
                 try:
-                    while self._active:
+                    while self._active or self._resolution_must_yield_to_causal():
+                        if (
+                            not self._active
+                            and self._resolution_must_yield_to_causal()
+                            and not fairness_block_recorded
+                        ):
+                            self._resolution_fairness_blocks += 1
+                            fairness_block_recorded = True
                         self._condition.wait()
                     self._active = True
+                    # If no causal writer was waiting when this grant became available, old
+                    # resolution-only traffic must not accumulate a stale fairness debt.
+                    if self._causal_waiters == 0:
+                        self._consecutive_resolution_grants = 0
+                    self._consecutive_resolution_grants += 1
+                    self._max_consecutive_resolution_grants = max(
+                        self._max_consecutive_resolution_grants,
+                        self._consecutive_resolution_grants,
+                    )
                 finally:
                     self._resolution_waiters -= 1
             elif normalized == CAUSAL_PRIORITY:
@@ -91,9 +141,16 @@ class PrioritizedSQLiteWriteAdmission:
                     self._causal_waiters,
                 )
                 try:
-                    while self._active or self._resolution_waiters > 0:
+                    while True:
+                        resolution_has_priority = (
+                            self._resolution_waiters > 0
+                            and not self._resolution_must_yield_to_causal()
+                        )
+                        if not self._active and not resolution_has_priority:
+                            self._active = True
+                            self._consecutive_resolution_grants = 0
+                            break
                         self._condition.wait()
-                    self._active = True
                 finally:
                     self._causal_waiters -= 1
             else:
@@ -164,6 +221,18 @@ class PrioritizedSQLiteWriteAdmission:
             self._resolution_wait_seconds.clear()
             self._causal_wait_seconds.clear()
             self._audit_wait_seconds.clear()
+            self._consecutive_resolution_grants = 0
+            self._max_consecutive_resolution_grants = 0
+            self._resolution_fairness_blocks = 0
+
+    def is_idle(self) -> bool:
+        with self._condition:
+            return not (
+                self._active
+                or self._resolution_waiters
+                or self._causal_waiters
+                or self._audit_waiters
+            )
 
     def snapshot(self) -> SQLiteWriteAdmissionSnapshot:
         with self._condition:
@@ -178,6 +247,11 @@ class PrioritizedSQLiteWriteAdmission:
                 resolution_wait_seconds=tuple(self._resolution_wait_seconds),
                 causal_wait_seconds=tuple(self._causal_wait_seconds),
                 audit_wait_seconds=tuple(self._audit_wait_seconds),
+                resolution_fairness_blocks=self._resolution_fairness_blocks,
+                max_consecutive_resolution_grants=self._max_consecutive_resolution_grants,
+                resolution_max_consecutive_when_causal_waiting=(
+                    self.resolution_max_consecutive_when_causal_waiting
+                ),
             )
 
 
