@@ -27,7 +27,8 @@ Este arquivo é o **source of truth operacional e científico atual** do projeto
 - Tailfix v5: **failed live on unchanged global-prefix HOL; retained as base**
 - Tailfix v6: **active structural correction; causal per-asset partial-order admission implemented/tests required before live**
 - Tailfix v8: **live failed under a different high-load profile; authoritative writer admission was insufficient**
-- Tailfix v9: **active structural correction; proven demotion is acknowledged causally and audited off the stateful ready queue**
+- Tailfix v9: **LIVE PASS 11/11; PumpSwap p95 3.151s, Pump p95 1.478s, coverage 99.6%, backlog 0.408%**
+- SQLite cleanup: **Windows/Python 3.14 test-handle fix committed; full suite 1049/1049**
 - official Pump/PumpSwap p95 gate: **5s unchanged**
 - preventive causal-stage warning: **4s p95**
 - V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
@@ -247,6 +248,79 @@ audit-only queueing. The existing V27
 continuation writer, canonical-hit accounting, replay and fail-closed audit behavior remain active.
 Ambiguous, ready, running and state-changing work remains on the original causal path.
 
+## Current product direction — Signal-First / Human-Executed
+
+The project is an **Opportunity Intelligence Engine**, not a product whose initial value depends
+on full automatic trading. The current product path is:
+
+`opportunity intelligence -> research signal -> validated signal -> human TAKE/SKIP -> manual execution -> automatic outcome tracking -> shadow execution -> assisted/selective automation -> eventual full automation`
+
+Separate these claims:
+
+1. finding an opportunity or edge;
+2. emitting a useful, prospective and auditable decision;
+3. capturing the opportunity economically;
+4. automating that capture.
+
+Proof of the first three must not depend on completing the fourth. Automation may be delayed, but
+execution realism may not: executable quotes, liquidity, slippage, latency, entry geometry, exit
+behavior, route availability and net economics remain required research evidence.
+
+### Future signal contract
+
+A research signal is an immutable, versioned prospective decision. It must preserve at least:
+
+- `signal_id`, `signal_version`, `episode_id`;
+- `detected_at`, `emitted_at`, `decision_as_of`;
+- detector/strategy versions and signal class/status;
+- reference quote and its observation time;
+- market, participant, wallet, social, launch-quality and execution-reality evidence;
+- explicit missingness, risk flags and reason codes;
+- confidence method/version/value, or `confidence=NOT_AVAILABLE` until calibrated.
+
+Later information creates an update, a new version or a new event. It never silently rewrites the
+original signal. No arbitrary percentage confidence is allowed without prospective calibration.
+
+### Independent outcome populations
+
+Future human-execution experiments must retain three independent sets:
+
+- **ALL SIGNALS:** every prospective signal emitted;
+- **HUMAN SELECTED:** Murillo's pre-outcome `TAKE`/`SKIP`, timestamp, optional reason and signal
+  version seen;
+- **SHADOW AUTO:** the same frozen execution policy applied independently of the human choice.
+
+Human-selected performance cannot be called incremental edge merely because its median exceeds all
+signals; comparisons must control for evidence available in the original signal.
+
+### Signal taxonomy and evidence families
+
+- **Research Signal:** hypothesis/evidence under research; not an operating recommendation.
+- **Validated Signal:** rule survived the declared prospective protocol; execution is not yet proven.
+- **Operational Signal:** opportunity, execution realism, exit behavior, shadow validation and risk
+  specification are all sufficiently evidenced; it still does not authorize live money.
+
+Evidence families remain distinct: market/flow, participant structure, wallet intelligence,
+social/narrative, launch/token quality, execution reality and future cross-market/multichain
+context. Wallet intelligence is post-opportunity evidence, never a primary acquisition whitelist.
+Social `created_at` is not causal availability, and non-Solana research cannot rescue a failed
+Solana hypothesis.
+
+### Product roadmap
+
+1. Opportunity Intelligence: detect and structure causal opportunities.
+2. Research Signals: emit versioned, auditable prospective signals.
+3. Validated Signal Bot: promote only rules that pass prospective validation.
+4. Human-Executed Workflow: record TAKE/SKIP before outcome and track outcomes automatically.
+5. Shadow Execution: compare all signals, human selections and frozen shadow policy.
+6. Assisted Execution: prepare execution while retaining human confirmation.
+7. Selective Automation: automate only validated contexts.
+8. Full Automation: consider only after later evidence justifies it.
+
+Current execution state remains: funded executable BUY `BLOCKED_BY_FUNDING`, landing/fill
+validation `NOT_RELEASED`, market-first exit `NOT_VALIDATED`, shadow `NOT_RELEASED`, live money
+`NOT_AUTHORIZED`.
+
 ### Deterministic V5/V6 requirements before live
 
 Tests must prove:
@@ -290,7 +364,7 @@ Exactly one candidate advanced:
 
 The v55 sample is burned for validation.
 
-## v68 prospective Flow60 Buy-Share — ECONOMIC GATE OPEN, NOT RUNNING
+## v68 prospective Flow60 Buy-Share — FROZEN / NOT_EVALUATED
 
 Frozen:
 
@@ -372,14 +446,18 @@ These remain isolated from active Solana systems/V68 validation.
 29. current-run delayed identity reuse must clamp event `observed_at` forward to mapping availability
 30. prior-run historical identity remains subject to the original event causal cutoff
 31. do not tune SQLite fairness by trial-and-error while duplicate identity demand remains possible
+32. execution automation is not required to prove opportunity intelligence or signal validity
+33. execution realism remains mandatory before any execution claim
+34. every signal is prospective and bounded by its `decision_as_of`
+35. confidence stays unavailable until methodology and prospective calibration exist
+36. ALL SIGNALS, HUMAN SELECTED and SHADOW AUTO remain independently attributable
+37. human selection is recorded before outcome and does not rewrite the signal
+38. funded BUY, landing/fill, shadow and live money remain explicitly blocked/not released
 
 ## Immediate next action
 
-1. Require the final V9 head to be CI-green after all tests/docs/context changes.
-2. Audit the V9 diff to confirm detector/original V68/pacing/economic files remain untouched.
-3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v9.py`.
-4. Do **not** run V68 economics yet.
-5. Accept systems only on exact classification `PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`.
-6. Accept V9 only with official 11/11 PASS, no V5 preventive warning, nonzero partial-order graph evidence, zero demoted-audit deadline backlog, and no invariant failure.
-7. If dependency p95 remains high after causal demotion isolation, evaluate bounded WIP/admission pressure using the live queue clocks; do not raise workers or relax ordering.
-8. If V9 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.
+1. Keep the accepted V9 systems profile frozen; do not reopen PumpSwap latency without new evidence.
+2. Land the Signal-First / Human-Executed documentation update and keep detector, systems and V68 frozen.
+3. Keep V68 as the next existing economic experiment, still `NOT_EVALUATED`; do not start it automatically.
+4. Define the future signal contract and human TAKE/SKIP workflow before implementing UI or execution.
+5. Require execution realism and shadow evidence before considering assisted or selective automation.

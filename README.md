@@ -4,6 +4,36 @@ MVP local para monitorar wallets públicas na Solana, guardar transações em SQ
 confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 **A aplicação não possui chave privada e não envia ordens reais.**
 
+## Direção atual: Opportunity Intelligence / Signal-First
+
+O produto evoluiu de uma descrição wallet-first para um **Opportunity Intelligence Engine**:
+
+```text
+oportunidade -> research signal -> validated signal -> decisão humana TAKE/SKIP
+             -> execução manual -> outcome automático -> shadow execution
+             -> assisted/selective automation -> eventual full automation
+```
+
+O valor inicial é encontrar, explicar e avaliar oportunidades antes de operar. Full automation
+não é requisito para provar valor, mas execution realism continua obrigatório: cotação executável,
+liquidez, slippage, latência, geometria de entrada, saída, disponibilidade de rota e economia
+líquida.
+
+Wallet discovery e paper copy permanecem funcionalidades e infraestrutura de pesquisa histórica;
+wallet não é whitelist primária de aquisição no Market Opportunity Radar. A aplicação continua
+em `PAPER / RESEARCH / READ ONLY`: não possui chave privada, não envia ordens e não autoriza
+dinheiro real.
+
+Signals futuros devem ser prospectivos, versionados e limitados por `decision_as_of`. Informação
+posterior gera update/nova versão, nunca reescrita silenciosa. Até existir metodologia calibrada,
+`confidence` deve permanecer `NOT_AVAILABLE`.
+
+O roadmap formal está em
+[`docs/signal-first-human-execution-roadmap-2026-09-08.md`](docs/signal-first-human-execution-roadmap-2026-09-08.md).
+
+As seções abaixo documentam funcionalidades já existentes e trilhas históricas; não alteram essa
+direção atual.
+
 ## O que já funciona
 
 - cadastro e remoção lógica de wallets públicas;
@@ -540,12 +570,13 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Antes de alterar a regra `wave_v3_volume_integrity`, repetir a coleta em outras datas e
-condições de mercado e exigir cobertura suficiente em todos os horizontes. O resultado precisa continuar
-positivo sob custos conservadores, sem depender de falhas de preço, pools diferentes ou
-janelas de volume inconsistentes. Só depois dessa validação fora da primeira janela faz
-sentido testar stop, alvo parcial e trailing stop em uma nova versão paper da estratégia.
-Execução com dinheiro real permanece fora do escopo.
+1. Formalizar o Signal Layer prospectivo e seus reason codes/missingness.
+2. Registrar, antes do outcome, a decisão humana `TAKE` ou `SKIP` e a versão do sinal observada.
+3. Comparar futuramente `ALL SIGNALS`, `HUMAN SELECTED` e `SHADOW AUTO` sem seleção retrospectiva.
+4. Validar execução, liquidez, slippage, saída e shadow antes de qualquer automação assistida.
+
+V68 permanece congelado e `NOT_EVALUATED`; esta documentação não altera feature, bins, horizonte,
+detector ou protocolo econômico. Execução com dinheiro real permanece bloqueada.
 
 ## Estrutura
 
