@@ -9,7 +9,7 @@ import time
 from src import pumpswap_pool_store
 from src.pumpswap_resolver_wait_trace_v53 import _caller_class
 from src.solana import SolanaRPCError
-from src.sqlite_write_admission import CAUSAL_PRIORITY, sqlite_write_admission
+from src.sqlite_write_admission import RESOLUTION_PRIORITY, sqlite_write_admission
 
 
 @dataclass(frozen=True)
@@ -37,13 +37,15 @@ class AsyncDurablePoolResolutionMixinV3:
     slow pool into a global reservation-sequence hole.
 
     V3 preserves the same cache, historical reuse, per-pool lock, expensive-resolution semaphore,
-    hydration budget, earliest-observed canonical mapping and explicit unresolved behavior. The only
-    behavioral scheduling change is that SQLite stages execute through ``asyncio.to_thread``. The
-    same-pool lock is intentionally held until the canonical mapping is durably committed and
-    reloaded; V3 never publishes an in-memory identity before durability.
+    hydration budget, earliest-observed canonical mapping and explicit unresolved behavior. SQLite
+    stages execute through ``asyncio.to_thread``. The same-pool lock is intentionally held until the
+    canonical mapping is durably committed and reloaded; V3 never publishes an in-memory identity
+    before durability.
 
-    ``record_pumpswap_pool_mapping`` is called through the existing prioritized SQLite write
-    admission as causal work. Reads remain outside that writer gate and concurrent under WAL.
+    Pool-identity writes use the global writer gate's ``resolution`` priority because they are a
+    causal prerequisite for normalization/reservation. The gate still has one physical writer and
+    the resolver's existing concurrency ceiling bounds how many identity writers can contend. Reads
+    remain outside that writer gate and concurrent under WAL.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -76,10 +78,9 @@ class AsyncDurablePoolResolutionMixinV3:
         observed_at: int,
         source_provider: str,
     ) -> None:
-        # V28's global writer admission remains the one physical-writer ownership authority.
-        # Call the store module directly so we do not accidentally nest one of v28's per-module
-        # monkey-patched wrappers around the same non-reentrant admission gate.
-        with sqlite_write_admission(CAUSAL_PRIORITY):
+        # Call the store module directly so V28's by-value monkey patches cannot accidentally nest
+        # the same non-reentrant admission gate. Resolution priority changes admission only.
+        with sqlite_write_admission(RESOLUTION_PRIORITY):
             pumpswap_pool_store.record_pumpswap_pool_mapping(
                 acquisition_run_key=self.acquisition_run_key,
                 pool_address=pool,
@@ -174,8 +175,6 @@ class AsyncDurablePoolResolutionMixinV3:
             if cached is not None:
                 return cached
 
-            # Most pools are already known. Move both SQLite reads off the event loop before
-            # entering single-flight so unrelated normalization coroutines remain schedulable.
             known = await self._v3_lookup_known(pool, decision_time)
             if known is not None:
                 return known
@@ -186,8 +185,6 @@ class AsyncDurablePoolResolutionMixinV3:
             async with lock:
                 lock_acquired = time.monotonic()
                 try:
-                    # A same-pool owner may have populated either memory or durable state while
-                    # this coroutine waited. Recheck causally before spending network budget.
                     cached = self._causal_cache_hit(pool, as_of=decision_time)
                     if cached is not None:
                         return cached
@@ -230,7 +227,6 @@ class AsyncDurablePoolResolutionMixinV3:
         finally:
             elapsed = max(0.0, time.monotonic() - total_started)
             self._v3_record_timing("total_resolve", elapsed)
-            # Preserve the exact v53 aggregate diagnostic contract even though V3 owns resolve.
             with self._v53_metrics_lock:
                 self._v53_timings[f"{caller}_resolve"].append(elapsed)
 
