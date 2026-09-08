@@ -12,14 +12,7 @@ _BASE_V54_RUN_SMOKE = v54.run_smoke_v54
 
 
 async def run_smoke_tailfix_v1(**kwargs) -> None:
-    """Run frozen v54 with Pump/PumpSwap stateful commits split by source and locked by token.
-
-    The v54 detector, reservation, continuation proof, provider pacing, research decision,
-    and systems gates are untouched. Only the inherited shared one-thread stateful commit
-    executor is replaced at the `_run_sync_stage` seam by two one-thread source lanes.
-    Jobs that touch the same trigger token share a process-local lock across both lanes;
-    unrelated Pump and PumpSwap tokens may execute concurrently.
-    """
+    """Run frozen v54 with Pump/PumpSwap stateful commits split and token-serialized."""
 
     inherited_runner = v19._run_sync_stage
     lanes = CrossSourceTokenCommitLanes()
@@ -47,6 +40,8 @@ async def run_smoke_tailfix_v1(**kwargs) -> None:
 
         print("\nTAILFIX V1 CROSS-SOURCE TOKEN COMMIT LANES")
         print(
+            f"pump_workers={snapshot.pump_workers} "
+            f"pumpswap_workers={snapshot.pumpswap_workers} "
             f"pump_calls={snapshot.pump_calls} "
             f"pumpswap_calls={snapshot.pumpswap_calls} "
             f"fallback_calls={snapshot.fallback_calls} "
@@ -70,10 +65,12 @@ async def run_smoke_tailfix_v1(**kwargs) -> None:
             f"{v19._latency_summary_ms(list(snapshot.service_seconds))}"
         )
         print(
-            "tailfix_v1_note=Pump and PumpSwap stateful finalizers use separate bounded one-thread "
-            "lanes, while every trigger token is serialized across both sources. Multi-token work "
-            "locks the sorted token set. Detector, first-persisted episode semantics, continuation "
-            "proofs, reservation FIFO, replay, as-of, provider pacing and economics are unchanged."
+            "tailfix_v1_note=Pump and PumpSwap stateful finalizers use separate bounded source "
+            "lanes while every trigger token is serialized across both sources. Multi-token work "
+            "locks the sorted token set. Default v1 capacity remains one worker per source; later "
+            "systems-only profiles may increase a lane only while preserving the same token locks. "
+            "Detector, first-persisted episode semantics, continuation proofs, reservation FIFO, "
+            "replay, as-of, provider pacing and economics are unchanged."
         )
 
         if run_error is None:
