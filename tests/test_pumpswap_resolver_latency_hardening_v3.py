@@ -136,6 +136,10 @@ class ResolverLatencyHardeningV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(thread_id != loop_thread for thread_id in reload_threads))
         snapshot = resolver.resolver_stage_snapshot_v3()
         self.assertEqual(snapshot.durable_mapping_writes, 1)
+        self.assertEqual(snapshot.mapping_sync_started, 1)
+        self.assertEqual(snapshot.mapping_sync_admitted, 1)
+        self.assertEqual(snapshot.mapping_sync_completed, 1)
+        self.assertEqual(snapshot.mapping_sync_inflight, 0)
         self.assertEqual(snapshot.network_resolutions, 1)
 
     async def test_same_pool_remains_single_flight(self):
@@ -175,6 +179,62 @@ class ResolverLatencyHardeningV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolver.network_calls, 1)
         self.assertGreaterEqual(resolver.singleflight_waits, 1)
         self.assertGreaterEqual(resolver.cache_hits, 1)
+
+    async def test_deadline_cancellation_can_finish_durable_write_without_publication(self):
+        resolver = _FakeHardenedResolver()
+        durable = {}
+        write_started = threading.Event()
+
+        def load_current(*, acquisition_run_key, pool_address, as_of=None):
+            value = durable.get(pool_address)
+            if value is None:
+                return None
+            if as_of is not None and value.observed_at > as_of:
+                return None
+            return value
+
+        def record_mapping(**kwargs):
+            write_started.set()
+            time.sleep(0.08)
+            durable[kwargs["pool_address"]] = PumpSwapPoolMapping(
+                acquisition_run_key=kwargs["acquisition_run_key"],
+                pool_address=kwargs["pool_address"],
+                base_mint=kwargs["base_mint"],
+                quote_mint=kwargs["quote_mint"],
+                observed_at=kwargs["observed_at"],
+                source_provider=kwargs["source_provider"],
+            )
+            return True
+
+        with patch(
+            "src.pumpswap_resolver_latency_hardening_v3.pumpswap_pool_store.load_pumpswap_pool_mapping",
+            side_effect=load_current,
+        ), patch(
+            "src.pumpswap_resolver_latency_hardening_v3.pumpswap_pool_store.load_known_pumpswap_pool_mapping",
+            return_value=None,
+        ), patch(
+            "src.pumpswap_resolver_latency_hardening_v3.pumpswap_pool_store.record_pumpswap_pool_mapping",
+            side_effect=record_mapping,
+        ):
+            task = asyncio.create_task(
+                resolver.resolve("pool-deadline", as_of=int(time.time()) + 10)
+            )
+            started = await asyncio.to_thread(write_started.wait, 1.0)
+            self.assertTrue(started)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            # asyncio cancellation does not stop already-running to_thread work.
+            await asyncio.sleep(0.12)
+
+        snapshot = resolver.resolver_stage_snapshot_v3()
+        self.assertEqual(snapshot.mapping_sync_started, 1)
+        self.assertEqual(snapshot.mapping_sync_admitted, 1)
+        self.assertEqual(snapshot.mapping_sync_completed, 1)
+        self.assertEqual(snapshot.mapping_sync_inflight, 0)
+        self.assertEqual(snapshot.durable_mapping_writes, 0)
+        self.assertEqual(snapshot.network_resolutions, 0)
+        self.assertIn("pool-deadline", durable)
 
 
 if __name__ == "__main__":
