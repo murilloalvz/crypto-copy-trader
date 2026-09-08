@@ -9,8 +9,26 @@ import unified_market_route_research_smoke_tailfix_v2 as tailfix
 
 
 class TailfixV2WrapperTests(unittest.IsolatedAsyncioTestCase):
-    async def test_installs_shared_transport_resolver_and_restores_global(self):
-        original_global = tailfix.v52.DeadlineBoundedParallelHedgedResolverV52
+    def test_composed_resolver_keeps_v53_trace_and_tailfix_transport(self):
+        self.assertTrue(
+            issubclass(
+                tailfix.TracedSharedTransportResolverTailfixV2,
+                tailfix.TracedDeadlineBoundedResolverV53,
+            )
+        )
+        self.assertTrue(
+            issubclass(
+                tailfix.TracedSharedTransportResolverTailfixV2,
+                tailfix.SharedTransportDeadlineResolverTailfixV2,
+            )
+        )
+        self.assertIs(
+            tailfix.TracedSharedTransportResolverTailfixV2._fetch_batch,
+            tailfix.SharedTransportDeadlineResolverTailfixV2._fetch_batch,
+        )
+
+    async def test_installs_composed_resolver_at_v53_seam_and_restores_global(self):
+        original_global = tailfix.v53.TracedDeadlineBoundedResolverV53
         original_base = tailfix._BASE_TAILFIX_V1_RUN_SMOKE
         observed = {}
 
@@ -29,7 +47,9 @@ class TailfixV2WrapperTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         async def fake_base(**_kwargs):
-            observed["during"] = tailfix.v52.DeadlineBoundedParallelHedgedResolverV52
+            observed["during"] = tailfix.v53.TracedDeadlineBoundedResolverV53
+            # Emulate construction side effects from the composed MRO. The SharedTransport base
+            # owns the v2 diagnostic handle used after the inherited smoke returns.
             tailfix.SharedTransportDeadlineResolverTailfixV2.last_instance = FakeInstance()
 
         tailfix._BASE_TAILFIX_V1_RUN_SMOKE = fake_base
@@ -43,15 +63,37 @@ class TailfixV2WrapperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(
             observed["during"],
-            tailfix.SharedTransportDeadlineResolverTailfixV2,
+            tailfix.TracedSharedTransportResolverTailfixV2,
         )
-        self.assertIs(tailfix.v52.DeadlineBoundedParallelHedgedResolverV52, original_global)
+        self.assertIs(tailfix.v53.TracedDeadlineBoundedResolverV53, original_global)
         text = output.getvalue()
         self.assertIn("TAILFIX V2 SHARED RPC TRANSPORT", text)
         self.assertIn("transport_limit_violations=0", text)
 
+    async def test_fails_closed_when_v53_path_does_not_construct_tailfix_resolver(self):
+        original_global = tailfix.v53.TracedDeadlineBoundedResolverV53
+        original_base = tailfix._BASE_TAILFIX_V1_RUN_SMOKE
+
+        async def fake_base(**_kwargs):
+            # This specifically protects against the live failure where the wrong module symbol
+            # was patched and v53 silently installed its own resolver instead.
+            self.assertIs(
+                tailfix.v53.TracedDeadlineBoundedResolverV53,
+                tailfix.TracedSharedTransportResolverTailfixV2,
+            )
+
+        tailfix._BASE_TAILFIX_V1_RUN_SMOKE = fake_base
+        tailfix.SharedTransportDeadlineResolverTailfixV2.last_instance = None
+        try:
+            with self.assertRaisesRegex(RuntimeError, "traced resolver was not installed"):
+                await tailfix.run_smoke_tailfix_v2()
+        finally:
+            tailfix._BASE_TAILFIX_V1_RUN_SMOKE = original_base
+            tailfix.v53.TracedDeadlineBoundedResolverV53 = original_global
+            tailfix.SharedTransportDeadlineResolverTailfixV2.last_instance = None
+
     async def test_fails_closed_on_transport_limit_violation(self):
-        original_global = tailfix.v52.DeadlineBoundedParallelHedgedResolverV52
+        original_global = tailfix.v53.TracedDeadlineBoundedResolverV53
         original_base = tailfix._BASE_TAILFIX_V1_RUN_SMOKE
 
         class FakeInstance:
@@ -69,6 +111,10 @@ class TailfixV2WrapperTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         async def fake_base(**_kwargs):
+            self.assertIs(
+                tailfix.v53.TracedDeadlineBoundedResolverV53,
+                tailfix.TracedSharedTransportResolverTailfixV2,
+            )
             tailfix.SharedTransportDeadlineResolverTailfixV2.last_instance = FakeInstance()
 
         tailfix._BASE_TAILFIX_V1_RUN_SMOKE = fake_base
@@ -78,7 +124,7 @@ class TailfixV2WrapperTests(unittest.IsolatedAsyncioTestCase):
         finally:
             tailfix._BASE_TAILFIX_V1_RUN_SMOKE = original_base
             tailfix.SharedTransportDeadlineResolverTailfixV2.last_instance = None
-            tailfix.v52.DeadlineBoundedParallelHedgedResolverV52 = original_global
+            tailfix.v53.TracedDeadlineBoundedResolverV53 = original_global
 
 
 if __name__ == "__main__":
