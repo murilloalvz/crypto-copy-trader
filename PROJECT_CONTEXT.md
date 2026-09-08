@@ -24,7 +24,8 @@ Este arquivo é o **source of truth operacional e científico atual** do projeto
 - Tailfix v2: bounded shared RPC transport + early decision release implemented/tested
 - Tailfix v3: resolver latency class fixed live, but run failed 9/11 on persistence drain capacity
 - Tailfix v4: persistence drain fixed live, but run failed 10/11 on PumpSwap causal latency due normalization/single-flight amplification
-- Tailfix v5: **active systems correction; deterministic implementation/tests in progress/CI before live required**
+- Tailfix v5: **failed live on unchanged global-prefix HOL; retained as base**
+- Tailfix v6: **active structural correction; causal per-asset partial-order admission implemented/tests required before live**
 - official Pump/PumpSwap p95 gate: **5s unchanged**
 - preventive causal-stage warning: **4s p95**
 - V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
@@ -149,7 +150,7 @@ The 42.5% pool-mapping collision rate with zero identity conflicts is consistent
 
 Do not tune the v4 fairness constant by trial and error. The active V5 removes redundant demand while preserving the v4 fairness rule.
 
-## Tailfix v5 — active causal-throughput hardening
+## Tailfix v5 — failed live causal-throughput hardening
 
 Protocol: `docs/pumpswap-causal-throughput-hardening-v5-protocol-2026-09-08.md`
 
@@ -199,7 +200,24 @@ This means identity learned later can unblock old queued work only at the later 
 - writer fully drained;
 - only this exact classification can be considered for a fresh V68 acquisition.
 
-### Deterministic V5 requirements before live
+## Tailfix v6 — structural partial-order correction after V5 FAIL
+
+V5 removed duplicate normalization demand but retained the strict global reservation prefix. The
+V5 live result therefore showed the same structural HOL in reservation admission and downstream
+stateful/demoted ready queues even though RPC and finalizer service were small.
+
+V6 adds `src/pumpswap_partial_order_v6.py` and V6 wrappers. Reservations are admitted when their
+causal normalization hint is available. The existing scheduler still issues one FIFO ticket chain
+per asset, while disjoint assets have no dependency edge. The ordering contract is explicitly
+causal admission order, not ingress FIFO across an unresolved normalization gap; late episode
+ordering remains fail-closed through the existing canonical episode store semantics.
+
+V6 does not change detector, V68, economics, 5s gate, RPC ceiling, SQLite writer count, writer
+authority, persistence superset guard, or stateful/demoted queue policy. Its deterministic tests
+prove disjoint bypass, same-asset serialization, multi-asset acyclicity, stateful priority over
+proven demotion, and asynchronous writer interaction inherited from V5.
+
+### Deterministic V5/V6 requirements before live
 
 Tests must prove:
 
@@ -327,10 +345,11 @@ These remain isolated from active Solana systems/V68 validation.
 
 ## Immediate next action
 
-1. Require the final V5 head to be CI-green after all tests/docs/context changes.
-2. Audit V5 diff to confirm detector/original V68/pacing/economic files remain untouched.
-3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v5.py`.
+1. Require the final V6 head to be CI-green after all tests/docs/context changes.
+2. Audit V6 diff to confirm detector/original V68/pacing/economic files remain untouched.
+3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v6.py`.
 4. Do **not** run V68 economics yet.
 5. Accept systems only on exact classification `PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`.
-6. If normalization/barrier is healthy but ready-queue p95 independently remains >=4s, then evaluate a separate bounded multi-finalizer design with per-asset FIFO and same-token proofs. Do not raise workers before that evidence.
-7. If V5 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.
+6. Accept V6 only with official 11/11 PASS, no V5 preventive warning, and nonzero partial-order graph evidence with no invariant failure.
+7. If ready-queue p95 remains >=4s after global-prefix removal, evaluate a separate bounded multi-finalizer design with per-asset FIFO and same-token proofs. Do not raise workers before that evidence.
+8. If V6 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.

@@ -33,6 +33,7 @@ from src.pumpswap_radar_bridge_v5 import (
     prepare_persisted_pumpswap_notification_for_radar_v5,
 )
 from src.pumpswap_ready_scheduler import AssetReservation, ReadyAssetScheduler
+from src.pumpswap_partial_order_v6 import PumpSwapPartialOrderCoordinatorV6
 from src.pumpswap_stream import iter_pumpswap_log_notifications
 from unified_market_latency_smoke_v5 import _print_replay_telemetry
 from unified_market_latency_smoke_v8 import BoundedConcurrentResolver, _short_episode
@@ -103,6 +104,9 @@ def _prepared_has_trigger(prepared) -> bool:
     return any(token.trigger is not None for token in prepared.tokens)
 
 
+last_pumpswap_partial_order_coordinator_v6 = None
+
+
 def _reservation_missing_assets(
     handle: DeferredPumpSwapPersistHandle,
     result,
@@ -147,14 +151,16 @@ async def run_smoke_v19(
     split_pump_radar: bool = False,
     pump_prepare_workers: int = 4,
     stateful_only_finalize: bool = False,
+    pumpswap_reservation_mode: str = "global_prefix",
 ) -> ThreadedWriterDiagnostics:
     """Run the unified latency smoke with early conservative PumpSwap reservations.
 
     v18 proved that the writer and prepare queue can both be healthy while a global
-    post-persistence reservation watermark creates head-of-line delay. v19 moves the
-    watermark earlier: once causal pool resolution/normalization has identified a
-    conservative asset superset, the per-asset ticket is issued in original ingress
-    sequence without waiting for the SQLite writer result. Detector preparation still
+    post-persistence reservation watermark creates head-of-line delay. The default v19
+    path moves that watermark earlier but still admits tickets in ingress sequence. V6
+    selects ``partial_order`` mode: once causal normalization identifies a conservative
+    asset superset, the ticket is admitted immediately and ordered only against the
+    previous admitted reservation for each overlapping asset. Detector preparation still
     starts only after canonical persistence succeeds, and trigger/episode finalization
     remains protected by the same per-asset FIFO scheduler.
 
@@ -175,6 +181,10 @@ async def run_smoke_v19(
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
         raise ValueError("prepare submitters/executor workers must be positive")
+    if pumpswap_reservation_mode not in {"global_prefix", "partial_order"}:
+        raise ValueError(
+            "pumpswap_reservation_mode must be 'global_prefix' or 'partial_order'"
+        )
     if split_pump_radar and pump_prepare_workers <= 0:
         raise ValueError("pump_prepare_workers must be positive when split Pump radar is enabled")
     if stateful_only_finalize and not split_pump_radar:
@@ -197,6 +207,13 @@ async def run_smoke_v19(
     scheduler: ReadyAssetScheduler[PreparedTimedPumpSwapWork | SkipTimedPumpSwapWork] = (
         ReadyAssetScheduler()
     )
+    global last_pumpswap_partial_order_coordinator_v6
+    partial_order_coordinator = (
+        PumpSwapPartialOrderCoordinatorV6(scheduler)
+        if pumpswap_reservation_mode == "partial_order"
+        else None
+    )
+    last_pumpswap_partial_order_coordinator_v6 = partial_order_coordinator
 
     resolver = BoundedConcurrentResolver(
         acquisition_run_key=run_key,
@@ -769,6 +786,31 @@ async def run_smoke_v19(
     async def pumpswap_reservation_coordinator() -> None:
         nonlocal pumpswap_asset_reservations, pumpswap_multi_asset_notifications
         nonlocal pumpswap_max_assets_per_notification
+
+        def admit_reservation(ordered: EarlyReservationHint, reservation) -> None:
+            nonlocal pumpswap_asset_reservations, pumpswap_multi_asset_notifications
+            nonlocal pumpswap_max_assets_per_notification
+            pumpswap_normalization_to_reservation_seconds.append(
+                max(
+                    0.0,
+                    reservation.created_monotonic
+                    - ordered.normalization_completed_monotonic,
+                )
+            )
+            pumpswap_ingress_to_reservation_seconds.append(
+                max(0.0, reservation.created_monotonic - ordered.enqueued_monotonic)
+            )
+            pumpswap_asset_reservations += 1
+            pumpswap_max_assets_per_notification = max(
+                pumpswap_max_assets_per_notification,
+                len(reservation.assets),
+            )
+            if len(reservation.assets) > 1:
+                pumpswap_multi_asset_notifications += 1
+            reservations_by_sequence[ordered.sequence] = reservation
+            maybe_submit(ordered.sequence)
+            maybe_submit_skip(ordered.sequence)
+
         next_sequence = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -778,35 +820,25 @@ async def run_smoke_v19(
                 )
             except asyncio.TimeoutError:
                 continue
+
+            if pumpswap_reservation_mode == "partial_order":
+                try:
+                    reservation = partial_order_coordinator.reserve(
+                        hint.sequence,
+                        hint.assets,
+                    )
+                    admit_reservation(hint, reservation)
+                finally:
+                    pumpswap_reservation_hints.task_done()
+                continue
+
             pending_reservation_hints[hint.sequence] = hint
             pumpswap_reservation_hints.task_done()
 
             while next_sequence in pending_reservation_hints and time.monotonic() < deadline:
                 ordered = pending_reservation_hints.pop(next_sequence)
                 reservation = scheduler.reserve(ordered.assets)
-                pumpswap_normalization_to_reservation_seconds.append(
-                    max(
-                        0.0,
-                        reservation.created_monotonic
-                        - ordered.normalization_completed_monotonic,
-                    )
-                )
-                pumpswap_ingress_to_reservation_seconds.append(
-                    max(
-                        0.0,
-                        reservation.created_monotonic - ordered.enqueued_monotonic,
-                    )
-                )
-                pumpswap_asset_reservations += 1
-                pumpswap_max_assets_per_notification = max(
-                    pumpswap_max_assets_per_notification,
-                    len(reservation.assets),
-                )
-                if len(reservation.assets) > 1:
-                    pumpswap_multi_asset_notifications += 1
-                reservations_by_sequence[ordered.sequence] = reservation
-                maybe_submit(ordered.sequence)
-                maybe_submit_skip(ordered.sequence)
+                admit_reservation(ordered, reservation)
                 next_sequence += 1
 
     async def pumpswap_prepare_worker() -> None:
@@ -992,6 +1024,9 @@ async def run_smoke_v19(
             pump_prepare_executor.shutdown(wait=True, cancel_futures=True)
         if radar_sync_executor is not None:
             radar_sync_executor.shutdown(wait=True, cancel_futures=True)
+
+    if partial_order_coordinator is not None:
+        partial_order_coordinator.assert_acyclic()
 
     elapsed = time.monotonic() - started
     resolver_operational_skips = (
@@ -1197,6 +1232,17 @@ async def run_smoke_v19(
         f"stateful_only_finalize={stateful_only_finalize} "
         f"reservation_superset_violations={reservation_superset_violations}"
     )
+    print(f"pumpswap_reservation_ordering={pumpswap_reservation_mode}")
+    if partial_order_coordinator is not None:
+        partial_snapshot = partial_order_coordinator.snapshot()
+        print(
+            f"partial_order_admissions={partial_snapshot.admissions} "
+            f"partial_order_dependency_edges={partial_snapshot.dependency_edges} "
+            f"partial_order_disjoint_admissions={partial_snapshot.disjoint_admissions} "
+            f"partial_order_overlapping_admissions={partial_snapshot.overlapping_admissions} "
+            f"partial_order_out_of_ingress_admissions={partial_snapshot.out_of_ingress_admissions} "
+            f"partial_order_max_predecessors={partial_snapshot.max_predecessors_per_admission}"
+        )
     print(
         "pumpswap_finalize_causal_asset_concentration "
         f"assets_with_reservations={sum(1 for item in asset_telemetry if item.reservations > 0)} "
@@ -1284,6 +1330,11 @@ def main() -> None:
     parser.add_argument("--pumpswap-writer-batch-max-wait-ms", type=int, default=10)
     parser.add_argument("--max-concurrent-resolutions", type=int, default=18)
     parser.add_argument("--queue-size", type=int, default=5000)
+    parser.add_argument(
+        "--pumpswap-reservation-mode",
+        choices=("global_prefix", "partial_order"),
+        default="global_prefix",
+    )
     args = parser.parse_args()
 
     if not 1 <= args.duration_seconds <= MAX_SMOKE_SECONDS:
@@ -1327,9 +1378,9 @@ def main() -> None:
         f"sqlite_journal_mode={journal_mode} sqlite_synchronous={synchronous}"
     )
     print(
-        "v19 keeps detector/provider/replay/as_of semantics frozen. Per-asset tickets are now "
-        "issued in ingress order as soon as causal normalization identifies a conservative asset "
-        "superset; detector preparation still waits for canonical SQLite persistence."
+        "v19 keeps detector/provider/replay/as_of semantics frozen. Reservation mode is "
+        f"{args.pumpswap_reservation_mode}; detector preparation still waits for canonical "
+        "SQLite persistence."
     )
 
     try:
@@ -1349,6 +1400,7 @@ def main() -> None:
                 pumpswap_writer_batch_max_wait_ms=args.pumpswap_writer_batch_max_wait_ms,
                 max_concurrent_resolutions=args.max_concurrent_resolutions,
                 queue_size=args.queue_size,
+                pumpswap_reservation_mode=args.pumpswap_reservation_mode,
             )
         )
     finally:
