@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import unittest
 
 import route_research_systems_stability_tailfix_v3 as wrapper
 
 
 class RouteResearchSystemsStabilityTailfixV3Tests(unittest.TestCase):
-    def test_injects_and_restores_tailfix_runner_on_success(self):
+    def setUp(self):
+        self.original_report = wrapper.tailfix.last_headroom_report_v3
+
+    def tearDown(self):
+        wrapper.tailfix.last_headroom_report_v3 = self.original_report
+
+    def test_injects_and_restores_tailfix_runner_on_success_with_headroom(self):
         original_runner = wrapper.v54_guard.v54.run_smoke_v54
         original_main = wrapper.v54_guard.main
         observed = {}
+        wrapper.tailfix.last_headroom_report_v3 = SimpleNamespace(warning_stages=())
 
         def fake_main():
             observed["runner"] = wrapper.v54_guard.v54.run_smoke_v54
@@ -25,9 +33,34 @@ class RouteResearchSystemsStabilityTailfixV3Tests(unittest.TestCase):
         self.assertIs(observed["runner"], wrapper.tailfix.run_smoke_tailfix_v3)
         self.assertIs(wrapper.v54_guard.v54.run_smoke_v54, original_runner)
 
+    def test_official_pass_is_held_when_stage_headroom_is_thin(self):
+        original_main = wrapper.v54_guard.main
+        wrapper.tailfix.last_headroom_report_v3 = SimpleNamespace(
+            warning_stages=("global_prefix_normalization_barrier",)
+        )
+        wrapper.v54_guard.main = lambda: 0
+        try:
+            result = wrapper.main()
+        finally:
+            wrapper.v54_guard.main = original_main
+
+        self.assertEqual(result, wrapper.V3_HEADROOM_HOLD_EXIT)
+
+    def test_official_pass_is_held_when_headroom_report_is_missing(self):
+        original_main = wrapper.v54_guard.main
+        wrapper.tailfix.last_headroom_report_v3 = None
+        wrapper.v54_guard.main = lambda: 0
+        try:
+            result = wrapper.main()
+        finally:
+            wrapper.v54_guard.main = original_main
+
+        self.assertEqual(result, wrapper.V3_HEADROOM_HOLD_EXIT)
+
     def test_nonzero_frozen_guard_is_not_rescued(self):
         original_runner = wrapper.v54_guard.v54.run_smoke_v54
         original_main = wrapper.v54_guard.main
+        wrapper.tailfix.last_headroom_report_v3 = SimpleNamespace(warning_stages=())
         wrapper.v54_guard.main = lambda: 7
         try:
             result = wrapper.main()
