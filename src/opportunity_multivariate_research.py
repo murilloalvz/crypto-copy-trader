@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from src.opportunity_wallet_convergence_v60 import WalletConvergenceEvidenceV60
 from src.participant_distribution_research import ParticipantDistributionWindow
 from src.temporal_flow_structure_research import TemporalFlowStructureWindow
 
 
 OPPORTUNITY_MULTIVARIATE_RESEARCH_VERSION = (
-    "opportunity_multivariate_research_v1_outcome_blind_component_vector"
+    "opportunity_multivariate_research_v1_1_outcome_blind_component_vector"
 )
 
 
@@ -66,6 +67,33 @@ INTERACTION_FAMILY_SPECS = (
             "temporally concentrated?"
         ),
     ),
+    InteractionFamilySpec(
+        key="participant_distribution_x_wallet_convergence",
+        left_family="participant_distribution",
+        right_family="wallet_convergence",
+        research_question=(
+            "Does broad market participation have different information when a pre-frozen useful "
+            "wallet cohort is also present?"
+        ),
+    ),
+    InteractionFamilySpec(
+        key="temporal_structure_x_wallet_convergence",
+        left_family="temporal_structure",
+        right_family="wallet_convergence",
+        research_question=(
+            "Does sustained activity differ when pre-frozen wallet archetypes participate during "
+            "the same T0-anchored market window?"
+        ),
+    ),
+    InteractionFamilySpec(
+        key="direction_x_wallet_convergence",
+        left_family="direction",
+        right_family="wallet_convergence",
+        research_question=(
+            "Does buy/sell composition carry different information when pre-frozen wallet "
+            "archetypes contribute to the observed flow?"
+        ),
+    ),
 )
 
 
@@ -74,6 +102,7 @@ _SCIENCE_CAUTIONS = (
     "interaction_family_is_not_economic_evidence",
     "failed_univariate_rule_may_reenter_only_as_a_new_interaction_hypothesis",
     "interaction_discovery_requires_fresh_data_and_separate_prospective_validation",
+    "wallet_convergence_requires_prefrozen_cohort_membership_before_episode_t0",
     "no_outcome_labels_are_accepted_by_this_builder",
 )
 
@@ -93,6 +122,7 @@ class OutcomeBlindOpportunityVector:
     research_decision_as_of: int
     features: tuple[tuple[str, float | int | None], ...]
     feature_observed_at: tuple[tuple[str, int], ...]
+    component_context: tuple[tuple[str, str], ...]
     interaction_families: tuple[str, ...]
     data_quality_flags: tuple[str, ...]
     science_cautions: tuple[str, ...]
@@ -102,6 +132,9 @@ class OutcomeBlindOpportunityVector:
 
     def clock_dict(self) -> dict[str, int]:
         return dict(self.feature_observed_at)
+
+    def context_dict(self) -> dict[str, str]:
+        return dict(self.component_context)
 
 
 def _required(value: str, name: str) -> str:
@@ -137,12 +170,16 @@ def build_outcome_blind_opportunity_vector(
     base_feature_observed_at: Mapping[str, int],
     participant: ParticipantDistributionWindow,
     temporal: TemporalFlowStructureWindow,
+    wallet_convergence: WalletConvergenceEvidenceV60 | None = None,
 ) -> OutcomeBlindOpportunityVector:
     """Join complementary causal measurements without constructing an economic score.
 
-    The component market windows must be anchored to the same episode T0. Their knowledge cutoffs
-    may be earlier than or equal to the research decision, never later. The builder accepts no
-    outcome argument by design, preventing label-driven feature construction at this layer.
+    Component market windows must be anchored to the same episode T0. Knowledge cutoffs may be
+    earlier than or equal to the research decision, never later. The optional wallet-convergence
+    component must come from a cohort frozen before that same market anchor.
+
+    The builder accepts no outcome argument by design, preventing label-driven feature construction
+    at this layer.
     """
 
     key = _required(episode_key, "episode_key")
@@ -171,8 +208,20 @@ def build_outcome_blind_opportunity_vector(
     if temporal.knowledge_as_of > decision:
         raise ValueError("temporal evidence observed after research decision")
 
+    if wallet_convergence is not None:
+        if wallet_convergence.token_mint != token:
+            raise ValueError("wallet convergence token_mint does not match opportunity token")
+        if wallet_convergence.market_anchor_time != t0:
+            raise ValueError("wallet convergence market anchor must equal episode_t0")
+        if wallet_convergence.as_of > decision:
+            raise ValueError("wallet convergence evidence observed after research decision")
+
     merged: dict[str, float | int | None] = dict(base_features)
     clocks: dict[str, int] = {name: int(value) for name, value in base_feature_observed_at.items()}
+    context: dict[str, str] = {
+        "participant_method_version": participant.method_version,
+        "temporal_method_version": temporal.method_version,
+    }
 
     participant_prefix = f"participant{participant.window_seconds}"
     participant_values: dict[str, float | int | None] = {
@@ -210,20 +259,65 @@ def build_outcome_blind_opportunity_vector(
         f"{temporal_prefix}_buy_active_subwindow_count": temporal.buy_active_subwindow_count,
     }
 
-    for values, observed_at in (
+    components: list[tuple[dict[str, float | int | None], int]] = [
         (participant_values, participant.as_of),
         (temporal_values, temporal.knowledge_as_of),
-    ):
+    ]
+
+    if wallet_convergence is not None:
+        wallet_prefix = f"walletconv{wallet_convergence.window_seconds}"
+        wallet_values: dict[str, float | int | None] = {
+            f"{wallet_prefix}_eligible_cohort_size": wallet_convergence.eligible_cohort_size,
+            f"{wallet_prefix}_market_wallet_identity_coverage_pct": (
+                wallet_convergence.market_wallet_identity_coverage_pct
+            ),
+            f"{wallet_prefix}_cohort_event_count": wallet_convergence.cohort_event_count,
+            f"{wallet_prefix}_cohort_buy_event_count": wallet_convergence.cohort_buy_event_count,
+            f"{wallet_prefix}_unique_cohort_wallet_count": (
+                wallet_convergence.unique_cohort_wallet_count
+            ),
+            f"{wallet_prefix}_unique_cohort_buy_wallet_count": (
+                wallet_convergence.unique_cohort_buy_wallet_count
+            ),
+            f"{wallet_prefix}_unique_strategy_signature_count": (
+                wallet_convergence.unique_strategy_signature_count
+            ),
+            f"{wallet_prefix}_cohort_share_of_known_wallet_events_pct": (
+                wallet_convergence.cohort_share_of_known_wallet_events_pct
+            ),
+            f"{wallet_prefix}_repeated_cohort_event_share_pct": (
+                wallet_convergence.repeated_cohort_event_share_pct
+            ),
+            f"{wallet_prefix}_first_cohort_buy_offset_seconds": (
+                wallet_convergence.first_cohort_buy_offset_seconds
+            ),
+            f"{wallet_prefix}_last_cohort_buy_offset_seconds": (
+                wallet_convergence.last_cohort_buy_offset_seconds
+            ),
+        }
+        components.append((wallet_values, wallet_convergence.as_of))
+        context.update(
+            {
+                "wallet_convergence_method_version": wallet_convergence.method_version,
+                "wallet_convergence_cohort_key": wallet_convergence.cohort_key,
+            }
+        )
+
+    for values, observed_at in components:
         collisions = set(values).intersection(merged)
         if collisions:
             raise ValueError(f"component feature name collision: {sorted(collisions)}")
         merged.update(values)
         clocks.update({name: int(observed_at) for name in values})
 
-    quality = tuple(
+    quality_items = (
         [f"participant:{flag}" for flag in participant.data_quality_flags]
         + [f"temporal:{flag}" for flag in temporal.data_quality_flags]
     )
+    if wallet_convergence is not None:
+        quality_items += [
+            f"wallet_convergence:{flag}" for flag in wallet_convergence.data_quality_flags
+        ]
 
     return OutcomeBlindOpportunityVector(
         method_version=OPPORTUNITY_MULTIVARIATE_RESEARCH_VERSION,
@@ -233,7 +327,8 @@ def build_outcome_blind_opportunity_vector(
         research_decision_as_of=decision,
         features=tuple(sorted(merged.items())),
         feature_observed_at=tuple(sorted(clocks.items())),
+        component_context=tuple(sorted(context.items())),
         interaction_families=tuple(spec.key for spec in INTERACTION_FAMILY_SPECS),
-        data_quality_flags=quality,
+        data_quality_flags=tuple(quality_items),
         science_cautions=_SCIENCE_CAUTIONS,
     )
