@@ -3,6 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from src.pumpswap_deadline_hedged_resolver_v52 import (
+    DeadlineBoundedParallelHedgedResolverV52,
+)
+from src.pumpswap_parallel_batched_resolver_v41 import (
+    ParallelHedgedBatchedBoundedResolverV41,
+)
 from src.pumpswap_resolver_wait_trace_v53 import TracedDeadlineBoundedResolverV53
 from src.pumpswap_shared_transport_resolver_tailfix_v2 import (
     SharedTransportDeadlineResolverTailfixV2,
@@ -25,9 +31,24 @@ class TracedSharedTransportResolverTailfixV2(
     the v52 symbol directly is therefore overwritten by v53. Multiple inheritance keeps the v53
     observational resolve/lock/semaphore telemetry while routing `_fetch_batch` and transport
     ownership through SharedTransportDeadlineResolverTailfixV2.
+
+    The inherited runners publish diagnostics through class-level ``last_instance`` slots on their
+    own resolver classes. Because v53 and v52 replace resolver symbols dynamically, relying on MRO
+    side effects alone can leave those compatibility slots unset even when the combined resolver is
+    actually running. Register the same concrete instance explicitly for v41/v52/v53 and tailfix-v2
+    diagnostics so the unchanged v54 guard observes the real executed resolver rather than reporting
+    a false diagnostic-missing failure.
     """
 
     last_instance: "TracedSharedTransportResolverTailfixV2 | None" = None
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        TracedSharedTransportResolverTailfixV2.last_instance = self
+        TracedDeadlineBoundedResolverV53.last_instance = self
+        SharedTransportDeadlineResolverTailfixV2.last_instance = self
+        DeadlineBoundedParallelHedgedResolverV52.last_instance = self
+        ParallelHedgedBatchedBoundedResolverV41.last_instance = self
 
 
 async def run_smoke_tailfix_v2(**kwargs) -> None:
@@ -47,6 +68,9 @@ async def run_smoke_tailfix_v2(**kwargs) -> None:
     original_traced_resolver = v53.TracedDeadlineBoundedResolverV53
     SharedTransportDeadlineResolverTailfixV2.last_instance = None
     TracedSharedTransportResolverTailfixV2.last_instance = None
+    TracedDeadlineBoundedResolverV53.last_instance = None
+    DeadlineBoundedParallelHedgedResolverV52.last_instance = None
+    ParallelHedgedBatchedBoundedResolverV41.last_instance = None
     v53.TracedDeadlineBoundedResolverV53 = TracedSharedTransportResolverTailfixV2
 
     run_error: BaseException | None = None
