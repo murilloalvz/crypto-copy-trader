@@ -89,6 +89,7 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
     original_v2_resolver = tailfix_v2.TracedSharedTransportResolverTailfixV2
     original_commit_lanes = tailfix_v1.CrossSourceTokenCommitLanes
     original_trace_class = v50.PumpSwapSequenceBarrierTraceV50
+    sqlite_before = sqlite_write_admission_snapshot()
 
     HardenedTracedSharedTransportResolverV3.last_instance = None
     V3CrossSourceTokenCommitLanes.last_instance = None
@@ -140,9 +141,16 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             else None
         )
         sqlite_snapshot = sqlite_write_admission_snapshot()
+        sqlite_resolution_delta = (
+            sqlite_snapshot.resolution_acquisitions - sqlite_before.resolution_acquisitions
+        )
 
         print(
             f"resolver_durable_mapping_writes={resolver_snapshot.durable_mapping_writes} "
+            f"mapping_sync_started={resolver_snapshot.mapping_sync_started} "
+            f"mapping_sync_admitted={resolver_snapshot.mapping_sync_admitted} "
+            f"mapping_sync_completed={resolver_snapshot.mapping_sync_completed} "
+            f"mapping_sync_inflight={resolver_snapshot.mapping_sync_inflight} "
             f"current_store_hits={resolver_snapshot.current_store_hits} "
             f"historical_store_hits={resolver_snapshot.historical_store_hits} "
             f"network_resolutions={resolver_snapshot.network_resolutions} "
@@ -173,7 +181,8 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             f"{v19._latency_summary_ms(list(resolver_snapshot.pool_lock_hold_seconds))}"
         )
         print(
-            f"sqlite_resolution_acquisitions={sqlite_snapshot.resolution_acquisitions} "
+            f"sqlite_resolution_acquisitions_total={sqlite_snapshot.resolution_acquisitions} "
+            f"sqlite_resolution_acquisitions_run_delta={sqlite_resolution_delta} "
             f"max_resolution_waiters={sqlite_snapshot.max_resolution_waiters}"
         )
         print(
@@ -217,20 +226,42 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
         )
 
         if run_error is None:
-            expected_writes = (
+            published_identities = (
                 resolver_snapshot.historical_store_hits
                 + resolver_snapshot.network_resolutions
             )
             if resolver_snapshot.event_loop_store_calls != 0:
                 raise RuntimeError("tailfix v3 observed resolver SQLite work on the event loop")
-            if resolver_snapshot.durable_mapping_writes != expected_writes:
+
+            # Publication safety is the invariant that matters scientifically: every identity that
+            # became visible to normalization must have a completed durable mapping write first.
+            # A write may legitimately complete after its awaiting coroutine is cancelled at the
+            # frozen deadline; such a write is durable but was never published in this run.
+            if resolver_snapshot.mapping_sync_completed < published_identities:
                 raise RuntimeError(
-                    "tailfix v3 durable mapping accounting mismatch: every historical/network "
-                    "identity must be durable before publication"
+                    "tailfix v3 durable mapping publication invariant violated: published identity "
+                    "without a completed durable write"
                 )
-            if sqlite_snapshot.resolution_acquisitions != resolver_snapshot.durable_mapping_writes:
+            if resolver_snapshot.mapping_sync_completed > resolver_snapshot.mapping_sync_admitted:
+                raise RuntimeError("tailfix v3 mapping sync completion exceeded admitted writes")
+            if resolver_snapshot.mapping_sync_admitted > resolver_snapshot.mapping_sync_started:
+                raise RuntimeError("tailfix v3 mapping sync admission exceeded started writes")
+            if resolver_snapshot.mapping_sync_inflight < 0:
+                raise RuntimeError("tailfix v3 mapping sync inflight accounting became negative")
+
+            # The global gate increments immediately before the resolver thread records its local
+            # admitted counter. At snapshot time an in-flight worker can therefore make the global
+            # delta exceed the local admitted count by at most the number of local in-flight writes.
+            if sqlite_resolution_delta < resolver_snapshot.mapping_sync_admitted:
                 raise RuntimeError(
-                    "tailfix v3 resolution-priority admission accounting mismatch"
+                    "tailfix v3 resolution-priority admission undercount: local admitted write was "
+                    "not observed by the global gate"
+                )
+            if sqlite_resolution_delta > (
+                resolver_snapshot.mapping_sync_admitted + resolver_snapshot.mapping_sync_inflight
+            ):
+                raise RuntimeError(
+                    "tailfix v3 resolution-priority admission overcount beyond in-flight tolerance"
                 )
             if lane_snapshot.pump_workers != V3_PUMP_COMMIT_WORKERS:
                 raise RuntimeError("tailfix v3 Pump commit lane capacity mismatch")
