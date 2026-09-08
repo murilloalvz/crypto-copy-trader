@@ -320,6 +320,17 @@ class ReadyAssetScheduler(Generic[T]):
     async def get_ready(self) -> ScheduledAssetWork[T]:
         return await self._ready.get()
 
+    def requeue_ready_nowait(self, work: ScheduledAssetWork[T]) -> None:
+        """Put a retrieved ready item back without changing causal scheduler state.
+
+        This is used only by the V9 class multiplexer when a fairness turn selects audit work
+        after both queues become ready in the same event-loop turn. The queue bookkeeping is
+        balanced as one get/task-done followed by one put; the asset cursor is untouched.
+        """
+
+        self._ready.task_done()
+        self._ready.put_nowait(work)
+
     def ready_task_done(self) -> None:
         self._ready.task_done()
 

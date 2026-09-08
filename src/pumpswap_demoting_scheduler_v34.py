@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Callable, Generic, TypeVar
 
-from src.pumpswap_ready_scheduler import ReadyAssetScheduler
+from src.pumpswap_ready_scheduler import ReadyAssetScheduler, ScheduledAssetWork
 
 
 T = TypeVar("T")
@@ -30,6 +30,7 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
         super().__init__()
         self._should_remain_stateful = should_remain_stateful
         self._demoted_finalizer_acks: set[tuple[str, int]] = set()
+        self._demoted_audit_handler: Callable[[ScheduledAssetWork[T]], None] | None = None
         self.demoted_pending_jobs = 0
         self.demoted_pending_tickets = 0
         self.demotion_wait_seconds: list[float] = []
@@ -38,6 +39,23 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
     @property
     def demoted_finalizer_acks_pending(self) -> int:
         return len(self._demoted_finalizer_acks)
+
+    def set_demoted_audit_handler(
+        self,
+        handler: Callable[[ScheduledAssetWork[T]], None] | None,
+    ) -> None:
+        """Route proven continuation payloads to an audit-only consumer.
+
+        The default remains the historical v34/v51 behavior: demoted payloads enter the shared
+        ready queue and are acknowledged by the finalizer. Tailfix v9 installs a separate handler
+        only after construction and before any reservation is admitted. In that mode the stateful
+        ticket is consumed immediately after the proof, while the payload remains available to a
+        mandatory audit consumer outside the stateful dependency queue.
+        """
+
+        if self._pending or self._submitted_reservations:
+            raise RuntimeError("cannot change demoted audit handling after scheduler admission")
+        self._demoted_audit_handler = handler
 
     def _demote_proven_pending(self) -> None:
         selected: list[tuple[int, object]] = []
@@ -52,19 +70,35 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
         affected_assets: set[str] = set()
         now = time.monotonic()
         for pending_id, pending in selected:
-            current = self._pending.pop(pending_id, None)
+            current = self._pending.get(pending_id)
             if current is None:
                 continue
+
+            key = self._reservation_key(current.reservation)
+            if key not in self._submitted_reservations:
+                raise RuntimeError("pending reservation missing submitted state during demotion")
+
+            audit_work = ScheduledAssetWork(
+                payload=current.payload,
+                reservation=current.reservation,
+                waiter_started_monotonic=current.waiter_started_monotonic,
+                dependency_ready_monotonic=now,
+                ready_queue_entered_monotonic=now,
+                blocking_assets=current.blocking_assets,
+            )
+            if self._demoted_audit_handler is not None:
+                # Queue admission is deliberately performed before consuming the causal ticket.
+                # A full/failed audit queue therefore fails closed instead of silently releasing
+                # stateful successors while losing the required continuation evidence.
+                self._demoted_audit_handler(audit_work)
+
+            self._pending.pop(pending_id, None)
             self._remove_pending_indexes(pending_id, current)
             for asset in current.blocking_assets:
                 self._waiting_by_asset[asset] = max(
                     0, self._waiting_by_asset.get(asset, 0) - 1
                 )
             self._active_waits.pop(pending_id, None)
-
-            key = self._reservation_key(current.reservation)
-            if key not in self._submitted_reservations:
-                raise RuntimeError("pending reservation missing submitted state during demotion")
             self._submitted_reservations.discard(key)
 
             for asset, ticket in current.reservation.tickets:
@@ -80,20 +114,23 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
                 affected_assets.add(asset)
                 self.demoted_pending_tickets += 1
 
-            self._demoted_finalizer_acks.add(key)
+            if self._demoted_audit_handler is None:
+                self._demoted_finalizer_acks.add(key)
             self.demoted_pending_jobs += 1
             self.demotion_wait_seconds.append(
                 max(0.0, now - current.waiter_started_monotonic)
             )
 
-            # Preserve evidence: the payload must still traverse the normal v27-aware finalizer,
-            # which now only appends continuation audit and returns the canonical episode hit.
-            self._enqueue_ready(
-                current.payload,
-                current.reservation,
-                waiter_started_monotonic=current.waiter_started_monotonic,
-                blocking_assets=current.blocking_assets,
-            )
+            if self._demoted_audit_handler is None:
+                # Preserve the historical v34/v51 path when no split audit consumer is installed.
+                # The v9 path intentionally omits this enqueue: audit work is already held by the
+                # separate handler and must not occupy the stateful ready queue.
+                self._enqueue_ready(
+                    current.payload,
+                    current.reservation,
+                    waiter_started_monotonic=current.waiter_started_monotonic,
+                    blocking_assets=current.blocking_assets,
+                )
 
         # Consume only contiguous skipped tickets. Any earlier stateful predecessor still controls
         # the cursor, so later state-mutating work cannot overtake it.

@@ -26,6 +26,8 @@ Este arquivo é o **source of truth operacional e científico atual** do projeto
 - Tailfix v4: persistence drain fixed live, but run failed 10/11 on PumpSwap causal latency due normalization/single-flight amplification
 - Tailfix v5: **failed live on unchanged global-prefix HOL; retained as base**
 - Tailfix v6: **active structural correction; causal per-asset partial-order admission implemented/tests required before live**
+- Tailfix v8: **live failed under a different high-load profile; authoritative writer admission was insufficient**
+- Tailfix v9: **active structural correction; proven demotion is acknowledged causally and audited off the stateful ready queue**
 - official Pump/PumpSwap p95 gate: **5s unchanged**
 - preventive causal-stage warning: **4s p95**
 - V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
@@ -234,6 +236,17 @@ groups canonical affected-token readback for batches with distinct transaction k
 transaction keys retain per-item readback for replay correctness. Continuation/audit persistence is
 not mixed into this authoritative queue.
 
+### Tailfix V9 — proven-demotion causal acknowledgement
+
+V8 proved the remaining tail had moved after submit: 913 pending jobs were proven demoted, but the
+V34/V42/V51 scheduler still put those continuation payloads into the shared stateful ready queue
+for an audit/finalizer acknowledgement. V9 keeps the exact proof and per-asset ticket ordering, but
+routs proven demoted payloads to a bounded audit-only queue multiplexed by the existing finalizer.
+Their causal tickets are consumed immediately; later state-changing work cannot be blocked by
+audit-only queueing. The existing V27
+continuation writer, canonical-hit accounting, replay and fail-closed audit behavior remain active.
+Ambiguous, ready, running and state-changing work remains on the original causal path.
+
 ### Deterministic V5/V6 requirements before live
 
 Tests must prove:
@@ -362,11 +375,11 @@ These remain isolated from active Solana systems/V68 validation.
 
 ## Immediate next action
 
-1. Require the final V6 head to be CI-green after all tests/docs/context changes.
-2. Audit V6 diff to confirm detector/original V68/pacing/economic files remain untouched.
-3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v6.py`.
+1. Require the final V9 head to be CI-green after all tests/docs/context changes.
+2. Audit the V9 diff to confirm detector/original V68/pacing/economic files remain untouched.
+3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v9.py`.
 4. Do **not** run V68 economics yet.
 5. Accept systems only on exact classification `PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`.
-6. Accept V6 only with official 11/11 PASS, no V5 preventive warning, and nonzero partial-order graph evidence with no invariant failure.
-7. If ready-queue p95 remains >=4s after global-prefix removal, evaluate a separate bounded multi-finalizer design with per-asset FIFO and same-token proofs. Do not raise workers before that evidence.
-8. If V6 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.
+6. Accept V9 only with official 11/11 PASS, no V5 preventive warning, nonzero partial-order graph evidence, zero demoted-audit deadline backlog, and no invariant failure.
+7. If dependency p95 remains high after causal demotion isolation, evaluate bounded WIP/admission pressure using the live queue clocks; do not raise workers or relax ordering.
+8. If V9 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.

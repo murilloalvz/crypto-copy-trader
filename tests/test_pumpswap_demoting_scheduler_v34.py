@@ -92,6 +92,40 @@ class DemotingReadyAssetSchedulerV34Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [payload.name for payload in followers])
         self.assertEqual(scheduler.demoted_finalizer_acks_pending, 0)
 
+    async def test_split_audit_lane_releases_long_continuation_burst_without_ready_hol(self):
+        audit = []
+        scheduler = DemotingReadyAssetSchedulerV34[_Payload](
+            should_remain_stateful=lambda payload: payload.stateful
+        )
+        scheduler.set_demoted_audit_handler(audit.append)
+        opener = _Payload("opener")
+        followers = [_Payload(f"continuation-{index}") for index in range(100)]
+        successor = _Payload("later-stateful")
+        reservations = [scheduler.reserve(("hot",)) for _ in range(102)]
+
+        scheduler.submit(opener, reservations[0])
+        for payload, reservation in zip(followers, reservations[1:101]):
+            scheduler.submit(payload, reservation)
+        scheduler.submit(successor, reservations[101])
+
+        ready_opener = await asyncio.wait_for(scheduler.get_ready(), timeout=0.1)
+        for payload in followers:
+            payload.stateful = False
+        await scheduler.complete(ready_opener.reservation)
+        scheduler.ready_task_done()
+
+        self.assertEqual(len(audit), 100)
+        self.assertEqual([item.payload.name for item in audit], [item.name for item in followers])
+        self.assertEqual(scheduler.ready_backlog(), 1)
+        self.assertEqual(scheduler.waiting_backlog(), 0)
+        self.assertEqual(scheduler.demoted_finalizer_acks_pending, 0)
+
+        ready_successor = await asyncio.wait_for(scheduler.get_ready(), timeout=0.1)
+        self.assertEqual(ready_successor.payload.name, "later-stateful")
+        await scheduler.complete(ready_successor.reservation)
+        scheduler.ready_task_done()
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+
     async def test_ambiguous_pending_work_remains_stateful(self):
         scheduler = DemotingReadyAssetSchedulerV34[_Payload](
             should_remain_stateful=lambda payload: payload.stateful
@@ -151,6 +185,68 @@ class DemotingReadyAssetSchedulerV34Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(later_ready.payload.name, "later")
         await scheduler.complete(later_ready.reservation)
         self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+
+    async def test_split_multi_asset_demotion_preserves_other_asset_predecessor(self):
+        audit = []
+        scheduler = DemotingReadyAssetSchedulerV34[_Payload](
+            should_remain_stateful=lambda payload: payload.stateful
+        )
+        scheduler.set_demoted_audit_handler(audit.append)
+        a0 = _Payload("a0")
+        b0 = _Payload("b0")
+        continuation = _Payload("continuation")
+        later = _Payload("later")
+        ra0 = scheduler.reserve(("A",))
+        rb0 = scheduler.reserve(("B",))
+        rcont = scheduler.reserve(("A", "B"))
+        rlater = scheduler.reserve(("A", "B"))
+        scheduler.submit(a0, ra0)
+        scheduler.submit(b0, rb0)
+        scheduler.submit(continuation, rcont)
+        scheduler.submit(later, rlater)
+
+        ready_a = scheduler._ready.get_nowait()
+        ready_b = scheduler._ready.get_nowait()
+        scheduler.ready_task_done()
+        scheduler.ready_task_done()
+
+        continuation.stateful = False
+        await scheduler.complete(ready_a.reservation)
+        self.assertEqual([item.payload.name for item in audit], ["continuation"])
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+
+        await scheduler.complete(ready_b.reservation)
+        later_ready = scheduler._ready.get_nowait()
+        scheduler.ready_task_done()
+        self.assertEqual(later_ready.payload.name, "later")
+        await scheduler.complete(later_ready.reservation)
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 0)
+
+    async def test_split_audit_admission_failure_is_fail_closed(self):
+        def reject_audit(_item):
+            raise RuntimeError("audit queue full")
+
+        scheduler = DemotingReadyAssetSchedulerV34[_Payload](
+            should_remain_stateful=lambda payload: payload.stateful
+        )
+        scheduler.set_demoted_audit_handler(reject_audit)
+        opener = _Payload("opener")
+        follower = _Payload("follower")
+        opener_reservation = scheduler.reserve(("hot",))
+        follower_reservation = scheduler.reserve(("hot",))
+        scheduler.submit(opener, opener_reservation)
+        scheduler.submit(follower, follower_reservation)
+
+        ready_opener = await scheduler.get_ready()
+        follower.stateful = False
+        with self.assertRaisesRegex(RuntimeError, "audit queue full"):
+            await scheduler.complete(ready_opener.reservation)
+        scheduler.ready_task_done()
+
+        self.assertEqual(scheduler.waiting_backlog(), 1)
+        self.assertEqual(scheduler.ready_backlog(), 0)
+        self.assertEqual(scheduler.snapshot().total_outstanding_tickets, 2)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,7 @@ async def run_smoke_v19(
     pump_prepare_workers: int = 4,
     stateful_only_finalize: bool = False,
     pumpswap_reservation_mode: str = "global_prefix",
+    pumpswap_demoted_audit_split: bool = False,
 ) -> ThreadedWriterDiagnostics:
     """Run the unified latency smoke with early conservative PumpSwap reservations.
 
@@ -178,6 +179,13 @@ async def run_smoke_v19(
     in the per-asset scheduler, so the cursor remembers them but later stateful work still
     cannot overtake an earlier stateful predecessor. All actual Pump/PumpSwap trigger
     commits continue to share the same one-thread executor.
+
+    ``pumpswap_demoted_audit_split`` is the V9 structural correction. Once the existing v34 proof
+    establishes that a pending PumpSwap payload is continuation-only, its per-asset stateful ticket
+    is consumed immediately and the payload is handed to a bounded audit-only queue. The existing
+    finalizer task multiplexes that queue with causal ready work, preserving the v27 continuation
+    writer and canonical hit handling without allowing audit work to hold a later state-changing
+    ticket in the stateful ready queue.
     """
 
     if pumpswap_prepare_submitters <= 0 or pumpswap_prepare_executor_workers <= 0:
@@ -205,9 +213,17 @@ async def run_smoke_v19(
     pumpswap_queue: asyncio.Queue[QueuedNotification] = asyncio.Queue(maxsize=queue_size)
     pumpswap_reservation_hints: asyncio.Queue[EarlyReservationHint] = asyncio.Queue()
     pumpswap_prepare_queue: asyncio.Queue[TimedPumpSwapCompletion] = asyncio.Queue()
+    pumpswap_demoted_audit_queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
     scheduler: ReadyAssetScheduler[PreparedTimedPumpSwapWork | SkipTimedPumpSwapWork] = (
         ReadyAssetScheduler()
     )
+    if pumpswap_demoted_audit_split:
+        set_demoted_audit_handler = getattr(scheduler, "set_demoted_audit_handler", None)
+        if set_demoted_audit_handler is None:
+            raise RuntimeError(
+                "demoted audit split requires the proof-based demotion scheduler"
+            )
+        set_demoted_audit_handler(pumpswap_demoted_audit_queue.put_nowait)
     global last_pumpswap_partial_order_coordinator_v6
     partial_order_coordinator = (
         PumpSwapPartialOrderCoordinatorV6(scheduler)
@@ -249,7 +265,6 @@ async def run_smoke_v19(
         if offload_sync_radar
         else None
     )
-
     received: Counter[str] = Counter()
     enqueued: Counter[str] = Counter()
     dropped: Counter[str] = Counter()
@@ -297,6 +312,8 @@ async def run_smoke_v19(
     pumpswap_post_finalize_seconds: list[float] = []
     pumpswap_compute_service_seconds: list[float] = []
     pumpswap_pipeline_end_to_end_seconds: list[float] = []
+    pumpswap_demoted_audit_queue_wait_seconds: list[float] = []
+    pumpswap_demoted_audit_service_seconds: list[float] = []
     hol_diagnostics = PumpSwapHOLDiagnosticsV7()
 
     pumpswap_transaction_read_seconds: list[float] = []
@@ -321,6 +338,8 @@ async def run_smoke_v19(
     pump_trigger_commits = 0
     pumpswap_no_trigger_elisions = 0
     pumpswap_no_evidence_elisions = 0
+    pumpswap_demoted_audit_in_service = False
+    pumpswap_demoted_audit_pending_at_deadline = 0
 
     def handle_radar_result(source: str, result) -> None:
         nonlocal enrichment_admitted, flow30_total, wallets_total, risk_missing
@@ -907,18 +926,106 @@ async def run_smoke_v19(
             finally:
                 pumpswap_prepare_queue.task_done()
 
-    async def pumpswap_finalize_worker() -> None:
-        nonlocal no_new_evidence_skips
-        while time.monotonic() < deadline:
+    # This is a scheduling fairness bound, not extra capacity: both classes still use the
+    # existing PumpSwap finalizer task and its existing one-thread sync executor. It prevents an
+    # audit backlog from starving stateful work while also preventing a sustained stateful stream
+    # from leaving mandatory continuation evidence unserved forever.
+    demoted_audit_stateful_burst_limit = 32
+    demoted_audit_stateful_burst = 0
+
+    async def next_pumpswap_work() -> tuple[bool, object]:
+        """Multiplex the existing finalizer between causal and proven-audit work."""
+
+        nonlocal demoted_audit_stateful_burst
+        if not pumpswap_demoted_audit_split:
             remaining = deadline - time.monotonic()
+            return False, await asyncio.wait_for(
+                scheduler.get_ready(), timeout=min(0.5, max(0.001, remaining))
+            )
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+
+            audit_available = not pumpswap_demoted_audit_queue.empty()
+            stateful_available = scheduler.ready_backlog() > 0
+            if stateful_available and (
+                not audit_available
+                or demoted_audit_stateful_burst < demoted_audit_stateful_burst_limit
+            ):
+                work = await scheduler.get_ready()
+                demoted_audit_stateful_burst += 1
+                return False, work
+
+            if audit_available:
+                demoted_audit_stateful_burst = 0
+                return True, pumpswap_demoted_audit_queue.get_nowait()
+
+            ready_task = asyncio.create_task(scheduler.get_ready())
+            audit_task = asyncio.create_task(pumpswap_demoted_audit_queue.get())
             try:
-                work = await asyncio.wait_for(
-                    scheduler.get_ready(), timeout=min(0.5, remaining)
+                done, pending = await asyncio.wait(
+                    {ready_task, audit_task},
+                    timeout=min(0.5, remaining),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+            except BaseException:
+                for task in (ready_task, audit_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(ready_task, audit_task, return_exceptions=True)
+                raise
+            if not done:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                raise asyncio.TimeoutError
+
+            # If both become available in the same event-loop turn, preserve causal priority until
+            # the bounded stateful burst is reached. On the fairness turn, put the retrieved
+            # stateful item back with balanced queue bookkeeping and serve the audit item.
+            if ready_task in done:
+                work = ready_task.result()
+                if audit_task in done:
+                    if demoted_audit_stateful_burst >= demoted_audit_stateful_burst_limit:
+                        scheduler.requeue_ready_nowait(work)
+                        demoted_audit_stateful_burst = 0
+                        return True, audit_task.result()
+                    audit_work = audit_task.result()
+                    pumpswap_demoted_audit_queue.task_done()
+                    pumpswap_demoted_audit_queue.put_nowait(audit_work)
+                else:
+                    audit_task.cancel()
+                    await asyncio.gather(audit_task, return_exceptions=True)
+                demoted_audit_stateful_burst += 1
+                return False, work
+
+            work = audit_task.result()
+            ready_task.cancel()
+            try:
+                await asyncio.gather(ready_task, return_exceptions=True)
+            except BaseException:
+                # The audit item was already removed from the bounded queue. Restore its
+                # unfinished-task accounting before propagating cancellation so deadline cleanup
+                # reports it as pending rather than silently losing evidence.
+                pumpswap_demoted_audit_queue.task_done()
+                pumpswap_demoted_audit_queue.put_nowait(work)
+                raise
+            demoted_audit_stateful_burst = 0
+            return True, work
+
+    async def pumpswap_finalize_worker() -> None:
+        nonlocal no_new_evidence_skips, pumpswap_demoted_audit_in_service
+        while time.monotonic() < deadline:
+            try:
+                is_demoted_audit, work = await next_pumpswap_work()
             except asyncio.TimeoutError:
                 continue
 
             started_finalize = time.monotonic()
+            if is_demoted_audit:
+                pumpswap_demoted_audit_in_service = True
             try:
                 payload = work.payload
                 item = payload.timed.completed
@@ -935,18 +1042,62 @@ async def run_smoke_v19(
                         work.dependency_ready_monotonic - work.waiter_started_monotonic,
                     )
                 )
-                pumpswap_ready_queue_wait_seconds.append(
-                    max(0.0, started_finalize - work.ready_queue_entered_monotonic)
-                )
                 pumpswap_finalize_wait_seconds.append(
                     started_finalize - item.enqueued_monotonic
-                )
-                is_demoted = bool(
-                    getattr(scheduler, "is_demoted_work", lambda _: False)(work)
                 )
                 dependency_wait = max(
                     0.0,
                     work.dependency_ready_monotonic - work.waiter_started_monotonic,
+                )
+
+                if is_demoted_audit:
+                    queue_wait = max(
+                        0.0,
+                        started_finalize - work.ready_queue_entered_monotonic,
+                    )
+                    pumpswap_demoted_audit_queue_wait_seconds.append(queue_wait)
+                    result = await _run_sync_stage(
+                        finalize_prepared_pumpswap_radar_v5,
+                        payload.prepared,
+                        acquisition_run_key=run_key,
+                        executor=radar_sync_executor,
+                    )
+                    finalized = time.monotonic()
+                    pumpswap_demoted_audit_service_seconds.append(
+                        max(0.0, finalized - started_finalize)
+                    )
+                    pumpswap_finalize_service_seconds.append(
+                        max(0.0, finalized - started_finalize)
+                    )
+                    pumpswap_episode_assign_seconds.append(
+                        result.telemetry.episode_assign_seconds
+                    )
+                    handle_radar_result("pumpswap", result)
+                    finished = time.monotonic()
+                    pumpswap_post_finalize_seconds.append(
+                        max(0.0, finished - finalized)
+                    )
+                    pumpswap_compute_service_seconds.append(
+                        max(0.0, finished - started_finalize)
+                    )
+                    pumpswap_pipeline_end_to_end_seconds.append(
+                        max(0.0, finished - item.enqueued_monotonic)
+                    )
+                    hol_diagnostics.record(
+                        blocking_assets=work.blocking_assets,
+                        dependency_wait_seconds=dependency_wait,
+                        ready_capacity_wait_seconds=0.0,
+                        writer_result_wait_seconds=payload.timed.writer_result_wait_seconds,
+                        finalizer_occupied_seconds=max(0.0, finalized - started_finalize),
+                        is_demoted=True,
+                    )
+                    continue
+
+                pumpswap_ready_queue_wait_seconds.append(
+                    max(0.0, started_finalize - work.ready_queue_entered_monotonic)
+                )
+                is_demoted = bool(
+                    getattr(scheduler, "is_demoted_work", lambda _: False)(work)
                 )
                 ready_capacity_wait = max(
                     0.0, started_finalize - work.ready_queue_entered_monotonic
@@ -1004,10 +1155,16 @@ async def run_smoke_v19(
                     is_demoted=is_demoted,
                 )
             except Exception:
-                worker_errors["pumpswap_finalize"] += 1
+                worker_errors[
+                    "pumpswap_demoted_audit" if is_demoted_audit else "pumpswap_finalize"
+                ] += 1
                 raise
             finally:
-                scheduler.ready_task_done()
+                if is_demoted_audit:
+                    pumpswap_demoted_audit_queue.task_done()
+                    pumpswap_demoted_audit_in_service = False
+                else:
+                    scheduler.ready_task_done()
 
     tasks = [
         asyncio.create_task(producer("pump"), name="producer-pump"),
@@ -1051,10 +1208,19 @@ async def run_smoke_v19(
                         raise exception
             await asyncio.sleep(0.1)
     finally:
+        if pumpswap_demoted_audit_split:
+            pumpswap_demoted_audit_pending_at_deadline = (
+                pumpswap_demoted_audit_queue.qsize()
+                + int(pumpswap_demoted_audit_in_service)
+            )
         for task in tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if pumpswap_demoted_audit_pending_at_deadline:
+            worker_errors["pumpswap_demoted_audit_deadline"] += (
+                pumpswap_demoted_audit_pending_at_deadline
+            )
         await scheduler.cancel_waiters()
         writer_diagnostics.final_writer_queue_size = writer.queue_size
         await writer.close(cancel_pending=True)
@@ -1134,6 +1300,7 @@ async def run_smoke_v19(
         f"'pumpswap_prepared_waiting_reservation': {ps_prepared_waiting_reservation}, "
         f"'pumpswap_no_evidence_waiting_reservation': {ps_no_evidence_waiting_reservation}, "
         f"'pumpswap_reservation_waiting_payload': {ps_reservation_waiting_payload}, "
+        f"'pumpswap_demoted_audit_pending_at_deadline': {pumpswap_demoted_audit_pending_at_deadline}, "
         f"'pumpswap_ready': {scheduler_snapshot.ready_backlog}, "
         f"'pumpswap_waiting': {scheduler_snapshot.waiting_backlog}"
         "} "
@@ -1246,6 +1413,14 @@ async def run_smoke_v19(
         f"pumpswap_pipeline_end_to_end_ms {_latency_summary_ms(pumpswap_pipeline_end_to_end_seconds)}"
     )
     print(
+        "pumpswap_demoted_audit_queue_wait_ms "
+        f"{_latency_summary_ms(pumpswap_demoted_audit_queue_wait_seconds)}"
+    )
+    print(
+        "pumpswap_demoted_audit_service_time_ms "
+        f"{_latency_summary_ms(pumpswap_demoted_audit_service_seconds)}"
+    )
+    print(
         f"pumpswap_radar_transaction_view_read_ms {_latency_summary_ms(pumpswap_transaction_read_seconds)}"
     )
     print(
@@ -1312,6 +1487,8 @@ async def run_smoke_v19(
         f"no_new_evidence_skips={no_new_evidence_skips} "
         f"no_trigger_elisions={pumpswap_no_trigger_elisions} "
         f"no_evidence_elisions={pumpswap_no_evidence_elisions} "
+        f"demoted_audit_split={pumpswap_demoted_audit_split} "
+        f"demoted_audit_pending_at_deadline={pumpswap_demoted_audit_pending_at_deadline} "
         f"stateful_only_finalize={stateful_only_finalize} "
         f"reservation_superset_violations={reservation_superset_violations}"
     )
@@ -1366,7 +1543,9 @@ async def run_smoke_v19(
         f"writer_queue_at_deadline={writer_diagnostics.final_writer_queue_size} "
         f"reservation_superset_violations={reservation_superset_violations} "
         f"offload_sync_radar={offload_sync_radar} split_pump_radar={split_pump_radar} "
-        f"stateful_only_finalize={stateful_only_finalize}"
+        f"stateful_only_finalize={stateful_only_finalize} "
+        f"demoted_audit_split={pumpswap_demoted_audit_split} "
+        f"demoted_audit_pending_at_deadline={pumpswap_demoted_audit_pending_at_deadline}"
     )
     print(
         f"pumpswap_writer_queue_wait_ms {_latency_summary_ms(writer_diagnostics.writer_queue_wait_seconds)}"
@@ -1394,8 +1573,10 @@ async def run_smoke_v19(
         "before SQLite completion, while detector preparation still waits for the authoritative "
         "persist result. Duplicate/no-new-evidence items traverse FIFO as no-op releases unless "
         "stateful-only finalization is enabled, in which case proven no-ops are elided from the "
-        "stateful dependency graph. Any canonical affected asset missing from the early superset "
-        "is fatal."
+        "stateful dependency graph. V9 additionally routes proven continuation payloads to a "
+        "separate bounded audit lane; the audit queue is mandatory and any deadline backlog is "
+        "reported as missingness rather than dropped. Any canonical affected asset missing from "
+        "the early superset is fatal."
     )
 
     return writer_diagnostics
