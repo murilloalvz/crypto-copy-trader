@@ -6,7 +6,9 @@ from typing import Iterable
 from src.market_observation_store import StoredMarketTrade
 
 
-OPPORTUNITY_WALLET_CONVERGENCE_VERSION = "opportunity_wallet_convergence_v60"
+OPPORTUNITY_WALLET_CONVERGENCE_VERSION = (
+    "opportunity_wallet_convergence_v60_1_t0_anchored_dual_clock"
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,7 @@ class WalletConvergenceEvidenceV60:
     method_version: str
     acquisition_run_key: str
     token_mint: str
+    market_anchor_time: int
     as_of: int
     window_seconds: int
     cohort_key: str
@@ -71,21 +74,30 @@ def build_wallet_convergence_evidence_v60(
     cohort_key: str,
     members: Iterable[FrozenWalletCohortMemberV60],
     stored_trades: Iterable[StoredMarketTrade],
+    market_anchor_time: int | None = None,
 ) -> WalletConvergenceEvidenceV60:
     """Describe pre-frozen wallet participation after a market-first episode exists.
 
-    This function never detects an opportunity, never ranks wallets, and never reads PnL.
-    Cohort membership must have been frozen strictly before ``as_of``. Market rows must have
-    both chain time and knowledge time at or before ``as_of``; an older chain event discovered
-    later cannot become evidence for the earlier episode.
+    ``market_anchor_time`` controls the market window and the cohort-membership freeze boundary;
+    ``as_of`` controls what was actually known. For prospective episode research, the intended
+    call is episode T0 as the market anchor plus research_decision_as_of as the knowledge cutoff.
+
+    This prevents two subtle leaks when the decision occurs after the episode trigger:
+    - a wallet enrolled between T0 and the research decision cannot retroactively join the cohort;
+    - a post-T0 trade cannot enter the pre-T0 market window merely because it was known by decision.
+
+    When ``market_anchor_time`` is omitted it defaults to ``as_of`` for backward compatibility.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     cohort = _required(cohort_key, "cohort_key")
     cutoff = int(as_of)
-    if cutoff < 0:
-        raise ValueError("as_of must be non-negative")
+    anchor = cutoff if market_anchor_time is None else int(market_anchor_time)
+    if cutoff < 0 or anchor < 0:
+        raise ValueError("market and knowledge timestamps must be non-negative")
+    if anchor > cutoff:
+        raise ValueError("market_anchor_time cannot be after as_of")
     if int(window_seconds) <= 0:
         raise ValueError("window_seconds must be positive")
     window = int(window_seconds)
@@ -100,16 +112,16 @@ def build_wallet_convergence_evidence_v60(
     eligible_members = {
         address: member
         for address, member in by_wallet.items()
-        if member.cohort_key == cohort and int(member.frozen_at) < cutoff
+        if member.cohort_key == cohort and int(member.frozen_at) < anchor
     }
 
-    lower = cutoff - window
+    lower = anchor - window
     market_rows = [
         item
         for item in stored_trades
         if item.acquisition_run_key == run_key
         and item.observation.token_mint == mint
-        and lower < int(item.observation.chain_time) <= cutoff
+        and lower < int(item.observation.chain_time) <= anchor
         and int(item.observation.observed_at) <= cutoff
     ]
     market_rows.sort(
@@ -157,11 +169,11 @@ def build_wallet_convergence_evidence_v60(
     if known_wallet_rows:
         cohort_known_share = 100.0 * len(cohort_rows) / len(known_wallet_rows)
 
-    buy_offsets = [int(item.observation.chain_time) - cutoff for item in buy_rows]
+    buy_offsets = [int(item.observation.chain_time) - anchor for item in buy_rows]
 
     flags: list[str] = []
     if not eligible_members:
-        flags.append("no_cohort_members_frozen_before_as_of")
+        flags.append("no_cohort_members_frozen_before_market_anchor")
     if market_rows and len(known_wallet_rows) != len(market_rows):
         flags.append("partial_market_wallet_identity_coverage")
     if cohort_wallets and not signature_coverage_complete:
@@ -175,6 +187,7 @@ def build_wallet_convergence_evidence_v60(
         method_version=OPPORTUNITY_WALLET_CONVERGENCE_VERSION,
         acquisition_run_key=run_key,
         token_mint=mint,
+        market_anchor_time=anchor,
         as_of=cutoff,
         window_seconds=window,
         cohort_key=cohort,
