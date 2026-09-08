@@ -7,52 +7,49 @@ Este arquivo é o **source of truth operacional e científico atual** do projeto
 - Repositório: `murilloalvz/crypto-copy-trader`
 - Branch científica base: `feat/exit-engine-v1`
 - Head científico canônico pré-hardening: `94017d7d96231a5bcd05a6d2a69d8d2ee90e231c`
-- Branch systems ativa: `fix/pumpswap-persistence-throughput-v4`
+- Branch systems ativa: `fix/pumpswap-causal-throughput-v5`
 - Modo: **PAPER / RESEARCH / READ ONLY**
 - Tese: **market-first Opportunity Intelligence / Opportunity Engine**
 - Laboratório principal: **Solana**
-- Segundo laboratório em preparação: **Robinhood Chain / Pons v2**
-- Fluxo: `market -> radar -> causal episode -> enrichment -> research decision -> forward outcomes -> prospective validation -> execution research -> shadow`
-- Detector Solana permanece congelado.
-- Wallet é evidência pós-episódio, nunca whitelist de aquisição.
+- Detector Solana: **FROZEN**
+- Wallet: evidência pós-episódio, nunca whitelist de aquisição
+- Fluxo oficial: `market -> radar -> causal episode -> enrichment -> research decision -> forward outcomes -> prospective validation -> execution research -> shadow`
 
-## Status executivo atual
+## Status executivo
 
 ### Sistemas / aquisição
 
-- v54 demand-only resolver admission: **accepted historical systems profile / PASS 11/11**
-- Tailfix v1: **cross-source token commit isolation implemented/tested**
-- Tailfix v2: **bounded shared RPC transport + decision release implemented/tested**
-- Tailfix v3: **LATENCY OBJECTIVE ACHIEVED LIVE, but systems gate 9/11 because persistence drain capacity failed**
-- Tailfix v4: **persistence throughput hardening implemented + tests/CI green before final context update / LIVE SYSTEMS VALIDATION NEXT**
-- detector thresholds: **FROZEN**
-- provider pacing: **650/1000/250ms frozen for current route research**
-- route-only research: **US$25 / 100 bps / 300-900-3600s**
+- v54 demand-only resolver admission: **historical accepted systems profile / PASS 11/11**
+- Tailfix v1: cross-source token commit isolation implemented/tested
+- Tailfix v2: bounded shared RPC transport + early decision release implemented/tested
+- Tailfix v3: resolver latency class fixed live, but run failed 9/11 on persistence drain capacity
+- Tailfix v4: persistence drain fixed live, but run failed 10/11 on PumpSwap causal latency due normalization/single-flight amplification
+- Tailfix v5: **active systems correction; deterministic implementation/tests in progress/CI before live required**
 - official Pump/PumpSwap p95 gate: **5s unchanged**
-- preventive latency warning: **4s per monitored causal stage**
-- preventive writer-pressure warning: **PumpSwap writer queue high-water >=80% of persistence-worker reservoir**
+- preventive causal-stage warning: **4s p95**
+- V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
+- provider pacing: **650/1000/250ms frozen** for current route research
+- route-only research: **US$25 / 100 bps / 300-900-3600s**
 
 ### Ciência econômica Solana
 
-- v48 Flow60 prospective holdout: **FAIL ECONOMIC HYPOTHESIS / CLOSED**
-- v55 Causal Early-Opportunity Discovery: **COMPLETE / CLEAN**
-- v55 selected rank #1: **`flow60_buy_share_pct`, favorable LOW, opposite HIGH**
+- v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
+- v55 causal discovery: **COMPLETE / CLEAN**
+- v55 rank #1: `flow60_buy_share_pct`, favorable LOW / opposite HIGH
 - v68 prospective Flow60 buy-share holdout: **IMPLEMENTED + PRE-REGISTERED / ECONOMIC VERDICT NOT OBTAINED**
-- profitable route-only opportunity-selection edge: **NOT YET ESTABLISHED**
+- profitable prospective route-only selection edge: **NOT YET ESTABLISHED**
 
-### v68 interpretation
-
-All attempted fresh v68 acquisitions that reached the relevant gate aborted **before forward economic collection** because the frozen systems acquisition path did not pass.
+All systems-aborted v68 attempts stopped before valid forward economic collection.
 
 Therefore:
 
-`V68 ECONOMIC HYPOTHESIS = NOT EVALUATED`
+`V68 ECONOMIC HYPOTHESIS = NOT_EVALUATED`
 
-Do not classify Flow60 buy-share as PASS/FAIL from an acquisition abort. Do not reuse a failed/partial acquisition key as a clean prospective cohort.
+Do not classify Flow60 buy-share as PASS/FAIL from a systems abort. Never reuse a failed/partial acquisition key as a clean prospective cohort.
 
 ## Frozen systems gate — 11/11
 
-All must pass in systems-sensitive acquisition runs:
+Every systems-sensitive acquisition must pass all:
 
 1. no worker/traceback errors
 2. drops = 0
@@ -68,173 +65,197 @@ All must pass in systems-sensitive acquisition runs:
 
 Never relax the 5s thresholds to rescue an experiment.
 
-## v54 accepted historical systems profile
+## Historical accepted v54 profile
 
-Canonical systems-only run:
-`route-research-systems-stability-20260907-54`
+Run: `route-research-systems-stability-20260907-54`
 
-- radar coverage 98.1%
+- coverage 98.1%
 - true backlog 1.913%
 - Pump p95 ~1.906s
 - PumpSwap p95 ~1.626s
-- systems 11/11
+- 11/11 PASS
 - zero worker errors / drops / hydration skips / reservation-superset violations
 
-This remains historical accepted evidence, not proof that every future/high-load acquisition is stable.
+This is historical evidence only; it does not guarantee future high-load acquisitions.
 
-## Tailfix v3 — live result and lesson
+## Tailfix v3 — latency fixed, throughput failed
 
-Protocol:
-`docs/pumpswap-latency-hardening-tailfix-v3-protocol-2026-09-08.md`
+Protocol: `docs/pumpswap-latency-hardening-tailfix-v3-protocol-2026-09-08.md`
 
-V3 changes:
+V3 moved pool-store lookup/write/reload off the asyncio event loop, retained same-pool single-flight until durable canonical identity, retained one physical SQLite writer, added `RESOLUTION > CAUSAL > AUDIT` admission, preserved bounded RPC transport and added causal-stage headroom telemetry.
 
-1. Resolver SQLite current/historical lookup, durable mapping write and canonical reload run off the asyncio event loop.
-2. Same-pool single-flight remains held until identity is durably written and canonically reloaded; no identity is published early.
-3. SQLite retains one physical writer with explicit `RESOLUTION > CAUSAL > AUDIT` admission.
-4. Tailfix v2 bounded RPC transport remains authoritative.
-5. Same-token cross-source serialization remains authoritative.
-6. Stage-by-stage latency decomposition and promotion-only 4.0s headroom warning were added.
-
-Fresh live v3 systems run on 2026-09-08:
+Fresh v3 live systems result:
 
 - PumpSwap received: 2,969
 - persistence completed: 2,559
 - radar processed: 2,551
-- radar coverage: **90.4% FAIL**
+- coverage: **90.4% FAIL**
 - true backlog: **9.597% FAIL**
 - Pump p95: **1.516s PASS**
-- PumpSwap pipeline p95: **1.894s PASS**
-- systems gate: **9/11**
-- writer queue at deadline: **224**
-- PumpSwap ingress backlog: 154
-- PumpSwap in-flight persistence: 256
-- writer batch avg size: 6.71 / 32
-- writer batch service p95: ~92.9ms
-- writer queue wait p95: ~929ms
-- global prefix normalization barrier p95: ~1.624s
-- reservation->submit p95: ~0.788s
-- submit->dependency-ready p95: ~1.586s
-- stateful ready queue p95: ~1.371s
-- demoted ready queue p95: ~1.518s
-- all monitored v3 latency stages <4s
+- PumpSwap p95: **1.894s PASS**
+- systems: **9/11**
+- writer queue at deadline: 224
+- all monitored V3 latency stages <4s
 - `event_loop_store_calls=0`
-- mapping sync started/admitted/completed = 243/243/243; inflight=0
-- transport-limit violations=0
+- mapping sync started/admitted/completed 243/243/243
+- transport violations=0
 - same-token overlap violations=0
-- reservation-superset violations=0
-- drops=0 / worker errors=0
+
+Interpretation: the latency class targeted by V3 was fixed; the remaining failure was sustained persistence drain capacity.
+
+## Tailfix v4 — throughput fixed, normalization latency failed
+
+Protocol: `docs/pumpswap-persistence-throughput-hardening-v4-protocol-2026-09-08.md`
+
+V4 added:
+
+- bounded SQLite resolution fairness: when causal work waits, at most one consecutive resolution grant goes first;
+- optimistic pool mapping insert-first fast path;
+- writer pressure instrumentation;
+- V3 latency headroom retained;
+- no detector/economic/RPC-worker/FIFO changes.
+
+Fresh v4 live systems result on 2026-09-08:
+
+- PumpSwap received / persisted / processed: **5,191 / 5,191 / 5,191**
+- Pump received / persisted / processed: **2,107 / 2,107 / 2,107**
+- coverage: **100.0% PASS**
+- true backlog: **0.000% PASS**
+- drops: 0
+- worker errors: 0
+- Pump p95: **2.463s PASS**
+- PumpSwap p95: **19.066s FAIL**
+- systems: **10/11**
+- normalization->reservation p95: ~17.421s
+- global prefix normalization barrier p95: ~17.412s
+- resolver pool-lock hold p95: ~4.439s
+- resolver durable mapping write p95: ~4.221s
+- SQLite resolution admission p95: ~3.566s
+- demand same-pool lock wait p95: ~14.934s
+- RPC decision p95: ~0.534s; capacity/transport violations=0
+- mapping writes: 560
+- pool mapping collision reads: **238 / 560 = 42.5%**
+- identity conflicts: 0
+- writer submitted/completed: 5,191 / 5,191
+- writer pending at close: 0
+- writer queue high-water: 222
+- writer result wait p95: ~2.030s
 
 Interpretation:
 
-**V3 fixed the latency class it targeted.** The remaining failure was sustained persistence drain capacity: the individual PumpSwap event path was healthy, but the system could not empty all accepted work before the frozen 120s deadline. Do not continue tuning resolver/RPC latency without new evidence.
+**V4 fixed the V3 throughput failure.** It did not fail because SQLite could not drain. It failed because the critical identity/normalization path accumulated repeated same-pool work and SQLite-resolution admission waits; strict ingress-order reservation then amplified a few slow predecessors into a ~17s global barrier.
 
-## Tailfix v4 — active systems gate
+The 42.5% pool-mapping collision rate with zero identity conflicts is consistent with repeated writes of already-present same identities. Code review identified two concrete sources: historical promotion before the per-pool single-flight lock and older queued notifications re-resolving identities learned later in the same run.
 
-Protocol:
-`docs/pumpswap-persistence-throughput-hardening-v4-protocol-2026-09-08.md`
+Do not tune the v4 fairness constant by trial and error. The active V5 removes redundant demand while preserving the v4 fairness rule.
 
-Main code:
-- `src/sqlite_write_admission.py`
-- `src/pumpswap_pool_mapping_fastpath_v4.py`
-- `src/pumpswap_writer_pressure_v4.py`
-- `unified_market_route_research_smoke_tailfix_v4.py`
-- `route_research_systems_stability_tailfix_v4.py`
+## Tailfix v5 — active causal-throughput hardening
 
-### What v4 changes
+Protocol: `docs/pumpswap-causal-throughput-hardening-v5-protocol-2026-09-08.md`
 
-1. **Bounded SQLite resolution fairness**: pool-identity writes remain higher priority, but when a causal writer is already waiting, at most one consecutive resolution write may go first before the causal writer gets a turn.
-2. **One physical SQLite writer remains invariant**. V4 does not create parallel SQLite writers.
-3. **Optimistic pool-mapping fast path**: fresh `(run_key,pool)` identity uses `INSERT OR IGNORE` first; replay/conflict SELECT runs only after a UNIQUE collision.
-4. Earliest `observed_at`, equal-time lexical tie-break, conflict auditing and durable-before-publication remain unchanged.
-5. **Writer-pressure telemetry** measures submissions, completions, pending work, queue high-water, queue-before-close and microbatch utilization.
-6. V3 latency headroom remains active.
-7. No detector, economics, pacing, FIFO, replay/as-of, worker-count or RPC-ceiling retuning.
+Main additions:
 
-### V4 preventive classifications
+- `src/pumpswap_normalization_resolver_v5.py`
+- `src/pumpswap_causal_normalization_v5.py`
+- `src/pumpswap_writer_headroom_v5.py`
+- `unified_market_route_research_smoke_tailfix_v5.py`
+- `route_research_systems_stability_tailfix_v5.py`
+- V5-specific deterministic tests
 
-`FAIL_TAILFIX_V4_UNCHANGED_11_GATE`
-- official frozen 11/11 failed;
-- no v68 allowed.
+### V5 fixes failure classes instead of tuning one threshold
 
-`HOLD_TAILFIX_V4_PREVENTIVE_HEADROOM`
-- 11/11 passed, but latency headroom or writer-pressure headroom is too thin/missing;
-- no v68 allowed.
+1. **Historical promotion is inside per-pool single-flight.** Concurrent notifications cannot all promote the same prior-run mapping independently.
+2. **Current-run durable identity may be reused as delayed knowledge.** If notification time is 120 and mapping becomes known at 130, the normalized event is persisted at `observed_at=130`, never 120. This prevents redundant re-resolution without lookahead/backdating.
+3. **Prior-run historical reuse stays strict.** A historical mapping observed after the notification cutoff is not reused as if it were already known.
+4. **CreatePool identity persistence becomes async/off-loop.** The remaining synchronous pool-store write in normalization is removed from the asyncio event loop.
+5. **V4 fairness stays unchanged.** V5 tests removal of redundant resolution demand instead of simultaneously changing the fairness knob.
+6. **Writer pressure becomes sustained evidence.** Queue high-water remains diagnostic, but promotion uses queue-depth p95, writer-result-wait p95 and complete drain.
+7. **One PumpSwap finalizer remains intentionally unchanged.** V4 ready-queue tails happened downstream of the ~17s normalization burst and are not yet proven to be an independent root cause. Do not increase finalizer workers preemptively.
 
-`PASS_TAILFIX_V4_11_GATE_WITH_LATENCY_AND_THROUGHPUT_HEADROOM`
-- official 11/11 passed;
-- every monitored causal latency stage p95 <4s;
-- writer-pressure report present;
-- writer queue high-water <80% of the PumpSwap persistence-worker reservoir;
-- this is the only v4 classification that may unlock a new fresh v68 acquisition.
+### Delayed-availability causal rule
 
-The writer-pressure rule is promotion-only engineering. It does not replace the official coverage/backlog/latency gates.
+For a current-run mapping learned later than an already queued notification:
 
-### V4 deterministic evidence
+`effective_event_observed_at = max(notification.observed_at, mapping.observed_at)`
 
-V4 tests cover:
+This means identity learned later can unblock old queued work only at the later availability timestamp. It cannot create evidence before the identity became known.
 
-- bounded resolution fairness and one active SQLite writer;
-- historical/default admission behavior preserved outside v4;
-- fresh mapping INSERT fast path;
-- earliest same-identity replay semantics;
-- conflicting identity audit/canonical replacement;
-- equal-time lexical tie-break;
-- writer submissions/completions/pending/batch telemetry;
-- v4 systems seam installation/restoration;
-- PASS/HOLD/FAIL promotion guard behavior.
+### V5 preventive classifications
 
-Latest implementation head before this context update:
-`a3c4da025f6a4e5623c088349f1b2e1a84a17abd`
+`FAIL_TAILFIX_V5_UNCHANGED_11_GATE`
+- frozen 11/11 failed;
+- V68 remains blocked.
 
-GitHub Actions compile + full unit-test suite: **SUCCESS**.
+`HOLD_TAILFIX_V5_PREVENTIVE_HEADROOM`
+- 11/11 passed but required preventive evidence is missing, at least one monitored causal stage p95 >=4s, sustained writer pressure is too high, writer result-wait p95 >=4s, or writer did not drain;
+- V68 remains blocked.
 
-The v4 diff from parent v3 head `e762171...` is systems-isolated: new systems/tests/docs plus deliberate `src/sqlite_write_admission.py` fairness support. The frozen detector and original v68 scientific files are unchanged.
+`PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`
+- 11/11 PASS;
+- all V3 monitored causal stages p95 <4s;
+- V5 resolver/coalescing evidence present;
+- writer queue-depth p95 <80% of persistence-worker reservoir;
+- writer result-wait p95 <4s;
+- writer fully drained;
+- only this exact classification can be considered for a fresh V68 acquisition.
+
+### Deterministic V5 requirements before live
+
+Tests must prove:
+
+- many concurrent historical same-pool requests -> one promotion;
+- many older queued same-pool requests -> one network resolution;
+- delayed current-run mapping reuse clamps observed availability forward;
+- prior-run future historical mapping is not looked ahead;
+- CreatePool identity is async + durable;
+- V5 seams restore after success and exception;
+- transient max queue spike alone does not HOLD;
+- sustained queue p95 does HOLD;
+- writer result-wait p95 >=4s does HOLD;
+- incomplete drain does HOLD;
+- official systems FAIL cannot be rescued;
+- missing preventive evidence causes HOLD;
+- full repository compile/tests green.
 
 ## v48 Flow60 prospective result — CLOSED
 
-Classification:
-`FAIL_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
+Classification: `FAIL_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
 
 Frozen hypothesis:
 - `flow60_event_count`
 - LOW<=25 / MID=26..47 / HIGH>47
 - primary 900s LOW vs HIGH
 
-Absolute Flow60 event count did not replicate prospectively. Do not retune bins/horizon or reuse the burned sample.
+Do not retune bins/horizon or reuse the burned sample.
 
-## v55 Causal Early-Opportunity Discovery — COMPLETE
+## v55 causal discovery — COMPLETE
 
-Fresh base:
-`route-research-early-opportunity-discovery-20260907-55`
+Fresh discovery rows=79; A=39 / B=40; lineage/causal audit clean.
 
-- rows=79; A=39 / B=40
-- causal/lineage audit clean
-- exactly one eligible primary 900s candidate advanced: `flow60_buy_share_pct`
+Exactly one candidate advanced:
+
+- feature `flow60_buy_share_pct`
 - LOW <=57.1429
 - MID <=65.7143
 - HIGH >65.7143
-- favorable=LOW / opposite=HIGH
+- favorable LOW / opposite HIGH
 
-The v55 discovery sample is burned for validation.
+The v55 sample is burned for validation.
 
-## v68 Prospective Flow60 Buy-Share Holdout — ECONOMIC GATE STILL OPEN
-
-Protocol:
-`docs/route-research-v68-prospective-flow60-buy-share-holdout-protocol-2026-09-08.md`
+## v68 prospective Flow60 Buy-Share — ECONOMIC GATE OPEN, NOT RUNNING
 
 Frozen:
-- feature `flow60_buy_share_pct`
+
+- `flow60_buy_share_pct`
 - LOW<=57.1429
 - MID=(57.1429,65.7143]
 - HIGH>65.7143
-- favorable=LOW
-- opposite=HIGH
-- primary horizon=900s
-- LOW>=5 and HIGH>=5 independently in A and B
+- favorable LOW / opposite HIGH
+- primary horizon 900s
+- support LOW>=5 and HIGH>=5 independently in A and B
 - same detector / pacing / notional / slippage / horizons
 
-Primary PASS requires all:
+PASS requires all:
 1. LOW median > HIGH median A
 2. LOW median > HIGH median B
 3. LOW median > HIGH median ALL
@@ -243,12 +264,12 @@ Primary PASS requires all:
 6. aggregate LOW PF >1
 7. aggregate LOW mean_without_best >0
 
-MID and 300/3600s are diagnostic only. If a valid future v68 FAILS or is INCONCLUSIVE, do not mine the same sample for rescue.
+MID and 300/3600s are diagnostic only. No same-sample rescue if a valid v68 FAILS/INCONCLUSIVE.
 
-## Preparatory research tracks
+## Other research tracks — isolated
 
 - v56 Exceptional Trade Pre-Entry: causal scaffold ready
-- v57 Market-First Social Evidence: causal scaffold ready / no live provider
+- v57 Market-First Social Evidence: causal scaffold ready / no approved live provider
 - v58 Market-First Exit Geometry: measurement ready / no policy tuning
 - v59 Multichain Market Contract: chain-aware adapter scaffold ready
 - v60 Opportunity Wallet Convergence: pre-frozen-cohort evidence ready
@@ -260,7 +281,7 @@ MID and 300/3600s are diagnostic only. If a valid future v68 FAILS or is INCONCL
 - v66 Protocol Deployment Capability Attestation: authority scaffold ready
 - v67 Pons Raw Launch Quality Evidence: implemented / no score
 
-These stay isolated from active Solana v68 validation.
+These remain isolated from active Solana systems/V68 validation.
 
 ## Execution state
 
@@ -295,17 +316,21 @@ These stay isolated from active Solana v68 validation.
 21. old Wave exit results do not validate market-first exits
 22. no live money without robust forward + execution + shadow evidence
 23. systems abort before forward collector = no economic verdict
-24. do not reuse partial/failed acquisition identities blindly
+24. never reuse partial/failed acquisition identities blindly
 25. do not increase worker counts without proving causal independence and respecting ceilings
 26. systems/headroom engineering cannot relax the frozen 5s gate
-27. one physical SQLite writer remains authoritative unless a future architecture change proves equivalent causal/durability semantics
-28. a pool identity must be durable before publication
+27. one physical SQLite writer remains authoritative unless a future architecture proves equivalent semantics
+28. pool identity must be durable before publication
+29. current-run delayed identity reuse must clamp event `observed_at` forward to mapping availability
+30. prior-run historical identity remains subject to the original event causal cutoff
+31. do not tune SQLite fairness by trial-and-error while duplicate identity demand remains possible
 
 ## Immediate next action
 
-1. Require the final `fix/pumpswap-persistence-throughput-v4` head to be CI-green.
-2. Run exactly one fresh 120s **systems-only** validation using `route_research_systems_stability_tailfix_v4.py`.
-3. Do **not** run v68 economics yet.
-4. Accept systems only on exact classification `PASS_TAILFIX_V4_11_GATE_WITH_LATENCY_AND_THROUGHPUT_HEADROOM`.
-5. If V4 FAILS, use writer-pressure/fairness + inherited V3 latency telemetry to identify the remaining capacity stage; do not retune economics.
-6. If V4 PASSES, freeze this systems profile and only then prepare a fresh, never-reused v68 acquisition identity.
+1. Require the final V5 head to be CI-green after all tests/docs/context changes.
+2. Audit V5 diff to confirm detector/original V68/pacing/economic files remain untouched.
+3. Run exactly one fresh 120s **systems-only** validation with `route_research_systems_stability_tailfix_v5.py`.
+4. Do **not** run V68 economics yet.
+5. Accept systems only on exact classification `PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`.
+6. If normalization/barrier is healthy but ready-queue p95 independently remains >=4s, then evaluate a separate bounded multi-finalizer design with per-asset FIFO and same-token proofs. Do not raise workers before that evidence.
+7. If V5 passes, freeze the systems profile before preparing a new never-reused V68 acquisition identity.
