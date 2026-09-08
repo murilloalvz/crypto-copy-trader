@@ -38,6 +38,7 @@ class DeferredPumpSwapPersistHandle:
     reservation_assets: tuple[str, ...]
     normalization_completed_monotonic: float
     result_future: Future
+    writer_enqueued_monotonic: float = 0.0
 
     async def wait_result(self) -> PumpSwapNormalizedPersistResult:
         return await asyncio.wrap_future(self.result_future)
@@ -192,9 +193,11 @@ async def begin_pumpswap_notification_normalized_v5(
             sorted(set(_incoming_trade_tokens(prepared)).union(existing_tokens))
         )
     normalization_completed = time.monotonic()
+    writer_enqueued = time.monotonic()
     result_future = writer.enqueue(prepared)
     return DeferredPumpSwapPersistHandle(
         reservation_assets=reservation_assets,
         normalization_completed_monotonic=normalization_completed,
         result_future=result_future,
+        writer_enqueued_monotonic=writer_enqueued,
     )

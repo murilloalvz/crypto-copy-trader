@@ -162,3 +162,8 @@ class StatefulPriorityEagerDemotingReadyAssetSchedulerV51(
 
     def priority_snapshot(self) -> StatefulPriorityQueueSnapshotV51:
         return self._ready.snapshot()
+
+    def is_demoted_work(self, work: ScheduledAssetWork[T]) -> bool:
+        """Expose queue classification for observation-only tail attribution."""
+
+        return self._reservation_key(work.reservation) in self._demoted_finalizer_acks

@@ -33,6 +33,7 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
         self.demoted_pending_jobs = 0
         self.demoted_pending_tickets = 0
         self.demotion_wait_seconds: list[float] = []
+        self.submitted_jobs = 0
 
     @property
     def demoted_finalizer_acks_pending(self) -> int:
@@ -116,3 +117,7 @@ class DemotingReadyAssetSchedulerV34(ReadyAssetScheduler[T], Generic[T]):
         # collapse at once rather than releasing one follower per stateful completion.
         self._demote_proven_pending()
         await super().complete(reservation)
+
+    def submit(self, payload: T, reservation) -> None:
+        self.submitted_jobs += 1
+        super().submit(payload, reservation)

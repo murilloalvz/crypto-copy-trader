@@ -34,6 +34,7 @@ from src.pumpswap_radar_bridge_v5 import (
 )
 from src.pumpswap_ready_scheduler import AssetReservation, ReadyAssetScheduler
 from src.pumpswap_partial_order_v6 import PumpSwapPartialOrderCoordinatorV6
+from src.pumpswap_hol_diagnostics_v7 import PumpSwapHOLDiagnosticsV7
 from src.pumpswap_stream import iter_pumpswap_log_notifications
 from unified_market_latency_smoke_v5 import _print_replay_telemetry
 from unified_market_latency_smoke_v8 import BoundedConcurrentResolver, _short_episode
@@ -296,6 +297,7 @@ async def run_smoke_v19(
     pumpswap_post_finalize_seconds: list[float] = []
     pumpswap_compute_service_seconds: list[float] = []
     pumpswap_pipeline_end_to_end_seconds: list[float] = []
+    hol_diagnostics = PumpSwapHOLDiagnosticsV7()
 
     pumpswap_transaction_read_seconds: list[float] = []
     pumpswap_history_read_seconds: list[float] = []
@@ -409,6 +411,14 @@ async def run_smoke_v19(
                 finished - item.enqueued_monotonic
             )
             pumpswap_no_trigger_elisions += 1
+            hol_diagnostics.record(
+                blocking_assets=(),
+                dependency_wait_seconds=0.0,
+                ready_capacity_wait_seconds=0.0,
+                writer_result_wait_seconds=prepared_work.timed.writer_result_wait_seconds,
+                finalizer_occupied_seconds=finished - started_finalize,
+                is_demoted=False,
+            )
             del prepared_by_sequence[sequence]
             del reservations_by_sequence[sequence]
             return
@@ -771,6 +781,11 @@ async def run_smoke_v19(
                     ),
                     persistence_started_monotonic=persistence_started,
                     persistence_completed_monotonic=persistence_completed_at,
+                    writer_result_completed_monotonic=persistence_completed_at,
+                    writer_result_wait_seconds=max(
+                        0.0,
+                        persistence_completed_at - handle.writer_enqueued_monotonic,
+                    ),
                 )
                 if has_new_evidence(timed):
                     await pumpswap_prepare_queue.put(timed)
@@ -926,6 +941,16 @@ async def run_smoke_v19(
                 pumpswap_finalize_wait_seconds.append(
                     started_finalize - item.enqueued_monotonic
                 )
+                is_demoted = bool(
+                    getattr(scheduler, "is_demoted_work", lambda _: False)(work)
+                )
+                dependency_wait = max(
+                    0.0,
+                    work.dependency_ready_monotonic - work.waiter_started_monotonic,
+                )
+                ready_capacity_wait = max(
+                    0.0, started_finalize - work.ready_queue_entered_monotonic
+                )
 
                 if isinstance(payload, SkipTimedPumpSwapWork):
                     await scheduler.complete(work.reservation)
@@ -937,6 +962,14 @@ async def run_smoke_v19(
                     pumpswap_compute_service_seconds.append(finished - started_finalize)
                     pumpswap_pipeline_end_to_end_seconds.append(
                         finished - item.enqueued_monotonic
+                    )
+                    hol_diagnostics.record(
+                        blocking_assets=work.blocking_assets,
+                        dependency_wait_seconds=dependency_wait,
+                        ready_capacity_wait_seconds=ready_capacity_wait,
+                        writer_result_wait_seconds=payload.timed.writer_result_wait_seconds,
+                        finalizer_occupied_seconds=finished - started_finalize,
+                        is_demoted=is_demoted,
                     )
                     continue
 
@@ -961,6 +994,14 @@ async def run_smoke_v19(
                 )
                 pumpswap_pipeline_end_to_end_seconds.append(
                     finished - item.enqueued_monotonic
+                )
+                hol_diagnostics.record(
+                    blocking_assets=work.blocking_assets,
+                    dependency_wait_seconds=dependency_wait,
+                    ready_capacity_wait_seconds=ready_capacity_wait,
+                    writer_result_wait_seconds=payload.timed.writer_result_wait_seconds,
+                    finalizer_occupied_seconds=finished - started_finalize,
+                    is_demoted=is_demoted,
                 )
             except Exception:
                 worker_errors["pumpswap_finalize"] += 1
@@ -1070,6 +1111,7 @@ async def run_smoke_v19(
     max_waiting_per_asset = max(
         (item.max_waiting_jobs for item in asset_telemetry), default=0
     )
+    hol_snapshot = hol_diagnostics.snapshot()
 
     print("\nSUMMARY")
     print(
@@ -1219,6 +1261,47 @@ async def run_smoke_v19(
         f"pumpswap_radar_episode_assign_ms {_latency_summary_ms(pumpswap_episode_assign_seconds)}"
     )
     print(
+        "pumpswap_hol_attribution_v7 "
+        f"records={hol_snapshot.records} "
+        f"stateful_records={hol_snapshot.stateful_records} "
+        f"demoted_records={hol_snapshot.demoted_records} "
+        f"dependency_p95_ms={hol_snapshot.dependency_wait_p95_seconds * 1000.0:.1f} "
+        f"ready_capacity_p95_ms={hol_snapshot.ready_capacity_wait_p95_seconds * 1000.0:.1f} "
+        f"writer_result_p95_ms={hol_snapshot.writer_result_wait_p95_seconds * 1000.0:.1f}"
+    )
+    print(
+        "pumpswap_hol_stateful_v7 "
+        f"predecessor_incomplete_p95_ms={hol_snapshot.stateful_predecessor_incomplete_p95_seconds * 1000.0:.1f} "
+        f"capacity_wait_p95_ms={hol_snapshot.stateful_capacity_wait_p95_seconds * 1000.0:.1f} "
+        f"finalizer_occupied_p95_ms={hol_snapshot.stateful_finalizer_occupied_p95_seconds * 1000.0:.1f}"
+    )
+    print(
+        "pumpswap_hol_demoted_v7 "
+        f"predecessor_incomplete_p95_ms={hol_snapshot.demoted_predecessor_incomplete_p95_seconds * 1000.0:.1f} "
+        f"capacity_wait_p95_ms={hol_snapshot.demoted_capacity_wait_p95_seconds * 1000.0:.1f} "
+        f"finalizer_occupied_p95_ms={hol_snapshot.demoted_finalizer_occupied_p95_seconds * 1000.0:.1f}"
+    )
+    print(
+        "pumpswap_hol_writer_correlation_v7 "
+        f"writer_vs_dependency={hol_snapshot.writer_vs_dependency_correlation:.3f} "
+        f"writer_vs_ready_capacity={hol_snapshot.writer_vs_ready_capacity_correlation:.3f} "
+        "ready_capacity_has_completed_predecessor=true"
+    )
+    print(
+        "pumpswap_hol_hot_assets_v7 "
+        f"top_assets={hol_snapshot.top_hot_asset_count} "
+        f"top5_dependency_wait_share_pct={hol_snapshot.top_hot_dependency_wait_share_pct:.1f} "
+        f"top5_dependency_p95_ms={hol_snapshot.top_hot_dependency_wait_p95_seconds * 1000.0:.1f} "
+        f"cold_dependency_p95_ms={hol_snapshot.cold_dependency_wait_p95_seconds * 1000.0:.1f}"
+    )
+    print(
+        "pumpswap_dependency_wait_by_asset_p95_ms "
+        + " ".join(
+            f"{asset[:10]}…:{wait * 1000.0:.1f}"
+            for asset, wait in hol_snapshot.dependency_wait_by_asset_p95_seconds
+        )
+    )
+    print(
         f"pumpswap_split_radar prepare_submitters={pumpswap_prepare_submitters} "
         f"prepare_executor_workers={pumpswap_prepare_executor_workers} finalize_workers=1 "
         f"reservations={pumpswap_asset_reservations} "
@@ -1231,6 +1314,12 @@ async def run_smoke_v19(
         f"no_evidence_elisions={pumpswap_no_evidence_elisions} "
         f"stateful_only_finalize={stateful_only_finalize} "
         f"reservation_superset_violations={reservation_superset_violations}"
+    )
+    print(
+        f"pumpswap_stateful_submitted_jobs={getattr(scheduler, 'submitted_jobs', 0)} "
+        f"pumpswap_proven_demoted_jobs={getattr(scheduler, 'demoted_pending_jobs', 0)} "
+        f"pumpswap_proven_demoted_pct="
+        f"{100.0 * getattr(scheduler, 'demoted_pending_jobs', 0) / max(1, getattr(scheduler, 'submitted_jobs', 0)):.1f}"
     )
     print(f"pumpswap_reservation_ordering={pumpswap_reservation_mode}")
     if partial_order_coordinator is not None:

@@ -40,6 +40,7 @@ class DemotingReadyAssetSchedulerV34Tests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(scheduler.demoted_pending_jobs, 1)
         self.assertEqual(scheduler.demoted_pending_tickets, 1)
+        self.assertEqual(scheduler.submitted_jobs, 3)
         self.assertEqual(scheduler.waiting_backlog(), 0)
         self.assertEqual(scheduler.demoted_finalizer_acks_pending, 1)
 

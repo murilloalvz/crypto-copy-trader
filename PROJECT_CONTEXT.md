@@ -217,6 +217,14 @@ authority, persistence superset guard, or stateful/demoted queue policy. Its det
 prove disjoint bypass, same-asset serialization, multi-asset acyclicity, stateful priority over
 proven demotion, and asynchronous writer interaction inherited from V5.
 
+### Tailfix V7 — remaining-HOL attribution only
+
+V7 diagnostic wrappers preserve V6 scheduling and add observation-only attribution for predecessor
+wait versus post-ready shared capacity, stateful/demoted finalizer occupancy, authoritative writer
+result correlation, per-asset dependency p95, top-hot-asset concentration, and proven demotion rate.
+No V7 structural correction is authorized until a systems-only run proves an avoidable cause while
+the V6 same-asset and fail-closed invariants remain green.
+
 ### Deterministic V5/V6 requirements before live
 
 Tests must prove:

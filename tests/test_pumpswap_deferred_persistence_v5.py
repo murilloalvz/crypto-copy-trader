@@ -91,6 +91,7 @@ class PumpSwapDeferredPersistenceV5Tests(unittest.IsolatedAsyncioTestCase):
                     writer=writer,
                 )
                 self.assertEqual(handle.reservation_assets, ("TOKEN",))
+                self.assertGreater(handle.writer_enqueued_monotonic, 0.0)
                 self.assertIsNotNone(writer.prepared)
                 self.assertFalse(writer.future.done())
 

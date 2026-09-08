@@ -31,6 +31,8 @@ class TimedPumpSwapCompletion:
     completed: CompletedPumpSwapNotification
     persistence_started_monotonic: float
     persistence_completed_monotonic: float
+    writer_result_completed_monotonic: float = 0.0
+    writer_result_wait_seconds: float = 0.0
 
 
 def _asset_label(asset: str) -> str:

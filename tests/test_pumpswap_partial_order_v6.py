@@ -26,6 +26,8 @@ class PartialOrderCoordinatorV6Tests(unittest.IsolatedAsyncioTestCase):
         first = await asyncio.wait_for(scheduler.get_ready(), timeout=0.1)
         second = await asyncio.wait_for(scheduler.get_ready(), timeout=0.1)
         self.assertEqual({first.payload, second.payload}, {"later", "earlier"})
+        self.assertEqual(first.blocking_assets, ())
+        self.assertEqual(second.blocking_assets, ())
         await scheduler.complete(first.reservation)
         await scheduler.complete(second.reservation)
 
@@ -45,12 +47,14 @@ class PartialOrderCoordinatorV6Tests(unittest.IsolatedAsyncioTestCase):
 
         ready_first = await asyncio.wait_for(scheduler.get_ready(), timeout=0.1)
         self.assertEqual(ready_first.payload, "first")
+        self.assertEqual(ready_first.blocking_assets, ())
         blocked = asyncio.create_task(scheduler.get_ready())
         await asyncio.sleep(0)
         self.assertFalse(blocked.done())
         await scheduler.complete(ready_first.reservation)
         ready_second = await asyncio.wait_for(blocked, timeout=0.1)
         self.assertEqual(ready_second.payload, "second")
+        self.assertEqual(ready_second.blocking_assets, ("HOT",))
         await scheduler.complete(ready_second.reservation)
 
         snapshot = coordinator.snapshot()

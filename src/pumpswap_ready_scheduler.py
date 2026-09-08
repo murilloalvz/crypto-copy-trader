@@ -35,6 +35,7 @@ class ScheduledAssetWork(Generic[T]):
     waiter_started_monotonic: float = field(default=0.0, compare=False)
     dependency_ready_monotonic: float = field(default=0.0, compare=False)
     ready_queue_entered_monotonic: float = field(default=0.0, compare=False)
+    blocking_assets: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,7 @@ class ReadyAssetScheduler(Generic[T]):
                 waiter_started_monotonic=waiter_started_monotonic,
                 dependency_ready_monotonic=dependency_ready,
                 ready_queue_entered_monotonic=ready_queue_entered,
+                blocking_assets=blocking_assets,
             )
         )
 
