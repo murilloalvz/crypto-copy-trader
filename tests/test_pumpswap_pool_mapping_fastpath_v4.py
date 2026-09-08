@@ -113,6 +113,40 @@ class PumpSwapPoolMappingFastPathV4Tests(unittest.TestCase):
         self.assertEqual(snapshot.identity_conflicts, 1)
         self.assertEqual(snapshot.canonical_replacements, 1)
 
+    def test_equal_time_conflict_preserves_lexical_tie_break(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fast-v4.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                record_pumpswap_pool_mapping_fast_v4(
+                    acquisition_run_key="run",
+                    pool_address="P",
+                    base_mint="Z",
+                    quote_mint="Q",
+                    observed_at=100,
+                    source_provider="rpc",
+                )
+                record_pumpswap_pool_mapping_fast_v4(
+                    acquisition_run_key="run",
+                    pool_address="P",
+                    base_mint="A",
+                    quote_mint="Q",
+                    observed_at=100,
+                    source_provider="create",
+                )
+                loaded = load_pumpswap_pool_mapping(
+                    acquisition_run_key="run", pool_address="P"
+                )
+                conflicts = count_pumpswap_pool_mapping_conflicts(
+                    acquisition_run_key="run"
+                )
+
+        assert loaded is not None
+        self.assertEqual((loaded.base_mint, loaded.quote_mint), ("A", "Q"))
+        self.assertEqual(conflicts, 1)
+        snapshot = pumpswap_pool_mapping_fastpath_snapshot_v4()
+        self.assertEqual(snapshot.identity_conflicts, 1)
+        self.assertEqual(snapshot.canonical_replacements, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
