@@ -22,9 +22,11 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - v48-v54 prospective Flow60 holdout: **COMPLETE / FAIL ECONOMIC HYPOTHESIS**
 - Flow60 hypothesis: **REJECTED PROSPECTIVELY; DO NOT RETUNE OR REUSE**
 - v55 Causal Early-Opportunity Discovery: **IMPLEMENTED / PROTOCOL PRE-REGISTERED / FRESH LIVE RUN STARTED BY USER / RESULT PENDING**
+- v55 candidate-selection bridge: **PRE-REGISTERED BEFORE RESULT REVIEW / DETERMINISTIC RANKING IMPLEMENTED**
 - v56 Exceptional Trade Pre-Entry: **CAUSAL RESEARCH SCAFFOLD IMPLEMENTED / CI GREEN / NO ECONOMIC STUDY YET**
 - v57 Market-First Social Evidence: **CAUSAL EVIDENCE BRIDGE IMPLEMENTED / TESTS GREEN / NO LIVE SOCIAL PROVIDER OR ECONOMIC TEST**
 - participation-structure research boundary: **DOCUMENTED; NOT A MANIPULATION DETECTOR**
+- market-first exit research: **LEGACY WAVE ENGINE AUDITED / CURRENT LINEAGE GAP DOCUMENTED / NO EXIT TUNING**
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -170,6 +172,36 @@ Forbidden in v55:
 - reusing v55 A/B as future holdout
 - injecting v56/v57 evidence into the already-running experiment
 
+## v55 candidate selection -> future holdout bridge — PRE-REGISTERED BEFORE RESULTS
+
+Protocol:
+`docs/route-research-v55-candidate-selection-to-holdout-protocol-2026-09-07.md`
+
+Code:
+- `src/route_research_v55_candidate_selection.py`
+- `route_research_v55_candidate_selection.py`
+- `tests/test_route_research_v55_candidate_selection.py`
+
+If multiple 900s candidates survive the frozen v55 eligibility rules, rank them deterministically by:
+
+1. `min(abs(delta_median_A), abs(delta_median_B))`, descending;
+2. split-balance ratio `min(abs(A),abs(B))/max(abs(A),abs(B))`, descending;
+3. `abs(delta_median_ALL)`, descending;
+4. minimum A/B feature coverage, descending;
+5. feature name lexicographically ascending.
+
+Only rank #1 may be carried forward.
+
+For numeric v55 features the effect is `median(HIGH)-median(LOW)`:
+- positive same-direction delta -> HIGH is discovery-favorable;
+- negative same-direction delta -> LOW is discovery-favorable.
+
+The selected discovery cutpoints and favorable direction must be frozen before any new holdout data are collected.
+
+Future validation uses the conservative v48-style 900s PASS template generalized to FAVORABLE vs OPPOSITE extreme: same direction A/B/ALL, favorable median >0 A/B, favorable PF >1 A/B, aggregate favorable PF >1 and aggregate favorable mean_without_best >0. MID/300s/3600s cannot rescue primary failure.
+
+If no v55 candidate survives, do not relax rules to manufacture one.
+
 ## v56 Exceptional Trade Intelligence — strict pre-entry scaffold
 
 Protocol:
@@ -235,6 +267,17 @@ Transaction-level wallet metrics such as breadth, repetition, top-wallet event s
 
 Do not call these metrics wash trading, sybil activity, insider coordination, organic demand or manipulation without a separately validated semantic study and stronger evidence.
 
+## Market-first exit research boundary
+
+Design:
+`docs/market-first-exit-research-gap-2026-09-07.md`
+
+The existing `exit_engine_v1` is a useful legacy Wave laboratory tied to `wave_signals`, `WAVE_STRATEGY_VERSION` and GeckoTerminal/candle observation. Its metrics already include MFE, MAE, MFE captured, winner dependence and paired policy evaluation.
+
+It is **not** the authoritative exit path for current market-first route-research decisions. Silently converting v55 episodes into Wave signals would conflate entry semantics, clocks, provider evidence and lineage.
+
+Do not tune a new TP/SL/trailing parameter now. A future market-first exit study first needs a route-compatible path-observation contract with explicit `observed_at`, route SELL semantics, provider missingness and MFE/MAE/peak-giveback geometry. That work should start only after entry-selection evidence warrants the extra provider/runtime budget.
+
 ## Scientific invariants
 
 - discovery != validation
@@ -252,11 +295,14 @@ Do not call these metrics wash trading, sybil activity, insider coordination, or
 - v48-v54 sample is burned for validation
 - v55 is discovery only; any future hypothesis must be frozen before new untouched data
 - v55 feature contract cannot change while its live run is in progress
+- v55 candidate selection rule was registered before result review and cannot be changed to favor a result
+- only v55 rank #1 may advance to one fresh holdout; rank #2 cannot rescue its failure
 - v56 outcome labels remain separate from pre-entry feature construction
 - v56 same-second target activity is excluded
 - participation concentration/repetition != manipulation proof
 - social `created_at` != causal availability; collector `observed_at` is authoritative
 - v57 exact mint linkage only
+- old Wave exit results do not validate market-first exit behavior
 - no second live economic acquisition while v55 is active
 
 ## Immediate next action
@@ -268,8 +314,9 @@ Do not start another economic/live acquisition or modify the v55 contract while 
 
 When v55 completes:
 1. inspect the full A+B output and systems/lineage gates;
-2. review candidate coverage/support and A/B direction at 900s;
-3. select at most one defensible hypothesis, if any;
-4. pre-register a separate fresh holdout before collecting any validation data.
+2. apply the pre-registered candidate ranking without discretion;
+3. if there is a rank #1, freeze its feature definition, value-only cutpoints and favorable direction;
+4. register one separate fresh 900s holdout before collecting validation data;
+5. if no candidate survives, do not loosen v55 rules.
 
-v56/v57 are preparatory scaffolds only and must not be used to influence the running v55 result.
+v56/v57/exit-boundary work is preparatory scaffolding only and must not influence the running v55 result.
