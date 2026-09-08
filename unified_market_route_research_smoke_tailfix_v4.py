@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from src import pumpswap_pool_store
 import src.sqlite_write_admission as sqlite_admission_module
 from src.pumpswap_pool_mapping_fastpath_v4 import (
     pumpswap_pool_mapping_fastpath_snapshot_v4,
@@ -59,7 +60,7 @@ async def run_smoke_tailfix_v4(**kwargs) -> None:
     if not gate.is_idle():
         raise RuntimeError("tailfix v4 cannot change SQLite fairness while writer work is active")
     original_fairness_limit = gate.resolution_max_consecutive_when_causal_waiting
-    original_pool_record = tailfix_v3.pumpswap_pool_store.record_pumpswap_pool_mapping
+    original_pool_record = pumpswap_pool_store.record_pumpswap_pool_mapping
     original_writer_class = v19.PumpSwapSQLiteThreadedMicrobatchWriter
 
     reset_pumpswap_pool_mapping_fastpath_metrics_v4()
@@ -67,9 +68,7 @@ async def run_smoke_tailfix_v4(**kwargs) -> None:
     gate.resolution_max_consecutive_when_causal_waiting = (
         V4_RESOLUTION_MAX_CONSECUTIVE_WITH_CAUSAL_WAITING
     )
-    tailfix_v3.pumpswap_pool_store.record_pumpswap_pool_mapping = (
-        record_pumpswap_pool_mapping_fast_v4
-    )
+    pumpswap_pool_store.record_pumpswap_pool_mapping = record_pumpswap_pool_mapping_fast_v4
     v19.PumpSwapSQLiteThreadedMicrobatchWriter = InstrumentedPumpSwapSQLiteWriterV4
 
     run_error: BaseException | None = None
@@ -104,7 +103,7 @@ async def run_smoke_tailfix_v4(**kwargs) -> None:
         # Restore by-value seams first. The shared gate object itself is retained so any late
         # deadline cleanup thread can never escape the one-writer admission lock.
         v19.PumpSwapSQLiteThreadedMicrobatchWriter = original_writer_class
-        tailfix_v3.pumpswap_pool_store.record_pumpswap_pool_mapping = original_pool_record
+        pumpswap_pool_store.record_pumpswap_pool_mapping = original_pool_record
         gate.resolution_max_consecutive_when_causal_waiting = original_fairness_limit
 
         print("\nTAILFIX V4 PERSISTENCE THROUGHPUT HARDENING DIAGNOSTIC")
