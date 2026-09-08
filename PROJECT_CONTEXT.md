@@ -21,7 +21,10 @@ Este arquivo é o **source of truth operacional e científico** do projeto. Hist
 - v54 demand-only resolver admission: **LIVE SYSTEMS PASS 11/11 / accepted acquisition profile**
 - v48-v54 prospective Flow60 holdout: **COMPLETE / FAIL ECONOMIC HYPOTHESIS**
 - Flow60 hypothesis: **REJECTED PROSPECTIVELY; DO NOT RETUNE OR REUSE**
-- v55 Causal Early-Opportunity Discovery: **IMPLEMENTED / PROTOCOL PRE-REGISTERED / FRESH RUN PENDING**
+- v55 Causal Early-Opportunity Discovery: **IMPLEMENTED / PROTOCOL PRE-REGISTERED / FRESH LIVE RUN STARTED BY USER / RESULT PENDING**
+- v56 Exceptional Trade Pre-Entry: **CAUSAL RESEARCH SCAFFOLD IMPLEMENTED / CI GREEN / NO ECONOMIC STUDY YET**
+- v57 Market-First Social Evidence: **CAUSAL EVIDENCE BRIDGE IMPLEMENTED / TESTS GREEN / NO LIVE SOCIAL PROVIDER OR ECONOMIC TEST**
+- participation-structure research boundary: **DOCUMENTED; NOT A MANIPULATION DETECTOR**
 - profitable economic edge: **NOT ESTABLISHED**
 - funded executable BUY: **BLOCKED_BY_FUNDING**
 - official executable outcomes/shadow/live: **NOT RELEASED**
@@ -116,7 +119,7 @@ Detector-population baseline at 900s across the 80 rows:
 
 Current economic problem: **selection**. Preserve access to rare explosive moves while rejecting a large fraction of poor detector episodes.
 
-## v55 Causal Early-Opportunity Discovery
+## v55 Causal Early-Opportunity Discovery — ACTIVE EXPERIMENT
 
 Protocol:
 `docs/route-research-v55-causal-early-opportunity-discovery-protocol-2026-09-07.md`
@@ -165,6 +168,72 @@ Forbidden in v55:
 - dropping losers
 - favorable subcohort selection
 - reusing v55 A/B as future holdout
+- injecting v56/v57 evidence into the already-running experiment
+
+## v56 Exceptional Trade Intelligence — strict pre-entry scaffold
+
+Protocol:
+`docs/exceptional-trade-v56-causal-preentry-snapshot-protocol-2026-09-07.md`
+
+Code:
+- `src/exceptional_trade_preentry_v56.py`
+- `exceptional_trade_preentry_snapshot_v56.py`
+- `tests/test_exceptional_trade_preentry_v56.py`
+
+Purpose:
+Prepare a future causal study of what was observable immediately before entries made by trades/wallets that are later classified as exceptional.
+
+Causal cutoffs are strict:
+- `event.chain_time < entry_chain_time`
+- `event.observed_at < entry_observed_at`
+
+Same-second activity is excluded conservatively because an arbitrary external entry has no canonical sub-second order in the persisted store. A trade that happened earlier on-chain but was only discovered after the reference entry is also excluded.
+
+Frozen descriptive pre-entry windows:
+- 10s
+- 30s
+- 60s
+- 300s
+
+Participation structure is computed only with adequate/complete identity coverage where required. Outcome/P&L labels are deliberately absent from the feature builder.
+
+The exceptional outcome definition is intentionally **not registered yet**. A future comparison study must pre-register the target universe, outcome label, controls/placebos, dependence rules, sample support, feature set and statistic before labels are joined.
+
+v56 proves only causal snapshot semantics. It does not prove exceptional trades are predictable or copyable.
+
+## v57 Market-First Social Evidence — scaffold only
+
+Protocol:
+`docs/opportunity-social-v57-market-first-causal-evidence-protocol-2026-09-07.md`
+
+Code:
+- `src/opportunity_social_evidence_v57.py`
+- `tests/test_opportunity_social_evidence_v57.py`
+
+Existing social core already preserves `created_at` and `observed_at`, anchors window membership on first collector observation and allows only engagement snapshots known by `as_of`.
+
+v57 adds a market-first envelope with:
+- exact `token_mint` join only; no symbol-only episode linkage
+- current social window 300s
+- baseline 3600s
+- event count / unique authors / acceleration / author diversity / original share / known engagement
+- explicit `NO_CAUSAL_EVENTS` missingness
+- zero prior baseline => acceleration remains `None`, never infinity/bullish
+
+The repository still has no approved live social provider in this protocol. Existing `social_ingest.py` imports already-observed JSONL only.
+
+v57 is not part of v55 and cannot be used to rescue or reinterpret its outcome.
+
+## Participation-structure research boundary
+
+Design:
+`docs/participation-structure-research-design-2026-09-07.md`
+
+Existing `src/market_integrity.py` is aggregate observational evidence and explicitly cannot establish self-trading, counterparty graphs, order-level sequence or funding relationships.
+
+Transaction-level wallet metrics such as breadth, repetition, top-wallet event share, buy/sell overlap and acceleration may be studied as **participation structure**.
+
+Do not call these metrics wash trading, sybil activity, insider coordination, organic demand or manipulation without a separately validated semantic study and stronger evidence.
 
 ## Scientific invariants
 
@@ -182,15 +251,25 @@ Forbidden in v55:
 - failed prospective hypotheses are closed, not retuned
 - v48-v54 sample is burned for validation
 - v55 is discovery only; any future hypothesis must be frozen before new untouched data
+- v55 feature contract cannot change while its live run is in progress
+- v56 outcome labels remain separate from pre-entry feature construction
+- v56 same-second target activity is excluded
+- participation concentration/repetition != manipulation proof
+- social `created_at` != causal availability; collector `observed_at` is authoritative
+- v57 exact mint linkage only
+- no second live economic acquisition while v55 is active
 
 ## Immediate next action
 
-First require CI green on the current branch after removal of the obsolete v53 wiring test and addition of v55 tests.
-
-After CI is green, run one fresh v55 discovery base. Recommended key:
+The user has already started the fresh v55 base:
 `route-research-early-opportunity-discovery-20260907-55`
 
-Command:
-`python route_research_early_opportunity_discovery_v55.py --run-key route-research-early-opportunity-discovery-20260907-55`
+Do not start another economic/live acquisition or modify the v55 contract while it is running.
 
-Do not run any other concurrent economic experiment. When v55 completes, review the full output before choosing at most one future holdout hypothesis.
+When v55 completes:
+1. inspect the full A+B output and systems/lineage gates;
+2. review candidate coverage/support and A/B direction at 900s;
+3. select at most one defensible hypothesis, if any;
+4. pre-register a separate fresh holdout before collecting any validation data.
+
+v56/v57 are preparatory scaffolds only and must not be used to influence the running v55 result.
