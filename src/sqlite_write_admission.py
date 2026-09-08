@@ -7,35 +7,40 @@ import threading
 import time
 
 
+RESOLUTION_PRIORITY = "resolution"
 CAUSAL_PRIORITY = "causal"
 AUDIT_PRIORITY = "audit"
 
 
 @dataclass(frozen=True)
 class SQLiteWriteAdmissionSnapshot:
+    resolution_acquisitions: int
     causal_acquisitions: int
     audit_acquisitions: int
     audit_forced_after_starvation: int
+    max_resolution_waiters: int
     max_causal_waiters: int
     max_audit_waiters: int
+    resolution_wait_seconds: tuple[float, ...]
     causal_wait_seconds: tuple[float, ...]
     audit_wait_seconds: tuple[float, ...]
 
 
 class PrioritizedSQLiteWriteAdmission:
-    """Serialize SQLite writers while giving causal work bounded priority.
+    """Serialize SQLite writers with bounded resolution > causal > audit priority.
 
-    SQLite/WAL still has one physical writer. Letting several independent writer threads race for
-    that lock turns queueing into opaque ``busy_timeout`` latency. This gate makes that queueing
-    explicit in-process instead:
+    SQLite/WAL still has one physical writer. Letting independent writer threads race for that lock
+    turns queueing into opaque ``busy_timeout`` latency. This gate makes writer ownership explicit:
 
-    * causal market persistence / episode-opening work always enters before a fresh audit waiter;
-    * append-only audit work may enter after a bounded starvation interval even while causal work
-      remains queued, so a long collection cannot grow audit memory without bound;
+    * ``resolution`` is reserved for durable pool identity needed before normalization can finish;
+    * ordinary causal market persistence / episode-opening work follows;
+    * append-only audit work yields to both, but may enter after a bounded starvation interval so a
+      long collection cannot grow audit memory without bound;
     * readers never touch this gate and remain concurrent under WAL.
 
-    The gate protects *admission*, not transaction semantics. Each existing store still owns its
-    transaction and replay rules.
+    Resolution priority changes admission order only. It does not change transaction semantics,
+    canonical mapping rules, replay/as-of behavior, or the physical one-writer ceiling. Expensive
+    resolution itself remains separately bounded by the resolver capacity.
     """
 
     def __init__(self, *, audit_max_starvation_seconds: float = 0.5) -> None:
@@ -44,33 +49,49 @@ class PrioritizedSQLiteWriteAdmission:
         self.audit_max_starvation_seconds = float(audit_max_starvation_seconds)
         self._condition = threading.Condition()
         self._active = False
+        self._resolution_waiters = 0
         self._causal_waiters = 0
         self._audit_waiters = 0
+        self._resolution_acquisitions = 0
         self._causal_acquisitions = 0
         self._audit_acquisitions = 0
         self._audit_forced_after_starvation = 0
+        self._max_resolution_waiters = 0
         self._max_causal_waiters = 0
         self._max_audit_waiters = 0
+        self._resolution_wait_seconds: deque[float] = deque(maxlen=100_000)
         self._causal_wait_seconds: deque[float] = deque(maxlen=100_000)
         self._audit_wait_seconds: deque[float] = deque(maxlen=100_000)
 
     @contextmanager
     def acquire(self, priority: str):
         normalized = str(priority).strip().lower()
-        if normalized not in {CAUSAL_PRIORITY, AUDIT_PRIORITY}:
+        if normalized not in {RESOLUTION_PRIORITY, CAUSAL_PRIORITY, AUDIT_PRIORITY}:
             raise ValueError("unsupported sqlite write priority")
 
         started = time.perf_counter()
         forced_after_starvation = False
         with self._condition:
-            if normalized == CAUSAL_PRIORITY:
+            if normalized == RESOLUTION_PRIORITY:
+                self._resolution_waiters += 1
+                self._max_resolution_waiters = max(
+                    self._max_resolution_waiters,
+                    self._resolution_waiters,
+                )
+                try:
+                    while self._active:
+                        self._condition.wait()
+                    self._active = True
+                finally:
+                    self._resolution_waiters -= 1
+            elif normalized == CAUSAL_PRIORITY:
                 self._causal_waiters += 1
                 self._max_causal_waiters = max(
                     self._max_causal_waiters,
                     self._causal_waiters,
                 )
                 try:
-                    while self._active:
+                    while self._active or self._resolution_waiters > 0:
                         self._condition.wait()
                     self._active = True
                 finally:
@@ -85,12 +106,15 @@ class PrioritizedSQLiteWriteAdmission:
                     while True:
                         waited = time.perf_counter() - started
                         starved = waited >= self.audit_max_starvation_seconds
-                        if not self._active and (self._causal_waiters == 0 or starved):
-                            forced_after_starvation = starved and self._causal_waiters > 0
+                        higher_priority_waiting = (
+                            self._resolution_waiters > 0 or self._causal_waiters > 0
+                        )
+                        if not self._active and (not higher_priority_waiting or starved):
+                            forced_after_starvation = starved and higher_priority_waiting
                             self._active = True
                             break
                         timeout = None
-                        if self._causal_waiters > 0 and not starved:
+                        if higher_priority_waiting and not starved:
                             timeout = max(
                                 0.001,
                                 self.audit_max_starvation_seconds - waited,
@@ -100,7 +124,10 @@ class PrioritizedSQLiteWriteAdmission:
                     self._audit_waiters -= 1
 
             wait_seconds = max(0.0, time.perf_counter() - started)
-            if normalized == CAUSAL_PRIORITY:
+            if normalized == RESOLUTION_PRIORITY:
+                self._resolution_acquisitions += 1
+                self._resolution_wait_seconds.append(wait_seconds)
+            elif normalized == CAUSAL_PRIORITY:
                 self._causal_acquisitions += 1
                 self._causal_wait_seconds.append(wait_seconds)
             else:
@@ -120,24 +147,35 @@ class PrioritizedSQLiteWriteAdmission:
 
     def reset_metrics(self) -> None:
         with self._condition:
-            if self._active or self._causal_waiters or self._audit_waiters:
+            if (
+                self._active
+                or self._resolution_waiters
+                or self._causal_waiters
+                or self._audit_waiters
+            ):
                 raise RuntimeError("cannot reset sqlite write admission while work is active")
+            self._resolution_acquisitions = 0
             self._causal_acquisitions = 0
             self._audit_acquisitions = 0
             self._audit_forced_after_starvation = 0
+            self._max_resolution_waiters = 0
             self._max_causal_waiters = 0
             self._max_audit_waiters = 0
+            self._resolution_wait_seconds.clear()
             self._causal_wait_seconds.clear()
             self._audit_wait_seconds.clear()
 
     def snapshot(self) -> SQLiteWriteAdmissionSnapshot:
         with self._condition:
             return SQLiteWriteAdmissionSnapshot(
+                resolution_acquisitions=self._resolution_acquisitions,
                 causal_acquisitions=self._causal_acquisitions,
                 audit_acquisitions=self._audit_acquisitions,
                 audit_forced_after_starvation=self._audit_forced_after_starvation,
+                max_resolution_waiters=self._max_resolution_waiters,
                 max_causal_waiters=self._max_causal_waiters,
                 max_audit_waiters=self._max_audit_waiters,
+                resolution_wait_seconds=tuple(self._resolution_wait_seconds),
                 causal_wait_seconds=tuple(self._causal_wait_seconds),
                 audit_wait_seconds=tuple(self._audit_wait_seconds),
             )
