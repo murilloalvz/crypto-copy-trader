@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
-from typing import Iterable
 
 from src.pons_curve_state_progress_v64 import PonsCurveProgressSnapshotV64
 from src.protocol_deployment_attestation_v66 import (
@@ -14,6 +13,8 @@ from src.protocol_deployment_attestation_v66 import (
 
 
 PONS_LAUNCH_QUALITY_EVIDENCE_VERSION = "pons_launch_quality_evidence_v67_raw"
+PONS_CHAIN_NAMESPACE_V67 = "eip155"
+PONS_CHAIN_REFERENCE_V67 = "4663"
 
 
 @dataclass(frozen=True)
@@ -21,8 +22,10 @@ class PonsLaunchStaticEvidenceV67:
     token_address: str
     curve_address: str
     deployer_address: str
+    launch_block_number: int
     launch_chain_time: int
     launch_observed_at: int
+    evidence_observed_at: int
     dev_quote_spent_raw: int | None
     dev_tokens_received_raw: int | None
     launch_supply_raw: int | None
@@ -51,6 +54,7 @@ class PonsDeployerHistoryEvidenceV67:
 class PonsPriorFingerprintEvidenceV67:
     fingerprint_key: str
     before_chain_time: int
+    history_observed_at: int
     window_seconds: int
     prior_matching_launch_count: int | None
     distinct_prior_deployer_count: int | None
@@ -142,15 +146,31 @@ def _pct(num: int, den: int) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _validate_deployment(item: ProtocolDeploymentAttestationV66) -> None:
+    if item.protocol_key.strip().lower() != "pons":
+        raise ValueError("deployment attestation must identify Pons")
+    if item.generation.strip().lower() != "v2":
+        raise ValueError("deployment attestation must identify Pons v2")
+    if (
+        item.chain.namespace != PONS_CHAIN_NAMESPACE_V67
+        or item.chain.reference != PONS_CHAIN_REFERENCE_V67
+    ):
+        raise ValueError("deployment attestation must identify Robinhood Chain eip155:4663")
+
+
 def _validate_static(item: PonsLaunchStaticEvidenceV67) -> None:
     _address(item.token_address, "token_address")
     _address(item.curve_address, "curve_address")
     _address(item.deployer_address, "deployer_address")
     _required(item.evidence_reference, "evidence_reference")
-    if item.launch_chain_time < 0 or item.launch_observed_at < 0:
-        raise ValueError("launch timestamps must be non-negative")
+    if item.launch_block_number < 0:
+        raise ValueError("launch_block_number must be non-negative")
+    if min(item.launch_chain_time, item.launch_observed_at, item.evidence_observed_at) < 0:
+        raise ValueError("launch/evidence timestamps must be non-negative")
     if item.launch_observed_at < item.launch_chain_time:
         raise ValueError("launch_observed_at cannot precede launch_chain_time")
+    if item.evidence_observed_at < item.launch_observed_at:
+        raise ValueError("evidence_observed_at cannot precede launch_observed_at")
     for name in ("dev_quote_spent_raw", "dev_tokens_received_raw", "launch_supply_raw"):
         value = getattr(item, name)
         if value is not None and int(value) < 0:
@@ -185,7 +205,7 @@ def _validate_deployer(item: PonsDeployerHistoryEvidenceV67) -> None:
 def _validate_fingerprint(item: PonsPriorFingerprintEvidenceV67) -> None:
     _required(item.fingerprint_key, "fingerprint_key")
     _required(item.evidence_reference, "evidence_reference")
-    if item.before_chain_time < 0 or item.window_seconds <= 0:
+    if item.before_chain_time < 0 or item.history_observed_at < 0 or item.window_seconds <= 0:
         raise ValueError("fingerprint clocks must be positive/non-negative")
     for name in ("prior_matching_launch_count", "distinct_prior_deployer_count"):
         value = getattr(item, name)
@@ -235,22 +255,23 @@ def build_pons_launch_quality_evidence_v67(
     curve_progress: PonsCurveProgressSnapshotV64 | None = None,
     opening_tax: PonsOpeningTaxEvidenceV67 | None = None,
 ) -> PonsLaunchQualityEvidenceV67:
-    """Join causal raw evidence without turning it into a weighted launch score.
+    """Join causal raw evidence without producing a weighted launch score.
 
-    Every optional family fails to missing if its provenance is incomplete or postdates ``as_of``.
-    Opening-tax evidence has an additional hard gate: the exact read capability must be authoritative
-    in the v66 deployment attestation. Source-only or third-party descriptions cannot populate it.
+    Every optional family degrades to missing when provenance is incomplete or unavailable by
+    ``as_of``. Opening-tax evidence has an additional hard gate: the exact read capability must be
+    authoritative in the v66 deployment attestation. No Bodkin/source score or threshold is used.
     """
 
     cutoff = int(as_of)
     if cutoff < 0:
         raise ValueError("as_of must be non-negative")
+    _validate_deployment(deployment)
     _validate_static(static)
     token = _address(static.token_address, "token_address")
     deployer = _address(static.deployer_address, "deployer_address")
 
-    if static.launch_observed_at > cutoff:
-        raise ValueError("launch evidence was not known by as_of")
+    if static.evidence_observed_at > cutoff:
+        raise ValueError("static launch bundle was not known by as_of")
     if deployment.observed_at > cutoff:
         raise ValueError("deployment attestation was not known by as_of")
 
@@ -290,6 +311,8 @@ def build_pons_launch_quality_evidence_v67(
         _validate_deployer(deployer_history)
         if _address(deployer_history.deployer_address, "deployer_address") != deployer:
             raise ValueError("deployer history address mismatch")
+        if deployer_history.before_block_number >= static.launch_block_number:
+            raise ValueError("deployer history cutoff must be strictly before launch block")
         if deployer_history.history_observed_at <= cutoff and deployer_history.history_complete:
             prior_launches = deployer_history.prior_launch_count
             prior_graduated = deployer_history.prior_graduated_count
@@ -302,13 +325,13 @@ def build_pons_launch_quality_evidence_v67(
     fp_deployers = None
     if fingerprint_history is not None:
         _validate_fingerprint(fingerprint_history)
-        if fingerprint_history.before_chain_time > static.launch_chain_time:
-            raise ValueError("fingerprint history cutoff cannot follow launch chain time")
-        if fingerprint_history.evidence_complete:
+        if fingerprint_history.before_chain_time >= static.launch_chain_time:
+            raise ValueError("fingerprint history cutoff must be strictly before launch chain time")
+        if fingerprint_history.history_observed_at <= cutoff and fingerprint_history.evidence_complete:
             fp_count = fingerprint_history.prior_matching_launch_count
             fp_deployers = fingerprint_history.distinct_prior_deployer_count
         else:
-            flags.append("fingerprint_history_incomplete")
+            flags.append("fingerprint_history_incomplete_or_not_known_by_as_of")
 
     early_event_count = None
     early_buy_count = None
