@@ -68,7 +68,10 @@ class OpportunityWalletConvergenceV60Tests(unittest.TestCase):
         )
         self.assertEqual(evidence.eligible_cohort_size, 0)
         self.assertEqual(evidence.cohort_event_count, 0)
-        self.assertIn("no_cohort_members_frozen_before_as_of", evidence.data_quality_flags)
+        self.assertIn(
+            "no_cohort_members_frozen_before_market_anchor",
+            evidence.data_quality_flags,
+        )
 
     def test_old_chain_event_discovered_late_is_excluded(self):
         members = [FrozenWalletCohortMemberV60("A", "cohort", 50, "x")]
