@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,9 +40,10 @@ class MarketObservationTransactionIdentityTests(unittest.TestCase):
     def test_existing_pre_transaction_identity_db_is_migrated_without_data_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
-            with sqlite3.connect(path) as conn:
-                conn.execute(
-                    """CREATE TABLE market_trade_observations (
+            with closing(sqlite3.connect(path)) as conn:
+                with conn:
+                    conn.execute(
+                        """CREATE TABLE market_trade_observations (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         acquisition_run_key TEXT NOT NULL,
                         event_key TEXT NOT NULL,
@@ -56,14 +58,14 @@ class MarketObservationTransactionIdentityTests(unittest.TestCase):
                         venue TEXT,
                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(acquisition_run_key, event_key)
-                    )"""
-                )
-                conn.execute(
-                    """INSERT INTO market_trade_observations(
+                        )"""
+                    )
+                    conn.execute(
+                        """INSERT INTO market_trade_observations(
                         acquisition_run_key, event_key, source_provider, token_mint, side,
                         chain_time, observed_at, wallet_address, venue
-                    ) VALUES ('old-run', 'old-event', 'native', 'T', 'buy', 90, 91, 'OLD', 'pump')"""
-                )
+                        ) VALUES ('old-run', 'old-event', 'native', 'T', 'buy', 90, 91, 'OLD', 'pump')"""
+                    )
 
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 item = MarketTradeObservation(
@@ -84,7 +86,7 @@ class MarketObservationTransactionIdentityTests(unittest.TestCase):
                 old_rows = load_market_trades(acquisition_run_key="old-run", token_mint="T")
                 new_rows = load_market_trades(acquisition_run_key="new-run", token_mint="T")
 
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(market_trade_observations)")}
 
         self.assertIn("transaction_key", columns)

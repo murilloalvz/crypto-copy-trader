@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,8 +13,9 @@ class DatabaseTransactionModeTests(unittest.TestCase):
     def test_connection_uses_immediate_and_keeps_selects_transaction_free(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "connection-mode.db"
-            with sqlite3.connect(path) as raw:
-                raw.execute("CREATE TABLE probe(id INTEGER PRIMARY KEY, value TEXT)")
+            with closing(sqlite3.connect(path)) as raw:
+                with raw:
+                    raw.execute("CREATE TABLE probe(id INTEGER PRIMARY KEY, value TEXT)")
 
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with database.connection() as conn:
@@ -26,7 +28,7 @@ class DatabaseTransactionModeTests(unittest.TestCase):
                     busy_timeout_ms = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
 
             self.assertEqual(busy_timeout_ms, 10_000)
-            with sqlite3.connect(path) as raw:
+            with closing(sqlite3.connect(path)) as raw:
                 self.assertEqual(raw.execute("SELECT COUNT(*) FROM probe").fetchone()[0], 1)
 
 

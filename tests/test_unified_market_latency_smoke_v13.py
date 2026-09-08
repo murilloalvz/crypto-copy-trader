@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager
+from contextlib import closing
 from unittest.mock import patch
 
 import unified_market_latency_smoke_v13 as v13
@@ -24,7 +25,7 @@ class UnifiedMarketLatencySmokeV13Tests(unittest.TestCase):
                 conn.close()
 
         try:
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 before_sync = int(conn.execute("PRAGMA synchronous").fetchone()[0])
 
             with patch.object(v13, "connection", temp_connection):
@@ -33,7 +34,7 @@ class UnifiedMarketLatencySmokeV13Tests(unittest.TestCase):
             self.assertEqual(mode, "wal")
             self.assertEqual(synchronous, before_sync)
 
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 persisted_mode = str(
                     conn.execute("PRAGMA journal_mode").fetchone()[0]
                 ).lower()
