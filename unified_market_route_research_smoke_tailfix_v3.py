@@ -12,6 +12,7 @@ from src.pumpswap_resolver_wait_trace_v53 import TracedDeadlineBoundedResolverV5
 from src.pumpswap_sequence_barrier_trace_v50 import PumpSwapSequenceBarrierTraceV50
 from src.pumpswap_shared_transport_resolver_tailfix_v2 import SharedTransportDeadlineResolverTailfixV2
 from src.pumpswap_stateful_priority_scheduler_v51 import StatefulPriorityEagerDemotingReadyAssetSchedulerV51
+from src.sqlite_write_admission import sqlite_write_admission_snapshot
 import unified_market_latency_smoke_v19 as v19
 import unified_market_route_research_smoke_tailfix_v1 as tailfix_v1
 import unified_market_route_research_smoke_tailfix_v2 as tailfix_v2
@@ -19,7 +20,11 @@ import unified_market_route_research_smoke_v50 as v50
 
 
 V3_PUMP_COMMIT_WORKERS = 1
-V3_PUMPSWAP_COMMIT_WORKERS = 4
+# The inherited v19 topology still owns one PumpSwap finalizer coroutine. Keep one commit executor
+# worker until that upstream consumer topology is explicitly changed and proven; extra executor
+# threads alone would create no concurrency and would falsely imply capacity.
+V3_PUMPSWAP_COMMIT_WORKERS = 1
+last_headroom_report_v3 = None
 
 
 class TrackedSequenceBarrierTraceV3(PumpSwapSequenceBarrierTraceV50):
@@ -52,8 +57,6 @@ class HardenedTracedSharedTransportResolverV3(
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         HardenedTracedSharedTransportResolverV3.last_instance = self
-        # Preserve every inherited diagnostic seam. The wrappers intentionally use class-level
-        # instance registries and must all refer to the concrete resolver that actually ran.
         TracedDeadlineBoundedResolverV53.last_instance = self
         SharedTransportDeadlineResolverTailfixV2.last_instance = self
         DeadlineBoundedParallelHedgedResolverV52.last_instance = self
@@ -61,19 +64,27 @@ class HardenedTracedSharedTransportResolverV3(
 
 
 async def run_smoke_tailfix_v3(**kwargs) -> None:
-    """Run the full preventive latency-hardening profile without changing market semantics.
+    """Run preventive latency hardening without changing market/economic semantics.
 
-    V3 keeps Tailfix v1 token serialization and Tailfix v2 bounded RPC decision release, then:
+    V3 keeps Tailfix-v1 token serialization and Tailfix-v2 bounded RPC decision release, then:
     * moves resolver SQLite lookup/write/reload stages off the asyncio event loop while retaining
       same-pool single-flight until canonical durable identity exists;
-    * provisions a bounded PumpSwap commit lane for independently ready tokens while preserving
-      same-token locks (upstream finalizer concurrency remains whatever the inherited path proves);
+    * gives pool-identity durability its own bounded highest SQLite admission priority because it is
+      upstream of normalization/reservation;
     * retains the exact v50 causal clocks and emits an 80%-of-gate engineering warning before the
       official immutable 5s PumpSwap p95 gate is breached.
+
+    The global ingress-sequence reservation watermark remains intentionally conservative: without a
+    proven token identity an unresolved earlier pool may alias a later token, so removing that
+    barrier would weaken per-asset FIFO causality. V3 attacks the safe root cause instead: keep the
+    unknown-identity critical section short and non-blocking to the event loop.
 
     Detector thresholds, reservation order, per-asset FIFO, replay/as-of, provider pacing and every
     V68 economic definition remain untouched.
     """
+
+    global last_headroom_report_v3
+    last_headroom_report_v3 = None
 
     original_v2_resolver = tailfix_v2.TracedSharedTransportResolverTailfixV2
     original_commit_lanes = tailfix_v1.CrossSourceTokenCommitLanes
@@ -128,6 +139,7 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             if priority_scheduler is not None
             else None
         )
+        sqlite_snapshot = sqlite_write_admission_snapshot()
 
         print(
             f"resolver_durable_mapping_writes={resolver_snapshot.durable_mapping_writes} "
@@ -161,6 +173,14 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             f"{v19._latency_summary_ms(list(resolver_snapshot.pool_lock_hold_seconds))}"
         )
         print(
+            f"sqlite_resolution_acquisitions={sqlite_snapshot.resolution_acquisitions} "
+            f"max_resolution_waiters={sqlite_snapshot.max_resolution_waiters}"
+        )
+        print(
+            "sqlite_resolution_admission_wait_ms "
+            f"{v19._latency_summary_ms(list(sqlite_snapshot.resolution_wait_seconds))}"
+        )
+        print(
             f"commit_lane_capacity=pump:{lane_snapshot.pump_workers},"
             f"pumpswap:{lane_snapshot.pumpswap_workers} "
             f"observed_max_parallel={lane_snapshot.max_parallel_calls} "
@@ -173,6 +193,7 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             priority_snapshot=priority_snapshot,
             commit_snapshot=lane_snapshot,
         )
+        last_headroom_report_v3 = report
         print("\nTAILFIX V3 LATENCY HEADROOM REPORT")
         print(
             f"official_pipeline_p95_gate_ms=5000.0 early_warning_ms=4000.0 "
@@ -191,7 +212,8 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             "tailfix_v3_headroom_note=stage warnings are engineering-only and never replace or "
             "relax the frozen 11/11 systems gate. Stage clocks are not summed because pipeline "
             "stages can overlap. A warning means a single stage already consumes >=80% of the "
-            "official 5s p95 budget and should be investigated before another economic run."
+            "official 5s p95 budget; the systems wrapper will HOLD economic promotion even if the "
+            "official 11/11 gate itself still passes."
         )
 
         if run_error is None:
@@ -205,6 +227,10 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
                 raise RuntimeError(
                     "tailfix v3 durable mapping accounting mismatch: every historical/network "
                     "identity must be durable before publication"
+                )
+            if sqlite_snapshot.resolution_acquisitions != resolver_snapshot.durable_mapping_writes:
+                raise RuntimeError(
+                    "tailfix v3 resolution-priority admission accounting mismatch"
                 )
             if lane_snapshot.pump_workers != V3_PUMP_COMMIT_WORKERS:
                 raise RuntimeError("tailfix v3 Pump commit lane capacity mismatch")
@@ -221,8 +247,8 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = tailfix_v2.build_parser()
     parser.description = (
-        "Systems-only Tailfix v3: async durable pool identity stages, inherited bounded RPC "
-        "transport, token-serialized commit capacity and proactive latency headroom diagnostics"
+        "Systems-only Tailfix v3: async durable pool identity stages, resolution-priority SQLite "
+        "admission, inherited bounded RPC transport and proactive latency headroom diagnostics"
     )
     return parser
 
