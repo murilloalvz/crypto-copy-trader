@@ -101,6 +101,21 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
             object.insert("timestamp".into(), json!(event.timestamp));
             object.insert("sol_amount_raw".into(), json!(event.sol_amount));
             object.insert("token_amount_raw".into(), json!(event.token_amount));
+
+            // Extra research fields are intentionally outside the frozen parity field set.
+            // They expose same-unit quote flow/reserve evidence decoded by Carbon without
+            // changing the 150-event semantic parity denominator.
+            object.insert("quote_mint".into(), json!(event.quote.to_string()));
+            object.insert("quote_amount_raw".into(), json!(event.quote_amount));
+            object.insert(
+                "virtual_quote_reserves_raw".into(),
+                json!(event.virtual_quote_reserves),
+            );
+            object.insert(
+                "real_quote_reserves_raw".into(),
+                json!(event.real_quote_reserves),
+            );
+            object.insert("mayhem_mode".into(), json!(event.mayhem_mode));
         }
         "pump_create" => {
             let Some(event) = CreateEventEvent::decode(payload) else {
@@ -129,6 +144,14 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
             object.insert("timestamp".into(), json!(event.timestamp));
             object.insert("base_amount_raw".into(), json!(event.base_amount_out));
             object.insert("quote_amount_raw".into(), json!(event.quote_amount_in));
+            object.insert(
+                "pool_base_token_reserves_raw".into(),
+                json!(event.pool_base_token_reserves),
+            );
+            object.insert(
+                "pool_quote_token_reserves_raw".into(),
+                json!(event.pool_quote_token_reserves),
+            );
         }
         "pumpswap_sell" => {
             let Some(event) = SellEventEvent::decode(payload) else {
@@ -142,6 +165,14 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
             object.insert("timestamp".into(), json!(event.timestamp));
             object.insert("base_amount_raw".into(), json!(event.base_amount_in));
             object.insert("quote_amount_raw".into(), json!(event.quote_amount_out));
+            object.insert(
+                "pool_base_token_reserves_raw".into(),
+                json!(event.pool_base_token_reserves),
+            );
+            object.insert(
+                "pool_quote_token_reserves_raw".into(),
+                json!(event.pool_quote_token_reserves),
+            );
         }
         "pumpswap_create_pool" => {
             let Some(event) = CreatePoolEventEvent::decode(payload) else {
