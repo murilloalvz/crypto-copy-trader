@@ -6,6 +6,7 @@ on:
       - spike/commodity-signal-plane-v0
     paths:
       - 'benchmarks/market_regime_detector_v0/**'
+      - 'tests/test_market_regime_causal_intensity.py'
       - '.github/workflows/market-regime-detector-v0.yml'
   workflow_dispatch:
 
@@ -22,13 +23,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install River research dependency
+      - name: Install research dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements.txt
           pip install river
 
-      - name: Compile benchmark
-        run: python -m py_compile benchmarks/market_regime_detector_v0/benchmark.py
+      - name: Compile benchmark and causal adapter
+        run: |
+          python -m py_compile benchmarks/market_regime_detector_v0/benchmark.py
+          python -m py_compile benchmarks/market_regime_detector_v0/causal_intensity.py
+
+      - name: Run causal intensity adapter tests
+        run: python -m unittest tests.test_market_regime_causal_intensity -v
 
       - name: Run frozen detector benchmark
         run: |
