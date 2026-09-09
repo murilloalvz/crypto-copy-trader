@@ -104,11 +104,13 @@ class CausalMarketIntensityV0Tests(unittest.TestCase):
             self._coverage(
                 start_chain_time=100,
                 end_chain_time=102,
+                available_at=104,
                 evidence_key="a",
             ),
             self._coverage(
                 start_chain_time=102,
                 end_chain_time=104,
+                available_at=104,
                 evidence_key="b",
             ),
         )
@@ -133,7 +135,11 @@ class CausalMarketIntensityV0Tests(unittest.TestCase):
             end_chain_time=104,
             trades=(),
             coverage=(
-                self._coverage(start_chain_time=100, end_chain_time=103),
+                self._coverage(
+                    start_chain_time=100,
+                    end_chain_time=103,
+                    available_at=104,
+                ),
             ),
             bin_seconds=4,
         )
