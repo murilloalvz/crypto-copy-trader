@@ -29,15 +29,17 @@ jobs:
       - name: Targeted tests
         run: python -m unittest tests.test_integrated_market_signal_plane_v1 -v
 
-      - name: Frozen 10k integrated replay
+      - name: Frozen 10k indexed replay
         run: |
-          python -m benchmarks.integrated_market_signal_plane_v1.suite \
+          python -m benchmarks.integrated_market_signal_plane_v1.indexed_suite \
             --events 10000 \
             --seed 68 \
-            --out artifacts/integrated_market_signal_plane_v1/report.json
+            --out artifacts/integrated_market_signal_plane_v1/indexed-report.json
 
       - name: Upload benchmark evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integrated-market-signal-plane-v1
-          path: artifacts/integrated_market_signal_plane_v1/report.json
+          path: artifacts/integrated_market_signal_plane_v1/indexed-report.json
+          if-no-files-found: warn
