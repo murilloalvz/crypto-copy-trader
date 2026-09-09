@@ -48,6 +48,10 @@ class PumpCreationModeFactsV0Tests(unittest.TestCase):
         )
         self.assertIsNone(facts.mayhem_mode)
 
+    def test_observation_cannot_precede_chain_time(self):
+        with self.assertRaises(ValueError):
+            self._obs(chain_time=101, observed_at=100)
+
     def test_exact_mint_isolation(self):
         facts = build_pump_creation_mode_facts_v0(
             token_mint="MINT_A",
