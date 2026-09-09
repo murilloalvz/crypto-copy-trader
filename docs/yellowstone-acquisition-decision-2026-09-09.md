@@ -1,22 +1,20 @@
-# Yellowstone acquisition decision — 2026-09-09
+# Acquisition / corpus decision — 2026-09-09
 
-## Decision
+## Revised decision
 
-Replace high-volume `logsSubscribe -> getTransaction` hydration with a Yellowstone-compatible transaction stream for the next acquisition spike.
+Do **not** pay for production-grade Yellowstone/gRPC before the bot's decoder semantics and opportunity intelligence show enough evidence to justify a live low-latency provider.
 
-Status:
+Current status:
 
-- public JSON-RPC hydration path: **REJECT for high-volume acquisition**;
-- Yellowstone-compatible transaction stream: **ADOPT as next benchmark interface**;
-- provider: **NOT YET SELECTED for production**;
-- first corpus route: **ERPC 1-day free Geyser gRPC trial**;
-- second free-trial route: **Helius LaserStream 2-day trial, subject to approval**;
-- low-cost recurring route after trials: **Alchemy PAYG (~USD 75/TB)**;
-- Carbon runtime: **NOT YET ADOPTED**;
-- Carbon Pump.fun/PumpSwap decoders: **decoder-parity candidates**;
+- public `logsSubscribe -> getTransaction` at full Pump/PumpSwap volume: **REJECT for high-volume live acquisition**;
+- Helius Free historical standard RPC: **ADOPT for decoder corpus and offline research now**;
+- Helius Free Standard WebSockets: **ADOPT candidate for bounded live/shadow research**;
+- paid Yellowstone/gRPC mainnet: **FREEZE / DEFER until live latency and full-coverage validation matter**;
+- Carbon Pump.fun/PumpSwap decoders: **next semantic-parity experiment**;
+- Carbon runtime/provider choice: **NOT YET EVALUATED**;
 - V68: **still NOT_EVALUATED and frozen**.
 
-## Evidence from rejected raw corpus v1
+## Why the previous live HTTP path was rejected
 
 30-second mainnet run over `api.mainnet.solana.com`:
 
@@ -26,119 +24,127 @@ Status:
 - hydrated: 39;
 - hydrate errors: 61;
 - remaining unhydrated at bounded drain timeout: 2,025;
-- all 61 observed hydration errors were HTTP 429 Too Many Requests;
+- all observed hydration errors were HTTP 429 Too Many Requests;
 - successful hydration median was ~37.6s;
 - successful hydration p95 was ~57.3s;
 - corpus validity: false.
 
-Interpretation: a per-signature JSON-RPC fan-out cannot keep up with the target program event rate on the public endpoint and produces latency that is incompatible with early opportunity detection. More workers/retries would increase pressure rather than remove the structural mismatch.
+Interpretation: one HTTP `getTransaction` per live market event cannot keep up with the full target-program event rate on the public endpoint. Increasing workers/retries would amplify rate-limit pressure.
 
-## Existing-solutions-first provider screen
+This rejects that pattern for **high-volume live acquisition** only. It does **not** reject paced historical `getTransaction` for offline research.
 
-Current public documentation reviewed on 2026-09-09:
+## Zero-cost validation path
 
-| Candidate | Raw mainnet Yellowstone suitable for parity | Free path | Paid shape | Current decision |
-|---|---:|---|---|---|
-| ERPC Geyser gRPC | yes | 1-day free trial; EUR 5 temporary card authorization for verification | Standard shared gRPC listed around EUR 198/mo promotional / EUR 398 list | **TRY FIRST** |
-| Helius LaserStream | yes | 2-day mainnet trial by application/review | Business mainnet access around USD 499/mo | **TRY SECOND IF NEEDED** |
-| Alchemy gRPC | yes | no confirmed free mainnet gRPC tier | ~USD 75/TB PAYG, no monthly minimum | **LOW-COST RECURRING CANDIDATE** |
-| NoLimitNodes | yes according to current product pages | marketing pages mention trials, but current mainnet pricing is paid | Pro starts around USD 49/mo flat with 2 gRPC streams | **CHEAP FLAT-RATE CANDIDATE; VERIFY BEFORE USE** |
-| Subglow | Yellowstone-style interface but output is pre-parsed JSON | free trial/no card advertised | USD 99/mo | **NOT RAW DECODER-PARITY INPUT; INTELLIGENCE/PRODUCTION CANDIDATE LATER** |
-| OrbitFlare | full Yellowstone | free gRPC is devnet-only | mainnet shared gRPC ~USD 500/mo | **REJECT FOR FREE MAINNET PARITY** |
-| Triport | full Yellowstone on paid tier | 7-day no-card free tier excludes Yellowstone gRPC | Pro ~USD 249/mo | **REJECT FOR FREE MAINNET PARITY** |
-| Raiden Vortex | Yellowstone/Geyser compatible | trial on request | ~USD 650/mo/region | **DEFER** |
-| Triton | yes | no free public path found | PAYG streaming ~USD 0.08/GB but USD 125 minimum prepaid deposit | **DEFER** |
+Helius currently documents a Free plan with:
 
-Provider claims and prices are not performance evidence. They only determine which candidates are economical enough to benchmark.
+- USD 0/month;
+- 1,000,000 credits/month;
+- 10 RPC requests/sec;
+- Standard WebSockets on mainnet;
+- 5 concurrent WebSocket connections;
+- up to 1,000 subscriptions per connection.
 
-## Why ERPC first
+Current documented credit costs:
 
-ERPC's current documentation explicitly states:
+- standard RPC call: 1 credit;
+- `getSignaturesForAddress`: 1 credit;
+- `getTransaction`: 1 credit;
+- Standard WebSocket streaming: 2 credits per 0.1 MB.
 
-- shared Geyser gRPC is full Yellowstone/Geyser for transaction/account/slot/block subscriptions;
-- all plans have a 1-day free trial;
-- the EUR 5 card event is an authorization used for verification, not an immediate service charge;
-- shared endpoints are IP-allowlisted and can run without token metadata;
-- HTTPS and plaintext HTTP/2 endpoints are supported.
+Therefore decoder semantic parity does not require Yellowstone. A 250 Pump + 250 PumpSwap historical corpus costs roughly ~500 standard RPC credits plus a handful of signature-page calls, assuming no retries/missing rows.
 
-This gives us the lowest-friction path to a raw **mainnet** corpus while preserving the standard Yellowstone wire interface.
-
-The local collector is provider-neutral: TLS/plaintext and auth metadata are configuration, not architecture.
-
-## Cost posture after the free corpus
-
-Do not select a production provider from one short smoke.
-
-Once decoder correctness is established, compare at least:
-
-- delivery latency / `provider_created_at -> received_at` where available;
-- coverage and gaps;
-- duplicate rate;
-- ordering;
-- reconnect/replay behavior;
-- filter semantics;
-- effective monthly cost for Pump + PumpSwap only.
-
-For low filtered volume, Alchemy's per-bandwidth PAYG model is likely economically attractive. For sustained higher volume, a flat plan such as NoLimitNodes may become cheaper. That crossover must be measured from our actual bytes, not guessed.
-
-## Why Yellowstone
-
-A Yellowstone transaction update includes the full transaction plus `TransactionStatusMeta`, slot and transaction index in the stream. This removes the rejected signature-to-HTTP hydration fan-out.
-
-Target path:
+Official research path now:
 
 ```text
-Yellowstone transaction stream
+Helius Free historical RPC
         |
         v
-raw transaction + meta
+Pump / PumpSwap signatures
         |
         v
-same-input decoder parity
-   /                  \
-our decoder        Carbon decoder
-   \                  /
-        canonical event
-             |
-             v
-      bounded memory kernel
+paced getTransaction (5 RPS target)
+        |
+        v
+complete raw transaction + meta corpus
+        |
+        +-------------------+
+        |                   |
+        v                   v
+our decoder            Carbon decoder
+        |                   |
+        +---------+---------+
+                  v
+           semantic parity
 ```
 
-## Spike constraints
+This is intentionally offline. Latency does not matter in this experiment; correctness does.
 
-The first spike is intentionally narrow:
+## What can be validated for free
 
-- Pump + PumpSwap only;
-- successful non-vote transactions only;
-- confirmed commitment initially;
-- exact provider `SubscribeUpdate` protobuf preserved;
-- bounded by duration and max transaction count;
-- no SQLite;
-- no Radar;
-- no V68;
-- no wallet scoring;
-- no execution;
-- no real money;
-- no production provider conclusion from a single short run.
+### 1. Decoder correctness
 
-## Promotion gates
+Using complete historical transactions and metadata:
 
-A raw stream corpus may enter decoder parity only if:
+- venue recognition;
+- mint;
+- side;
+- wallet;
+- base/quote amounts;
+- lifecycle/create events;
+- duplicates/silent drops.
 
-1. transaction updates are captured;
-2. Pump is represented;
-3. PumpSwap is represented;
-4. full transaction info is present for every stored transaction update;
-5. zero local write errors;
-6. zero gRPC stream errors during the bounded smoke;
-7. provider token is not present in artifacts or repository history.
+### 2. Market intelligence offline
 
-Decoder parity then requires, on the same raw updates:
+Once the canonical decoder path is trustworthy, replay historical windows through candidate Market-First features and episode logic. Historical P&L remains discovery evidence, not causal proof.
 
-- recognized transaction coverage 100%;
-- zero silent drops;
-- zero duplicates attributable to the decoder;
-- zero side inversions;
-- zero mint/wallet/amount/lifecycle mismatches.
+### 3. Bounded prospective/shadow research
 
-Only after correctness passes should throughput, delivery latency, reconnect behavior, gaps and provider cost be benchmarked.
+Helius Free Standard WebSockets can be used for mainnet `logsSubscribe`/other standard subscriptions. Any HTTP enrichment must be explicitly bounded below the Free-plan rate limit. This can support low-alert-rate shadow validation; it is not a claim of production full-market coverage.
+
+## What still needs paid/trial streaming later
+
+Only after correctness and economic promise are established do we need to benchmark:
+
+- full live Pump/PumpSwap coverage under bursts;
+- end-to-end delivery latency;
+- reconnect/replay behavior;
+- queue/backlog behavior at market peak;
+- provider failover;
+- production reliability.
+
+At that point Yellowstone/gRPC becomes important because `SubscribeUpdateTransaction` carries full transaction + `TransactionStatusMeta` in the stream and avoids per-signature HTTP fan-out.
+
+## Paid-provider candidates — deferred
+
+Current documented shapes reviewed on 2026-09-09:
+
+| Candidate | Relevant access | Commercial shape | Current decision |
+|---|---|---|---|
+| Helius | Standard WSS free; Enhanced WSS from Developer; mainnet gRPC from Business | Free / ~USD49 Developer / ~USD499 Business | **USE FREE NOW; DEFER PAID** |
+| Alchemy | mainnet Yellowstone-compatible gRPC | ~USD75/TB PAYG, no fixed gRPC monthly minimum documented | **CHEAP PAYG CANDIDATE LATER** |
+| ERPC | mainnet Geyser gRPC | 1-day trial; paid shared plans afterward | **TRIAL CANDIDATE LATER** |
+| NoLimitNodes | Yellowstone according to current product pages | ~USD49/mo entry paid plan | **CHEAP FLAT-RATE CANDIDATE LATER; VERIFY** |
+| QuickNode | mainnet Solana gRPC on higher plans | expensive relative to current stage | **DEFER** |
+
+Provider pricing/claims are screening evidence only, not performance evidence.
+
+## Promotion rule
+
+Do not spend recurring money on streaming infrastructure until at least:
+
+1. decoder semantic parity is established on a clean corpus;
+2. Market-First candidate logic has reproducible offline evidence;
+3. at least one bounded prospective/shadow experiment is worth scaling;
+4. the expected latency/coverage benefit of paid streaming is measurable against a free baseline.
+
+Only then run a provider bake-off and choose by measured latency, coverage, gaps, reconnect behavior, and actual bytes/month.
+
+## Scientific constraints unchanged
+
+- no SQLite/Radar/V68 changes merely to accommodate this corpus work;
+- no real-money execution;
+- no lookahead;
+- systems PASS does not imply economic edge;
+- historical P&L does not imply causal edge;
+- Market-First and Social/Event-First remain independent research tracks;
+- V68 remains `NOT_EVALUATED` until explicitly resumed under a valid protocol.
