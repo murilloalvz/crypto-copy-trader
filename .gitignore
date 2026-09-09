@@ -9,6 +9,7 @@ data/
 logs/*.log
 
 # Local research artifacts / exports
+artifacts/
 *.zip
 *.bundle
 backtest-concurrent*.txt
