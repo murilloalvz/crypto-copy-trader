@@ -30,12 +30,7 @@ async def _subscribe_one(
     commitment: str,
     timeout_seconds: float = 15.0,
 ) -> tuple[int, tuple[str, str]]:
-    """Subscribe one program and tolerate interleaved non-ACK websocket messages.
-
-    The capture window has not started while this function runs. Any early notification
-    from a previously acknowledged subscription is intentionally ignored instead of being
-    misclassified as an acknowledgement.
-    """
+    """Subscribe one program and tolerate interleaved non-ACK websocket messages."""
 
     await websocket.send(
         json.dumps(
@@ -56,8 +51,6 @@ async def _subscribe_one(
         raw = await asyncio.wait_for(websocket.recv(), timeout=remaining)
         message = json.loads(raw)
 
-        # Notifications may interleave after another subscription has already been
-        # acknowledged. They are outside the official capture window and are discarded.
         if message.get("method") == "logsNotification":
             continue
 
@@ -67,7 +60,6 @@ async def _subscribe_one(
             )
 
         if message.get("id") != request_id:
-            # Ignore unrelated JSON-RPC responses rather than treating them as this ACK.
             continue
 
         subscription_id = message.get("result")
@@ -89,6 +81,7 @@ async def capture_raw_transaction_corpus_compat(
     queue_size: int = 2048,
     hydrate_attempts: int = 4,
     hydrate_retry_delay_ms: int = 250,
+    drain_timeout_seconds: float = 30.0,
 ) -> dict:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
@@ -96,6 +89,8 @@ async def capture_raw_transaction_corpus_compat(
         raise ValueError("hydrate_workers/queue_size must be positive")
     if hydrate_attempts <= 0 or hydrate_retry_delay_ms < 0:
         raise ValueError("invalid hydration retry configuration")
+    if drain_timeout_seconds <= 0:
+        raise ValueError("drain_timeout_seconds must be positive")
 
     try:
         import websockets
@@ -150,6 +145,8 @@ async def capture_raw_transaction_corpus_compat(
                     queue.task_done()
 
         workers = [asyncio.create_task(worker()) for _ in range(hydrate_workers)]
+        drain_timed_out = False
+        remaining_unhydrated = 0
 
         try:
             async with websockets.connect(
@@ -173,7 +170,6 @@ async def capture_raw_transaction_corpus_compat(
                     )
                     subscription_map[subscription_id] = mapping
 
-                # Official corpus clocks begin only after BOTH subscriptions are confirmed.
                 started_wall_ns = time.time_ns()
                 started_mono_ns = time.monotonic_ns()
                 deadline_ns = started_mono_ns + int(duration_seconds * 1_000_000_000)
@@ -182,7 +178,7 @@ async def capture_raw_transaction_corpus_compat(
                     {
                         "type": "trace_header",
                         "version": TRACE_VERSION,
-                        "capture_variant": "compat_sequential_handshake_v1_1",
+                        "capture_variant": "compat_sequential_handshake_bounded_drain_v1_2",
                         "rpc_url_host": rpc_client.rpc_host,
                         "commitment": commitment,
                         "duration_seconds": duration_seconds,
@@ -190,6 +186,7 @@ async def capture_raw_transaction_corpus_compat(
                         "hydrate_workers": hydrate_workers,
                         "hydrate_attempts": hydrate_attempts,
                         "hydrate_retry_delay_ms": hydrate_retry_delay_ms,
+                        "drain_timeout_seconds": drain_timeout_seconds,
                         "started_wall_ns": started_wall_ns,
                         "started_monotonic_ns": started_mono_ns,
                         "subscriptions": {
@@ -246,20 +243,37 @@ async def capture_raw_transaction_corpus_compat(
                     else:
                         counters.queued += 1
         finally:
-            await queue.join()
-            for _ in workers:
-                await queue.put(None)
-            await asyncio.gather(*workers)
+            try:
+                await asyncio.wait_for(queue.join(), timeout=drain_timeout_seconds)
+            except asyncio.TimeoutError:
+                drain_timed_out = True
+                remaining_unhydrated = max(
+                    0,
+                    counters.queued
+                    - counters.hydrated
+                    - counters.hydrate_missing
+                    - counters.hydrate_errors,
+                )
+                for task in workers:
+                    task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+            else:
+                for _ in workers:
+                    await queue.put(None)
+                await asyncio.gather(*workers)
 
         finished_wall_ns = time.time_ns()
         summary = {
             "type": "trace_footer",
             "version": TRACE_VERSION,
-            "capture_variant": "compat_sequential_handshake_v1_1",
+            "capture_variant": "compat_sequential_handshake_bounded_drain_v1_2",
             "finished_wall_ns": finished_wall_ns,
+            "drain_timed_out": drain_timed_out,
+            "remaining_unhydrated": remaining_unhydrated,
             "counters": asdict(counters),
             "valid_for_decoder_parity": (
-                counters.queue_overflow == 0
+                not drain_timed_out
+                and counters.queue_overflow == 0
                 and counters.hydrate_missing == 0
                 and counters.hydrate_errors == 0
                 and counters.hydrated == counters.queued
@@ -272,7 +286,10 @@ async def capture_raw_transaction_corpus_compat(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Capture Pump/PumpSwap raw transactions with robust sequential WS handshake."
+        description=(
+            "Capture Pump/PumpSwap raw transactions with robust sequential WS handshake "
+            "and a bounded post-capture hydration drain."
+        )
     )
     parser.add_argument("--rpc-url", required=True)
     parser.add_argument("--out", required=True, type=Path)
@@ -286,6 +303,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--queue-size", type=int, default=2048)
     parser.add_argument("--hydrate-attempts", type=int, default=4)
     parser.add_argument("--hydrate-retry-delay-ms", type=int, default=250)
+    parser.add_argument("--drain-timeout-seconds", type=float, default=30.0)
     return parser
 
 
@@ -301,6 +319,7 @@ def main() -> int:
             queue_size=args.queue_size,
             hydrate_attempts=args.hydrate_attempts,
             hydrate_retry_delay_ms=args.hydrate_retry_delay_ms,
+            drain_timeout_seconds=args.drain_timeout_seconds,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
