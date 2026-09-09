@@ -36,10 +36,19 @@ jobs:
             --seed 68 \
             --out artifacts/integrated_market_signal_plane_v1/indexed-report.json
 
+      - name: Long-horizon differential
+        run: |
+          python -m benchmarks.integrated_market_signal_plane_v1.differential \
+            --seeds 11,29,68,97 \
+            --trades-per-seed 1800 \
+            --out artifacts/integrated_market_signal_plane_v1/differential-report.json
+
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integrated-market-signal-plane-v1
-          path: artifacts/integrated_market_signal_plane_v1/indexed-report.json
+          path: |
+            artifacts/integrated_market_signal_plane_v1/indexed-report.json
+            artifacts/integrated_market_signal_plane_v1/differential-report.json
           if-no-files-found: warn
