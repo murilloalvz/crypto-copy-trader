@@ -31,20 +31,42 @@ class CaptureCounters:
     bytes_protobuf: int = 0
 
 
-def endpoint_target(endpoint: str) -> tuple[str, str]:
-    """Return (grpc_target, safe_host) without retaining URL paths/tokens."""
+def endpoint_connection(endpoint: str) -> tuple[str, str, bool]:
+    """Return (grpc_target, safe_host, use_tls) without retaining path/query data."""
     value = endpoint.strip()
     if not value:
         raise ValueError("endpoint cannot be blank")
     if "://" not in value:
         value = "https://" + value
     parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("endpoint scheme must be http or https")
     if not parsed.hostname:
         raise ValueError("invalid endpoint")
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or (443 if scheme == "https" else 80)
     target = f"{parsed.hostname}:{port}"
     safe_host = parsed.hostname
+    return target, safe_host, scheme == "https"
+
+
+def endpoint_target(endpoint: str) -> tuple[str, str]:
+    """Backward-compatible helper used by tests/docs."""
+    target, safe_host, _ = endpoint_connection(endpoint)
     return target, safe_host
+
+
+def _build_metadata(auth_header: str, auth_token: str) -> tuple[tuple[str, str], ...]:
+    header = auth_header.strip().lower()
+    if header in {"", "none"}:
+        return ()
+    token = auth_token.strip()
+    if not token:
+        raise ValueError(
+            f"authentication header {header!r} requires YELLOWSTONE_AUTH_TOKEN "
+            "(or legacy YELLOWSTONE_X_TOKEN)"
+        )
+    return ((header, token),)
 
 
 def load_generated_modules():
@@ -95,7 +117,8 @@ def _build_footer(
 async def capture(
     *,
     endpoint: str,
-    x_token: str,
+    auth_header: str,
+    auth_token: str,
     out_path: Path,
     duration_seconds: float,
     max_transactions: int,
@@ -107,8 +130,6 @@ async def capture(
         raise ValueError("max_transactions must be positive")
     if commitment not in {"processed", "confirmed", "finalized"}:
         raise ValueError("unsupported commitment")
-    if not x_token.strip():
-        raise ValueError("YELLOWSTONE_X_TOKEN cannot be blank")
 
     try:
         import grpc
@@ -118,7 +139,8 @@ async def capture(
         ) from exc
 
     geyser_pb2, geyser_pb2_grpc = load_generated_modules()
-    target, safe_host = endpoint_target(endpoint)
+    target, safe_host, use_tls = endpoint_connection(endpoint)
+    metadata = _build_metadata(auth_header, auth_token)
 
     commitment_value = {
         "processed": geyser_pb2.PROCESSED,
@@ -153,10 +175,13 @@ async def capture(
             yield item
 
     options = (("grpc.max_receive_message_length", 64 * 1024 * 1024),)
-    credentials = grpc.ssl_channel_credentials()
-    channel = grpc.aio.secure_channel(target, credentials, options=options)
+    if use_tls:
+        channel = grpc.aio.secure_channel(
+            target, grpc.ssl_channel_credentials(), options=options
+        )
+    else:
+        channel = grpc.aio.insecure_channel(target, options=options)
     stub = geyser_pb2_grpc.GeyserStub(channel)
-    metadata = (("x-token", x_token),)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     counters = CaptureCounters()
@@ -174,6 +199,8 @@ async def capture(
                 "version": TRACE_VERSION,
                 "source": "yellowstone_grpc",
                 "endpoint_host": safe_host,
+                "transport": "tls" if use_tls else "plaintext",
+                "auth_header": None if not metadata else metadata[0][0],
                 "commitment": commitment,
                 "duration_seconds": duration_seconds,
                 "max_transactions": max_transactions,
@@ -309,7 +336,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--endpoint",
         default=os.getenv("YELLOWSTONE_ENDPOINT", ""),
-        help="Yellowstone HTTPS endpoint; can also use YELLOWSTONE_ENDPOINT.",
+        help="Yellowstone http(s) endpoint; can also use YELLOWSTONE_ENDPOINT.",
+    )
+    parser.add_argument(
+        "--auth-header",
+        default=os.getenv("YELLOWSTONE_AUTH_HEADER", "x-token"),
+        help=(
+            "gRPC metadata header for provider auth (default: x-token). "
+            "Use 'none' for IP-allowlisted/no-token providers such as ERPC."
+        ),
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--duration-seconds", type=float, default=30.0)
@@ -330,20 +365,18 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    x_token = os.getenv("YELLOWSTONE_X_TOKEN", "").strip()
-    if not x_token:
-        print(
-            "Missing YELLOWSTONE_X_TOKEN. Keep provider tokens in the environment, "
-            "not in shell history or repository files.",
-            file=sys.stderr,
-        )
-        return 2
+
+    auth_token = os.getenv(
+        "YELLOWSTONE_AUTH_TOKEN",
+        os.getenv("YELLOWSTONE_X_TOKEN", ""),
+    ).strip()
 
     try:
         footer = asyncio.run(
             capture(
                 endpoint=args.endpoint,
-                x_token=x_token,
+                auth_header=args.auth_header,
+                auth_token=auth_token,
                 out_path=args.out,
                 duration_seconds=args.duration_seconds,
                 max_transactions=args.max_transactions,
