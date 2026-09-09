@@ -51,8 +51,10 @@ class IntegratedMarketSignalPlaneV1Tests(unittest.TestCase):
             report = run_integrated(records)
 
         self.assertEqual(report["adapter"]["parity_pct"], 100.0)
-        self.assertEqual(report["detector"]["parity_pct"], 100.0)
-        self.assertEqual(report["detector"]["mismatches"], 0)
+        self.assertEqual(report["detector"]["baseline"]["parity_pct"], 100.0)
+        self.assertEqual(report["detector"]["baseline"]["mismatches"], 0)
+        self.assertEqual(report["detector"]["candidate"]["parity_pct"], 100.0)
+        self.assertEqual(report["detector"]["candidate"]["mismatches"], 0)
         self.assertEqual(
             report["burst_research_handoff"]["accounted"], report["record_count"]
         )
