@@ -6,6 +6,29 @@ runtime, adapted behind a hot-path handoff boundary, or rejected.
 This benchmark is additive and offline. It does **not** change the frozen Market Radar,
 V68, economics, live acquisition, provider choice, or execution.
 
+## Result
+
+CI run `34396395162` produced:
+
+`ADAPT_CARBON_RUNTIME_BOUNDARY`
+
+At 5,000 paced events/s:
+
+- stock fast Carbon pipeline p95: `0.0231155 ms`;
+- 5 ms inline stall every 100 events raised pipeline p95 to `5.3822833 ms`;
+- the event immediately after a stalled event had p50 `6.440415 ms`;
+- the same slow work behind the bounded async handoff left pipeline p95 at `0.022765 ms`;
+- representative handoff drops: `0`;
+- unpaced burst saturated the 1,024 handoff buffer and produced `3,875` explicit,
+  reconciled drops out of 5,000 events.
+
+Decision: use Carbon as datasource/decoder/runtime shell **with a strict bounded and
+observable hot-path handoff**. Do not run slow persistence, enrichment, research, reports,
+or other awaitable I/O inline in Carbon's central processor loop. A production boundary
+must never silently drop on saturation.
+
+See `docs/carbon-runtime-replay-decision-2026-09-09.md` for the decision record.
+
 ## Why this exists
 
 `PASS_CARBON_DECODER_PARITY_V1` established exact semantic correctness for the maintained
@@ -88,6 +111,6 @@ The suite generates `Cargo.lock` on first run if absent, builds the Rust runner 
 `--locked`, executes all four frozen scenarios, writes individual reports plus
 `suite-report.json`, and prints the verdict.
 
-After the first successful run, commit the generated
-`benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.lock` so the exact dependency
-resolution remains reproducible.
+The CI workflow commits the generated
+`benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.lock` after the frozen verdict passes,
+so the dependency resolution is preserved byte-for-byte from the successful runner.
