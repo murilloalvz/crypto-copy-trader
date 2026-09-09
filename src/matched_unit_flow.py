@@ -1,13 +1,13 @@
 """Causal same-unit flow/reserve facts for Market-First research.
 
 The generic market flow snapshot intentionally carries USD notionals while protocol
-liquidity can be expressed in raw quote-token units.  This module closes that
+liquidity can be expressed in raw quote-token units. This module closes that
 dimensional gap without manufacturing a price conversion: each observation pairs a
 raw quote amount with a reserve reported in the *same quote asset and raw unit*.
 
 Surfaces are never blended implicitly. Pump bonding-curve liquidity, PumpSwap pools,
 and any future venues remain separate by ``venue + market_surface_key +
-quote_asset_key + reserve_kind``.  The output is descriptive research evidence only;
+quote_asset_key + reserve_kind``. The output is descriptive research evidence only;
 it has no score, confidence, recommendation, or trading action.
 """
 
@@ -71,10 +71,24 @@ class MatchedUnitFlowFactsV0:
 
 
 def _require_text(name: str, value: str) -> str:
-    normalized = str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    normalized = value.strip()
     if not normalized:
         raise ValueError(f"{name} cannot be empty")
     return normalized
+
+
+def _require_nonnegative_int(name: str, value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _require_positive_int(name: str, value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def validate_matched_unit_flow_observation(item: MatchedUnitFlowObservation) -> None:
@@ -86,14 +100,12 @@ def validate_matched_unit_flow_observation(item: MatchedUnitFlowObservation) -> 
     _require_text("evidence_key", item.evidence_key)
     if item.side not in _VALID_SIDES:
         raise ValueError("side must be 'buy' or 'sell'")
-    if int(item.chain_time) < 0 or int(item.observed_at) < 0:
-        raise ValueError("chain_time and observed_at must be non-negative")
-    if int(item.observed_at) < int(item.chain_time):
+    _require_nonnegative_int("chain_time", item.chain_time)
+    _require_nonnegative_int("observed_at", item.observed_at)
+    if item.observed_at < item.chain_time:
         raise ValueError("observed_at cannot precede chain_time")
-    if isinstance(item.quote_amount_raw, bool) or int(item.quote_amount_raw) <= 0:
-        raise ValueError("quote_amount_raw must be a positive integer")
-    if isinstance(item.quote_reserve_raw, bool) or int(item.quote_reserve_raw) <= 0:
-        raise ValueError("quote_reserve_raw must be a positive integer")
+    _require_positive_int("quote_amount_raw", item.quote_amount_raw)
+    _require_positive_int("quote_reserve_raw", item.quote_reserve_raw)
 
 
 def _canonicalize_eligible(
@@ -146,8 +158,8 @@ def _build_surface_window(
         for item in rows
     )
     gross_quote = sum(item.quote_amount_raw for item in rows)
-    first_reserve = int(first.quote_reserve_raw)
-    last_reserve = int(rows[-1].quote_reserve_raw)
+    first_reserve = first.quote_reserve_raw
+    last_reserve = rows[-1].quote_reserve_raw
     signed_event_fraction = sum(
         (1.0 if item.side == "buy" else -1.0)
         * (float(item.quote_amount_raw) / float(item.quote_reserve_raw))
@@ -158,11 +170,11 @@ def _build_surface_window(
     )
 
     quality: set[str] = set()
-    if first_reserve != last_reserve:
+    if any(item.quote_reserve_raw != first_reserve for item in rows[1:]):
         quality.add("event_reported_quote_reserve_changed_within_window")
 
     return MatchedUnitFlowSurfaceWindowV0(
-        window_seconds=int(window_seconds),
+        window_seconds=window_seconds,
         venue=first.venue,
         market_surface_key=first.market_surface_key,
         quote_asset_key=first.quote_asset_key,
@@ -170,8 +182,8 @@ def _build_surface_window(
         event_count=len(rows),
         buy_count=buy_count,
         sell_count=sell_count,
-        signed_quote_amount_raw=int(signed_quote),
-        gross_quote_amount_raw=int(gross_quote),
+        signed_quote_amount_raw=signed_quote,
+        gross_quote_amount_raw=gross_quote,
         first_quote_reserve_raw=first_reserve,
         last_quote_reserve_raw=last_reserve,
         signed_quote_over_first_reserve_pct=(
@@ -204,25 +216,25 @@ def build_matched_unit_flow_facts_v0(
     """
 
     token_mint = _require_text("token_mint", token_mint)
-    if int(as_of) < 0:
-        raise ValueError("as_of must be non-negative")
-    if not windows_seconds or any(int(item) <= 0 for item in windows_seconds):
+    _require_nonnegative_int("as_of", as_of)
+    if not windows_seconds:
         raise ValueError("windows_seconds must contain positive values")
-    if len(set(int(item) for item in windows_seconds)) != len(windows_seconds):
+    normalized_windows: list[int] = []
+    for item in windows_seconds:
+        normalized_windows.append(_require_positive_int("window_seconds", item))
+    if len(set(normalized_windows)) != len(normalized_windows):
         raise ValueError("windows_seconds must be unique")
+    windows = tuple(sorted(normalized_windows))
 
-    normalized_windows = tuple(sorted(int(item) for item in windows_seconds))
     eligible = _canonicalize_eligible(
-        tuple(observations), token_mint=token_mint, as_of=int(as_of)
+        tuple(observations), token_mint=token_mint, as_of=as_of
     )
 
     output: list[MatchedUnitFlowSurfaceWindowV0] = []
-    for window_seconds in normalized_windows:
-        lower_bound = int(as_of) - window_seconds
+    for window_seconds in windows:
+        lower_bound = as_of - window_seconds
         in_window = tuple(
-            item
-            for item in eligible
-            if lower_bound < item.chain_time <= int(as_of)
+            item for item in eligible if lower_bound < item.chain_time <= as_of
         )
         grouped: dict[
             tuple[str, str, str, str], list[MatchedUnitFlowObservation]
@@ -252,8 +264,8 @@ def build_matched_unit_flow_facts_v0(
     return MatchedUnitFlowFactsV0(
         method_version=MATCHED_UNIT_FLOW_VERSION,
         token_mint=token_mint,
-        as_of=int(as_of),
-        windows_seconds=normalized_windows,
+        as_of=as_of,
+        windows_seconds=windows,
         surface_windows=tuple(output),
         available=bool(output),
         provenance_keys=provenance,
