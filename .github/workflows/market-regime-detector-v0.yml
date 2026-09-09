@@ -29,13 +29,18 @@ jobs:
           pip install -r requirements.txt
           pip install river
 
-      - name: Compile benchmark and causal adapter
+      - name: Compile research modules
         run: |
           python -m py_compile benchmarks/market_regime_detector_v0/benchmark.py
           python -m py_compile benchmarks/market_regime_detector_v0/causal_intensity.py
+          python -m py_compile benchmarks/market_regime_detector_v0/covered_page_hinkley.py
+          python -m py_compile benchmarks/market_regime_detector_v0/covered_smoke.py
 
       - name: Run causal intensity adapter tests
         run: python -m unittest tests.test_market_regime_causal_intensity -v
+
+      - name: Run coverage-aware Page-Hinkley smoke
+        run: python -m benchmarks.market_regime_detector_v0.covered_smoke
 
       - name: Run frozen detector benchmark
         run: |
