@@ -105,7 +105,7 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
             // Extra research fields are intentionally outside the frozen parity field set.
             // They expose same-unit quote flow/reserve evidence decoded by Carbon without
             // changing the 150-event semantic parity denominator.
-            object.insert("quote_mint".into(), json!(event.quote.to_string()));
+            object.insert("quote_mint".into(), json!(event.quote_mint.to_string()));
             object.insert("quote_amount_raw".into(), json!(event.quote_amount));
             object.insert(
                 "virtual_quote_reserves_raw".into(),
