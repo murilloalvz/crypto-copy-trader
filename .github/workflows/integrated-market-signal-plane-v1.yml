@@ -1,0 +1,43 @@
+name: Integrated market signal plane v1
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - "benchmarks/integrated_market_signal_plane_v1/**"
+      - "benchmarks/commodity_signal_plane_v0/**"
+      - "src/market_opportunity_radar.py"
+      - "tests/test_integrated_market_signal_plane_v1.py"
+      - ".github/workflows/integrated-market-signal-plane-v1.yml"
+  workflow_dispatch:
+
+jobs:
+  integrated-signal-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Targeted tests
+        run: python -m unittest tests.test_integrated_market_signal_plane_v1 -v
+
+      - name: Frozen 10k integrated replay
+        run: |
+          python -m benchmarks.integrated_market_signal_plane_v1.suite \
+            --events 10000 \
+            --seed 68 \
+            --out artifacts/integrated_market_signal_plane_v1/report.json
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrated-market-signal-plane-v1
+          path: artifacts/integrated_market_signal_plane_v1/report.json
