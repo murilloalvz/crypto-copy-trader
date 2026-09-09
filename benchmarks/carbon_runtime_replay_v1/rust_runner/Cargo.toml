@@ -1,0 +1,13 @@
+[package]
+name = "carbon-runtime-replay-v1"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96.1"
+publish = false
+
+[dependencies]
+async-trait = "=0.1.89"
+carbon-core = "=2.0.0"
+serde_json = "=1.0.145"
+tokio = { version = "=1.48.0", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-util = "=0.7.17"
