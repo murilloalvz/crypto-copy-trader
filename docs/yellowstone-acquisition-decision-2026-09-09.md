@@ -9,7 +9,9 @@ Status:
 - public JSON-RPC hydration path: **REJECT for high-volume acquisition**;
 - Yellowstone-compatible transaction stream: **ADOPT as next benchmark interface**;
 - provider: **NOT YET SELECTED for production**;
-- first low-cost benchmark candidate: **Alchemy PAYG**;
+- first corpus route: **ERPC 1-day free Geyser gRPC trial**;
+- second free-trial route: **Helius LaserStream 2-day trial, subject to approval**;
+- low-cost recurring route after trials: **Alchemy PAYG (~USD 75/TB)**;
 - Carbon runtime: **NOT YET ADOPTED**;
 - Carbon Pump.fun/PumpSwap decoders: **decoder-parity candidates**;
 - V68: **still NOT_EVALUATED and frozen**.
@@ -35,19 +37,49 @@ Interpretation: a per-signature JSON-RPC fan-out cannot keep up with the target 
 
 Current public documentation reviewed on 2026-09-09:
 
-| Candidate | Mainnet Yellowstone access | Commercial shape | Current decision |
-|---|---|---|---|
-| Alchemy | yes | ~$75/TB PAYG, no monthly minimum; PAYG team required | **BENCHMARK FIRST** |
-| Helius LaserStream gRPC | yes | Business tier, ~$499/month | defer until edge justifies cost |
-| QuickNode Solana gRPC | yes | Scale/Business, ~$499/month | defer until edge justifies cost |
-| Chainstack Yellowstone | yes | add-on starting around $49/month | possible later bake-off |
-| Shyft Yellowstone | yes | paid plans starting around $199/month | possible later bake-off |
+| Candidate | Raw mainnet Yellowstone suitable for parity | Free path | Paid shape | Current decision |
+|---|---:|---|---|---|
+| ERPC Geyser gRPC | yes | 1-day free trial; EUR 5 temporary card authorization for verification | Standard shared gRPC listed around EUR 198/mo promotional / EUR 398 list | **TRY FIRST** |
+| Helius LaserStream | yes | 2-day mainnet trial by application/review | Business mainnet access around USD 499/mo | **TRY SECOND IF NEEDED** |
+| Alchemy gRPC | yes | no confirmed free mainnet gRPC tier | ~USD 75/TB PAYG, no monthly minimum | **LOW-COST RECURRING CANDIDATE** |
+| NoLimitNodes | yes according to current product pages | marketing pages mention trials, but current mainnet pricing is paid | Pro starts around USD 49/mo flat with 2 gRPC streams | **CHEAP FLAT-RATE CANDIDATE; VERIFY BEFORE USE** |
+| Subglow | Yellowstone-style interface but output is pre-parsed JSON | free trial/no card advertised | USD 99/mo | **NOT RAW DECODER-PARITY INPUT; INTELLIGENCE/PRODUCTION CANDIDATE LATER** |
+| OrbitFlare | full Yellowstone | free gRPC is devnet-only | mainnet shared gRPC ~USD 500/mo | **REJECT FOR FREE MAINNET PARITY** |
+| Triport | full Yellowstone on paid tier | 7-day no-card free tier excludes Yellowstone gRPC | Pro ~USD 249/mo | **REJECT FOR FREE MAINNET PARITY** |
+| Raiden Vortex | Yellowstone/Geyser compatible | trial on request | ~USD 650/mo/region | **DEFER** |
+| Triton | yes | no free public path found | PAYG streaming ~USD 0.08/GB but USD 125 minimum prepaid deposit | **DEFER** |
 
-Pricing and product claims are vendor documentation, not performance evidence.
+Provider claims and prices are not performance evidence. They only determine which candidates are economical enough to benchmark.
 
-### Cost guard for the first Alchemy smoke
+## Why ERPC first
 
-Alchemy documents Yellowstone gRPC as bandwidth-priced and currently states that Solana gRPC usage does **not** count toward the normal dashboard usage-limit mechanism. Therefore the first smoke must not rely on a dashboard spend cap. The local collector is bounded by both duration and transaction count (`--max-transactions 500`), and only one smoke should be run before reviewing actual captured bytes and provider behavior.
+ERPC's current documentation explicitly states:
+
+- shared Geyser gRPC is full Yellowstone/Geyser for transaction/account/slot/block subscriptions;
+- all plans have a 1-day free trial;
+- the EUR 5 card event is an authorization used for verification, not an immediate service charge;
+- shared endpoints are IP-allowlisted and can run without token metadata;
+- HTTPS and plaintext HTTP/2 endpoints are supported.
+
+This gives us the lowest-friction path to a raw **mainnet** corpus while preserving the standard Yellowstone wire interface.
+
+The local collector is provider-neutral: TLS/plaintext and auth metadata are configuration, not architecture.
+
+## Cost posture after the free corpus
+
+Do not select a production provider from one short smoke.
+
+Once decoder correctness is established, compare at least:
+
+- delivery latency / `provider_created_at -> received_at` where available;
+- coverage and gaps;
+- duplicate rate;
+- ordering;
+- reconnect/replay behavior;
+- filter semantics;
+- effective monthly cost for Pump + PumpSwap only.
+
+For low filtered volume, Alchemy's per-bandwidth PAYG model is likely economically attractive. For sustained higher volume, a flat plan such as NoLimitNodes may become cheaper. That crossover must be measured from our actual bytes, not guessed.
 
 ## Why Yellowstone
 
