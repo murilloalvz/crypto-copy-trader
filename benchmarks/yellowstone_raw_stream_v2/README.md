@@ -29,9 +29,24 @@ The protobuf payload is preserved exactly so later Rust/Carbon parity work can d
 
 ## Provider neutrality
 
-The client uses the standard Yellowstone `Geyser.Subscribe` API and `x-token` metadata. Provider tokens are read only from `YELLOWSTONE_X_TOKEN`; do not put them in commands, files, screenshots, or commits.
+The client uses the standard Yellowstone `Geyser.Subscribe` API and supports:
 
-The first candidate is Alchemy mainnet gRPC because, as of 2026-09-09, it is Yellowstone-compatible and pay-as-you-go rather than requiring a ~$499/month gRPC tier. This is a benchmark candidate, not a production provider verdict.
+- TLS (`https://`) or plaintext HTTP/2 (`http://`) endpoints;
+- arbitrary gRPC auth metadata header via `YELLOWSTONE_AUTH_HEADER`;
+- token auth via `YELLOWSTONE_AUTH_TOKEN` (legacy `YELLOWSTONE_X_TOKEN` also works);
+- IP-allowlisted/no-token providers with `YELLOWSTONE_AUTH_HEADER=none`.
+
+Never put provider secrets in commands, files, screenshots, artifacts, or commits.
+
+## Provider order for the current spike
+
+As of 2026-09-09:
+
+1. **ERPC 1-day Geyser gRPC trial** — preferred first raw-mainnet corpus attempt. Full Yellowstone/Geyser transaction stream; IP allowlist; no token metadata. The trial is free, but ERPC requires a temporary EUR 5 card authorization for verification before the trial is started.
+2. **Helius LaserStream 2-day trial** — valid second option if ERPC is inconvenient; application is manually reviewed.
+3. **Alchemy PAYG** — low recurring cost candidate after free trials; approximately USD 75/TB with no monthly minimum, but requires billing/PAYG access.
+
+Free tiers that only expose RPC/WebSocket, devnet gRPC, or pre-parsed JSON are not substitutes for this raw-mainnet decoder-parity corpus.
 
 ## Setup
 
@@ -46,16 +61,28 @@ python -m benchmarks.yellowstone_raw_stream_v2.generate_proto
 
 Generated stubs and downloaded proto files remain ignored local research artifacts.
 
-## Environment
+## Environment — ERPC trial
 
-For Alchemy:
+After ERPC assigns the endpoint and your current public IP has been allowlisted:
 
 ```powershell
-$env:YELLOWSTONE_ENDPOINT = "https://solana-mainnet.streaming.alchemy.com"
-$env:YELLOWSTONE_X_TOKEN = "<API KEY>"
+$env:YELLOWSTONE_ENDPOINT = "<EXACT ERPC ENDPOINT>"
+$env:YELLOWSTONE_AUTH_HEADER = "none"
+Remove-Item Env:YELLOWSTONE_AUTH_TOKEN -ErrorAction SilentlyContinue
+Remove-Item Env:YELLOWSTONE_X_TOKEN -ErrorAction SilentlyContinue
 ```
 
-Keep the token private.
+Use the endpoint exactly as provided. ERPC supports both HTTPS and plaintext HTTP endpoints; the collector chooses TLS based on the URL scheme.
+
+## Environment — token-auth provider
+
+Example for a provider using `x-token`:
+
+```powershell
+$env:YELLOWSTONE_ENDPOINT = "<PROVIDER ENDPOINT>"
+$env:YELLOWSTONE_AUTH_HEADER = "x-token"
+$env:YELLOWSTONE_AUTH_TOKEN = "<PRIVATE API KEY>"
+```
 
 ## Bounded parity smoke
 
