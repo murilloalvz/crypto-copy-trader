@@ -218,8 +218,10 @@ async def capture(
 
                 counters.transaction_updates += 1
                 tx_update = message.transaction
-                tx_info = tx_update.transaction
-                if tx_info is None:
+                if tx_update.HasField("transaction"):
+                    tx_info = tx_update.transaction
+                else:
+                    tx_info = None
                     counters.missing_transaction_info += 1
 
                 if first_transaction_wall_ns is None:
