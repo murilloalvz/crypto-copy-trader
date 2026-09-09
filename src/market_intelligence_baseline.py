@@ -1,25 +1,28 @@
 """Score-free Market-First intelligence baseline.
 
 This module composes already-validated causal protocol facts and opportunity snapshot
-features into one immutable research surface.  It intentionally does NOT assign an
+features into one immutable research surface. It intentionally does NOT assign an
 opportunity score, confidence, recommendation, TAKE/SKIP action, or social evidence.
 
-The baseline is descriptive.  It answers questions such as:
+The baseline is descriptive. It answers questions such as:
 - what lifecycle/protocol state was causally known at T0?
 - how intense and directionally imbalanced was observed flow?
 - how broad/repetitive was participant activity where identity coverage permits it?
 - what price response was observed over the same causal window?
 - what executable quote/liquidity/impact evidence was actually available?
+- when same-unit quote flow/reserve evidence exists, how large was flow relative to
+  the event-reported liquidity surface?
 
-Liquidity-normalized on-chain flow is deliberately not manufactured here.  The
-current generic FlowTradeObservation carries USD notional while protocol reserves are
-raw token/quote units; dividing those quantities would be dimensionally invalid.
-A future protocol adapter may add matched-unit raw flow/reserve observations.
+The generic FlowTradeObservation still carries USD notional while protocol reserves
+can be raw token/quote units, so those quantities are never divided. Optional
+``MatchedUnitFlowFactsV0`` closes that dimensional gap only when numerator and
+denominator are explicitly expressed in the same quote asset and raw unit.
 """
 
 from dataclasses import dataclass
 
 from src.market_protocol_facts import MarketProtocolFactsV0
+from src.matched_unit_flow import MatchedUnitFlowFactsV0
 from src.opportunity_snapshot_core import (
     ExecutionSurfaceFeatures,
     FlowWindowFeatures,
@@ -27,7 +30,9 @@ from src.opportunity_snapshot_core import (
 )
 
 
-MARKET_INTELLIGENCE_BASELINE_VERSION = "market_intelligence_baseline_v0"
+MARKET_INTELLIGENCE_BASELINE_VERSION = (
+    "market_intelligence_baseline_v0_1_matched_unit_flow"
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,7 @@ class MarketIntelligenceBaselineV0:
     protocol: MarketProtocolFactsV0
     windows: tuple[MarketWindowMicrostructureFactsV0, ...]
     execution: ExecutionSurfaceFeatures
+    matched_unit_flow: MatchedUnitFlowFactsV0 | None
     liquidity_normalized_flow_available: bool
     provenance_keys: tuple[str, ...]
     data_quality_flags: tuple[str, ...]
@@ -107,11 +113,12 @@ def build_market_intelligence_baseline_v0(
     *,
     protocol: MarketProtocolFactsV0,
     snapshot: OpportunitySnapshotCoreV1,
+    matched_unit_flow: MatchedUnitFlowFactsV0 | None = None,
 ) -> MarketIntelligenceBaselineV0:
     """Compose causal Market-First facts known at the same exact T0.
 
-    Both inputs must already have been built causally.  This boundary refuses token or
-    clock mismatches rather than silently joining evidence from different snapshots.
+    Inputs must already have been built causally. This boundary refuses token or clock
+    mismatches rather than silently joining evidence from different snapshots.
     Social/event evidence is intentionally outside this type and remains an independent
     research track.
     """
@@ -120,6 +127,11 @@ def build_market_intelligence_baseline_v0(
         raise ValueError("protocol and snapshot token_mint must match")
     if protocol.as_of != snapshot.as_of:
         raise ValueError("protocol and snapshot as_of must match exactly")
+    if matched_unit_flow is not None:
+        if matched_unit_flow.token_mint != protocol.token_mint:
+            raise ValueError("matched_unit_flow token_mint must match baseline token")
+        if matched_unit_flow.as_of != protocol.as_of:
+            raise ValueError("matched_unit_flow as_of must match baseline as_of exactly")
 
     windows = tuple(_window_facts(window) for window in snapshot.flow_windows)
 
@@ -129,12 +141,20 @@ def build_market_intelligence_baseline_v0(
         quality.update(window.data_quality_flags)
     quality.update(snapshot.execution.data_quality_flags)
 
-    # We currently have USD flow notionals but raw protocol reserve units.  Keep the
-    # dimensional gap explicit instead of manufacturing a liquidity-normalized metric.
-    quality.add("matched_unit_liquidity_normalized_flow_unavailable")
+    matched_available = bool(matched_unit_flow and matched_unit_flow.available)
+    if matched_unit_flow is not None:
+        quality.update(matched_unit_flow.data_quality_flags)
+        for surface in matched_unit_flow.surface_windows:
+            quality.update(surface.data_quality_flags)
+    if not matched_available:
+        quality.add("matched_unit_liquidity_normalized_flow_unavailable")
 
     if not windows:
         quality.add("flow_windows_unavailable")
+
+    provenance = list(protocol.provenance_keys)
+    if matched_unit_flow is not None:
+        provenance.extend(matched_unit_flow.provenance_keys)
 
     return MarketIntelligenceBaselineV0(
         method_version=MARKET_INTELLIGENCE_BASELINE_VERSION,
@@ -144,7 +164,8 @@ def build_market_intelligence_baseline_v0(
         protocol=protocol,
         windows=windows,
         execution=snapshot.execution,
-        liquidity_normalized_flow_available=False,
-        provenance_keys=tuple(protocol.provenance_keys),
+        matched_unit_flow=matched_unit_flow,
+        liquidity_normalized_flow_available=matched_available,
+        provenance_keys=tuple(dict.fromkeys(provenance)),
         data_quality_flags=tuple(sorted(quality)),
     )
