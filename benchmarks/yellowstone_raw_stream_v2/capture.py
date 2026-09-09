@@ -21,6 +21,8 @@ TRACE_VERSION = "yellowstone_raw_transaction_trace_v2"
 class CaptureCounters:
     updates_seen: int = 0
     transaction_updates: int = 0
+    pump_updates: int = 0
+    pumpswap_updates: int = 0
     ping_updates: int = 0
     other_updates: int = 0
     missing_transaction_info: int = 0
@@ -66,6 +68,8 @@ def _build_footer(
     started_wall_ns: int,
     finished_wall_ns: int,
     first_transaction_wall_ns: int | None,
+    stop_reason: str,
+    max_transactions: int,
 ) -> dict[str, Any]:
     return {
         "type": "trace_footer",
@@ -74,9 +78,13 @@ def _build_footer(
         "finished_wall_ns": finished_wall_ns,
         "first_transaction_wall_ns": first_transaction_wall_ns,
         "elapsed_seconds": (finished_wall_ns - started_wall_ns) / 1_000_000_000,
+        "stop_reason": stop_reason,
+        "max_transactions": max_transactions,
         "counters": asdict(counters),
         "valid_for_decoder_parity": (
             counters.transaction_updates > 0
+            and counters.pump_updates > 0
+            and counters.pumpswap_updates > 0
             and counters.missing_transaction_info == 0
             and counters.write_errors == 0
             and counters.stream_errors == 0
@@ -90,10 +98,13 @@ async def capture(
     x_token: str,
     out_path: Path,
     duration_seconds: float,
+    max_transactions: int,
     commitment: str,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
+    if max_transactions <= 0:
+        raise ValueError("max_transactions must be positive")
     if commitment not in {"processed", "confirmed", "finalized"}:
         raise ValueError("unsupported commitment")
     if not x_token.strip():
@@ -141,12 +152,7 @@ async def capture(
                 return
             yield item
 
-    options = (
-        ("grpc.keepalive_time_ms", 10_000),
-        ("grpc.keepalive_timeout_ms", 5_000),
-        ("grpc.keepalive_permit_without_calls", 1),
-        ("grpc.max_receive_message_length", 64 * 1024 * 1024),
-    )
+    options = (("grpc.max_receive_message_length", 64 * 1024 * 1024),)
     credentials = grpc.ssl_channel_credentials()
     channel = grpc.aio.secure_channel(target, credentials, options=options)
     stub = geyser_pb2_grpc.GeyserStub(channel)
@@ -158,6 +164,7 @@ async def capture(
     started_mono_ns = time.monotonic_ns()
     deadline_ns = started_mono_ns + int(duration_seconds * 1_000_000_000)
     first_transaction_wall_ns: int | None = None
+    stop_reason = "duration"
 
     with out_path.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
         _write_jsonl(
@@ -169,6 +176,7 @@ async def capture(
                 "endpoint_host": safe_host,
                 "commitment": commitment,
                 "duration_seconds": duration_seconds,
+                "max_transactions": max_transactions,
                 "programs": {
                     "pump": PUMP_PROGRAM_ID,
                     "pumpswap": PUMPSWAP_PROGRAM_ID,
@@ -183,6 +191,10 @@ async def capture(
         call = stub.Subscribe(request_iter(), metadata=metadata)
         try:
             while time.monotonic_ns() < deadline_ns:
+                if counters.transaction_updates >= max_transactions:
+                    stop_reason = "max_transactions"
+                    break
+
                 remaining = max(
                     0.001,
                     (deadline_ns - time.monotonic_ns()) / 1_000_000_000,
@@ -190,12 +202,14 @@ async def capture(
                 try:
                     message = await asyncio.wait_for(call.read(), timeout=remaining)
                 except asyncio.TimeoutError:
+                    stop_reason = "duration"
                     break
                 except grpc.aio.AioRpcError:
                     counters.stream_errors += 1
                     raise
 
                 if message is grpc.aio.EOF:
+                    stop_reason = "stream_eof"
                     break
 
                 received_wall_ns = time.time_ns()
@@ -217,6 +231,12 @@ async def capture(
                     continue
 
                 counters.transaction_updates += 1
+                filters = set(message.filters)
+                if "pump" in filters:
+                    counters.pump_updates += 1
+                if "pumpswap" in filters:
+                    counters.pumpswap_updates += 1
+
                 tx_update = message.transaction
                 if tx_update.HasField("transaction"):
                     tx_info = tx_update.transaction
@@ -257,7 +277,7 @@ async def capture(
                     counters.write_errors += 1
                     raise
 
-                if counters.transaction_updates % 256 == 0:
+                if counters.transaction_updates % 128 == 0:
                     handle.flush()
 
         finally:
@@ -270,6 +290,8 @@ async def capture(
             started_wall_ns=started_wall_ns,
             finished_wall_ns=finished_wall_ns,
             first_transaction_wall_ns=first_transaction_wall_ns,
+            stop_reason=stop_reason,
+            max_transactions=max_transactions,
         )
         _write_jsonl(handle, footer)
         handle.flush()
@@ -291,6 +313,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--duration-seconds", type=float, default=30.0)
+    parser.add_argument("--max-transactions", type=int, default=500)
     parser.add_argument(
         "--commitment",
         choices=("processed", "confirmed", "finalized"),
@@ -323,6 +346,7 @@ def main() -> int:
                 x_token=x_token,
                 out_path=args.out,
                 duration_seconds=args.duration_seconds,
+                max_transactions=args.max_transactions,
                 commitment=args.commitment,
             )
         )
