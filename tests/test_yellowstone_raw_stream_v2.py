@@ -3,6 +3,8 @@ import unittest
 from benchmarks.yellowstone_raw_stream_v2.capture import (
     CaptureCounters,
     _build_footer,
+    _build_metadata,
+    endpoint_connection,
     endpoint_target,
 )
 
@@ -14,6 +16,22 @@ class YellowstoneRawStreamV2Tests(unittest.TestCase):
         )
         self.assertEqual(target, "example.rpc.invalid:443")
         self.assertEqual(safe_host, "example.rpc.invalid")
+
+    def test_endpoint_connection_supports_tls_and_plaintext(self):
+        self.assertEqual(
+            endpoint_connection("https://grpc.example.invalid"),
+            ("grpc.example.invalid:443", "grpc.example.invalid", True),
+        )
+        self.assertEqual(
+            endpoint_connection("http://grpc.example.invalid:10000"),
+            ("grpc.example.invalid:10000", "grpc.example.invalid", False),
+        )
+
+    def test_auth_metadata_supports_token_and_ip_allowlist(self):
+        self.assertEqual(_build_metadata("none", ""), ())
+        self.assertEqual(_build_metadata("x-token", "secret"), (("x-token", "secret"),))
+        with self.assertRaises(ValueError):
+            _build_metadata("x-token", "")
 
     def test_footer_requires_both_venues_and_zero_errors(self):
         counters = CaptureCounters(
