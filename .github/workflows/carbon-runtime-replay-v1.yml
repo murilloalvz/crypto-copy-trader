@@ -1,0 +1,68 @@
+name: Carbon runtime replay v1
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - "benchmarks/carbon_runtime_replay_v1/**"
+      - "tests/test_carbon_runtime_replay_v1.py"
+      - ".github/workflows/carbon-runtime-replay-v1.yml"
+  workflow_dispatch:
+
+jobs:
+  runtime-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Test suite classifier
+        run: python -m unittest tests.test_carbon_runtime_replay_v1 -v
+
+      - name: Set up Rust 1.96.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.1
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile --manifest-path benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.toml
+
+      - name: Cargo check
+        run: cargo check --locked --manifest-path benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.toml
+
+      - name: Run frozen runtime replay suite
+        run: |
+          python -m benchmarks.carbon_runtime_replay_v1.suite \
+            --events 5000 \
+            --out-dir artifacts/carbon_runtime_replay_v1-ci
+
+      - name: Require structural adaptation verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path("artifacts/carbon_runtime_replay_v1-ci/suite-report.json").read_text()
+          )
+          verdict = report["verdict"]["classification"]
+          print(json.dumps(report["verdict"], indent=2, sort_keys=True))
+          if verdict != "ADAPT_CARBON_RUNTIME_BOUNDARY":
+              raise SystemExit(f"unexpected verdict: {verdict}")
+          PY
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: carbon-runtime-replay-v1
+          path: |
+            artifacts/carbon_runtime_replay_v1-ci/
+            benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.lock
