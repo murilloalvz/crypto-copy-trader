@@ -1,0 +1,42 @@
+name: Market regime detector v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'benchmarks/market_regime_detector_v0/**'
+      - '.github/workflows/market-regime-detector-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install River research dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install river
+
+      - name: Compile benchmark
+        run: python -m py_compile benchmarks/market_regime_detector_v0/benchmark.py
+
+      - name: Run frozen detector benchmark
+        run: |
+          python -m benchmarks.market_regime_detector_v0.benchmark \
+            --out artifacts/market_regime_detector_v0/report.json
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-regime-detector-v0-report
+          path: artifacts/market_regime_detector_v0/report.json
