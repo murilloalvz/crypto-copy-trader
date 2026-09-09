@@ -16,6 +16,9 @@ from benchmarks.commodity_signal_plane_v0.benchmark import (
     generate_synthetic_trace,
     load_trace,
 )
+from benchmarks.integrated_market_signal_plane_v1.optimized_kernel import (
+    PrevalidatedBoundedMemoryRadarState,
+)
 
 VERSION = "integrated_market_signal_plane_v1"
 REPRESENTATIVE_EPS = 5_000.0
@@ -153,7 +156,6 @@ def _simulate_bounded_research_handoff(
 
     for sequence, arrival in enumerate(arrivals_s):
         completion_queue = [x for x in completion_queue if x > arrival]
-        # Tokio mpsc capacity counts buffered messages; one item may be in service.
         if len(completion_queue) >= buffer + 1:
             dropped += 1
             continue
@@ -187,15 +189,30 @@ def _fixed_arrivals(count: int, eps: float) -> list[float]:
     return [index * gap for index in range(count)]
 
 
+def _service_report(service_s: list[float], late_inserts: int) -> dict:
+    mean_service = sum(service_s) / len(service_s) if service_s else 0.0
+    return {
+        "mean_ms": mean_service * 1000.0,
+        "p95_ms": _percentile(service_s, 95.0) * 1000.0,
+        "p99_ms": _percentile(service_s, 99.0) * 1000.0,
+        "measured_capacity_eps_from_mean": (1.0 / mean_service) if mean_service > 0 else math.inf,
+        "late_chain_time_inserts": late_inserts,
+    }
+
+
 def run_integrated(records: Iterable[TraceRecord]) -> dict:
     records = tuple(records)
     reference = ReferenceRadarState()
-    kernel = BoundedMemoryRadarState()
+    baseline = BoundedMemoryRadarState()
+    candidate = PrevalidatedBoundedMemoryRadarState()
 
     adapter_exact = 0
-    parity_matches = 0
-    parity_mismatches: list[dict] = []
-    service_s: list[float] = []
+    baseline_matches = 0
+    candidate_matches = 0
+    baseline_mismatches: list[dict] = []
+    candidate_mismatches: list[dict] = []
+    baseline_service_s: list[float] = []
+    candidate_service_s: list[float] = []
     trade_decisions = 0
 
     for record in records:
@@ -205,54 +222,72 @@ def run_integrated(records: Iterable[TraceRecord]) -> dict:
             adapter_exact += 1
 
         reference_trigger = reference.ingest(record)
+
         started = time.perf_counter_ns()
-        kernel_trigger = kernel.ingest(decoded)
-        service_s.append((time.perf_counter_ns() - started) / 1_000_000_000.0)
+        baseline_trigger = baseline.ingest(decoded)
+        baseline_service_s.append((time.perf_counter_ns() - started) / 1_000_000_000.0)
+
+        started = time.perf_counter_ns()
+        candidate_trigger = candidate.ingest(decoded)
+        candidate_service_s.append((time.perf_counter_ns() - started) / 1_000_000_000.0)
 
         if record.kind == "trade":
             trade_decisions += 1
             expected = _trigger_snapshot(reference_trigger)
-            actual = _trigger_snapshot(kernel_trigger)
-            if expected == actual:
-                parity_matches += 1
+            baseline_actual = _trigger_snapshot(baseline_trigger)
+            candidate_actual = _trigger_snapshot(candidate_trigger)
+            if expected == baseline_actual:
+                baseline_matches += 1
             else:
-                parity_mismatches.append(
-                    {
-                        "sequence": record.sequence,
-                        "expected": expected,
-                        "actual": actual,
-                    }
+                baseline_mismatches.append(
+                    {"sequence": record.sequence, "expected": expected, "actual": baseline_actual}
+                )
+            if expected == candidate_actual:
+                candidate_matches += 1
+            else:
+                candidate_mismatches.append(
+                    {"sequence": record.sequence, "expected": expected, "actual": candidate_actual}
                 )
 
-    kernel_p95_ms = _percentile(service_s, 95.0) * 1000.0
-    kernel_p99_ms = _percentile(service_s, 99.0) * 1000.0
-    mean_service = sum(service_s) / len(service_s) if service_s else 0.0
-    measured_capacity_eps = (1.0 / mean_service) if mean_service > 0 else math.inf
+    baseline_report = _service_report(baseline_service_s, baseline.late_chain_time_inserts)
+    candidate_report = _service_report(candidate_service_s, candidate.late_chain_time_inserts)
+    baseline_capacity = baseline_report["measured_capacity_eps_from_mean"]
+    candidate_capacity = candidate_report["measured_capacity_eps_from_mean"]
+    candidate_report["capacity_gain_pct_vs_baseline"] = (
+        100.0 * (candidate_capacity / baseline_capacity - 1.0)
+        if baseline_capacity and math.isfinite(baseline_capacity) and math.isfinite(candidate_capacity)
+        else None
+    )
 
     scenarios: dict[str, dict] = {}
     for name, eps in (("representative_5k", REPRESENTATIVE_EPS), ("headroom_7_5k", HEADROOM_EPS)):
         arrivals = _fixed_arrivals(len(records), eps)
-        kernel_queue = _simulate_single_worker(arrivals, service_s)
+        baseline_queue = _simulate_single_worker(arrivals, baseline_service_s)
+        candidate_queue = _simulate_single_worker(arrivals, candidate_service_s)
         research = _simulate_bounded_research_handoff(
-            kernel_queue["completion_times_s"], buffer=RESEARCH_BUFFER
+            candidate_queue["completion_times_s"], buffer=RESEARCH_BUFFER
         )
-        kernel_queue = {k: v for k, v in kernel_queue.items() if k != "completion_times_s"}
         scenarios[name] = {
             "eps": eps,
-            "kernel_queue": kernel_queue,
+            "baseline_kernel_queue": {
+                k: v for k, v in baseline_queue.items() if k != "completion_times_s"
+            },
+            "candidate_kernel_queue": {
+                k: v for k, v in candidate_queue.items() if k != "completion_times_s"
+            },
             "research_handoff": research,
         }
 
-    burst_arrivals = [0.0 for _ in records]
     burst = _simulate_bounded_research_handoff(
-        burst_arrivals, buffer=RESEARCH_BUFFER, burst=True
+        [0.0 for _ in records], buffer=RESEARCH_BUFFER, burst=True
     )
 
     checks = {
         "canonical_adapter_exact": adapter_exact == len(records),
-        "detector_parity_100": parity_matches == trade_decisions and not parity_mismatches,
-        "representative_kernel_no_backlog": scenarios["representative_5k"]["kernel_queue"]["backlog_at_source_end"] == 0,
-        "headroom_kernel_no_backlog": scenarios["headroom_7_5k"]["kernel_queue"]["backlog_at_source_end"] == 0,
+        "baseline_detector_parity_100": baseline_matches == trade_decisions and not baseline_mismatches,
+        "candidate_detector_parity_100": candidate_matches == trade_decisions and not candidate_mismatches,
+        "representative_candidate_no_backlog": scenarios["representative_5k"]["candidate_kernel_queue"]["backlog_at_source_end"] == 0,
+        "headroom_candidate_no_backlog": scenarios["headroom_7_5k"]["candidate_kernel_queue"]["backlog_at_source_end"] == 0,
         "representative_research_zero_drop": scenarios["representative_5k"]["research_handoff"]["dropped"] == 0,
         "headroom_research_zero_drop": scenarios["headroom_7_5k"]["research_handoff"]["dropped"] == 0,
         "burst_accounting_explicit": burst["accounted"] == len(records),
@@ -263,16 +298,19 @@ def run_integrated(records: Iterable[TraceRecord]) -> dict:
     if all(checks.values()):
         classification = "PASS_INTEGRATED_MARKET_SIGNAL_PLANE_V1"
         interpretation = (
-            "The canonical adapter and memory-first Radar kernel compose correctly, sustain the frozen "
-            "5k events/s representative rate plus 1.5x headroom in the measured replay, and isolate slow "
-            "research work behind a bounded handoff with explicit overload accounting."
+            "The prevalidated memory-kernel candidate preserves frozen Radar semantics and sustains "
+            "the frozen 5k events/s representative rate plus 1.5x headroom; slow research work remains "
+            "isolated behind explicit bounded accounting. Candidate is eligible for production-safe refactor."
         )
-    elif not checks["canonical_adapter_exact"] or not checks["detector_parity_100"]:
+    elif not checks["canonical_adapter_exact"] or not checks["candidate_detector_parity_100"]:
         classification = "FAIL_INTEGRATED_SIGNAL_SEMANTICS"
-        interpretation = "Canonical adapter or frozen Radar semantics diverged; do not optimize around this failure."
-    elif not checks["representative_kernel_no_backlog"] or not checks["headroom_kernel_no_backlog"]:
-        classification = "OPTIMIZE_OR_PARTITION_MEMORY_KERNEL"
-        interpretation = "Correctness holds but the Python memory kernel lacks frozen 5k/7.5k capacity headroom."
+        interpretation = "Canonical adapter or optimized candidate diverged from the frozen Radar oracle."
+    elif not checks["representative_candidate_no_backlog"] or not checks["headroom_candidate_no_backlog"]:
+        classification = "PARTITION_OR_INCREMENTALIZE_MEMORY_KERNEL"
+        interpretation = (
+            "Validation removal alone is insufficient. Keep semantics frozen and move to indexed/incremental "
+            "rolling-window state or partitioned per-asset execution."
+        )
     else:
         classification = "ADAPT_RESEARCH_HANDOFF_POLICY"
         interpretation = "Kernel capacity/correctness holds but bounded downstream handoff policy needs adaptation."
@@ -294,17 +332,22 @@ def run_integrated(records: Iterable[TraceRecord]) -> dict:
             "parity_pct": 100.0 if not records else 100.0 * adapter_exact / len(records),
         },
         "detector": {
-            "exact_matches": parity_matches,
-            "mismatches": len(parity_mismatches),
-            "parity_pct": 100.0 if trade_decisions == 0 else 100.0 * parity_matches / trade_decisions,
-            "first_mismatches": parity_mismatches[:20],
+            "baseline": {
+                "exact_matches": baseline_matches,
+                "mismatches": len(baseline_mismatches),
+                "parity_pct": 100.0 if trade_decisions == 0 else 100.0 * baseline_matches / trade_decisions,
+                "first_mismatches": baseline_mismatches[:20],
+            },
+            "candidate": {
+                "exact_matches": candidate_matches,
+                "mismatches": len(candidate_mismatches),
+                "parity_pct": 100.0 if trade_decisions == 0 else 100.0 * candidate_matches / trade_decisions,
+                "first_mismatches": candidate_mismatches[:20],
+            },
         },
         "kernel_service": {
-            "mean_ms": mean_service * 1000.0,
-            "p95_ms": kernel_p95_ms,
-            "p99_ms": kernel_p99_ms,
-            "measured_capacity_eps_from_mean": measured_capacity_eps,
-            "late_chain_time_inserts": kernel.late_chain_time_inserts,
+            "baseline": baseline_report,
+            "prevalidated_candidate": candidate_report,
         },
         "scenarios": scenarios,
         "burst_research_handoff": burst,
@@ -315,6 +358,7 @@ def run_integrated(records: Iterable[TraceRecord]) -> dict:
             "decoder_semantics": "PASS_CARBON_DECODER_PARITY_V1 (150/150 exact events)",
             "carbon_runtime_boundary": "ADAPT_CARBON_RUNTIME_BOUNDARY",
             "this_benchmark_boundary": "canonical event -> adapter -> memory kernel -> bounded research handoff",
+            "optimization_scope": "benchmark-local prevalidated evaluator; frozen Radar remains unchanged",
         },
     }
 
