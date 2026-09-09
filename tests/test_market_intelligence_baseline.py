@@ -8,6 +8,10 @@ from src.market_protocol_facts import (
     PumpCurveStateObservation,
     build_market_protocol_facts_v0,
 )
+from src.matched_unit_flow import (
+    MatchedUnitFlowObservation,
+    build_matched_unit_flow_facts_v0,
+)
 from src.opportunity_snapshot_core import (
     FlowTradeObservation,
     build_opportunity_snapshot_core_v1,
@@ -75,6 +79,28 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
             flow_windows_seconds=(30, 300),
         )
 
+    def _matched(self, *, as_of=200, token_mint="MINT_A"):
+        return build_matched_unit_flow_facts_v0(
+            token_mint=token_mint,
+            as_of=as_of,
+            windows_seconds=(30, 300),
+            observations=(
+                MatchedUnitFlowObservation(
+                    token_mint=token_mint,
+                    side="buy",
+                    chain_time=195,
+                    observed_at=196,
+                    venue="pump",
+                    market_surface_key=f"pump:{token_mint}",
+                    quote_asset_key="SOL",
+                    quote_amount_raw=10,
+                    quote_reserve_raw=100,
+                    reserve_kind="pump_virtual_quote",
+                    evidence_key="matched-195",
+                ),
+            ),
+        )
+
     def test_composes_protocol_flow_and_execution_without_score(self):
         baseline = build_market_intelligence_baseline_v0(
             protocol=self._protocol(), snapshot=self._snapshot()
@@ -101,13 +127,49 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
             protocol=self._protocol(), snapshot=self._snapshot()
         )
         self.assertFalse(baseline.liquidity_normalized_flow_available)
+        self.assertIsNone(baseline.matched_unit_flow)
         self.assertIn(
             "matched_unit_liquidity_normalized_flow_unavailable",
             baseline.data_quality_flags,
         )
-        self.assertFalse(
-            hasattr(baseline.windows[0], "liquidity_normalized_flow")
+        self.assertFalse(hasattr(baseline.windows[0], "liquidity_normalized_flow"))
+
+    def test_valid_same_unit_facts_enable_liquidity_normalized_flow(self):
+        matched = self._matched()
+        baseline = build_market_intelligence_baseline_v0(
+            protocol=self._protocol(),
+            snapshot=self._snapshot(),
+            matched_unit_flow=matched,
         )
+        self.assertTrue(baseline.liquidity_normalized_flow_available)
+        self.assertIs(baseline.matched_unit_flow, matched)
+        self.assertNotIn(
+            "matched_unit_liquidity_normalized_flow_unavailable",
+            baseline.data_quality_flags,
+        )
+        fast = next(
+            item for item in matched.surface_windows if item.window_seconds == 30
+        )
+        self.assertAlmostEqual(
+            fast.cumulative_signed_event_reserve_fraction_pct, 10.0
+        )
+        self.assertEqual(baseline.provenance_keys, ("curve-100", "matched-195"))
+
+    def test_refuses_matched_unit_cross_token_join(self):
+        with self.assertRaisesRegex(ValueError, "matched_unit_flow token_mint"):
+            build_market_intelligence_baseline_v0(
+                protocol=self._protocol(),
+                snapshot=self._snapshot(),
+                matched_unit_flow=self._matched(token_mint="MINT_B"),
+            )
+
+    def test_refuses_matched_unit_cross_clock_join(self):
+        with self.assertRaisesRegex(ValueError, "matched_unit_flow as_of"):
+            build_market_intelligence_baseline_v0(
+                protocol=self._protocol(),
+                snapshot=self._snapshot(),
+                matched_unit_flow=self._matched(as_of=201),
+            )
 
     def test_protocol_provenance_is_retained(self):
         baseline = build_market_intelligence_baseline_v0(
