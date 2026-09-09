@@ -15,13 +15,20 @@ class YellowstoneRawStreamV2Tests(unittest.TestCase):
         self.assertEqual(target, "example.rpc.invalid:443")
         self.assertEqual(safe_host, "example.rpc.invalid")
 
-    def test_footer_requires_transaction_and_zero_errors(self):
-        counters = CaptureCounters(transaction_updates=2, bytes_protobuf=100)
+    def test_footer_requires_both_venues_and_zero_errors(self):
+        counters = CaptureCounters(
+            transaction_updates=2,
+            pump_updates=1,
+            pumpswap_updates=1,
+            bytes_protobuf=100,
+        )
         footer = _build_footer(
             counters,
             started_wall_ns=1_000_000_000,
             finished_wall_ns=2_000_000_000,
             first_transaction_wall_ns=1_100_000_000,
+            stop_reason="max_transactions",
+            max_transactions=500,
         )
         self.assertTrue(footer["valid_for_decoder_parity"])
 
@@ -31,6 +38,19 @@ class YellowstoneRawStreamV2Tests(unittest.TestCase):
             started_wall_ns=1_000_000_000,
             finished_wall_ns=2_000_000_000,
             first_transaction_wall_ns=1_100_000_000,
+            stop_reason="duration",
+            max_transactions=500,
+        )
+        self.assertFalse(footer["valid_for_decoder_parity"])
+
+    def test_footer_rejects_single_venue_corpus(self):
+        footer = _build_footer(
+            CaptureCounters(transaction_updates=1, pump_updates=1),
+            started_wall_ns=1,
+            finished_wall_ns=2,
+            first_transaction_wall_ns=1,
+            stop_reason="duration",
+            max_transactions=500,
         )
         self.assertFalse(footer["valid_for_decoder_parity"])
 
@@ -40,6 +60,8 @@ class YellowstoneRawStreamV2Tests(unittest.TestCase):
             started_wall_ns=1,
             finished_wall_ns=2,
             first_transaction_wall_ns=None,
+            stop_reason="duration",
+            max_transactions=500,
         )
         self.assertFalse(footer["valid_for_decoder_parity"])
 
