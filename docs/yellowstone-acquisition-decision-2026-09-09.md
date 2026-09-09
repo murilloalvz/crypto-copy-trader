@@ -45,6 +45,10 @@ Current public documentation reviewed on 2026-09-09:
 
 Pricing and product claims are vendor documentation, not performance evidence.
 
+### Cost guard for the first Alchemy smoke
+
+Alchemy documents Yellowstone gRPC as bandwidth-priced and currently states that Solana gRPC usage does **not** count toward the normal dashboard usage-limit mechanism. Therefore the first smoke must not rely on a dashboard spend cap. The local collector is bounded by both duration and transaction count (`--max-transactions 500`), and only one smoke should be run before reviewing actual captured bytes and provider behavior.
+
 ## Why Yellowstone
 
 A Yellowstone transaction update includes the full transaction plus `TransactionStatusMeta`, slot and transaction index in the stream. This removes the rejected signature-to-HTTP hydration fan-out.
@@ -76,6 +80,7 @@ The first spike is intentionally narrow:
 - successful non-vote transactions only;
 - confirmed commitment initially;
 - exact provider `SubscribeUpdate` protobuf preserved;
+- bounded by duration and max transaction count;
 - no SQLite;
 - no Radar;
 - no V68;
@@ -88,11 +93,13 @@ The first spike is intentionally narrow:
 
 A raw stream corpus may enter decoder parity only if:
 
-1. at least one transaction update is captured;
-2. full transaction info is present for every stored transaction update;
-3. zero local write errors;
-4. zero gRPC stream errors during the bounded smoke;
-5. provider token is not present in artifacts or repository history.
+1. transaction updates are captured;
+2. Pump is represented;
+3. PumpSwap is represented;
+4. full transaction info is present for every stored transaction update;
+5. zero local write errors;
+6. zero gRPC stream errors during the bounded smoke;
+7. provider token is not present in artifacts or repository history.
 
 Decoder parity then requires, on the same raw updates:
 
