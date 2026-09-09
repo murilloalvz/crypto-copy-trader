@@ -12,7 +12,10 @@ from src.pumpswap_resolver_wait_trace_v53 import TracedDeadlineBoundedResolverV5
 from src.pumpswap_sequence_barrier_trace_v50 import PumpSwapSequenceBarrierTraceV50
 from src.pumpswap_shared_transport_resolver_tailfix_v2 import SharedTransportDeadlineResolverTailfixV2
 from src.pumpswap_stateful_priority_scheduler_v51 import StatefulPriorityEagerDemotingReadyAssetSchedulerV51
-from src.sqlite_write_admission import sqlite_write_admission_snapshot
+from src.sqlite_write_admission import (
+    reset_sqlite_write_admission_metrics,
+    sqlite_write_admission_snapshot,
+)
 import unified_market_latency_smoke_v19 as v19
 import unified_market_route_research_smoke_tailfix_v1 as tailfix_v1
 import unified_market_route_research_smoke_tailfix_v2 as tailfix_v2
@@ -25,6 +28,59 @@ V3_PUMP_COMMIT_WORKERS = 1
 # threads alone would create no concurrency and would falsely imply capacity.
 V3_PUMPSWAP_COMMIT_WORKERS = 1
 last_headroom_report_v3 = None
+
+
+def _begin_resolution_admission_accounting_v3():
+    """Start a run-scoped view of the shared admission counters.
+
+    V28 resets the physical-writer admission metrics at each acquisition start. V68 runs two
+    independent subcohorts in one process, so taking this baseline before that nested reset would
+    subtract the previous subcohort from the current one. Resetting while active fails closed.
+    """
+
+    reset_sqlite_write_admission_metrics()
+    return sqlite_write_admission_snapshot()
+
+
+def _validate_resolution_admission_accounting_v3(
+    *,
+    before_resolution_acquisitions: int,
+    after_resolution_acquisitions: int,
+    mapping_sync_admitted: int,
+    mapping_sync_inflight: int,
+) -> None:
+    """Validate equivalent resolution-priority populations for one acquisition run."""
+
+    observed_delta = int(after_resolution_acquisitions) - int(before_resolution_acquisitions)
+    local_admitted = int(mapping_sync_admitted)
+    local_inflight = int(mapping_sync_inflight)
+    population = "durable_pool_mapping_resolution_admissions"
+    ticket_class = "RESOLUTION"
+    write_class = "durable_pool_mapping"
+    demotion_status = "not_applicable"
+    accounting_source = "global_sqlite_write_admission_vs_v3_resolver_stage"
+    check_timing = "post_acquisition_snapshot"
+    if observed_delta < local_admitted:
+        raise RuntimeError(
+            "tailfix v3 resolution-priority admission undercount: "
+            f"local_admitted={local_admitted} global_observed_delta={observed_delta} "
+            f"global_before={before_resolution_acquisitions} "
+            f"global_after={after_resolution_acquisitions} population={population} "
+            f"ticket_class={ticket_class} write_class={write_class} "
+            f"demotion_status={demotion_status} accounting_source={accounting_source} "
+            f"check_timing={check_timing}"
+        )
+    if observed_delta > local_admitted + local_inflight:
+        raise RuntimeError(
+            "tailfix v3 resolution-priority admission overcount: "
+            f"local_admitted={local_admitted} local_inflight={local_inflight} "
+            f"global_observed_delta={observed_delta} "
+            f"global_before={before_resolution_acquisitions} "
+            f"global_after={after_resolution_acquisitions} population={population} "
+            f"ticket_class={ticket_class} write_class={write_class} "
+            f"demotion_status={demotion_status} accounting_source={accounting_source} "
+            f"check_timing={check_timing}"
+        )
 
 
 class TrackedSequenceBarrierTraceV3(PumpSwapSequenceBarrierTraceV50):
@@ -89,7 +145,7 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
     original_v2_resolver = tailfix_v2.TracedSharedTransportResolverTailfixV2
     original_commit_lanes = tailfix_v1.CrossSourceTokenCommitLanes
     original_trace_class = v50.PumpSwapSequenceBarrierTraceV50
-    sqlite_before = sqlite_write_admission_snapshot()
+    sqlite_before = _begin_resolution_admission_accounting_v3()
 
     HardenedTracedSharedTransportResolverV3.last_instance = None
     V3CrossSourceTokenCommitLanes.last_instance = None
@@ -252,17 +308,12 @@ async def run_smoke_tailfix_v3(**kwargs) -> None:
             # The global gate increments immediately before the resolver thread records its local
             # admitted counter. At snapshot time an in-flight worker can therefore make the global
             # delta exceed the local admitted count by at most the number of local in-flight writes.
-            if sqlite_resolution_delta < resolver_snapshot.mapping_sync_admitted:
-                raise RuntimeError(
-                    "tailfix v3 resolution-priority admission undercount: local admitted write was "
-                    "not observed by the global gate"
-                )
-            if sqlite_resolution_delta > (
-                resolver_snapshot.mapping_sync_admitted + resolver_snapshot.mapping_sync_inflight
-            ):
-                raise RuntimeError(
-                    "tailfix v3 resolution-priority admission overcount beyond in-flight tolerance"
-                )
+            _validate_resolution_admission_accounting_v3(
+                before_resolution_acquisitions=sqlite_before.resolution_acquisitions,
+                after_resolution_acquisitions=sqlite_snapshot.resolution_acquisitions,
+                mapping_sync_admitted=resolver_snapshot.mapping_sync_admitted,
+                mapping_sync_inflight=resolver_snapshot.mapping_sync_inflight,
+            )
             if lane_snapshot.pump_workers != V3_PUMP_COMMIT_WORKERS:
                 raise RuntimeError("tailfix v3 Pump commit lane capacity mismatch")
             if lane_snapshot.pumpswap_workers != V3_PUMPSWAP_COMMIT_WORKERS:
