@@ -7,9 +7,11 @@ on:
     paths:
       - 'src/market_intelligence_baseline.py'
       - 'src/market_protocol_facts.py'
+      - 'src/matched_unit_flow.py'
       - 'src/opportunity_snapshot_core.py'
       - 'tests/test_market_intelligence_baseline.py'
       - 'tests/test_market_protocol_facts.py'
+      - 'tests/test_matched_unit_flow.py'
       - 'tests/test_opportunity_snapshot_core.py'
       - '.github/workflows/market-intelligence-baseline-v0.yml'
   workflow_dispatch:
@@ -40,12 +42,14 @@ jobs:
         run: |
           python -m py_compile src/market_intelligence_baseline.py
           python -m py_compile src/market_protocol_facts.py
+          python -m py_compile src/matched_unit_flow.py
           python -m py_compile src/opportunity_snapshot_core.py
 
       - name: Run focused intelligence tests
         run: |
           python -m unittest tests.test_market_intelligence_baseline -v
           python -m unittest tests.test_market_protocol_facts -v
+          python -m unittest tests.test_matched_unit_flow -v
           python -m unittest tests.test_opportunity_snapshot_core -v
 
       - name: Run full unit suite
