@@ -6,6 +6,7 @@ on:
       - spike/commodity-signal-plane-v0
     paths:
       - 'benchmarks/market_regime_detector_v0/**'
+      - 'src/market_episode_research_snapshot.py'
       - 'tests/test_market_regime_causal_intensity.py'
       - '.github/workflows/market-regime-detector-v0.yml'
   workflow_dispatch:
@@ -35,12 +36,17 @@ jobs:
           python -m py_compile benchmarks/market_regime_detector_v0/causal_intensity.py
           python -m py_compile benchmarks/market_regime_detector_v0/covered_page_hinkley.py
           python -m py_compile benchmarks/market_regime_detector_v0/covered_smoke.py
+          python -m py_compile benchmarks/market_regime_detector_v0/episode_adapter.py
+          python -m py_compile benchmarks/market_regime_detector_v0/episode_pipeline_smoke.py
 
       - name: Run causal intensity adapter tests
         run: python -m unittest tests.test_market_regime_causal_intensity -v
 
       - name: Run coverage-aware Page-Hinkley smoke
         run: python -m benchmarks.market_regime_detector_v0.covered_smoke
+
+      - name: Run MarketEpisode regime pipeline smoke
+        run: python -m benchmarks.market_regime_detector_v0.episode_pipeline_smoke
 
       - name: Run frozen detector benchmark
         run: |
