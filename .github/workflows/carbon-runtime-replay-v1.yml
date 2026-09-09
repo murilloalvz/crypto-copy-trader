@@ -10,6 +10,9 @@ on:
       - ".github/workflows/carbon-runtime-replay-v1.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   runtime-replay:
     runs-on: ubuntu-latest
@@ -58,6 +61,16 @@ jobs:
           if verdict != "ADAPT_CARBON_RUNTIME_BOUNDARY":
               raise SystemExit(f"unexpected verdict: {verdict}")
           PY
+
+      - name: Freeze generated lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/carbon_runtime_replay_v1/rust_runner/Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: freeze Carbon runtime replay dependencies"
+            git push origin HEAD:spike/commodity-signal-plane-v0
+          fi
 
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@v4
