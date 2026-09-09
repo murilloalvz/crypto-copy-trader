@@ -18,18 +18,8 @@ SOURCE_PROVIDER = "helius_free_standard_wss"
 COVERAGE_CLASSIFICATION = "operational_only_not_chain_complete"
 
 SUBSCRIPTION_REQUESTS = (
-    (
-        1,
-        "pump_logs",
-        "logsSubscribe",
-        [{"mentions": [PUMP_PROGRAM_ID]}, {"commitment": "processed"}],
-    ),
-    (
-        2,
-        "pumpswap_logs",
-        "logsSubscribe",
-        [{"mentions": [PUMPSWAP_PROGRAM_ID]}, {"commitment": "processed"}],
-    ),
+    (1, "pump_logs", "logsSubscribe", [{"mentions": [PUMP_PROGRAM_ID]}, {"commitment": "processed"}]),
+    (2, "pumpswap_logs", "logsSubscribe", [{"mentions": [PUMPSWAP_PROGRAM_ID]}, {"commitment": "processed"}]),
     (3, "slot", "slotSubscribe", []),
 )
 
@@ -37,6 +27,7 @@ SUBSCRIPTION_REQUESTS = (
 @dataclass
 class Counters:
     sessions_started: int = 0
+    sessions_connected: int = 0
     sessions_activated: int = 0
     reconnects: int = 0
     subscription_acks: int = 0
@@ -60,6 +51,18 @@ def helius_wss_url(api_key: str) -> str:
     return "wss://mainnet.helius-rpc.com/?api-key=" + quote(key, safe="")
 
 
+def redact_secret(text: str, api_key: str) -> str:
+    result = str(text)
+    key = api_key.strip()
+    if not key:
+        return result
+    result = result.replace(key, "<REDACTED>")
+    encoded = quote(key, safe="")
+    if encoded != key:
+        result = result.replace(encoded, "<REDACTED>")
+    return result
+
+
 def subscription_payloads() -> list[dict[str, Any]]:
     return [
         {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
@@ -67,11 +70,32 @@ def subscription_payloads() -> list[dict[str, Any]]:
     ]
 
 
+def trace_header(*, duration_seconds: float, max_log_notifications: int, started_wall_ns: int) -> dict[str, Any]:
+    return {
+        "type": "trace_header",
+        "version": TRACE_VERSION,
+        "source_provider": SOURCE_PROVIDER,
+        "endpoint_host": "mainnet.helius-rpc.com",
+        "commitment": "processed",
+        "programs": {"pump": PUMP_PROGRAM_ID, "pumpswap": PUMPSWAP_PROGRAM_ID},
+        "started_wall_ns": started_wall_ns,
+        "duration_seconds": duration_seconds,
+        "max_log_notifications": max_log_notifications,
+        "coverage_classification": COVERAGE_CLASSIFICATION,
+        "chain_complete_coverage_claimed": False,
+        "api_key_embedded_in_trace": False,
+        "notes": [
+            "standard WebSocket observations only",
+            "no getTransaction hydration",
+            "processed commitment may include forked observations",
+            "active connection is not treated as proof of chain-complete coverage",
+        ],
+    }
+
+
 def classify_notification(
     message: dict[str, Any], subscription_labels: dict[int, str]
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """Normalize one standard Solana WSS notification without claiming completeness."""
-
     method = message.get("method")
     params = message.get("params")
     if not isinstance(params, dict):
@@ -110,11 +134,14 @@ def classify_notification(
         if not isinstance(result, dict):
             return None, None
         slot = result.get("slot")
-        parent = result.get("parent")
-        root = result.get("root")
         if not isinstance(slot, int) or isinstance(slot, bool):
             return None, None
-        return label, {"subscription_label": label, "slot": slot, "parent": parent, "root": root}
+        return label, {
+            "subscription_label": label,
+            "slot": slot,
+            "parent": result.get("parent"),
+            "root": result.get("root"),
+        }
     return None, None
 
 
@@ -125,6 +152,40 @@ def _write_jsonl(handle: Any, row: dict[str, Any], counters: Counters) -> None:
     except OSError:
         counters.write_errors += 1
         raise
+
+
+def _record_notification(
+    *,
+    handle: Any,
+    counters: Counters,
+    session_key: str,
+    label: str | None,
+    normalized: dict[str, Any],
+    received_wall_ns: int,
+) -> None:
+    if label == "pump_logs":
+        counters.pump_log_notifications += 1
+        row_type = "logs_notification"
+    elif label == "pumpswap_logs":
+        counters.pumpswap_log_notifications += 1
+        row_type = "logs_notification"
+    elif label == "slot":
+        counters.slot_notifications += 1
+        row_type = "slot_notification"
+    else:
+        counters.malformed_messages += 1
+        return
+    _write_jsonl(
+        handle,
+        {
+            "type": row_type,
+            "version": TRACE_VERSION,
+            "session_key": session_key,
+            "received_wall_ns": received_wall_ns,
+            **normalized,
+        },
+        counters,
+    )
 
 
 async def _run_session(
@@ -139,21 +200,20 @@ async def _run_session(
 ) -> str:
     try:
         from websockets.asyncio.client import connect
-    except ImportError as exc:  # pragma: no cover - environment guard
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "websockets is required; install benchmarks/helius_standard_wss_shadow_v0/requirements.txt"
         ) from exc
 
     session_key = f"session-{session_number:04d}"
     counters.sessions_started += 1
-    connected_wall_ns = time.time_ns()
     _write_jsonl(
         handle,
         {
-            "type": "transport_session_start",
+            "type": "transport_session_attempt_start",
             "version": TRACE_VERSION,
             "session_key": session_key,
-            "connected_wall_ns": connected_wall_ns,
+            "attempt_started_wall_ns": time.time_ns(),
             "source_provider": SOURCE_PROVIDER,
             "coverage_classification": COVERAGE_CLASSIFICATION,
             "chain_complete_coverage_claimed": False,
@@ -163,7 +223,7 @@ async def _run_session(
 
     subscription_labels: dict[int, str] = {}
     request_labels = {request_id: label for request_id, label, _method, _params in SUBSCRIPTION_REQUESTS}
-
+    connected = False
     try:
         async with connect(
             websocket_url,
@@ -172,6 +232,20 @@ async def _run_session(
             close_timeout=10,
             max_size=16 * 1024 * 1024,
         ) as ws:
+            connected = True
+            counters.sessions_connected += 1
+            _write_jsonl(
+                handle,
+                {
+                    "type": "transport_session_connected",
+                    "version": TRACE_VERSION,
+                    "session_key": session_key,
+                    "connected_wall_ns": time.time_ns(),
+                    "coverage_classification": COVERAGE_CLASSIFICATION,
+                    "chain_complete_coverage_claimed": False,
+                },
+                counters,
+            )
             for payload in subscription_payloads():
                 await ws.send(json.dumps(payload, separators=(",", ":")))
 
@@ -218,9 +292,6 @@ async def _run_session(
                         counters,
                     )
                     continue
-
-                # A provider may race a notification after an earlier ack while another
-                # subscription is still being acknowledged. Preserve it if understood.
                 label, normalized = classify_notification(message, subscription_labels)
                 if normalized is not None:
                     _record_notification(
@@ -240,7 +311,7 @@ async def _run_session(
                     "version": TRACE_VERSION,
                     "session_key": session_key,
                     "activated_wall_ns": time.time_ns(),
-                    "subscriptions": dict(sorted(subscription_labels.items())),
+                    "subscriptions": {str(key): value for key, value in sorted(subscription_labels.items())},
                     "coverage_classification": COVERAGE_CLASSIFICATION,
                     "chain_complete_coverage_claimed": False,
                 },
@@ -301,45 +372,12 @@ async def _run_session(
                 "version": TRACE_VERSION,
                 "session_key": session_key,
                 "ended_wall_ns": time.time_ns(),
+                "connected": connected,
                 "coverage_classification": COVERAGE_CLASSIFICATION,
                 "chain_complete_coverage_claimed": False,
             },
             counters,
         )
-
-
-def _record_notification(
-    *,
-    handle: Any,
-    counters: Counters,
-    session_key: str,
-    label: str | None,
-    normalized: dict[str, Any],
-    received_wall_ns: int,
-) -> None:
-    if label == "pump_logs":
-        counters.pump_log_notifications += 1
-        row_type = "logs_notification"
-    elif label == "pumpswap_logs":
-        counters.pumpswap_log_notifications += 1
-        row_type = "logs_notification"
-    elif label == "slot":
-        counters.slot_notifications += 1
-        row_type = "slot_notification"
-    else:
-        counters.malformed_messages += 1
-        return
-    _write_jsonl(
-        handle,
-        {
-            "type": row_type,
-            "version": TRACE_VERSION,
-            "session_key": session_key,
-            "received_wall_ns": received_wall_ns,
-            **normalized,
-        },
-        counters,
-    )
 
 
 async def collect_shadow(
@@ -372,29 +410,13 @@ async def collect_shadow(
     with out_path.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
         _write_jsonl(
             handle,
-            {
-                "type": "trace_header",
-                "version": TRACE_VERSION,
-                "source_provider": SOURCE_PROVIDER,
-                "endpoint_host": "mainnet.helius-rpc.com",
-                "commitment": "processed",
-                "programs": {"pump": PUMP_PROGRAM_ID, "pumpswap": PUMPSWAP_PROGRAM_ID},
-                "started_wall_ns": started_wall_ns,
-                "duration_seconds": duration_seconds,
-                "max_log_notifications": max_log_notifications,
-                "coverage_classification": COVERAGE_CLASSIFICATION,
-                "chain_complete_coverage_claimed": False,
-                "api_key_embedded_in_trace": False,
-                "notes": [
-                    "standard WebSocket observations only",
-                    "no getTransaction hydration",
-                    "processed commitment may include forked observations",
-                    "active connection is not treated as proof of chain-complete coverage",
-                ],
-            },
+            trace_header(
+                duration_seconds=duration_seconds,
+                max_log_notifications=max_log_notifications,
+                started_wall_ns=started_wall_ns,
+            ),
             counters,
         )
-
         session_number = 0
         while time.monotonic() < global_deadline:
             session_number += 1
@@ -420,7 +442,7 @@ async def collect_shadow(
                         "session_key": f"session-{session_number:04d}",
                         "at_wall_ns": time.time_ns(),
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": redact_secret(str(exc), api_key),
                         "coverage_classification": COVERAGE_CLASSIFICATION,
                         "chain_complete_coverage_claimed": False,
                     },
@@ -430,7 +452,9 @@ async def collect_shadow(
                     stop_reason = "transport_error_reconnect_budget_exhausted"
                     break
                 counters.reconnects += 1
-                await asyncio.sleep(min(reconnect_delay_seconds, max(0.0, global_deadline - time.monotonic())))
+                await asyncio.sleep(
+                    min(reconnect_delay_seconds, max(0.0, global_deadline - time.monotonic()))
+                )
 
         elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
         footer = {
@@ -480,7 +504,11 @@ def main() -> int:
             )
         )
     except Exception as exc:
-        print(f"helius_standard_wss_shadow_v0 failed: {type(exc).__name__}: {exc}", flush=True)
+        print(
+            f"helius_standard_wss_shadow_v0 failed: {type(exc).__name__}: "
+            f"{redact_secret(str(exc), api_key)}",
+            flush=True,
+        )
         return 1
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
     return 0 if report.get("valid_operational_shadow") else 1
