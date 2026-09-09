@@ -1,0 +1,49 @@
+name: Market intelligence baseline v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'src/market_intelligence_baseline.py'
+      - 'src/market_protocol_facts.py'
+      - 'src/opportunity_snapshot_core.py'
+      - 'tests/test_market_intelligence_baseline.py'
+      - 'tests/test_market_protocol_facts.py'
+      - 'tests/test_opportunity_snapshot_core.py'
+      - '.github/workflows/market-intelligence-baseline-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile intelligence modules
+        run: |
+          python -m py_compile src/market_intelligence_baseline.py
+          python -m py_compile src/market_protocol_facts.py
+          python -m py_compile src/opportunity_snapshot_core.py
+
+      - name: Run focused intelligence tests
+        run: |
+          python -m unittest tests.test_market_intelligence_baseline -v
+          python -m unittest tests.test_market_protocol_facts -v
+          python -m unittest tests.test_opportunity_snapshot_core -v
