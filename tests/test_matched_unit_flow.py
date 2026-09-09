@@ -95,7 +95,6 @@ class MatchedUnitFlowFactsV0Tests(unittest.TestCase):
             token_mint="MINT_A", as_of=105, observations=rows, windows_seconds=(10,)
         )
         self.assertEqual(facts.surface_windows[0].provenance_keys, ("visible",))
-        # Eligible provenance retains causally known stale history, while the window does not.
         self.assertEqual(facts.provenance_keys, ("stale", "visible"))
 
     def test_wrong_token_is_ignored(self):
@@ -146,13 +145,47 @@ class MatchedUnitFlowFactsV0Tests(unittest.TestCase):
 
     def test_invalid_reserve_or_amount_fails(self):
         for field in ("quote_amount_raw", "quote_reserve_raw"):
-            with self.subTest(field=field):
+            for value in (0, True, 1.5, "10"):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        build_matched_unit_flow_facts_v0(
+                            token_mint="MINT_A",
+                            as_of=105,
+                            observations=(self._obs(**{field: value}),),
+                            windows_seconds=(10,),
+                        )
+
+    def test_invalid_clock_and_window_types_fail(self):
+        for field, value in (
+            ("chain_time", 100.5),
+            ("observed_at", "101"),
+            ("chain_time", True),
+        ):
+            with self.subTest(field=field, value=value):
                 with self.assertRaises(ValueError):
                     build_matched_unit_flow_facts_v0(
                         token_mint="MINT_A",
                         as_of=105,
-                        observations=(self._obs(**{field: 0}),),
+                        observations=(self._obs(**{field: value}),),
                         windows_seconds=(10,),
+                    )
+        for as_of in (105.0, "105", True):
+            with self.subTest(as_of=as_of):
+                with self.assertRaises(ValueError):
+                    build_matched_unit_flow_facts_v0(
+                        token_mint="MINT_A",
+                        as_of=as_of,
+                        observations=(self._obs(),),
+                        windows_seconds=(10,),
+                    )
+        for windows in ((10.0,), (True,), ("10",)):
+            with self.subTest(windows=windows):
+                with self.assertRaises(ValueError):
+                    build_matched_unit_flow_facts_v0(
+                        token_mint="MINT_A",
+                        as_of=105,
+                        observations=(self._obs(),),
+                        windows_seconds=windows,
                     )
 
     def test_output_has_no_score_confidence_recommendation_or_action(self):
