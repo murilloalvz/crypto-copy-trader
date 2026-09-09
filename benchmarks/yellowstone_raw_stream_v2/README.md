@@ -44,7 +44,7 @@ python -m benchmarks.yellowstone_raw_stream_v2.generate_proto
 
 `rpcpool/yellowstone-grpc@1bf1377f8ffd6919d3579b597b33ad980a214a7f`
 
-Generated stubs remain local research artifacts.
+Generated stubs and downloaded proto files remain ignored local research artifacts.
 
 ## Environment
 
@@ -57,7 +57,9 @@ $env:YELLOWSTONE_X_TOKEN = "<API KEY>"
 
 Keep the token private.
 
-## 30-second smoke
+## Bounded parity smoke
+
+The initial run is bounded by both wall-clock duration and transaction count. It stops at whichever happens first, so a busy market does not create an unnecessarily large or expensive file.
 
 ```powershell
 New-Item -ItemType Directory -Force -Path artifacts\yellowstone_raw_stream_v2 | Out-Null
@@ -65,6 +67,7 @@ New-Item -ItemType Directory -Force -Path artifacts\yellowstone_raw_stream_v2 | 
 python -m benchmarks.yellowstone_raw_stream_v2.capture `
   --out artifacts\yellowstone_raw_stream_v2\yellowstone-pump-pumpswap-v2.jsonl `
   --duration-seconds 30 `
+  --max-transactions 500 `
   --commitment confirmed
 ```
 
@@ -74,7 +77,9 @@ The capture subscribes only to successful, non-vote transactions that include th
 
 A corpus is marked `valid_for_decoder_parity=true` only when:
 
-- at least one transaction update was captured;
+- transaction updates were captured;
+- at least one Pump update is present;
+- at least one PumpSwap update is present;
 - no transaction update lacked transaction info;
 - there were no local write errors;
 - there were no gRPC stream errors.
