@@ -27,9 +27,9 @@ class MatchedUnitFlowFactsV0Tests(unittest.TestCase):
 
     def test_same_unit_pressure_is_dimensionless_and_directional(self):
         rows = (
-            self._obs(evidence_key="a", chain_time=100, quote_amount_raw=10, quote_reserve_raw=100),
-            self._obs(evidence_key="b", chain_time=101, quote_amount_raw=20, quote_reserve_raw=200),
-            self._obs(evidence_key="c", chain_time=102, side="sell", quote_amount_raw=5, quote_reserve_raw=100),
+            self._obs(evidence_key="a", chain_time=100, observed_at=101, quote_amount_raw=10, quote_reserve_raw=100),
+            self._obs(evidence_key="b", chain_time=101, observed_at=102, quote_amount_raw=20, quote_reserve_raw=200),
+            self._obs(evidence_key="c", chain_time=102, observed_at=103, side="sell", quote_amount_raw=5, quote_reserve_raw=100),
         )
         facts = build_matched_unit_flow_facts_v0(
             token_mint="MINT_A", as_of=105, observations=rows, windows_seconds=(10,)
