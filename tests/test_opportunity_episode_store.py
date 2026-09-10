@@ -175,9 +175,27 @@ class OpportunityEpisodeStoreTests(unittest.TestCase):
         self.assertEqual([item.observation_key for item in causal], ["obs-1"])
         self.assertEqual(len(all_triggers), 2)
 
-    def test_invalid_clock_is_rejected(self):
+    def test_chain_clock_ahead_of_local_observation_clock_is_valid(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "clock.db"
+            path = Path(directory) / "clock-domains.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                episode = assign_opportunity_trigger(
+                    acquisition_run_key="acq",
+                    observation_key="obs",
+                    wallet_address="W",
+                    token_mint="TOKEN",
+                    chain_time=120,
+                    observed_at=110,
+                )
+                trigger = load_opportunity_episode_triggers(episode.episode_key)[0]
+
+        self.assertEqual(trigger.chain_time, 120)
+        self.assertEqual(trigger.observed_at, 110)
+        self.assertEqual(episode.first_trigger_observed_at, 110)
+
+    def test_negative_trigger_timestamp_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "negative-clock.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with self.assertRaises(ValueError):
                     assign_opportunity_trigger(
@@ -185,7 +203,7 @@ class OpportunityEpisodeStoreTests(unittest.TestCase):
                         observation_key="obs",
                         wallet_address="W",
                         token_mint="TOKEN",
-                        chain_time=120,
+                        chain_time=-1,
                         observed_at=110,
                     )
 
