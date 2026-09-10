@@ -19,10 +19,11 @@ from src.carbon_protocol_adapter import (
     ADAPTED as PROTOCOL_ADAPTED,
     INVALID_EVENT as PROTOCOL_INVALID,
     adapt_carbon_pumpswap_create_pool_v0,
+    adapt_carbon_pumpswap_pool_account_identity_v0,
 )
 
 
-ADAPTER_AUDIT_VERSION = "helius_standard_wss_shadow_adapter_audit_v0"
+ADAPTER_AUDIT_VERSION = "helius_standard_wss_shadow_adapter_audit_v1"
 CARBON_DECODER_VERSION = "2.0.0"
 
 
@@ -63,9 +64,11 @@ def audit_adapters(
     manifest_path: Path,
     carbon_output_path: Path,
     output_path: Path,
+    pool_identities_path: Path | None = None,
 ) -> dict[str, Any]:
     manifest_rows = _jsonl(manifest_path)
     carbon_rows = _jsonl(carbon_output_path)
+    pool_identity_rows = _jsonl(pool_identities_path) if pool_identities_path is not None else []
 
     manifests, manifest_duplicates = _index_unique(
         manifest_rows, "wss_target_event_manifest"
@@ -81,6 +84,20 @@ def audit_adapters(
         and int(footer.get("output_events", -1)) == len(events)
         and int(footer.get("decode_failures", -1)) == 0
     )
+
+    pool_identity_observations = []
+    pool_identity_invalid = 0
+    pool_identity_decoded_rows = 0
+    for row in pool_identity_rows:
+        if row.get("type") != "carbon_pumpswap_pool_account":
+            continue
+        if row.get("status") == "decoded":
+            pool_identity_decoded_rows += 1
+        result = adapt_carbon_pumpswap_pool_account_identity_v0(row)
+        if result.status == PROTOCOL_ADAPTED and result.identity_observation is not None:
+            pool_identity_observations.append(result.identity_observation)
+        elif row.get("status") == "decoded":
+            pool_identity_invalid += 1
 
     missing_manifest_keys: list[str] = []
     rejected_manifest_keys: list[str] = []
@@ -121,6 +138,7 @@ def audit_adapters(
     protocol_status_counts: Counter[str] = Counter()
     matched_status_counts: Counter[str] = Counter()
     matched_by_event_type: dict[str, Counter[str]] = defaultdict(Counter)
+    matched_context_source_counts: Counter[str] = Counter()
     non_flow_event_counts: Counter[str] = Counter()
     invalid_or_conflicting_keys: list[str] = []
 
@@ -167,7 +185,9 @@ def audit_adapters(
             result = adapt_carbon_pumpswap_trade_v0(
                 event,
                 observed_at=observed_at,
+                observed_wall_ns=received_ns,
                 pool_observations=tuple(pool_observations),
+                pool_identity_observations=tuple(pool_identity_observations),
             )
         else:
             non_flow_event_counts[event_type or "UNKNOWN"] += 1
@@ -187,6 +207,14 @@ def audit_adapters(
         matched_by_event_type[event_type][result.status] += 1
         if result.status in {MATCHED_INVALID, CONFLICTING_CONTEXT}:
             invalid_or_conflicting_keys.append(event_key)
+        if result.status == MATCHED_ADAPTED and event_type in {"pumpswap_buy", "pumpswap_sell"}:
+            context_key = result.provenance_keys[-1] if len(result.provenance_keys) >= 2 else ""
+            source = (
+                "pool_account_cache"
+                if context_key.startswith("pumpswap_pool_account:")
+                else "create_pool_event"
+            )
+            matched_context_source_counts[source] += 1
         output_rows.append(
             {
                 **base_row,
@@ -224,6 +252,7 @@ def audit_adapters(
         and not rejected_manifest_keys
         and not invalid_manifest_clock_keys
         and not invalid_or_conflicting_keys
+        and pool_identity_invalid == 0
         and len(ordered) == len(events)
     )
 
@@ -239,10 +268,14 @@ def audit_adapters(
         "missing_manifest_events": len(missing_manifest_keys),
         "rejected_manifest_events": len(rejected_manifest_keys),
         "invalid_manifest_clock_events": len(invalid_manifest_clock_keys),
+        "pool_identity_rows": pool_identity_decoded_rows,
+        "pool_identity_observations": len(pool_identity_observations),
+        "pool_identity_invalid": pool_identity_invalid,
         "protocol_status_counts": dict(sorted(protocol_status_counts.items())),
         "pool_context_observations": len(pool_observations),
         "matched_unit_status_counts": dict(sorted(matched_status_counts.items())),
         "matched_unit_by_event_type": matched_by_event_type_json,
+        "matched_unit_context_source_counts": dict(sorted(matched_context_source_counts.items())),
         "matched_unit_adapted_events": matched_status_counts[MATCHED_ADAPTED],
         "matched_unit_missing_context_events": matched_status_counts[MISSING_CONTEXT],
         "pumpswap_trade_events": pumpswap_trade_total,
@@ -257,7 +290,8 @@ def audit_adapters(
         "chain_complete_coverage_claimed": False,
         "notes": [
             "MISSING_CONTEXT is preserved as missingness and does not fail the adapter audit.",
-            "PumpSwap quote identity is never assumed and future pool context is never backfilled.",
+            "PumpSwap quote identity is never assumed and future pool identity is never backfilled.",
+            "Pool-account identity uses exact local wall-clock availability, not a fabricated chain timestamp.",
             "This adapter audit does not establish chain-complete coverage or economic edge.",
         ],
     }
@@ -270,6 +304,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--carbon-output", type=Path, required=True)
     parser.add_argument("--out", dest="output_path", type=Path, required=True)
+    parser.add_argument("--pool-identities", type=Path)
     return parser.parse_args()
 
 
@@ -279,6 +314,7 @@ def main() -> int:
         manifest_path=args.manifest,
         carbon_output_path=args.carbon_output,
         output_path=args.output_path,
+        pool_identities_path=args.pool_identities,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["valid_adapter_audit"] else 1
