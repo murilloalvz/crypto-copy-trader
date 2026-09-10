@@ -4,22 +4,18 @@ from dataclasses import dataclass
 from src.causal_quotes import CausalQuoteObservation, validate_causal_quote
 
 
-OPPORTUNITY_SNAPSHOT_CORE_VERSION = "opportunity_snapshot_core_v1_1_dual_clock"
+OPPORTUNITY_SNAPSHOT_CORE_VERSION = "opportunity_snapshot_core_v1_2_clock_domains"
 DEFAULT_FLOW_WINDOWS_SECONDS = (10, 30, 60, 300)
 
 
 @dataclass(frozen=True)
 class FlowTradeObservation:
-    """One token-side flow event with market time and real observation time.
+    """One token-side flow event with independent chain and observation clocks.
 
-    ``chain_time`` represents when the trade happened in the market. ``observed_at`` represents
-    when our collector actually knew about it. A causal T0 snapshot needs BOTH conditions:
-
-    - availability: ``observed_at <= as_of``;
-    - market-window membership: ``as_of - window < chain_time <= as_of``.
-
-    This prevents a late/backfilled old trade from being misclassified as fresh order flow merely
-    because it was discovered recently.
+    ``chain_time`` is Solana on-chain approximate Unix time. ``observed_at`` is the
+    collector-local availability clock. Causal availability uses only
+    ``observed_at <= as_of``. Market-window membership uses only ``chain_time``
+    against an explicit same-domain ``chain_as_of``.
     """
 
     token_mint: str
@@ -83,6 +79,7 @@ class ExecutionSurfaceFeatures:
 class OpportunitySnapshotCoreV1:
     token_mint: str
     as_of: int
+    chain_as_of: int | None
     method_version: str
     flow_windows: tuple[FlowWindowFeatures, ...]
     execution: ExecutionSurfaceFeatures
@@ -94,10 +91,15 @@ def _validate_flow_observation(item: FlowTradeObservation) -> None:
         raise ValueError("flow token_mint cannot be empty")
     if item.side not in {"buy", "sell"}:
         raise ValueError("flow side must be buy or sell")
-    if item.chain_time < 0 or item.observed_at < 0:
-        raise ValueError("flow timestamps must be non-negative")
-    if item.observed_at < item.chain_time:
-        raise ValueError("flow observed_at cannot be earlier than chain_time")
+    if (
+        not isinstance(item.chain_time, int)
+        or isinstance(item.chain_time, bool)
+        or not isinstance(item.observed_at, int)
+        or isinstance(item.observed_at, bool)
+        or item.chain_time < 0
+        or item.observed_at < 0
+    ):
+        raise ValueError("flow timestamps must be non-negative integers")
     if item.wallet_address is not None and not item.wallet_address.strip():
         raise ValueError("flow wallet_address cannot be blank")
     if item.notional_usd is not None and (
@@ -110,16 +112,6 @@ def _validate_flow_observation(item: FlowTradeObservation) -> None:
         raise ValueError("flow price_usd must be positive and finite")
 
 
-def _median(values: list[int]) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return float(ordered[middle])
-    return (ordered[middle - 1] + ordered[middle]) / 2
-
-
 def _coverage_pct(known_count: int, total_count: int) -> float | None:
     if total_count <= 0:
         return None
@@ -130,16 +122,14 @@ def _build_flow_window(
     observations: list[FlowTradeObservation],
     *,
     as_of: int,
+    chain_as_of: int,
     window_seconds: int,
 ) -> FlowWindowFeatures:
-    lower_bound = as_of - window_seconds
-
-    # Dual-clock rule: the event must have happened inside the market window AND have been
-    # observed by T0. A stale event hydrated now is available now, but it is not fresh flow.
+    lower_bound = chain_as_of - window_seconds
     eligible = [
         item
         for item in observations
-        if lower_bound < item.chain_time <= as_of and item.observed_at <= as_of
+        if item.observed_at <= as_of and lower_bound < item.chain_time <= chain_as_of
     ]
     eligible.sort(key=lambda item: (item.chain_time, item.observed_at))
 
@@ -148,26 +138,14 @@ def _build_flow_window(
 
     wallet_events = [item.wallet_address for item in eligible if item.wallet_address]
     wallet_coverage = _coverage_pct(len(wallet_events), len(eligible))
-    buy_wallets = {
-        item.wallet_address for item in buys if item.wallet_address is not None
-    }
-    sell_wallets = {
-        item.wallet_address for item in sells if item.wallet_address is not None
-    }
+    buy_wallets = {item.wallet_address for item in buys if item.wallet_address is not None}
+    sell_wallets = {item.wallet_address for item in sells if item.wallet_address is not None}
 
     known_notionals = [item for item in eligible if item.notional_usd is not None]
     notional_coverage = _coverage_pct(len(known_notionals), len(eligible))
     notionals_complete = bool(eligible) and len(known_notionals) == len(eligible)
-    buy_notional = (
-        sum(float(item.notional_usd) for item in buys)
-        if notionals_complete
-        else None
-    )
-    sell_notional = (
-        sum(float(item.notional_usd) for item in sells)
-        if notionals_complete
-        else None
-    )
+    buy_notional = sum(float(item.notional_usd) for item in buys) if notionals_complete else None
+    sell_notional = sum(float(item.notional_usd) for item in sells) if notionals_complete else None
     signed_notional = (
         buy_notional - sell_notional
         if buy_notional is not None and sell_notional is not None
@@ -184,8 +162,6 @@ def _build_flow_window(
         else None
     )
 
-    # Repetition can be badly biased when wallet identity is missing, so do not calculate it
-    # from a selected subset and present the result as complete.
     repeated_wallet_share = None
     if wallet_events and len(wallet_events) == len(eligible):
         repeated_count = len(wallet_events) - len(set(wallet_events))
@@ -211,8 +187,11 @@ def _build_flow_window(
         quality.append("partial_wallet_identity_coverage")
     if not eligible:
         quality.append("no_flow_events_in_window")
+    if eligible:
+        quality.append("observation_lag_unavailable_unaligned_clock_domains")
+    if any(item.chain_time > item.observed_at for item in eligible):
+        quality.append("chain_clock_ahead_of_local_observation_clock_observed")
 
-    lags = [item.observed_at - item.chain_time for item in eligible]
     return FlowWindowFeatures(
         window_seconds=window_seconds,
         event_count=len(eligible),
@@ -231,9 +210,9 @@ def _build_flow_window(
         first_price_usd=first_price,
         last_price_usd=last_price,
         return_pct=return_pct,
-        median_observation_lag_seconds=_median(lags),
-        max_observation_lag_seconds=max(lags) if lags else None,
-        data_quality_flags=tuple(quality),
+        median_observation_lag_seconds=None,
+        max_observation_lag_seconds=None,
+        data_quality_flags=tuple(sorted(set(quality))),
     )
 
 
@@ -298,20 +277,12 @@ def build_execution_surface_features(
         latest_sell_price_usd=(latest_sell.price_usd if latest_sell else None),
         latest_buy_liquidity_usd=(latest_buy.liquidity_usd if latest_buy else None),
         latest_sell_liquidity_usd=(latest_sell.liquidity_usd if latest_sell else None),
-        latest_buy_price_impact_pct_points=(
-            latest_buy.provider_price_impact_pct_points if latest_buy else None
-        ),
-        latest_sell_price_impact_pct_points=(
-            latest_sell.provider_price_impact_pct_points if latest_sell else None
-        ),
+        latest_buy_price_impact_pct_points=(latest_buy.provider_price_impact_pct_points if latest_buy else None),
+        latest_sell_price_impact_pct_points=(latest_sell.provider_price_impact_pct_points if latest_sell else None),
         latest_buy_router=(latest_buy.provider_router if latest_buy else None),
         latest_sell_router=(latest_sell.provider_router if latest_sell else None),
-        latest_buy_observation_age_seconds=(
-            as_of - latest_buy.observed_at if latest_buy else None
-        ),
-        latest_sell_observation_age_seconds=(
-            as_of - latest_sell.observed_at if latest_sell else None
-        ),
+        latest_buy_observation_age_seconds=(as_of - latest_buy.observed_at if latest_buy else None),
+        latest_sell_observation_age_seconds=(as_of - latest_sell.observed_at if latest_sell else None),
         latest_buy_market_age_seconds=(as_of - latest_buy.market_time if latest_buy else None),
         latest_sell_market_age_seconds=(as_of - latest_sell.market_time if latest_sell else None),
         quote_notional_min_usd=quote_notional_min,
@@ -324,25 +295,32 @@ def build_opportunity_snapshot_core_v1(
     *,
     token_mint: str,
     as_of: int,
-    flow_observations: list[FlowTradeObservation]
-    | tuple[FlowTradeObservation, ...] = (),
+    chain_as_of: int | None = None,
+    flow_observations: list[FlowTradeObservation] | tuple[FlowTradeObservation, ...] = (),
     quotes: list[CausalQuoteObservation] | tuple[CausalQuoteObservation, ...] = (),
     flow_windows_seconds: tuple[int, ...] = DEFAULT_FLOW_WINDOWS_SECONDS,
 ) -> OpportunitySnapshotCoreV1:
-    """Build a score-free, causal T0 feature snapshot for research.
+    """Build a score-free causal T0 feature snapshot for research.
 
-    The function never fetches data and never assigns trading weights. Callers must pass raw
-    observations carrying their real ``observed_at``. Flow windows use market/chain time only
-    after the observation-time availability gate has been satisfied. Quotes expose their age
-    explicitly rather than silently pretending the latest historical quote is fresh.
+    ``as_of`` is the local evidence cutoff. An explicit ``chain_as_of`` is required
+    when locally visible Solana flow exists and anchors all chain-time windows.
+    Cross-domain observation lag is intentionally unavailable until a calibrated
+    clock method exists.
     """
 
     if not token_mint.strip():
         raise ValueError("token_mint cannot be empty")
-    if as_of < 0:
-        raise ValueError("as_of must be non-negative")
-    if not flow_windows_seconds or any(item <= 0 for item in flow_windows_seconds):
-        raise ValueError("flow windows must be positive")
+    if not isinstance(as_of, int) or isinstance(as_of, bool) or as_of < 0:
+        raise ValueError("as_of must be a non-negative integer")
+    if chain_as_of is not None and (
+        not isinstance(chain_as_of, int) or isinstance(chain_as_of, bool) or chain_as_of < 0
+    ):
+        raise ValueError("chain_as_of must be a non-negative integer when present")
+    if not flow_windows_seconds or any(
+        not isinstance(item, int) or isinstance(item, bool) or item <= 0
+        for item in flow_windows_seconds
+    ):
+        raise ValueError("flow windows must be positive integers")
     if len(set(flow_windows_seconds)) != len(flow_windows_seconds):
         raise ValueError("flow windows must be unique")
 
@@ -352,31 +330,35 @@ def build_opportunity_snapshot_core_v1(
         if item.token_mint == token_mint:
             normalized_flow.append(item)
 
+    locally_visible_flow = [item for item in normalized_flow if item.observed_at <= as_of]
+    if locally_visible_flow and chain_as_of is None:
+        raise ValueError("chain_as_of is required when locally visible flow exists")
+
     windows = tuple(
         _build_flow_window(
             normalized_flow,
             as_of=as_of,
+            chain_as_of=chain_as_of if chain_as_of is not None else 0,
             window_seconds=window_seconds,
         )
         for window_seconds in sorted(flow_windows_seconds)
     )
-    execution = build_execution_surface_features(
-        quotes,
-        token_mint=token_mint,
-        as_of=as_of,
-    )
+    execution = build_execution_surface_features(quotes, token_mint=token_mint, as_of=as_of)
 
     quality: list[str] = []
     if not any(item.event_count for item in windows):
         quality.append("no_flow_context")
+    if locally_visible_flow:
+        quality.append("cross_clock_latency_not_calibrated")
     if execution.quote_count == 0:
         quality.append("no_execution_context")
 
     return OpportunitySnapshotCoreV1(
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         method_version=OPPORTUNITY_SNAPSHOT_CORE_VERSION,
         flow_windows=windows,
         execution=execution,
-        data_quality_flags=tuple(quality),
+        data_quality_flags=tuple(sorted(set(quality))),
     )
