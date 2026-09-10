@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-VERSION = "helius_pumpswap_lazy_pool_context_replay_v0"
+from src.carbon_protocol_adapter import (
+    ADAPTED as PROTOCOL_ADAPTED,
+    adapt_carbon_pumpswap_pool_account_identity_v0,
+)
+
+VERSION = "helius_pumpswap_lazy_pool_context_replay_v1"
 DEFAULT_DELAYS_MS = (50, 100, 250, 500, 1000)
 PUMPSWAP_EVENT_TYPES = {"pumpswap_buy", "pumpswap_sell"}
 
@@ -38,27 +43,25 @@ def _index_unique(
 
 def _initial_pool_availability(
     rows: Iterable[dict[str, Any]],
-) -> tuple[dict[str, int], int]:
+) -> tuple[dict[str, int], int, int]:
+    """Reuse the production pool-account adapter so replay and live audit cannot drift."""
+
     availability: dict[str, int] = {}
     invalid = 0
+    decoded_rows = 0
     for row in rows:
         if row.get("type") != "carbon_pumpswap_pool_account" or row.get("status") != "decoded":
             continue
-        pool = row.get("pool")
-        observed_wall_ns = row.get("observed_wall_ns")
-        if (
-            not isinstance(pool, str)
-            or not pool
-            or not isinstance(observed_wall_ns, int)
-            or isinstance(observed_wall_ns, bool)
-            or observed_wall_ns <= 0
-        ):
+        decoded_rows += 1
+        adapted = adapt_carbon_pumpswap_pool_account_identity_v0(row)
+        if adapted.status != PROTOCOL_ADAPTED or adapted.identity_observation is None:
             invalid += 1
             continue
-        previous = availability.get(pool)
-        if previous is None or observed_wall_ns < previous:
-            availability[pool] = observed_wall_ns
-    return availability, invalid
+        observation = adapted.identity_observation
+        previous = availability.get(observation.pool)
+        if previous is None or observation.observed_wall_ns < previous:
+            availability[observation.pool] = observation.observed_wall_ns
+    return availability, invalid, decoded_rows
 
 
 def _ordered_pumpswap_trades(
@@ -132,7 +135,6 @@ def simulate_delay(
     lazy_resolved: set[str] = set()
     counts: Counter[str] = Counter()
     unique_pools = {pool for _, _, pool in trades}
-    first_miss_by_pool: dict[str, int] = {}
 
     for received_ns, _event_key, pool in trades:
         initial_ready = initial_pool_availability.get(pool)
@@ -151,8 +153,6 @@ def simulate_delay(
             continue
 
         counts["miss"] += 1
-        if pool not in first_miss_by_pool:
-            first_miss_by_pool[pool] = received_ns
         if pending is None:
             pending_ready_ns[pool] = received_ns + delay_ns
             counts["lookup_requests"] += 1
@@ -203,7 +203,9 @@ def run_replay(
         manifest_rows=manifest_rows,
         carbon_rows=carbon_rows,
     )
-    initial_availability, invalid_identities = _initial_pool_availability(identity_rows)
+    initial_availability, invalid_identities, decoded_identity_rows = _initial_pool_availability(
+        identity_rows
+    )
     scenarios = [
         simulate_delay(
             trades,
@@ -227,6 +229,7 @@ def run_replay(
         "chain_complete_coverage_claimed": False,
         "economic_edge_evaluated": False,
         "assumes_lookup_success_and_identity_decode_success": True,
+        "decoded_identity_rows": decoded_identity_rows,
         "initial_identity_rows": len(initial_availability),
         "invalid_identity_rows": invalid_identities,
         **join,
@@ -236,6 +239,7 @@ def run_replay(
             "A pool's first cache-miss trade remains missing; no lookup result is backfilled.",
             "Fixed delay scenarios are counterfactual and do not claim measured live RPC latency.",
             "Lookup success and account decode success are optimistic assumptions in this replay.",
+            "Initial pool-account identities are validated by the same production protocol adapter used by the live adapter audit.",
             "Standard WSS remains operational-only and not chain-complete.",
         ],
     }
