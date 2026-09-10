@@ -20,6 +20,10 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
             f"Program {PUMP_PROGRAM_ID} success",
         ]
 
+    def _event_data_line(self, suffix=b"synthetic-payload"):
+        payload = PUMP_TRADE_EVENT_DISCRIMINATOR + suffix
+        return "Program data: " + base64.b64encode(payload).decode("ascii")
+
     def _write_trace(self, path: Path, rows):
         path.write_text(
             "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows),
@@ -80,9 +84,10 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
         self.assertEqual(report["program_log_stack_errors"], 0)
         self.assertEqual(report["successful_tx_stack_errors"], 0)
         self.assertEqual(report["failed_tx_stack_errors"], 0)
+        self.assertEqual(report["successful_tx_unexplained_stack_anomalies"], 0)
         self.assertEqual(carbon_rows[0]["event_type"], "pump_trade")
-        self.assertEqual(manifest_rows[0]["first_received_wall_ns"], 1_000_000_000)
-        self.assertTrue(manifest_rows[0]["accepted_for_market_research"])
+        self.assertTrue(manifest_rows[0]["transaction_log_complete"])
+        self.assertTrue(manifest_rows[0]["eligible_for_complete_transaction_inference"])
 
     def test_duplicate_notification_keeps_first_observation_and_one_carbon_event(self):
         first = self._notification(received_wall_ns=1_000_000_000)
@@ -142,7 +147,7 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
     def test_program_stack_error_blocks_carbon_decode_validity(self):
         malformed_logs = [
             f"Program {PUMP_PROGRAM_ID} invoke [1]",
-            "Program data: " + base64.b64encode(PUMP_TRADE_EVENT_DISCRIMINATOR + b"x").decode("ascii"),
+            self._event_data_line(b"x"),
         ]
         row = self._notification(logs=malformed_logs)
         with tempfile.TemporaryDirectory() as directory:
@@ -154,14 +159,13 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
             report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
         self.assertGreater(report["program_log_stack_errors"], 0)
         self.assertGreater(report["successful_tx_stack_errors"], 0)
-        self.assertEqual(report["failed_tx_stack_errors"], 0)
+        self.assertGreater(report["successful_tx_unexplained_stack_anomalies"], 0)
         self.assertFalse(report["valid_for_carbon_decode"])
 
     def test_failed_tx_stack_error_is_audited_without_poisoning_successful_input(self):
-        payload = PUMP_TRADE_EVENT_DISCRIMINATOR + b"failed-synthetic-payload"
         malformed_failed_logs = [
             f"Program {PUMP_PROGRAM_ID} invoke [1]",
-            "Program data: " + base64.b64encode(payload).decode("ascii"),
+            self._event_data_line(b"failed-synthetic-payload"),
         ]
         succeeded = self._notification(signature="SIG_OK", received_wall_ns=1_000_000_000)
         failed = self._notification(
@@ -187,8 +191,78 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
         self.assertEqual(report["successful_tx_stack_errors"], 0)
         self.assertEqual(report["failed_tx_stack_errors"], 1)
         self.assertTrue(report["valid_for_carbon_decode"])
-        self.assertEqual(report["stack_error_examples"][0]["signature"], "SIG_FAIL")
-        self.assertFalse(report["stack_error_examples"][0]["transaction_succeeded"])
+
+    def test_successful_truncation_is_explicit_missingness_not_parser_failure(self):
+        truncated_logs = [
+            f"Program {PUMP_PROGRAM_ID} invoke [1]",
+            self._event_data_line(b"before-truncation"),
+            "Log truncated",
+        ]
+        row = self._notification(logs=truncated_logs)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "trace.jsonl"
+            carbon = root / "carbon.jsonl"
+            manifest = root / "manifest.jsonl"
+            self._write_trace(trace, [self._header(), row, self._footer()])
+            report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
+            carbon_rows = carbon.read_text(encoding="utf-8").splitlines()
+            manifest_row = json.loads(manifest.read_text(encoding="utf-8").splitlines()[0])
+
+        self.assertEqual(report["truncated_notifications"], 1)
+        self.assertEqual(report["successful_truncated_notifications"], 1)
+        self.assertEqual(report["program_log_stack_errors"], 1)
+        self.assertEqual(report["successful_tx_stack_errors"], 1)
+        self.assertEqual(report["successful_tx_unexplained_stack_anomalies"], 0)
+        self.assertEqual(len(carbon_rows), 1)
+        self.assertTrue(report["valid_for_carbon_decode"])
+        self.assertFalse(manifest_row["transaction_log_complete"])
+        self.assertFalse(manifest_row["eligible_for_complete_transaction_inference"])
+        self.assertEqual(manifest_row["first_truncation_log_index"], 2)
+
+    def test_post_truncation_target_event_is_rejected_from_carbon_input(self):
+        truncated_logs = [
+            f"Program {PUMP_PROGRAM_ID} invoke [1]",
+            self._event_data_line(b"safe-before"),
+            "Log truncated",
+            self._event_data_line(b"unsafe-after"),
+            f"Program {PUMP_PROGRAM_ID} success",
+        ]
+        row = self._notification(logs=truncated_logs)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "trace.jsonl"
+            carbon = root / "carbon.jsonl"
+            manifest = root / "manifest.jsonl"
+            self._write_trace(trace, [self._header(), row, self._footer()])
+            report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
+            carbon_rows = carbon.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(carbon_rows), 1)
+        self.assertEqual(report["post_truncation_target_events_rejected"], 1)
+        self.assertEqual(report["accepted_success_target_events"], 1)
+        self.assertTrue(report["valid_for_carbon_decode"])
+
+    def test_pre_truncation_stack_anomaly_still_blocks_carbon_decode(self):
+        unrelated_program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        logs = [
+            f"Program {unrelated_program} success",
+            f"Program {PUMP_PROGRAM_ID} invoke [1]",
+            self._event_data_line(b"event"),
+            "Log truncated",
+        ]
+        row = self._notification(logs=logs)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "trace.jsonl"
+            carbon = root / "carbon.jsonl"
+            manifest = root / "manifest.jsonl"
+            self._write_trace(trace, [self._header(), row, self._footer()])
+            report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
+
+        self.assertEqual(report["truncated_notifications"], 1)
+        self.assertGreater(report["successful_tx_unexplained_stack_anomalies"], 0)
+        self.assertFalse(report["valid_for_carbon_decode"])
 
 
 if __name__ == "__main__":
