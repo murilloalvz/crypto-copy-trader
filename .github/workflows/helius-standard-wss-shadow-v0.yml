@@ -13,6 +13,7 @@ on:
       - 'tests/test_helius_standard_wss_shadow_reduce_v0.py'
       - 'tests/test_helius_standard_wss_shadow_adapt_v0.py'
       - 'tests/test_helius_pumpswap_pool_bootstrap_probe_v0.py'
+      - 'tests/test_helius_standard_wss_shadow_invalid_diagnostic_v0.py'
       - '.github/workflows/helius-standard-wss-shadow-v0.yml'
   workflow_dispatch:
 
@@ -40,6 +41,7 @@ jobs:
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/reduce.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/adapt.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/bootstrap_pools.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/diagnose_invalid_matched_unit.py
           python -m py_compile src/carbon_matched_unit_adapter.py
           python -m py_compile src/carbon_protocol_adapter.py
           python -m py_compile src/pumpswap_pool_identity.py
@@ -55,3 +57,6 @@ jobs:
 
       - name: Run PumpSwap pool bootstrap probe tests
         run: python -m unittest tests.test_helius_pumpswap_pool_bootstrap_probe_v0 -v
+
+      - name: Run matched-unit invalid diagnostic tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_invalid_diagnostic_v0 -v
