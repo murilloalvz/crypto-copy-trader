@@ -5,12 +5,16 @@ import base64
 from collections import Counter
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable
 
 from benchmarks.carbon_decoder_parity_v1.parity import extract_contextual_target_payloads
 from benchmarks.helius_standard_wss_shadow_v0 import TRACE_VERSION
 
-REDUCER_VERSION = "helius_standard_wss_shadow_reducer_v1"
+REDUCER_VERSION = "helius_standard_wss_shadow_reducer_v2"
+
+_STACK_INVOKE_RE = re.compile(r"^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$")
+_STACK_EXIT_RE = re.compile(r"^Program ([1-9A-HJ-NP-Za-km-z]+) (?:success|failed:.*)$")
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -25,7 +29,79 @@ def _write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
-            handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+            handle.write(json.dumps(row, sort_keys=True, separators=(",", ",")) + "\n")
+
+
+def _diagnose_program_stack(logs: list[Any]) -> dict[str, Any]:
+    """Explain parser stack anomalies without changing extraction semantics."""
+    stack: list[str] = []
+    anomalies: list[dict[str, Any]] = []
+    truncation_markers: list[dict[str, Any]] = []
+    control_lines: list[dict[str, Any]] = []
+
+    for log_index, raw_line in enumerate(logs):
+        line = str(raw_line)
+        if "truncat" in line.lower():
+            truncation_markers.append({"log_index": log_index, "line": line})
+
+        invoke = _STACK_INVOKE_RE.match(line)
+        if invoke is not None:
+            program_id = invoke.group(1)
+            reported_depth = int(invoke.group(2))
+            expected_depth = len(stack) + 1
+            control_lines.append({"log_index": log_index, "line": line})
+            if reported_depth != expected_depth:
+                anomalies.append(
+                    {
+                        "reason": "invoke_depth_mismatch",
+                        "log_index": log_index,
+                        "program_id": program_id,
+                        "reported_depth": reported_depth,
+                        "expected_depth": expected_depth,
+                        "stack_before": list(stack),
+                        "line": line,
+                    }
+                )
+            stack.append(program_id)
+            continue
+
+        exit_match = _STACK_EXIT_RE.match(line)
+        if exit_match is not None:
+            program_id = exit_match.group(1)
+            control_lines.append({"log_index": log_index, "line": line})
+            if stack and stack[-1] == program_id:
+                stack.pop()
+            else:
+                anomalies.append(
+                    {
+                        "reason": "unmatched_or_out_of_order_exit",
+                        "log_index": log_index,
+                        "program_id": program_id,
+                        "stack_before": list(stack),
+                        "line": line,
+                    }
+                )
+                if program_id in stack:
+                    while stack and stack[-1] != program_id:
+                        stack.pop()
+                    if stack and stack[-1] == program_id:
+                        stack.pop()
+
+    if stack:
+        anomalies.append(
+            {
+                "reason": "unclosed_stack_at_end",
+                "remaining_depth": len(stack),
+                "remaining_programs": list(stack),
+            }
+        )
+
+    return {
+        "log_count": len(logs),
+        "truncation_markers": truncation_markers[:5],
+        "anomalies": anomalies[:10],
+        "tail_control_lines": control_lines[-12:],
+    }
 
 
 def reduce_shadow(
@@ -113,6 +189,7 @@ def reduce_shadow(
                         "subscription_label": subscription_label,
                         "transaction_succeeded": tx_succeeded,
                         "stack_errors": record_stack_errors,
+                        "diagnostics": _diagnose_program_stack(logs),
                     }
                 )
 
