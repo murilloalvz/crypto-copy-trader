@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufWriter, Write};
 
+#[allow(dead_code)]
 mod frozen_decoder {
     include!("../main.rs");
 
