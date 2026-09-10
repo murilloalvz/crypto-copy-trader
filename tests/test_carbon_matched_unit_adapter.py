@@ -10,6 +10,7 @@ from src.carbon_matched_unit_adapter import (
     adapt_carbon_pumpswap_trade_v0,
 )
 from src.market_protocol_facts import PumpSwapPoolObservation
+from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
 class CarbonMatchedUnitAdapterV0Tests(unittest.TestCase):
@@ -56,6 +57,19 @@ class CarbonMatchedUnitAdapterV0Tests(unittest.TestCase):
         )
         values.update(overrides)
         return PumpSwapPoolObservation(**values)
+
+    def _identity(self, **overrides):
+        values = dict(
+            pool="POOL_A",
+            base_mint="MINT_A",
+            quote_mint="USDC_MINT",
+            observed_wall_ns=100_000_000_000,
+            observed_slot=120,
+            evidence_key="pumpswap_pool_account:POOL_A:120:100000000000",
+            source="carbon_pumpswap_pool_account",
+        )
+        values.update(overrides)
+        return PumpSwapPoolIdentityObservation(**values)
 
     def test_pump_uses_event_native_quote_identity_and_reserve(self):
         result = adapt_carbon_pump_trade_v0(self._pump(), observed_at=101)
@@ -174,6 +188,67 @@ class CarbonMatchedUnitAdapterV0Tests(unittest.TestCase):
             pool_observations=(self._pool(pool="POOL_B"),),
         )
         self.assertEqual(result.status, MISSING_CONTEXT)
+
+    def test_pre_event_account_identity_enables_pumpswap_without_chain_time_fabrication(self):
+        identity = self._identity(observed_wall_ns=100_500_000_000)
+        result = adapt_carbon_pumpswap_trade_v0(
+            self._swap(),
+            observed_at=101,
+            observed_wall_ns=101_000_000_000,
+            pool_observations=(),
+            pool_identity_observations=(identity,),
+        )
+        self.assertEqual(result.status, ADAPTED)
+        assert result.observation is not None
+        self.assertEqual(result.observation.token_mint, "MINT_A")
+        self.assertEqual(result.observation.quote_asset_key, "USDC_MINT")
+        self.assertEqual(result.provenance_keys[-1], identity.evidence_key)
+
+    def test_post_event_account_identity_is_not_backfilled_even_within_same_second(self):
+        identity = self._identity(observed_wall_ns=101_900_000_000)
+        result = adapt_carbon_pumpswap_trade_v0(
+            self._swap(),
+            observed_at=101,
+            observed_wall_ns=101_100_000_000,
+            pool_observations=(),
+            pool_identity_observations=(identity,),
+        )
+        self.assertEqual(result.status, MISSING_CONTEXT)
+        self.assertIsNone(result.observation)
+
+    def test_conflicting_account_identity_fails_closed(self):
+        a = self._identity(
+            observed_wall_ns=99_000_000_000,
+            evidence_key="id:a",
+            base_mint="MINT_A",
+            quote_mint="USDC",
+        )
+        b = self._identity(
+            observed_wall_ns=100_000_000_000,
+            evidence_key="id:b",
+            base_mint="MINT_B",
+            quote_mint="SOL",
+        )
+        result = adapt_carbon_pumpswap_trade_v0(
+            self._swap(),
+            observed_at=101,
+            observed_wall_ns=101_000_000_000,
+            pool_observations=(),
+            pool_identity_observations=(a, b),
+        )
+        self.assertEqual(result.status, CONFLICTING_CONTEXT)
+        self.assertIsNone(result.observation)
+
+    def test_state_and_account_identity_disagreement_fails_closed(self):
+        identity = self._identity(quote_mint="DIFFERENT_QUOTE")
+        result = adapt_carbon_pumpswap_trade_v0(
+            self._swap(),
+            observed_at=101,
+            observed_wall_ns=101_000_000_000,
+            pool_observations=(self._pool(quote_mint="USDC_MINT"),),
+            pool_identity_observations=(identity,),
+        )
+        self.assertEqual(result.status, CONFLICTING_CONTEXT)
 
     def test_output_has_no_score_confidence_or_recommendation(self):
         result = adapt_carbon_pump_trade_v0(self._pump(), observed_at=101)
