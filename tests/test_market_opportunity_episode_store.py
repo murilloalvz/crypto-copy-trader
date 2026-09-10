@@ -200,12 +200,24 @@ class MarketOpportunityEpisodeStoreTests(unittest.TestCase):
         self.assertEqual(triggers[0].observed_at, 120)
         self.assertEqual(conflicts, 1)
 
-    def test_impossible_trigger_clock_is_rejected(self):
+    def test_chain_clock_ahead_of_local_observation_clock_is_valid(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "episodes.db"
+            path = Path(directory) / "clock-domains.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                episode = self._assign(observed=99, chain=100)
+                trigger = load_market_opportunity_episode_triggers(episode.episode_key)[0]
+
+        self.assertEqual(episode.first_trigger_chain_time, 100)
+        self.assertEqual(episode.first_trigger_observed_at, 99)
+        self.assertEqual(trigger.chain_time, 100)
+        self.assertEqual(trigger.observed_at, 99)
+
+    def test_negative_trigger_clock_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "negative-clock.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with self.assertRaises(ValueError):
-                    self._assign(observed=99, chain=100)
+                    self._assign(observed=99, chain=-1)
 
     def test_transient_sqlite_lock_retries_complete_transaction(self):
         attempts = []
