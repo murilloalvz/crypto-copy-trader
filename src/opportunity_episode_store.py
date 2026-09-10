@@ -122,8 +122,10 @@ def assign_opportunity_trigger(
     """Persist one raw BUY trigger and deterministically attach it to a live episode.
 
     Episode membership is based on the bot's causal availability clock (`observed_at`), not on
-    future outcomes. A trigger at exactly `episode_closes_at` starts a new episode. Repeating the
-    same observation is idempotent. Different acquisition runs can never share an episode.
+    future outcomes. `chain_time` is a separate on-chain ordering clock and is never compared
+    directly with `observed_at`. A trigger at exactly `episode_closes_at` starts a new episode.
+    Repeating the same observation is idempotent. Different acquisition runs can never share an
+    episode.
     """
 
     run_key = _required(acquisition_run_key, "acquisition_run_key")
@@ -132,8 +134,6 @@ def assign_opportunity_trigger(
     mint = _required(token_mint, "token_mint")
     if chain_time < 0 or observed_at < 0:
         raise ValueError("trigger timestamps must be non-negative")
-    if observed_at < chain_time:
-        raise ValueError("trigger observed_at cannot precede chain_time")
     if episode_window_seconds <= 0:
         raise ValueError("episode_window_seconds must be positive")
 
