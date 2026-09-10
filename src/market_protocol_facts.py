@@ -1,15 +1,18 @@
 """Causal protocol-aware market facts for Pump and PumpSwap.
 
-This module intentionally exposes facts, provenance and missingness only.  It does
+This module intentionally exposes facts, provenance and missingness only. It does
 not score opportunities, recommend trades, infer migration from PumpSwap activity,
 or backfill evidence that was unavailable at ``as_of``.
+
+``as_of`` is the local evidence-availability clock. ``chain_time`` is an independent
+on-chain ordering clock and is never compared to ``as_of`` as a causal gate.
 """
 
 from dataclasses import dataclass
 from typing import Iterable
 
 
-MARKET_PROTOCOL_FACTS_VERSION = "market_protocol_facts_v0"
+MARKET_PROTOCOL_FACTS_VERSION = "market_protocol_facts_v1_clock_domains"
 
 _ALLOWED_MIGRATION_EVIDENCE_KINDS = frozenset(
     {
@@ -39,12 +42,7 @@ def _require_optional_nonnegative(value: int | None, field_name: str) -> None:
 
 @dataclass(frozen=True)
 class PumpCurveStateObservation:
-    """Point-in-time Pump bonding-curve account/event state.
-
-    Reserve names use quote terminology so the model also supports current Pump
-    quote-mint evolution.  Legacy SOL-only decoders should normalize their
-    ``*_sol_reserves`` fields into these quote-reserve fields at the adapter edge.
-    """
+    """Point-in-time Pump bonding-curve account/event state."""
 
     token_mint: str
     chain_time: int
@@ -79,18 +77,12 @@ class PumpCurveStateObservation:
             _require_optional_nonnegative(getattr(self, name), name)
 
     def is_available_at(self, as_of: int) -> bool:
-        return self.chain_time <= as_of and self.observed_at <= as_of
+        return self.observed_at <= as_of
 
 
 @dataclass(frozen=True)
 class PumpSwapPoolObservation:
-    """Point-in-time PumpSwap pool facts.
-
-    ``pool_quote_token_reserves`` is the raw quote-vault reserve.  When
-    ``virtual_quote_reserves`` is available, ``effective_quote_reserves`` follows
-    the current PumpSwap protocol definition: raw quote reserve + virtual quote
-    reserve.  Missing virtual reserves remain missing rather than being assumed 0.
-    """
+    """Point-in-time PumpSwap pool facts."""
 
     token_mint: str
     pool: str
@@ -136,7 +128,7 @@ class PumpSwapPoolObservation:
             raise ValueError("effective quote reserves cannot be negative")
 
     def is_available_at(self, as_of: int) -> bool:
-        return self.chain_time <= as_of and self.observed_at <= as_of
+        return self.observed_at <= as_of
 
     @property
     def effective_quote_reserves(self) -> int | None:
@@ -147,12 +139,7 @@ class PumpSwapPoolObservation:
 
 @dataclass(frozen=True)
 class PumpMigrationEvidence:
-    """Explicit Pump -> PumpSwap lineage evidence.
-
-    A PumpSwap observation, even for pool index 0, is not represented by this type.
-    Callers may construct it only from an explicit migration instruction/event or a
-    separately validated exact-mint migration link.
-    """
+    """Explicit Pump -> PumpSwap lineage evidence."""
 
     token_mint: str
     pool: str
@@ -175,7 +162,7 @@ class PumpMigrationEvidence:
             raise ValueError(f"unsupported migration evidence_kind: {self.evidence_kind}")
 
     def is_available_at(self, as_of: int) -> bool:
-        return self.chain_time <= as_of and self.observed_at <= as_of
+        return self.observed_at <= as_of
 
 
 @dataclass(frozen=True)
@@ -268,11 +255,11 @@ def build_market_protocol_facts_v0(
     pumpswap_pool_observations: Iterable[PumpSwapPoolObservation] = (),
     migration_evidence: Iterable[PumpMigrationEvidence] = (),
 ) -> MarketProtocolFactsV0:
-    """Build immutable protocol facts known at exactly ``as_of``.
+    """Build immutable protocol facts known at local ``as_of``.
 
-    The builder filters by exact mint and by both clocks.  Later-arriving evidence is
-    intentionally invisible to an earlier snapshot.  No reserve threshold is used to
-    infer Pump completion, and no PumpSwap activity is used to infer migration.
+    The builder filters by exact mint and local observation availability. On-chain
+    timestamps order on-chain state but are not compared to local ``as_of`` as a
+    causal gate. Later-arriving evidence remains invisible to earlier snapshots.
     """
 
     _require_nonempty(token_mint, "token_mint")
@@ -320,6 +307,10 @@ def build_market_protocol_facts_v0(
         lifecycle_label = "UNKNOWN"
 
     flags: list[str] = []
+    all_rows = (*pump_rows, *swap_rows, *migration_rows)
+    if any(row.chain_time > as_of for row in all_rows):
+        flags.append("chain_clock_ahead_of_local_snapshot_clock_observed")
+
     if not pump_rows:
         flags.append("pump_curve_state_not_observed")
     else:
@@ -337,7 +328,10 @@ def build_market_protocol_facts_v0(
             flags.append("pump_reserves_partial")
 
     if swap_rows:
-        if swap_latest.pool_base_token_reserves is None or swap_latest.pool_quote_token_reserves is None:
+        if (
+            swap_latest.pool_base_token_reserves is None
+            or swap_latest.pool_quote_token_reserves is None
+        ):
             flags.append("pumpswap_raw_reserves_partial")
         if swap_latest.virtual_quote_reserves is None:
             flags.append("pumpswap_virtual_quote_reserves_missing")
@@ -348,12 +342,7 @@ def build_market_protocol_facts_v0(
         flags.append("migration_evidence_noncanonical_pool_index")
 
     provenance = tuple(
-        sorted(
-            {
-                row.evidence_key
-                for row in (*pump_rows, *swap_rows, *migration_rows)
-            }
-        )
+        sorted({row.evidence_key for row in all_rows})
     )
 
     return MarketProtocolFactsV0(
@@ -366,12 +355,8 @@ def build_market_protocol_facts_v0(
         pump_latest_chain_time=(pump_latest.chain_time if pump_latest else None),
         pump_latest_observed_at=(pump_latest.observed_at if pump_latest else None),
         pump_quote_mint=(pump_latest.quote_mint if pump_latest else None),
-        pump_virtual_token_reserves=(
-            pump_latest.virtual_token_reserves if pump_latest else None
-        ),
-        pump_virtual_quote_reserves=(
-            pump_latest.virtual_quote_reserves if pump_latest else None
-        ),
+        pump_virtual_token_reserves=(pump_latest.virtual_token_reserves if pump_latest else None),
+        pump_virtual_quote_reserves=(pump_latest.virtual_quote_reserves if pump_latest else None),
         pump_real_token_reserves=(pump_latest.real_token_reserves if pump_latest else None),
         pump_real_quote_reserves=(pump_latest.real_quote_reserves if pump_latest else None),
         pump_token_total_supply=(pump_latest.token_total_supply if pump_latest else None),
@@ -382,29 +367,15 @@ def build_market_protocol_facts_v0(
         pumpswap_pool_index=(swap_latest.pool_index if swap_latest else None),
         pumpswap_base_mint=(swap_latest.base_mint if swap_latest else None),
         pumpswap_quote_mint=(swap_latest.quote_mint if swap_latest else None),
-        pumpswap_pool_base_token_reserves=(
-            swap_latest.pool_base_token_reserves if swap_latest else None
-        ),
-        pumpswap_pool_quote_token_reserves=(
-            swap_latest.pool_quote_token_reserves if swap_latest else None
-        ),
-        pumpswap_virtual_quote_reserves=(
-            swap_latest.virtual_quote_reserves if swap_latest else None
-        ),
-        pumpswap_effective_quote_reserves=(
-            swap_latest.effective_quote_reserves if swap_latest else None
-        ),
+        pumpswap_pool_base_token_reserves=(swap_latest.pool_base_token_reserves if swap_latest else None),
+        pumpswap_pool_quote_token_reserves=(swap_latest.pool_quote_token_reserves if swap_latest else None),
+        pumpswap_virtual_quote_reserves=(swap_latest.virtual_quote_reserves if swap_latest else None),
+        pumpswap_effective_quote_reserves=(swap_latest.effective_quote_reserves if swap_latest else None),
         canonical_migration_proven=canonical_migration_proven,
         migration_pool=(canonical_migration.pool if canonical_migration else None),
-        migration_evidence_kind=(
-            canonical_migration.evidence_kind if canonical_migration else None
-        ),
-        migration_chain_time=(
-            canonical_migration.chain_time if canonical_migration else None
-        ),
-        migration_observed_at=(
-            canonical_migration.observed_at if canonical_migration else None
-        ),
+        migration_evidence_kind=(canonical_migration.evidence_kind if canonical_migration else None),
+        migration_chain_time=(canonical_migration.chain_time if canonical_migration else None),
+        migration_observed_at=(canonical_migration.observed_at if canonical_migration else None),
         provenance_keys=provenance,
         data_quality_flags=tuple(sorted(set(flags))),
     )
