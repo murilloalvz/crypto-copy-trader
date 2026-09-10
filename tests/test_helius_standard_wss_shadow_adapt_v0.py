@@ -6,6 +6,9 @@ import unittest
 from benchmarks.helius_standard_wss_shadow_v0.adapt import audit_adapters
 
 
+PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+
+
 class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
     def _write_jsonl(self, path: Path, rows):
         path.write_text(
@@ -13,7 +16,7 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _manifest(self, event_key, event_type, received_second, *, log_index=1):
+    def _manifest(self, event_key, event_type, received_second, *, log_index=1, received_ns=None):
         return {
             "type": "wss_target_event_manifest",
             "event_key": event_key,
@@ -21,7 +24,9 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
             "signature": f"SIG_{event_key}",
             "slot": 123,
             "log_index": log_index,
-            "first_received_wall_ns": received_second * 1_000_000_000,
+            "first_received_wall_ns": (
+                received_ns if received_ns is not None else received_second * 1_000_000_000
+            ),
             "transaction_succeeded": True,
             "accepted_for_market_research": True,
             "transaction_log_complete": True,
@@ -64,7 +69,7 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
             "signature": f"SIG_{event_key}",
             "slot": 123,
             "log_index": 2,
-            "program_id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+            "program_id": PUMPSWAP_PROGRAM_ID,
             "pool": "POOL_A",
             "user": "USER_A",
             "side": "buy",
@@ -82,7 +87,7 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
             "signature": f"SIG_{event_key}",
             "slot": 122,
             "log_index": 1,
-            "program_id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+            "program_id": PUMPSWAP_PROGRAM_ID,
             "pool": "POOL_A",
             "creator": "CREATOR_A",
             "base_mint": "MINT_A",
@@ -92,18 +97,35 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
             "timestamp": timestamp,
         }
 
-    def _run(self, manifests, events):
+    def _pool_identity(self, *, received_wall_ns):
+        return {
+            "type": "carbon_pumpswap_pool_account",
+            "status": "decoded",
+            "pool": "POOL_A",
+            "owner": PUMPSWAP_PROGRAM_ID,
+            "rpc_context_slot": 120,
+            "received_wall_ns": received_wall_ns,
+            "base_mint": "MINT_A",
+            "quote_mint": "USDC_MINT",
+            "carbon_decoder_version": "2.0.0",
+        }
+
+    def _run(self, manifests, events, *, pool_identities=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest_path = root / "manifest.jsonl"
             carbon_path = root / "carbon.jsonl"
             output_path = root / "adapted.jsonl"
+            identity_path = root / "pool-identities.jsonl"
             self._write_jsonl(manifest_path, manifests)
             self._write_jsonl(carbon_path, [*events, self._footer(len(events))])
+            if pool_identities is not None:
+                self._write_jsonl(identity_path, pool_identities)
             report = audit_adapters(
                 manifest_path=manifest_path,
                 carbon_output_path=carbon_path,
                 output_path=output_path,
+                pool_identities_path=(identity_path if pool_identities is not None else None),
             )
             output_rows = [
                 json.loads(line)
@@ -146,6 +168,7 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
         self.assertEqual(report["protocol_status_counts"], {"ADAPTED": 1})
         self.assertEqual(report["matched_unit_adapted_events"], 1)
         self.assertEqual(report["pumpswap_context_coverage_pct"], 100.0)
+        self.assertEqual(report["matched_unit_context_source_counts"], {"create_pool_event": 1})
         matched = next(row for row in rows if row["stage"] == "matched_unit_flow")
         self.assertEqual(matched["observation"]["quote_asset_key"], "USDC_MINT")
         self.assertEqual(matched["observation"]["token_mint"], "MINT_A")
@@ -166,6 +189,40 @@ class HeliusStandardWssShadowAdapterAuditV0Tests(unittest.TestCase):
         self.assertEqual(report["matched_unit_adapted_events"], 0)
         self.assertEqual(report["matched_unit_missing_context_events"], 1)
         self.assertEqual(report["pumpswap_context_coverage_pct"], 0.0)
+
+    def test_pool_identity_observed_after_trade_does_not_backfill_source_shadow(self):
+        swap = self._pumpswap_trade()
+        trade_ns = 101_100_000_000
+        identity_ns = 101_900_000_000
+        report, _rows = self._run(
+            [self._manifest("swap:1", "pumpswap_buy", 101, log_index=2, received_ns=trade_ns)],
+            [swap],
+            pool_identities=[self._pool_identity(received_wall_ns=identity_ns)],
+        )
+        self.assertTrue(report["valid_adapter_audit"])
+        self.assertEqual(report["pool_identity_observations"], 1)
+        self.assertEqual(report["pumpswap_matched_unit_adapted_events"], 0)
+        self.assertEqual(report["matched_unit_missing_context_events"], 1)
+        self.assertEqual(report["pumpswap_context_coverage_pct"], 0.0)
+
+    def test_pool_identity_available_before_trade_enables_future_shadow_causally(self):
+        swap = self._pumpswap_trade()
+        identity_ns = 100_500_000_000
+        trade_ns = 101_100_000_000
+        report, rows = self._run(
+            [self._manifest("swap:1", "pumpswap_buy", 101, log_index=2, received_ns=trade_ns)],
+            [swap],
+            pool_identities=[self._pool_identity(received_wall_ns=identity_ns)],
+        )
+        self.assertTrue(report["valid_adapter_audit"])
+        self.assertEqual(report["pool_identity_rows"], 1)
+        self.assertEqual(report["pool_identity_observations"], 1)
+        self.assertEqual(report["pool_identity_invalid"], 0)
+        self.assertEqual(report["pumpswap_matched_unit_adapted_events"], 1)
+        self.assertEqual(report["pumpswap_context_coverage_pct"], 100.0)
+        self.assertEqual(report["matched_unit_context_source_counts"], {"pool_account_cache": 1})
+        matched = rows[0]
+        self.assertEqual(matched["observation"]["quote_asset_key"], "USDC_MINT")
 
     def test_missing_manifest_fails_closed(self):
         report, _rows = self._run([], [self._pump_trade()])
