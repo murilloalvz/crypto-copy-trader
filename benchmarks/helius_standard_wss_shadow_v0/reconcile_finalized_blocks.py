@@ -14,7 +14,7 @@ from benchmarks.helius_standard_wss_shadow_v0.collect import (
     PUMPSWAP_PROGRAM_ID,
 )
 
-VERSION = "helius_standard_wss_finalized_block_reconciler_v0"
+VERSION = "helius_standard_wss_finalized_block_reconciler_v1"
 PROGRAMS = {
     "pump": PUMP_PROGRAM_ID,
     "pumpswap": PUMPSWAP_PROGRAM_ID,
@@ -187,10 +187,27 @@ def reconcile_signature_sets(
     for name in PROGRAMS:
         wss = set(wss_sets.get(name, set()))
         truth = truth_sets[name]
+        success_truth = success_truth_sets[name]
+
+        if not complete_truth_enumeration:
+            per_program[name] = {
+                "wss_processed_signatures": len(wss),
+                "finalized_truth_signatures": None,
+                "finalized_success_truth_signatures": None,
+                "wss_and_finalized_intersection": None,
+                "finalized_truth_missed_by_wss": None,
+                "wss_processed_absent_from_finalized_truth": None,
+                "finalized_success_seen_by_wss": None,
+                "finalized_signature_recall_pct": None,
+                "finalized_success_signature_recall_pct": None,
+                "missed_finalized_examples": [],
+                "processed_absent_finalized_examples": [],
+            }
+            continue
+
         intersection = wss & truth
         missed = truth - wss
         not_finalized = wss - truth
-        success_truth = success_truth_sets[name]
         success_seen = wss & success_truth
         per_program[name] = {
             "wss_processed_signatures": len(wss),
@@ -201,14 +218,10 @@ def reconcile_signature_sets(
             "wss_processed_absent_from_finalized_truth": len(not_finalized),
             "finalized_success_seen_by_wss": len(success_seen),
             "finalized_signature_recall_pct": (
-                None
-                if not complete_truth_enumeration or not truth
-                else 100.0 * len(intersection) / len(truth)
+                None if not truth else 100.0 * len(intersection) / len(truth)
             ),
             "finalized_success_signature_recall_pct": (
-                None
-                if not complete_truth_enumeration or not success_truth
-                else 100.0 * len(success_seen) / len(success_truth)
+                None if not success_truth else 100.0 * len(success_seen) / len(success_truth)
             ),
             "missed_finalized_examples": sorted(missed)[:20],
             "processed_absent_finalized_examples": sorted(not_finalized)[:20],
@@ -356,8 +369,10 @@ def reconcile_finalized_blocks(
         truth_rows=candidates,
         complete_truth_enumeration=complete_truth,
     )
-    any_missed = any(
-        item["finalized_truth_missed_by_wss"] > 0 for item in per_program.values()
+    any_missed = complete_truth and any(
+        int(item["finalized_truth_missed_by_wss"]) > 0
+        for item in per_program.values()
+        if item["finalized_truth_missed_by_wss"] is not None
     )
 
     return {
@@ -395,7 +410,7 @@ def reconcile_finalized_blocks(
             "The finalized block scan is an independent slot-bounded signature reference, not an economic test.",
             "WSS uses processed commitment; signatures absent from finalized blocks are not automatically labeled rollbacks without further transaction-level audit.",
             "Program-account mention is compared to the WSS logsSubscribe mentions boundary; target instruction/event recall requires a later semantic audit.",
-            "Any getBlock/getBlocks gap makes recall percentages unavailable rather than treating missing reference data as zero.",
+            "Any getBlock/getBlocks gap makes all truth-comparison counts and recall percentages unavailable rather than treating missing reference data as zero.",
         ],
     }
 
