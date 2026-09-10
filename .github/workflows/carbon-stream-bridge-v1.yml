@@ -1,17 +1,6 @@
-name: Carbon stream bridge v1
+name: Carbon stream bridge v1 (frozen)
 
 on:
-  push:
-    branches:
-      - spike/commodity-signal-plane-v0
-    paths:
-      - 'benchmarks/carbon_stream_bridge_v1/**'
-      - 'benchmarks/carbon_decoder_parity_v1/rust_runner/src/bin/stream_decode_batches.rs'
-      - 'benchmarks/carbon_decoder_parity_v1/rust_runner/src/main.rs'
-      - 'benchmarks/carbon_decoder_parity_v1/rust_runner/Cargo.toml'
-      - 'benchmarks/carbon_decoder_parity_v1/rust_runner/Cargo.lock'
-      - 'tests/test_carbon_stream_bridge_v1.py'
-      - '.github/workflows/carbon-stream-bridge-v1.yml'
   workflow_dispatch:
 
 jobs:
@@ -56,6 +45,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: carbon-stream-bridge-v1-report
+          name: carbon-stream-bridge-v1-frozen-report
           path: artifacts/carbon_stream_bridge_v1/report.json
           if-no-files-found: ignore
