@@ -3,7 +3,7 @@ import unittest
 
 from benchmarks.integrated_market_signal_plane_v1.differential import generate_long_horizon_trace
 from benchmarks.commodity_signal_plane_v0.benchmark import ReferenceRadarState
-from src.market_opportunity_radar import MarketTradeObservation
+from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 from src.market_signal_kernel import IndexedMarketSignalKernel
 
 
@@ -77,6 +77,57 @@ class IndexedMarketSignalKernelTests(unittest.TestCase):
                     transaction_key="TX2",
                 )
             )
+
+    def test_late_chain_time_insert_does_not_regress_chain_anchor(self):
+        kernel = IndexedMarketSignalKernel()
+        kernel.ingest_lifecycle(
+            MarketLifecycleObservation(
+                token_mint="T",
+                market_started_at=50,
+                observed_at=80,
+                venue="pump",
+            )
+        )
+
+        trigger = None
+        for i in range(6):
+            trigger = kernel.ingest_trade(
+                MarketTradeObservation(
+                    token_mint="T",
+                    side="buy",
+                    chain_time=100 + i,
+                    observed_at=90 + i,
+                    wallet_address=f"W{i}",
+                    notional_usd=1.0,
+                    price_usd=1.0,
+                    venue="pump",
+                    transaction_key=f"TX{i}",
+                )
+            )
+
+        self.assertIsNotNone(trigger)
+        assert trigger is not None
+        self.assertEqual(trigger.features.chain_as_of, 105)
+        self.assertEqual(trigger.features.fast_event_count, 6)
+
+        after_late = kernel.ingest_trade(
+            MarketTradeObservation(
+                token_mint="T",
+                side="sell",
+                chain_time=60,
+                observed_at=96,
+                wallet_address="LATE",
+                notional_usd=1.0,
+                price_usd=1.0,
+                venue="pump",
+                transaction_key="TX-LATE",
+            )
+        )
+        self.assertIsNotNone(after_late)
+        assert after_late is not None
+        self.assertEqual(after_late.features.chain_as_of, 105)
+        self.assertEqual(after_late.features.fast_event_count, 6)
+        self.assertEqual(after_late.features.fast_sell_count, 0)
 
 
 if __name__ == "__main__":
