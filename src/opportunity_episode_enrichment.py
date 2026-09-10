@@ -19,25 +19,18 @@ from src.opportunity_wallet_intelligence import (
 )
 
 
-EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_1_market_first_wallet_history"
+EPISODE_ENRICHMENT_VERSION = "episode_enrichment_v1_2_clock_domains"
 HazardEvidence = TokenHazardEvidence | OnchainMintHazardEvidence
 
 
 @dataclass(frozen=True)
 class RiskEvidenceEnvelope:
-    """Causal token-hazard evidence with explicit provider missingness.
-
-    Provider-native fields remain separate. In particular, Solana RPC
-    ``top10_token_account_concentration_pct`` is never relabeled as holder concentration and is not
-    written into the Solana Tracker ``top10_pct`` field.
-    """
+    """Causal token-hazard evidence with explicit provider missingness."""
 
     status: str
     data_quality_flags: tuple[str, ...]
     provider: str | None = None
     observed_at: int | None = None
-
-    # Solana Tracker provider-native evidence. These are not synthesized by the RPC provider.
     risk_score: float | None = None
     rugged: bool | None = None
     jupiter_verified: bool | None = None
@@ -47,8 +40,6 @@ class RiskEvidenceEnvelope:
     bundlers_pct: float | None = None
     insiders_pct: float | None = None
     risk_factors: tuple[tuple[str, str, float | None], ...] = ()
-
-    # Shared / on-chain evidence.
     freeze_authority_present: bool | None = None
     mint_authority_present: bool | None = None
     token_program: str | None = None
@@ -109,9 +100,7 @@ def _risk_envelope(
             token_2022=hazard_evidence.token_2022,
             extensions_present=hazard_evidence.extensions_present,
             mint_context_slot=hazard_evidence.context_slot,
-            top10_token_account_concentration_pct=(
-                hazard_evidence.top10_token_account_concentration_pct
-            ),
+            top10_token_account_concentration_pct=hazard_evidence.top10_token_account_concentration_pct,
             largest_token_accounts_observed=hazard_evidence.largest_token_accounts_observed,
             largest_accounts_context_slot=hazard_evidence.largest_accounts_context_slot,
             data_quality_flags=tuple(flags),
@@ -141,43 +130,36 @@ def build_episode_enrichment_bundle(
     episode: MarketOpportunityEpisode,
     as_of: int,
     quotes: tuple[CausalQuoteObservation, ...] | list[CausalQuoteObservation] = (),
-    historical_wallet_outcomes: tuple[HistoricalWalletOutcome, ...]
-    | list[HistoricalWalletOutcome] = (),
-    historical_wallet_opportunity_associations: tuple[
-        HistoricalWalletOpportunityAssociation, ...
-    ]
-    | list[HistoricalWalletOpportunityAssociation] = (),
+    historical_wallet_outcomes: tuple[HistoricalWalletOutcome, ...] | list[HistoricalWalletOutcome] = (),
+    historical_wallet_opportunity_associations: tuple[HistoricalWalletOpportunityAssociation, ...] | list[HistoricalWalletOpportunityAssociation] = (),
     hazard_evidence: HazardEvidence | None = None,
 ) -> EpisodeEnrichmentBundle:
-    """Build the minimal causal evidence bundle for one already-open market episode.
+    """Build causal evidence for one market episode with independent clock domains.
 
-    This function performs no network I/O and creates no BUY/SELL recommendation. It combines
-    shared Pump/PumpSwap market observations, optional causal execution quotes, wallet evidence and
-    optional persisted token-hazard evidence. Wallet-owned PnL history and market-first opportunity
-    associations remain separate. Market-first association labels must be strictly known before this
-    episode's T0 even when the bundle itself is assembled later. Later evidence is never backfilled
-    into an earlier causal state.
+    ``as_of`` is the local evidence cutoff. All token trades known by that cutoff are
+    loaded first; the on-chain window anchor is then derived as the maximum causally
+    known chain timestamp (including the episode's trigger chain time). No local clock
+    value is converted into a chain-time cutoff.
     """
 
     if as_of < episode.first_trigger_observed_at:
         raise ValueError("enrichment as_of cannot precede episode trigger observation")
     for item in historical_wallet_opportunity_associations:
         if item.prior_decision_as_of >= episode.first_trigger_observed_at:
-            raise ValueError(
-                "market-first wallet history decision must be strictly before current T0"
-            )
+            raise ValueError("market-first wallet history decision must be strictly before current T0")
         if item.outcome_observed_at >= episode.first_trigger_observed_at:
-            raise ValueError(
-                "market-first wallet history outcome must be strictly known before current T0"
-            )
+            raise ValueError("market-first wallet history outcome must be strictly known before current T0")
 
-    lower = max(0, as_of - 300)
     stored = load_market_trades(
         acquisition_run_key=episode.acquisition_run_key,
         token_mint=episode.token_mint,
         as_of=as_of,
-        chain_time_after=lower,
     )
+    chain_as_of = max(
+        [episode.first_trigger_chain_time]
+        + [item.observation.chain_time for item in stored]
+    )
+
     flow = tuple(
         FlowTradeObservation(
             token_mint=item.observation.token_mint,
@@ -194,11 +176,12 @@ def build_episode_enrichment_bundle(
     core = build_opportunity_snapshot_core_v1(
         token_mint=episode.token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         flow_observations=flow,
         quotes=quotes,
     )
 
-    fast_lower = as_of - 30
+    fast_lower = chain_as_of - 30
     participations = [
         OpportunityWalletParticipation(
             episode_key=episode.episode_key,
@@ -211,7 +194,7 @@ def build_episode_enrichment_bundle(
         )
         for item in stored
         if item.observation.wallet_address is not None
-        and fast_lower < item.observation.chain_time <= as_of
+        and fast_lower < item.observation.chain_time <= chain_as_of
         and item.observation.observed_at <= as_of
     ]
     wallets = build_opportunity_wallet_intelligence(
@@ -220,9 +203,7 @@ def build_episode_enrichment_bundle(
         as_of=as_of,
         participations=participations,
         historical_outcomes=list(historical_wallet_outcomes),
-        historical_opportunity_associations=list(
-            historical_wallet_opportunity_associations
-        ),
+        historical_opportunity_associations=list(historical_wallet_opportunity_associations),
     )
 
     risk = _risk_envelope(
