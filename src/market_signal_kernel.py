@@ -12,13 +12,12 @@ from src.market_opportunity_radar import (
     MarketRadarConfig,
     MarketTradeObservation,
     _coverage_pct,
-    _median,
     _validate_config,
     _validate_lifecycle,
     _validate_trade,
 )
 
-MARKET_SIGNAL_KERNEL_VERSION = "indexed_market_signal_kernel_v1"
+MARKET_SIGNAL_KERNEL_VERSION = "indexed_market_signal_kernel_v2_clock_domains"
 PUMP_LIFECYCLE_VENUES = {"pump", "pump_bonding_curve", "pumpfun", "pump.fun"}
 
 
@@ -46,16 +45,12 @@ def _build_features_from_indexed_windows(
     baseline_count: int,
     token_mint: str,
     as_of: int,
+    chain_as_of: int,
     lifecycle: MarketLifecycleObservation | None,
     config: MarketRadarConfig,
 ) -> MarketMovementFeatures:
-    """Build the frozen Radar v1.1 feature set from preselected causal windows.
+    """Build Radar features from causally preselected same-domain chain windows."""
 
-    Detailed feature work is required only for the 30-second fast window. The older
-    270-second baseline contributes only its event count/rate to the frozen detector,
-    so the kernel supplies that count from indexed boundaries instead of rescanning all
-    retained rows on every decision.
-    """
     buys = [item for item in fast if item.side == "buy"]
     sells = [item for item in fast if item.side == "sell"]
 
@@ -112,10 +107,12 @@ def _build_features_from_indexed_windows(
     market_age = None
     quality: list[str] = []
     if lifecycle is not None:
-        if lifecycle.observed_at <= as_of and lifecycle.market_started_at <= as_of:
-            market_age = as_of - lifecycle.market_started_at
-        else:
+        if lifecycle.observed_at > as_of:
             quality.append("lifecycle_not_available_by_as_of")
+        elif lifecycle.market_started_at <= chain_as_of:
+            market_age = chain_as_of - lifecycle.market_started_at
+        else:
+            quality.append("lifecycle_started_after_chain_as_of")
     else:
         quality.append("lifecycle_missing")
 
@@ -133,13 +130,17 @@ def _build_features_from_indexed_windows(
         quality.append("no_fast_window_events")
     if baseline_count < config.min_baseline_events:
         quality.append("baseline_activity_insufficient")
+    if fast:
+        quality.append("observation_lag_unavailable_unaligned_clock_domains")
+    if any(item.chain_time > item.observed_at for item in fast):
+        quality.append("chain_clock_ahead_of_local_observation_clock_observed")
 
-    lags = [item.observed_at - item.chain_time for item in fast]
     venues = tuple(sorted({str(item.venue) for item in fast if item.venue is not None}))
 
     return MarketMovementFeatures(
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         fast_window_seconds=config.fast_window_seconds,
         baseline_horizon_seconds=config.baseline_horizon_seconds,
         fast_event_count=len(fast),
@@ -161,8 +162,8 @@ def _build_features_from_indexed_windows(
         first_price_usd=first_price,
         last_price_usd=last_price,
         fast_return_pct=fast_return,
-        median_observation_lag_seconds=_median(lags),
-        max_observation_lag_seconds=max(lags) if lags else None,
+        median_observation_lag_seconds=None,
+        max_observation_lag_seconds=None,
         venues=venues,
         market_age_seconds=market_age,
         data_quality_flags=tuple(quality),
@@ -175,6 +176,7 @@ def _detect_from_indexed_windows(
     baseline_count: int,
     token_mint: str,
     as_of: int,
+    chain_as_of: int,
     lifecycle: MarketLifecycleObservation | None,
     config: MarketRadarConfig,
 ) -> MarketMovementTrigger | None:
@@ -183,6 +185,7 @@ def _detect_from_indexed_windows(
         baseline_count=baseline_count,
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         lifecycle=lifecycle,
         config=config,
     )
@@ -231,16 +234,11 @@ def _detect_from_indexed_windows(
 
 
 class IndexedMarketSignalKernel:
-    """Bounded memory-first state for the frozen Market Opportunity Radar.
+    """Bounded memory-first state for the Market Opportunity Radar.
 
-    Contract:
-    - inputs are validated once on ingress;
-    - same-asset `observed_at` is non-decreasing;
-    - chain-time disorder is allowed and inserted causally;
-    - only the detector's 300-second horizon is retained;
-    - thresholds and method version come directly from the frozen Radar config/version.
-
-    This class performs no persistence, network I/O, enrichment, or async work.
+    Local ``observed_at`` remains the causal arrival clock. Each token also carries a
+    monotone same-domain chain anchor equal to the maximum chain timestamp observed so
+    far. Late chain-time inserts are allowed and never move that anchor backwards.
     """
 
     def __init__(self, config: MarketRadarConfig = MarketRadarConfig()) -> None:
@@ -249,6 +247,7 @@ class IndexedMarketSignalKernel:
         self._rows: dict[str, list[tuple[int, int, int, MarketTradeObservation]]] = defaultdict(list)
         self._lifecycle: dict[str, MarketLifecycleObservation] = {}
         self._last_observed_at: dict[str, int] = {}
+        self._latest_chain_time: dict[str, int] = {}
         self._sequence = 0
         self._trade_events_ingested = 0
         self._lifecycle_events_ingested = 0
@@ -271,6 +270,10 @@ class IndexedMarketSignalKernel:
             raise ValueError("same-asset observed_at regression")
         self._last_observed_at[trade.token_mint] = trade.observed_at
 
+        previous_chain = self._latest_chain_time.get(trade.token_mint)
+        chain_as_of = trade.chain_time if previous_chain is None else max(previous_chain, trade.chain_time)
+        self._latest_chain_time[trade.token_mint] = chain_as_of
+
         sequence = self._sequence
         self._sequence += 1
         self._trade_events_ingested += 1
@@ -285,7 +288,7 @@ class IndexedMarketSignalKernel:
             index = bisect.bisect_right(keys, item[:3])
             rows.insert(index, item)
 
-        baseline_lower = trade.observed_at - self.config.baseline_horizon_seconds
+        baseline_lower = chain_as_of - self.config.baseline_horizon_seconds
         chain_keys = [row[0] for row in rows]
         prune_to = bisect.bisect_right(chain_keys, baseline_lower)
         if prune_to:
@@ -293,9 +296,9 @@ class IndexedMarketSignalKernel:
             self._compactions += 1
             chain_keys = chain_keys[prune_to:]
 
-        fast_lower = trade.observed_at - self.config.fast_window_seconds
+        fast_lower = chain_as_of - self.config.fast_window_seconds
         fast_start = bisect.bisect_right(chain_keys, fast_lower)
-        fast_end = bisect.bisect_right(chain_keys, trade.observed_at)
+        fast_end = bisect.bisect_right(chain_keys, chain_as_of)
         baseline_count = fast_start
         fast = [row[3] for row in rows[fast_start:fast_end]]
 
@@ -305,6 +308,7 @@ class IndexedMarketSignalKernel:
             baseline_count=baseline_count,
             token_mint=trade.token_mint,
             as_of=trade.observed_at,
+            chain_as_of=chain_as_of,
             lifecycle=lifecycle,
             config=self.config,
         )
