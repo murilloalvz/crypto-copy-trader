@@ -10,7 +10,11 @@ from src.carbon_protocol_adapter import (
     INVALID_EVENT,
     UNSUPPORTED_EVENT,
     adapt_carbon_pumpswap_create_pool_v0,
+    adapt_carbon_pumpswap_pool_account_identity_v0,
 )
+
+
+PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 
 
 class CarbonProtocolAdapterV0Tests(unittest.TestCase):
@@ -23,6 +27,21 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
             base_mint="MINT_A",
             quote_mint="USDC_MINT",
             timestamp=100,
+        )
+        row.update(overrides)
+        return row
+
+    def _pool_account(self, **overrides):
+        row = dict(
+            type="carbon_pumpswap_pool_account",
+            status="decoded",
+            pool="POOL_A",
+            owner=PUMPSWAP_PROGRAM_ID,
+            rpc_context_slot=123,
+            received_wall_ns=101_500_000_000,
+            base_mint="MINT_A",
+            quote_mint="USDC_MINT",
+            carbon_decoder_version="2.0.0",
         )
         row.update(overrides)
         return row
@@ -139,6 +158,39 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
         )
         self.assertEqual(trade_result.status, MISSING_CONTEXT)
         self.assertIsNone(trade_result.observation)
+
+    def test_pool_account_identity_uses_local_availability_without_fake_chain_time(self):
+        result = adapt_carbon_pumpswap_pool_account_identity_v0(self._pool_account())
+        self.assertEqual(result.status, ADAPTED)
+        identity = result.identity_observation
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(identity.pool, "POOL_A")
+        self.assertEqual(identity.base_mint, "MINT_A")
+        self.assertEqual(identity.quote_mint, "USDC_MINT")
+        self.assertEqual(identity.observed_wall_ns, 101_500_000_000)
+        self.assertEqual(identity.observed_slot, 123)
+        self.assertFalse(hasattr(identity, "chain_time"))
+
+    def test_invalid_pool_account_identity_fails_closed(self):
+        for row in (
+            self._pool_account(owner="WRONG"),
+            self._pool_account(base_mint=None),
+            self._pool_account(quote_mint=None),
+            self._pool_account(received_wall_ns=0),
+            self._pool_account(rpc_context_slot=-1),
+        ):
+            with self.subTest(row=row):
+                result = adapt_carbon_pumpswap_pool_account_identity_v0(row)
+                self.assertEqual(result.status, INVALID_EVENT)
+                self.assertIsNone(result.identity_observation)
+
+    def test_undecoded_pool_account_is_unsupported(self):
+        result = adapt_carbon_pumpswap_pool_account_identity_v0(
+            self._pool_account(status="decode_failed")
+        )
+        self.assertEqual(result.status, UNSUPPORTED_EVENT)
+        self.assertIsNone(result.identity_observation)
 
 
 if __name__ == "__main__":
