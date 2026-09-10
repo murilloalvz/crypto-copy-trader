@@ -84,17 +84,24 @@ class CarbonMatchedUnitAdapterV0Tests(unittest.TestCase):
         self.assertEqual(obs.reserve_kind, "pump_virtual_quote_event")
         self.assertEqual(result.provenance_keys, ("pump:sig:0",))
 
-    def test_pump_invalid_or_future_observation_fails_closed(self):
-        for row, observed_at in (
-            (self._pump(quote_mint=None), 101),
-            (self._pump(quote_amount_raw=0), 101),
-            (self._pump(virtual_quote_reserves_raw=0), 101),
-            (self._pump(), 99),
+    def test_pump_invalid_fields_fail_closed(self):
+        for row in (
+            self._pump(quote_mint=None),
+            self._pump(quote_amount_raw=0),
+            self._pump(virtual_quote_reserves_raw=0),
         ):
-            with self.subTest(row=row, observed_at=observed_at):
-                result = adapt_carbon_pump_trade_v0(row, observed_at=observed_at)
+            with self.subTest(row=row):
+                result = adapt_carbon_pump_trade_v0(row, observed_at=101)
                 self.assertEqual(result.status, INVALID_EVENT)
                 self.assertIsNone(result.observation)
+
+    def test_chain_clock_ahead_of_local_clock_is_valid_and_flagged(self):
+        result = adapt_carbon_pump_trade_v0(self._pump(timestamp=100), observed_at=99)
+        self.assertEqual(result.status, ADAPTED)
+        self.assertIsNotNone(result.observation)
+        self.assertIn(
+            "chain_clock_ahead_of_local_observation_clock", result.data_quality_flags
+        )
 
     def test_non_trade_row_is_unsupported_not_guessed(self):
         result = adapt_carbon_pump_trade_v0(
@@ -146,6 +153,20 @@ class CarbonMatchedUnitAdapterV0Tests(unittest.TestCase):
         self.assertEqual(obs.quote_reserve_raw, 200)
         self.assertEqual(
             result.provenance_keys, ("pumpswap:sig:0", "pool-state-90")
+        )
+
+    def test_pumpswap_chain_clock_ahead_is_valid_but_context_still_causal(self):
+        identity = self._identity(observed_wall_ns=100_000_000_000)
+        result = adapt_carbon_pumpswap_trade_v0(
+            self._swap(timestamp=102),
+            observed_at=101,
+            observed_wall_ns=101_000_000_000,
+            pool_observations=(),
+            pool_identity_observations=(identity,),
+        )
+        self.assertEqual(result.status, ADAPTED)
+        self.assertIn(
+            "chain_clock_ahead_of_local_observation_clock", result.data_quality_flags
         )
 
     def test_latest_causal_pool_context_wins(self):
