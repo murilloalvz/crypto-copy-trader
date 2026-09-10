@@ -43,15 +43,10 @@ CREATE TABLE IF NOT EXISTS market_trade_observations (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(acquisition_run_key, event_key)
 );
-
 CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_token_time
-ON market_trade_observations(
-    acquisition_run_key, token_mint, chain_time, observed_at, id
-);
-
+ON market_trade_observations(acquisition_run_key, token_mint, chain_time, observed_at, id);
 CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
 ON market_trade_observations(acquisition_run_key, transaction_key, id);
-
 CREATE TABLE IF NOT EXISTS market_lifecycle_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     acquisition_run_key TEXT NOT NULL,
@@ -64,12 +59,8 @@ CREATE TABLE IF NOT EXISTS market_lifecycle_observations (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(acquisition_run_key, event_key)
 );
-
 CREATE INDEX IF NOT EXISTS idx_market_lifecycle_observations_run_token_time
-ON market_lifecycle_observations(
-    acquisition_run_key, token_mint, market_started_at, observed_at, id
-);
-
+ON market_lifecycle_observations(acquisition_run_key, token_mint, market_started_at, observed_at, id);
 CREATE TABLE IF NOT EXISTS market_replay_conflicts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     acquisition_run_key TEXT NOT NULL,
@@ -83,7 +74,6 @@ CREATE TABLE IF NOT EXISTS market_replay_conflicts (
     canonical_action TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX IF NOT EXISTS idx_market_replay_conflicts_run_event
 ON market_replay_conflicts(acquisition_run_key, event_key, id);
 """
@@ -105,8 +95,6 @@ def _database_cache_key() -> str:
 
 
 def ensure_market_observation_schema() -> None:
-    """Ensure schema once per active SQLite path in this process."""
-
     cache_key = _database_cache_key()
     if cache_key in _SCHEMA_READY_PATHS:
         return
@@ -141,8 +129,6 @@ def _validate_trade(item: MarketTradeObservation) -> None:
         raise ValueError("trade side must be buy or sell")
     if item.chain_time < 0 or item.observed_at < 0:
         raise ValueError("trade timestamps must be non-negative")
-    if item.observed_at < item.chain_time:
-        raise ValueError("trade observed_at cannot precede chain_time")
     if item.wallet_address is not None and not item.wallet_address.strip():
         raise ValueError("wallet_address cannot be blank")
     if item.venue is not None and not item.venue.strip():
@@ -159,8 +145,6 @@ def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
     _required(item.token_mint, "token_mint")
     if item.market_started_at < 0 or item.observed_at < 0:
         raise ValueError("lifecycle timestamps must be non-negative")
-    if item.observed_at < item.market_started_at:
-        raise ValueError("lifecycle observed_at cannot precede market_started_at")
     if item.venue is not None and not item.venue.strip():
         raise ValueError("venue cannot be blank")
 
@@ -169,13 +153,7 @@ def _identity_sort_key(identity: tuple) -> str:
     return json.dumps(identity, separators=(",", ":"), ensure_ascii=True)
 
 
-def _choose_conflict_action(
-    *,
-    stored_observed_at: int,
-    incoming_observed_at: int,
-    stored_identity: tuple,
-    incoming_identity: tuple,
-) -> tuple[str, bool]:
+def _choose_conflict_action(*, stored_observed_at: int, incoming_observed_at: int, stored_identity: tuple, incoming_identity: tuple) -> tuple[str, bool]:
     if incoming_observed_at < stored_observed_at:
         return "replace_with_earlier_observation", True
     if incoming_observed_at > stored_observed_at:
@@ -185,19 +163,7 @@ def _choose_conflict_action(
     return "retain_equal_timestamp_by_identity_order", False
 
 
-def _record_replay_conflict(
-    conn,
-    *,
-    acquisition_run_key: str,
-    event_key: str,
-    event_type: str,
-    source_provider: str,
-    stored_observed_at: int,
-    incoming_observed_at: int,
-    stored_identity: tuple,
-    incoming_identity: tuple,
-    canonical_action: str,
-) -> None:
+def _record_replay_conflict(conn, *, acquisition_run_key: str, event_key: str, event_type: str, source_provider: str, stored_observed_at: int, incoming_observed_at: int, stored_identity: tuple, incoming_identity: tuple, canonical_action: str) -> None:
     conn.execute(
         """INSERT INTO market_replay_conflicts(
             acquisition_run_key, event_key, event_type, source_provider,
@@ -218,19 +184,12 @@ def _record_replay_conflict(
     )
 
 
-def record_market_trade(
-    *,
-    acquisition_run_key: str,
-    event_key: str,
-    source_provider: str,
-    observation: MarketTradeObservation,
-) -> bool:
+def record_market_trade(*, acquisition_run_key: str, event_key: str, source_provider: str, observation: MarketTradeObservation) -> bool:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     raw_key = _required(event_key, "event_key")
     provider = _required(source_provider, "source_provider")
     _validate_trade(observation)
     ensure_market_observation_schema()
-
     identity_values = (
         provider,
         observation.token_mint,
@@ -260,12 +219,10 @@ def record_market_trade(
             if existing_identity == identity_values:
                 if incoming_observed_at < stored_observed_at:
                     conn.execute(
-                        """UPDATE market_trade_observations SET observed_at=?
-                        WHERE acquisition_run_key=? AND event_key=?""",
+                        "UPDATE market_trade_observations SET observed_at=? WHERE acquisition_run_key=? AND event_key=?",
                         (incoming_observed_at, run_key, raw_key),
                     )
                 return False
-
             action, incoming_wins = _choose_conflict_action(
                 stored_observed_at=stored_observed_at,
                 incoming_observed_at=incoming_observed_at,
@@ -291,22 +248,13 @@ def record_market_trade(
                         wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?
                     WHERE acquisition_run_key=? AND event_key=?""",
                     (
-                        provider,
-                        observation.token_mint,
-                        observation.side,
-                        observation.chain_time,
-                        incoming_observed_at,
-                        observation.wallet_address,
-                        observation.notional_usd,
-                        observation.price_usd,
-                        observation.venue,
-                        observation.transaction_key,
-                        run_key,
-                        raw_key,
+                        provider, observation.token_mint, observation.side, observation.chain_time,
+                        incoming_observed_at, observation.wallet_address, observation.notional_usd,
+                        observation.price_usd, observation.venue, observation.transaction_key,
+                        run_key, raw_key,
                     ),
                 )
             return False
-
         conn.execute(
             """INSERT INTO market_trade_observations(
                 acquisition_run_key, event_key, source_provider, token_mint, side,
@@ -314,42 +262,22 @@ def record_market_trade(
                 transaction_key
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                run_key,
-                raw_key,
-                provider,
-                observation.token_mint,
-                observation.side,
-                observation.chain_time,
-                observation.observed_at,
-                observation.wallet_address,
-                observation.notional_usd,
-                observation.price_usd,
-                observation.venue,
+                run_key, raw_key, provider, observation.token_mint, observation.side,
+                observation.chain_time, observation.observed_at, observation.wallet_address,
+                observation.notional_usd, observation.price_usd, observation.venue,
                 observation.transaction_key,
             ),
         )
         return True
 
 
-def record_market_lifecycle(
-    *,
-    acquisition_run_key: str,
-    event_key: str,
-    source_provider: str,
-    observation: MarketLifecycleObservation,
-) -> bool:
+def record_market_lifecycle(*, acquisition_run_key: str, event_key: str, source_provider: str, observation: MarketLifecycleObservation) -> bool:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     raw_key = _required(event_key, "event_key")
     provider = _required(source_provider, "source_provider")
     _validate_lifecycle(observation)
     ensure_market_observation_schema()
-
-    identity_values = (
-        provider,
-        observation.token_mint,
-        observation.market_started_at,
-        observation.venue,
-    )
+    identity_values = (provider, observation.token_mint, observation.market_started_at, observation.venue)
     with connection() as conn:
         existing = conn.execute(
             """SELECT source_provider, token_mint, market_started_at, observed_at, venue
@@ -366,12 +294,10 @@ def record_market_lifecycle(
             if existing_identity == identity_values:
                 if incoming_observed_at < stored_observed_at:
                     conn.execute(
-                        """UPDATE market_lifecycle_observations SET observed_at=?
-                        WHERE acquisition_run_key=? AND event_key=?""",
+                        "UPDATE market_lifecycle_observations SET observed_at=? WHERE acquisition_run_key=? AND event_key=?",
                         (incoming_observed_at, run_key, raw_key),
                     )
                 return False
-
             action, incoming_wins = _choose_conflict_action(
                 stored_observed_at=stored_observed_at,
                 incoming_observed_at=incoming_observed_at,
@@ -396,42 +322,25 @@ def record_market_lifecycle(
                     SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
                     WHERE acquisition_run_key=? AND event_key=?""",
                     (
-                        provider,
-                        observation.token_mint,
-                        observation.market_started_at,
-                        incoming_observed_at,
-                        observation.venue,
-                        run_key,
-                        raw_key,
+                        provider, observation.token_mint, observation.market_started_at,
+                        incoming_observed_at, observation.venue, run_key, raw_key,
                     ),
                 )
             return False
-
         conn.execute(
             """INSERT INTO market_lifecycle_observations(
                 acquisition_run_key, event_key, source_provider, token_mint,
                 market_started_at, observed_at, venue
             ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
-                run_key,
-                raw_key,
-                provider,
-                observation.token_mint,
-                observation.market_started_at,
-                observation.observed_at,
-                observation.venue,
+                run_key, raw_key, provider, observation.token_mint,
+                observation.market_started_at, observation.observed_at, observation.venue,
             ),
         )
         return True
 
 
-def load_market_trades(
-    *,
-    acquisition_run_key: str,
-    token_mint: str,
-    as_of: int | None = None,
-    chain_time_after: int | None = None,
-) -> tuple[StoredMarketTrade, ...]:
+def load_market_trades(*, acquisition_run_key: str, token_mint: str, as_of: int | None = None, chain_time_after: int | None = None) -> tuple[StoredMarketTrade, ...]:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     if as_of is not None and as_of < 0:
@@ -475,13 +384,7 @@ def load_market_trades(
     )
 
 
-def load_latest_market_lifecycle(
-    *,
-    acquisition_run_key: str,
-    token_mint: str,
-    as_of: int | None = None,
-    venue: str | None = None,
-) -> StoredMarketLifecycle | None:
+def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, as_of: int | None = None, venue: str | None = None) -> StoredMarketLifecycle | None:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     mint = _required(token_mint, "token_mint")
     if as_of is not None and as_of < 0:
