@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from benchmarks.carbon_decoder_parity_v1.parity import extract_contextual_target_payloads
 from benchmarks.helius_standard_wss_shadow_v0 import TRACE_VERSION
 
-REDUCER_VERSION = "helius_standard_wss_shadow_reducer_v0"
+REDUCER_VERSION = "helius_standard_wss_shadow_reducer_v1"
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -54,6 +54,9 @@ def reduce_shadow(
     duplicate_notifications = 0
     seen_notification_identity: set[tuple[str, int, str]] = set()
     stack_errors = 0
+    successful_tx_stack_errors = 0
+    failed_tx_stack_errors = 0
+    stack_error_examples: list[dict[str, Any]] = []
     target_counts: Counter[str] = Counter()
     accepted_counts: Counter[str] = Counter()
     failed_tx_target_events = 0
@@ -97,6 +100,21 @@ def reduce_shadow(
         targets, record_stack_errors = extract_contextual_target_payloads(logs)
         stack_errors += record_stack_errors
         tx_succeeded = row.get("err") is None
+        if record_stack_errors:
+            if tx_succeeded:
+                successful_tx_stack_errors += record_stack_errors
+            else:
+                failed_tx_stack_errors += record_stack_errors
+            if len(stack_error_examples) < 10:
+                stack_error_examples.append(
+                    {
+                        "signature": signature,
+                        "slot": slot,
+                        "subscription_label": subscription_label,
+                        "transaction_succeeded": tx_succeeded,
+                        "stack_errors": record_stack_errors,
+                    }
+                )
 
         for target in targets:
             log_index = int(target["log_index"])
@@ -144,7 +162,10 @@ def reduce_shadow(
                     "event_type",
                     "transaction_succeeded",
                 )
-                if any(previous_manifest.get(field) != manifest_candidate.get(field) for field in immutable_fields):
+                if any(
+                    previous_manifest.get(field) != manifest_candidate.get(field)
+                    for field in immutable_fields
+                ):
                     conflicting_event_keys.append(event_key)
                     continue
                 if received_wall_ns < int(previous_manifest["first_received_wall_ns"]):
@@ -183,12 +204,15 @@ def reduce_shadow(
         "target_event_counts": dict(sorted(target_counts.items())),
         "accepted_event_counts": dict(sorted(accepted_counts.items())),
         "program_log_stack_errors": stack_errors,
+        "successful_tx_stack_errors": successful_tx_stack_errors,
+        "failed_tx_stack_errors": failed_tx_stack_errors,
+        "stack_error_examples": stack_error_examples,
         "conflicting_event_keys": len(conflicts),
         "conflicting_event_key_examples": list(conflicts[:10]),
         "valid_for_carbon_decode": (
             trace_contract_valid
             and len(carbon_rows) > 0
-            and stack_errors == 0
+            and successful_tx_stack_errors == 0
             and not conflicts
         ),
         "chain_complete_coverage_claimed": False,
