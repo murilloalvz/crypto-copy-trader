@@ -29,7 +29,7 @@ def _write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
-            handle.write(json.dumps(row, sort_keys=True, separators=(",", ",")) + "\n")
+            handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def _diagnose_program_stack(logs: list[Any]) -> dict[str, Any]:
