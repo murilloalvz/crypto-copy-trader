@@ -66,7 +66,7 @@ class HeliusStandardWssFinalizedBlockReconcilerV0Tests(unittest.TestCase):
         self.assertEqual(rows[1]["programs_mentioned"], ["pump", "pumpswap"])
         self.assertFalse(rows[1]["transaction_succeeded"])
 
-    def test_recall_is_withheld_when_reference_is_incomplete(self):
+    def test_recall_and_comparison_counts_are_withheld_when_reference_is_incomplete(self):
         truth = [
             {
                 "signature": "A",
@@ -75,12 +75,22 @@ class HeliusStandardWssFinalizedBlockReconcilerV0Tests(unittest.TestCase):
             }
         ]
         result = reconcile_signature_sets(
-            wss_sets={"pump": {"A"}, "pumpswap": set()},
+            wss_sets={"pump": {"A", "PROCESSED_ONLY"}, "pumpswap": set()},
             truth_rows=truth,
             complete_truth_enumeration=False,
         )
-        self.assertIsNone(result["pump"]["finalized_signature_recall_pct"])
-        self.assertIsNone(result["pump"]["finalized_success_signature_recall_pct"])
+        pump = result["pump"]
+        self.assertEqual(pump["wss_processed_signatures"], 2)
+        self.assertIsNone(pump["finalized_truth_signatures"])
+        self.assertIsNone(pump["finalized_success_truth_signatures"])
+        self.assertIsNone(pump["wss_and_finalized_intersection"])
+        self.assertIsNone(pump["finalized_truth_missed_by_wss"])
+        self.assertIsNone(pump["wss_processed_absent_from_finalized_truth"])
+        self.assertIsNone(pump["finalized_success_seen_by_wss"])
+        self.assertIsNone(pump["finalized_signature_recall_pct"])
+        self.assertIsNone(pump["finalized_success_signature_recall_pct"])
+        self.assertEqual(pump["missed_finalized_examples"], [])
+        self.assertEqual(pump["processed_absent_finalized_examples"], [])
 
     def test_reconciliation_surfaces_missed_and_processed_absent_finalized(self):
         truth = [
