@@ -1,9 +1,13 @@
 """Causal protocol-state adapters for decoded Carbon events and pool accounts.
 
 This module intentionally handles only protocol facts explicitly present in decoded
-Carbon data.  It does not infer migration, token orientation, or liquidity from
-later observations.  Pool-account identity uses its local receive clock directly;
+Carbon data. It does not infer migration, token orientation, or liquidity from
+later observations. Pool-account identity uses its local receive clock directly;
 no synthetic chain timestamp is invented for account snapshots.
+
+On-chain ``chain_time`` and local ``observed_at`` are separate clock domains. A
+cross-domain offset is diagnostic only; causal availability is determined by the
+local observation clock.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from src.market_protocol_facts import PumpSwapPoolObservation
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
-CARBON_PROTOCOL_ADAPTER_VERSION = "carbon_protocol_adapter_v0"
+CARBON_PROTOCOL_ADAPTER_VERSION = "carbon_protocol_adapter_v1_clock_domains"
 PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 ADAPTED = "ADAPTED"
 UNSUPPORTED_EVENT = "UNSUPPORTED_EVENT"
@@ -82,7 +86,6 @@ def adapt_carbon_pumpswap_create_pool_v0(
         or base_mint is None
         or quote_mint is None
         or chain_time is None
-        or observed_at < chain_time
     ):
         return CarbonProtocolAdaptationResultV0(
             method_version=CARBON_PROTOCOL_ADAPTER_VERSION,
@@ -103,13 +106,18 @@ def adapt_carbon_pumpswap_create_pool_v0(
         base_mint=base_mint,
         quote_mint=quote_mint,
     )
+    flags = (
+        ("chain_clock_ahead_of_local_observation_clock",)
+        if observed_at < chain_time
+        else ()
+    )
     return CarbonProtocolAdaptationResultV0(
         method_version=CARBON_PROTOCOL_ADAPTER_VERSION,
         event_key=event_key,
         status=ADAPTED,
         pool_observation=observation,
         provenance_keys=(event_key,),
-        data_quality_flags=(),
+        data_quality_flags=flags,
     )
 
 
