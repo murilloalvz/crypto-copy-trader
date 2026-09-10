@@ -2,9 +2,9 @@
 
 Pump TradeEvent carries its quote mint, quote amount and virtual quote reserves directly,
 so it can be adapted without external context. PumpSwap Buy/Sell events carry quote
-amount/reserves but not the quote mint; they are adapted only when an exact pool context
-was already causally available by the event's observation time. Missing context remains
-missing and is never backfilled or assumed to be SOL.
+amount/reserves but not quote identity; they are adapted only when exact pool identity
+was already causally available by the event's local observation time. Missing context
+remains missing and is never backfilled or assumed to be SOL.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from src.market_protocol_facts import PumpSwapPoolObservation
 from src.matched_unit_flow import MatchedUnitFlowObservation
+from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
 CARBON_MATCHED_UNIT_ADAPTER_VERSION = "carbon_matched_unit_adapter_v0"
@@ -32,6 +33,13 @@ class CarbonMatchedUnitAdaptationResultV0:
     observation: MatchedUnitFlowObservation | None
     provenance_keys: tuple[str, ...]
     data_quality_flags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _PoolIdentityContext:
+    token_mint: str
+    quote_mint: str
+    evidence_key: str
 
 
 def _text(row: Mapping[str, Any], name: str) -> str | None:
@@ -130,13 +138,13 @@ def adapt_carbon_pump_trade_v0(
     )
 
 
-def _causal_pool_context(
+def _causal_pool_state_context(
     *,
     pool: str,
     event_chain_time: int,
     event_observed_at: int,
     pool_observations: Sequence[PumpSwapPoolObservation],
-) -> tuple[PumpSwapPoolObservation | None, str | None]:
+) -> tuple[_PoolIdentityContext | None, str | None]:
     eligible = [
         item
         for item in pool_observations
@@ -158,7 +166,85 @@ def _causal_pool_context(
     if len(identities) != 1:
         return None, CONFLICTING_CONTEXT
     canonical = min(best, key=lambda item: item.evidence_key)
-    return canonical, None
+    assert canonical.quote_mint is not None
+    return _PoolIdentityContext(
+        token_mint=canonical.token_mint,
+        quote_mint=canonical.quote_mint,
+        evidence_key=canonical.evidence_key,
+    ), None
+
+
+def _causal_pool_identity_context(
+    *,
+    pool: str,
+    event_observed_at: int,
+    event_observed_wall_ns: int | None,
+    pool_identity_observations: Sequence[PumpSwapPoolIdentityObservation],
+) -> tuple[_PoolIdentityContext | None, str | None]:
+    eligible: list[PumpSwapPoolIdentityObservation] = []
+    for item in pool_identity_observations:
+        if item.pool != pool:
+            continue
+        if event_observed_wall_ns is not None:
+            if item.observed_wall_ns > event_observed_wall_ns:
+                continue
+        elif item.observed_at > event_observed_at:
+            continue
+        eligible.append(item)
+
+    if not eligible:
+        return None, MISSING_CONTEXT
+
+    identities = {(item.base_mint, item.quote_mint) for item in eligible}
+    if len(identities) != 1:
+        return None, CONFLICTING_CONTEXT
+    canonical = max(
+        eligible,
+        key=lambda item: (item.observed_wall_ns, item.observed_slot, item.evidence_key),
+    )
+    return _PoolIdentityContext(
+        token_mint=canonical.base_mint,
+        quote_mint=canonical.quote_mint,
+        evidence_key=canonical.evidence_key,
+    ), None
+
+
+def _causal_pool_context(
+    *,
+    pool: str,
+    event_chain_time: int,
+    event_observed_at: int,
+    event_observed_wall_ns: int | None,
+    pool_observations: Sequence[PumpSwapPoolObservation],
+    pool_identity_observations: Sequence[PumpSwapPoolIdentityObservation],
+) -> tuple[_PoolIdentityContext | None, str | None]:
+    state_context, state_error = _causal_pool_state_context(
+        pool=pool,
+        event_chain_time=event_chain_time,
+        event_observed_at=event_observed_at,
+        pool_observations=pool_observations,
+    )
+    identity_context, identity_error = _causal_pool_identity_context(
+        pool=pool,
+        event_observed_at=event_observed_at,
+        event_observed_wall_ns=event_observed_wall_ns,
+        pool_identity_observations=pool_identity_observations,
+    )
+
+    if state_error == CONFLICTING_CONTEXT or identity_error == CONFLICTING_CONTEXT:
+        return None, CONFLICTING_CONTEXT
+    if state_context is not None and identity_context is not None:
+        if (
+            state_context.token_mint != identity_context.token_mint
+            or state_context.quote_mint != identity_context.quote_mint
+        ):
+            return None, CONFLICTING_CONTEXT
+        return state_context, None
+    if state_context is not None:
+        return state_context, None
+    if identity_context is not None:
+        return identity_context, None
+    return None, MISSING_CONTEXT
 
 
 def adapt_carbon_pumpswap_trade_v0(
@@ -166,8 +252,10 @@ def adapt_carbon_pumpswap_trade_v0(
     *,
     observed_at: int,
     pool_observations: Sequence[PumpSwapPoolObservation],
+    pool_identity_observations: Sequence[PumpSwapPoolIdentityObservation] = (),
+    observed_wall_ns: int | None = None,
 ) -> CarbonMatchedUnitAdaptationResultV0:
-    """Adapt one PumpSwap Buy/Sell only with causal exact-pool quote-mint context."""
+    """Adapt PumpSwap Buy/Sell with exact pool identity available before the event."""
 
     event_key = _text(row, "event_key")
     event_type = row.get("event_type")
@@ -182,6 +270,12 @@ def adapt_carbon_pumpswap_trade_v0(
         )
     if not isinstance(observed_at, int) or isinstance(observed_at, bool) or observed_at < 0:
         raise ValueError("observed_at must be a non-negative integer")
+    if observed_wall_ns is not None and (
+        not isinstance(observed_wall_ns, int)
+        or isinstance(observed_wall_ns, bool)
+        or observed_wall_ns < 0
+    ):
+        raise ValueError("observed_wall_ns must be a non-negative integer when present")
 
     pool = _text(row, "pool")
     side = _text(row, "side")
@@ -207,7 +301,9 @@ def adapt_carbon_pumpswap_trade_v0(
         pool=pool,
         event_chain_time=chain_time,
         event_observed_at=observed_at,
+        event_observed_wall_ns=observed_wall_ns,
         pool_observations=pool_observations,
+        pool_identity_observations=pool_identity_observations,
     )
     if context is None:
         flag = (
@@ -221,7 +317,6 @@ def adapt_carbon_pumpswap_trade_v0(
             flags=(flag,),
         )
 
-    assert context.quote_mint is not None
     observation = MatchedUnitFlowObservation(
         token_mint=context.token_mint,
         side=side,
