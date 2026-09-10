@@ -9,6 +9,10 @@ Surfaces are never blended implicitly. Pump bonding-curve liquidity, PumpSwap po
 and any future venues remain separate by ``venue + market_surface_key +
 quote_asset_key + reserve_kind``. The output is descriptive research evidence only;
 it has no score, confidence, recommendation, or trading action.
+
+Local observation time and Solana chain time are separate clock domains. ``as_of``
+is the local evidence-availability cutoff. ``chain_as_of`` is the explicit on-chain
+window anchor. Neither clock is ordered against the other.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-MATCHED_UNIT_FLOW_VERSION = "matched_unit_flow_v0"
+MATCHED_UNIT_FLOW_VERSION = "matched_unit_flow_v1_clock_domains"
 DEFAULT_MATCHED_UNIT_WINDOWS_SECONDS = (10, 30, 60, 300)
 _VALID_SIDES = frozenset({"buy", "sell"})
 
@@ -63,6 +67,7 @@ class MatchedUnitFlowFactsV0:
     method_version: str
     token_mint: str
     as_of: int
+    chain_as_of: int | None
     windows_seconds: tuple[int, ...]
     surface_windows: tuple[MatchedUnitFlowSurfaceWindowV0, ...]
     available: bool
@@ -102,8 +107,6 @@ def validate_matched_unit_flow_observation(item: MatchedUnitFlowObservation) -> 
         raise ValueError("side must be 'buy' or 'sell'")
     _require_nonnegative_int("chain_time", item.chain_time)
     _require_nonnegative_int("observed_at", item.observed_at)
-    if item.observed_at < item.chain_time:
-        raise ValueError("observed_at cannot precede chain_time")
     _require_positive_int("quote_amount_raw", item.quote_amount_raw)
     _require_positive_int("quote_reserve_raw", item.quote_reserve_raw)
 
@@ -203,20 +206,24 @@ def build_matched_unit_flow_facts_v0(
     *,
     token_mint: str,
     as_of: int,
+    chain_as_of: int | None = None,
     observations: tuple[MatchedUnitFlowObservation, ...]
     | list[MatchedUnitFlowObservation] = (),
     windows_seconds: tuple[int, ...] = DEFAULT_MATCHED_UNIT_WINDOWS_SECONDS,
 ) -> MatchedUnitFlowFactsV0:
-    """Build causal dimensionless flow/liquidity facts at ``as_of``.
+    """Build causal dimensionless flow/liquidity facts at local ``as_of``.
 
-    Availability uses the same dual-clock rule as the generic flow snapshot: an event
-    must have happened inside the chain-time window *and* have been observed by T0.
-    Evidence arriving after T0 is invisible. Duplicate identical evidence is idempotent;
-    conflicting evidence visible by T0 fails closed.
+    Availability is gated only by the local observation clock. Market-window
+    membership is gated only by ``chain_time`` against an explicit ``chain_as_of``.
+    This avoids treating Solana's approximate Unix clock and the collector wall clock
+    as a single ordered clock. A chain anchor is required whenever causally visible
+    observations exist.
     """
 
     token_mint = _require_text("token_mint", token_mint)
     _require_nonnegative_int("as_of", as_of)
+    if chain_as_of is not None:
+        _require_nonnegative_int("chain_as_of", chain_as_of)
     if not windows_seconds:
         raise ValueError("windows_seconds must contain positive values")
     normalized_windows: list[int] = []
@@ -229,42 +236,48 @@ def build_matched_unit_flow_facts_v0(
     eligible = _canonicalize_eligible(
         tuple(observations), token_mint=token_mint, as_of=as_of
     )
+    if eligible and chain_as_of is None:
+        raise ValueError("chain_as_of is required when causally visible observations exist")
 
     output: list[MatchedUnitFlowSurfaceWindowV0] = []
-    for window_seconds in windows:
-        lower_bound = as_of - window_seconds
-        in_window = tuple(
-            item for item in eligible if lower_bound < item.chain_time <= as_of
-        )
-        grouped: dict[
-            tuple[str, str, str, str], list[MatchedUnitFlowObservation]
-        ] = {}
-        for item in in_window:
-            grouped.setdefault(_surface_key(item), []).append(item)
-        for key in sorted(grouped):
-            rows = tuple(
-                sorted(
-                    grouped[key],
-                    key=lambda item: (
-                        item.chain_time,
-                        item.observed_at,
-                        item.evidence_key,
-                    ),
+    if chain_as_of is not None:
+        for window_seconds in windows:
+            lower_bound = chain_as_of - window_seconds
+            in_window = tuple(
+                item for item in eligible if lower_bound < item.chain_time <= chain_as_of
+            )
+            grouped: dict[
+                tuple[str, str, str, str], list[MatchedUnitFlowObservation]
+            ] = {}
+            for item in in_window:
+                grouped.setdefault(_surface_key(item), []).append(item)
+            for key in sorted(grouped):
+                rows = tuple(
+                    sorted(
+                        grouped[key],
+                        key=lambda item: (
+                            item.chain_time,
+                            item.observed_at,
+                            item.evidence_key,
+                        ),
+                    )
                 )
-            )
-            output.append(
-                _build_surface_window(rows, window_seconds=window_seconds)
-            )
+                output.append(_build_surface_window(rows, window_seconds=window_seconds))
 
     quality: set[str] = set()
     if not output:
         quality.add("matched_unit_flow_unavailable")
+    if eligible:
+        quality.add("cross_clock_latency_not_calibrated")
+    if any(item.chain_time > item.observed_at for item in eligible):
+        quality.add("chain_clock_ahead_of_local_observation_clock_observed")
 
     provenance = tuple(item.evidence_key for item in eligible)
     return MatchedUnitFlowFactsV0(
         method_version=MATCHED_UNIT_FLOW_VERSION,
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         windows_seconds=windows,
         surface_windows=tuple(output),
         available=bool(output),
