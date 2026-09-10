@@ -89,39 +89,35 @@ class MarketProtocolFactsV0Tests(unittest.TestCase):
             real_token_reserves=0,
         )
         before = build_market_protocol_facts_v0(
-            token_mint="MINT_A",
-            as_of=120,
-            pump_curve_observations=(current,),
+            token_mint="MINT_A", as_of=120, pump_curve_observations=(current,)
         )
         appended = build_market_protocol_facts_v0(
-            token_mint="MINT_A",
-            as_of=120,
-            pump_curve_observations=(current, future),
+            token_mint="MINT_A", as_of=120, pump_curve_observations=(current, future)
         )
         self.assertEqual(before, appended)
         self.assertFalse(appended.pump_curve_complete)
-
         later = build_market_protocol_facts_v0(
-            token_mint="MINT_A",
-            as_of=130,
-            pump_curve_observations=(current, future),
+            token_mint="MINT_A", as_of=130, pump_curve_observations=(current, future)
         )
         self.assertTrue(later.pump_curve_complete)
         self.assertEqual(later.lifecycle_label, "PUMP_CURVE_COMPLETE")
 
-    def test_future_chain_time_is_invisible_even_if_observed_early(self):
-        future_chain = self._pump(
+    def test_chain_clock_ahead_does_not_hide_already_observed_protocol_evidence(self):
+        ahead = self._pump(
             chain_time=200,
             observed_at=100,
-            evidence_key="future-chain",
+            evidence_key="chain-ahead",
             complete=True,
         )
         facts = build_market_protocol_facts_v0(
-            token_mint="MINT_A",
-            as_of=150,
-            pump_curve_observations=(future_chain,),
+            token_mint="MINT_A", as_of=150, pump_curve_observations=(ahead,)
         )
-        self.assertEqual(facts.lifecycle_label, "UNKNOWN")
+        self.assertEqual(facts.lifecycle_label, "PUMP_CURVE_COMPLETE")
+        self.assertEqual(facts.pump_latest_chain_time, 200)
+        self.assertIn(
+            "chain_clock_ahead_of_local_snapshot_clock_observed",
+            facts.data_quality_flags,
+        )
 
     def test_late_observation_of_older_chain_state_is_causal_after_arrival(self):
         late = self._pump(chain_time=90, observed_at=150, evidence_key="late-90")
@@ -152,9 +148,7 @@ class MarketProtocolFactsV0Tests(unittest.TestCase):
             token_mint="MINT_A", as_of=120, pump_curve_observations=rows
         )
         self.assertIsNone(facts.pump_curve_complete)
-        self.assertIn(
-            "pump_curve_complete_regression_conflict", facts.data_quality_flags
-        )
+        self.assertIn("pump_curve_complete_regression_conflict", facts.data_quality_flags)
 
     def test_pumpswap_activity_never_proves_migration(self):
         facts = build_market_protocol_facts_v0(
@@ -185,18 +179,13 @@ class MarketProtocolFactsV0Tests(unittest.TestCase):
             token_mint="MINT_A", as_of=160, migration_evidence=(evidence,)
         )
         self.assertFalse(facts.canonical_migration_proven)
-        self.assertIn(
-            "migration_evidence_noncanonical_pool_index", facts.data_quality_flags
-        )
+        self.assertIn("migration_evidence_noncanonical_pool_index", facts.data_quality_flags)
 
     def test_effective_pumpswap_quote_reserves_require_virtual_reserve(self):
         with_virtual = build_market_protocol_facts_v0(
-            token_mint="MINT_A",
-            as_of=150,
-            pumpswap_pool_observations=(self._swap(),),
+            token_mint="MINT_A", as_of=150, pumpswap_pool_observations=(self._swap(),)
         )
         self.assertEqual(with_virtual.pumpswap_effective_quote_reserves, 305)
-
         without_virtual = build_market_protocol_facts_v0(
             token_mint="MINT_A",
             as_of=150,
@@ -205,10 +194,7 @@ class MarketProtocolFactsV0Tests(unittest.TestCase):
             ),
         )
         self.assertIsNone(without_virtual.pumpswap_effective_quote_reserves)
-        self.assertIn(
-            "pumpswap_virtual_quote_reserves_missing",
-            without_virtual.data_quality_flags,
-        )
+        self.assertIn("pumpswap_virtual_quote_reserves_missing", without_virtual.data_quality_flags)
 
     def test_signed_virtual_quote_reserve_is_allowed_when_effective_is_nonnegative(self):
         row = self._swap(pool_quote_token_reserves=300, virtual_quote_reserves=-20)
