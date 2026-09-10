@@ -10,6 +10,7 @@ on:
       - 'src/matched_unit_flow.py'
       - 'src/carbon_matched_unit_adapter.py'
       - 'src/carbon_protocol_adapter.py'
+      - 'src/pumpswap_pool_identity.py'
       - 'src/opportunity_snapshot_core.py'
       - 'tests/test_market_intelligence_baseline.py'
       - 'tests/test_market_protocol_facts.py'
@@ -49,6 +50,7 @@ jobs:
           python -m py_compile src/matched_unit_flow.py
           python -m py_compile src/carbon_matched_unit_adapter.py
           python -m py_compile src/carbon_protocol_adapter.py
+          python -m py_compile src/pumpswap_pool_identity.py
           python -m py_compile src/opportunity_snapshot_core.py
           python -m py_compile tests/test_carbon_protocol_adapter.py
 
