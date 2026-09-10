@@ -111,6 +111,8 @@ def probe_jupiter_market_discovery(
             )
         category_mints[query_name] = seen
 
+    _write_jsonl(output_path, output_rows)
+
     all_mints = set().union(*category_mints.values()) if category_mints else set()
     frequency = Counter(mint for values in category_mints.values() for mint in values)
     multi_list = sorted(mint for mint, count in frequency.items() if count >= 2)
