@@ -41,48 +41,30 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
             ),
         )
 
-    def _snapshot(self, *, as_of=200, token_mint="MINT_A"):
+    def _snapshot(self, *, as_of=200, chain_as_of=None, token_mint="MINT_A"):
+        if chain_as_of is None:
+            chain_as_of = as_of
         flow = (
-            FlowTradeObservation(
-                token_mint=token_mint,
-                side="buy",
-                chain_time=190,
-                observed_at=191,
-                wallet_address="W1",
-                notional_usd=60.0,
-                price_usd=1.0,
-            ),
-            FlowTradeObservation(
-                token_mint=token_mint,
-                side="buy",
-                chain_time=195,
-                observed_at=196,
-                wallet_address="W2",
-                notional_usd=30.0,
-                price_usd=1.1,
-            ),
-            FlowTradeObservation(
-                token_mint=token_mint,
-                side="sell",
-                chain_time=199,
-                observed_at=200,
-                wallet_address="W1",
-                notional_usd=10.0,
-                price_usd=1.2,
-            ),
+            FlowTradeObservation(token_mint, "buy", 190, 191, "W1", 60.0, 1.0),
+            FlowTradeObservation(token_mint, "buy", 195, 196, "W2", 30.0, 1.1),
+            FlowTradeObservation(token_mint, "sell", 199, 200, "W1", 10.0, 1.2),
         )
         return build_opportunity_snapshot_core_v1(
             token_mint=token_mint,
             as_of=as_of,
+            chain_as_of=chain_as_of,
             flow_observations=flow,
             quotes=(),
             flow_windows_seconds=(30, 300),
         )
 
-    def _matched(self, *, as_of=200, token_mint="MINT_A"):
+    def _matched(self, *, as_of=200, chain_as_of=None, token_mint="MINT_A"):
+        if chain_as_of is None:
+            chain_as_of = as_of
         return build_matched_unit_flow_facts_v0(
             token_mint=token_mint,
             as_of=as_of,
+            chain_as_of=chain_as_of,
             windows_seconds=(30, 300),
             observations=(
                 MatchedUnitFlowObservation(
@@ -106,6 +88,7 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
             protocol=self._protocol(), snapshot=self._snapshot()
         )
         self.assertEqual(baseline.method_version, MARKET_INTELLIGENCE_BASELINE_VERSION)
+        self.assertEqual(baseline.chain_as_of, 200)
         self.assertEqual(baseline.lifecycle_label, "PUMP_BONDING_ACTIVE")
         self.assertEqual([item.window_seconds for item in baseline.windows], [30, 300])
         fast = baseline.windows[0]
@@ -117,8 +100,8 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
         self.assertEqual(fast.unique_sell_wallet_count, 1)
         self.assertAlmostEqual(fast.notional_imbalance_pct, 80.0)
         self.assertAlmostEqual(fast.return_pct, 20.0)
+        self.assertIsNone(fast.median_observation_lag_seconds)
         self.assertEqual(baseline.execution.quote_count, 0)
-
         forbidden = {"score", "confidence", "recommendation", "take", "skip", "social"}
         self.assertTrue(forbidden.isdisjoint(baseline.__dataclass_fields__))
 
@@ -137,9 +120,7 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
     def test_valid_same_unit_facts_enable_liquidity_normalized_flow(self):
         matched = self._matched()
         baseline = build_market_intelligence_baseline_v0(
-            protocol=self._protocol(),
-            snapshot=self._snapshot(),
-            matched_unit_flow=matched,
+            protocol=self._protocol(), snapshot=self._snapshot(), matched_unit_flow=matched
         )
         self.assertTrue(baseline.liquidity_normalized_flow_available)
         self.assertIs(baseline.matched_unit_flow, matched)
@@ -147,12 +128,8 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
             "matched_unit_liquidity_normalized_flow_unavailable",
             baseline.data_quality_flags,
         )
-        fast = next(
-            item for item in matched.surface_windows if item.window_seconds == 30
-        )
-        self.assertAlmostEqual(
-            fast.cumulative_signed_event_reserve_fraction_pct, 10.0
-        )
+        fast = next(item for item in matched.surface_windows if item.window_seconds == 30)
+        self.assertAlmostEqual(fast.cumulative_signed_event_reserve_fraction_pct, 10.0)
         self.assertEqual(baseline.provenance_keys, ("curve-100", "matched-195"))
 
     def test_refuses_matched_unit_cross_token_join(self):
@@ -163,12 +140,20 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
                 matched_unit_flow=self._matched(token_mint="MINT_B"),
             )
 
-    def test_refuses_matched_unit_cross_clock_join(self):
+    def test_refuses_matched_unit_cross_local_clock_join(self):
         with self.assertRaisesRegex(ValueError, "matched_unit_flow as_of"):
             build_market_intelligence_baseline_v0(
                 protocol=self._protocol(),
                 snapshot=self._snapshot(),
-                matched_unit_flow=self._matched(as_of=201),
+                matched_unit_flow=self._matched(as_of=201, chain_as_of=200),
+            )
+
+    def test_refuses_matched_unit_cross_chain_anchor_join(self):
+        with self.assertRaisesRegex(ValueError, "matched_unit_flow chain_as_of"):
+            build_market_intelligence_baseline_v0(
+                protocol=self._protocol(),
+                snapshot=self._snapshot(chain_as_of=200),
+                matched_unit_flow=self._matched(chain_as_of=201),
             )
 
     def test_protocol_provenance_is_retained(self):
@@ -192,6 +177,7 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
         snapshot = build_opportunity_snapshot_core_v1(
             token_mint="MINT_A",
             as_of=200,
+            chain_as_of=200,
             flow_observations=flow,
             quotes=(),
             flow_windows_seconds=(30,),
@@ -231,8 +217,7 @@ class MarketIntelligenceBaselineV0Tests(unittest.TestCase):
     def test_refuses_cross_clock_join(self):
         with self.assertRaises(ValueError):
             build_market_intelligence_baseline_v0(
-                protocol=self._protocol(as_of=200),
-                snapshot=self._snapshot(as_of=201),
+                protocol=self._protocol(as_of=200), snapshot=self._snapshot(as_of=201)
             )
 
 
