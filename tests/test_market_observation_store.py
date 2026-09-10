@@ -129,12 +129,39 @@ class MarketObservationStoreTests(unittest.TestCase):
         assert loaded is not None
         self.assertEqual(loaded.observation.observed_at, 105)
 
-    def test_impossible_clock_is_rejected(self):
+    def test_chain_clock_ahead_is_accepted_but_availability_stays_local(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                item = MarketTradeObservation("T", "buy", 100, 99, "W")
+                self.assertTrue(
+                    record_market_trade(
+                        acquisition_run_key="run",
+                        event_key="ahead",
+                        source_provider="native",
+                        observation=item,
+                    )
+                )
+                self.assertEqual(
+                    load_market_trades(acquisition_run_key="run", token_mint="T", as_of=98),
+                    (),
+                )
+                visible = load_market_trades(acquisition_run_key="run", token_mint="T", as_of=99)
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(visible[0].observation.chain_time, 100)
+        self.assertEqual(visible[0].observation.observed_at, 99)
+
+    def test_negative_clock_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 with self.assertRaises(ValueError):
-                    record_market_trade(acquisition_run_key="run", event_key="bad", source_provider="native", observation=MarketTradeObservation("T", "buy", 100, 99, "W"))
+                    record_market_trade(
+                        acquisition_run_key="run",
+                        event_key="bad",
+                        source_provider="native",
+                        observation=MarketTradeObservation("T", "buy", -1, 0, "W"),
+                    )
 
 
 if __name__ == "__main__":
