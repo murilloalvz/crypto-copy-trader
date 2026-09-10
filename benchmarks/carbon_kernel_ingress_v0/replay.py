@@ -8,6 +8,7 @@ import struct
 import subprocess
 from typing import Any
 
+from benchmarks.helius_standard_wss_shadow_v0.collect import PUMP_PROGRAM_ID
 from src.carbon_market_trade_adapter import (
     adapt_carbon_matched_unit_to_market_trade_v0,
 )
@@ -15,7 +16,6 @@ from src.carbon_matched_unit_adapter import ADAPTED, adapt_carbon_pump_trade_v0
 from src.market_signal_kernel import IndexedMarketSignalKernel
 
 VERSION = "carbon_kernel_ingress_v0"
-PUMP_PROGRAM_ID = "6EF8rrecthR5DkU8L4pFj6PaL2DStQp6L7x4CAt4q2p5"
 TRADE_EVENT_DISCRIMINATOR = bytes([189, 219, 127, 211, 78, 230, 97, 238])
 DEFAULT_EVENTS = 500
 
