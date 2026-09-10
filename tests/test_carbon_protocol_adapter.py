@@ -64,7 +64,6 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
         result = adapt_carbon_pumpswap_create_pool_v0(
             self._create_pool(), observed_at=102
         )
-
         self.assertEqual(result.status, ADAPTED)
         self.assertEqual(result.provenance_keys, ("pumpswap:create:0",))
         self.assertEqual(result.data_quality_flags, ())
@@ -104,12 +103,15 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
                 self.assertEqual(result.status, INVALID_EVENT)
                 self.assertIsNone(result.pool_observation)
 
-    def test_observed_at_before_chain_time_fails_closed(self):
+    def test_chain_clock_ahead_of_local_clock_is_valid_and_flagged(self):
         result = adapt_carbon_pumpswap_create_pool_v0(
-            self._create_pool(), observed_at=99
+            self._create_pool(timestamp=100), observed_at=99
         )
-        self.assertEqual(result.status, INVALID_EVENT)
-        self.assertIsNone(result.pool_observation)
+        self.assertEqual(result.status, ADAPTED)
+        self.assertIsNotNone(result.pool_observation)
+        self.assertIn(
+            "chain_clock_ahead_of_local_observation_clock", result.data_quality_flags
+        )
 
     def test_invalid_observed_at_argument_raises(self):
         for observed_at in (-1, True, 1.5):
@@ -125,13 +127,9 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
         )
         self.assertEqual(pool_result.status, ADAPTED)
         assert pool_result.pool_observation is not None
-
         trade_result = adapt_carbon_pumpswap_trade_v0(
-            self._buy(),
-            observed_at=102,
-            pool_observations=(pool_result.pool_observation,),
+            self._buy(), observed_at=102, pool_observations=(pool_result.pool_observation,)
         )
-
         self.assertEqual(trade_result.status, MATCHED_UNIT_ADAPTED)
         observation = trade_result.observation
         self.assertIsNotNone(observation)
@@ -150,7 +148,6 @@ class CarbonProtocolAdapterV0Tests(unittest.TestCase):
         )
         self.assertEqual(pool_result.status, ADAPTED)
         assert pool_result.pool_observation is not None
-
         trade_result = adapt_carbon_pumpswap_trade_v0(
             self._buy(timestamp=100),
             observed_at=101,
