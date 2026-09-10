@@ -37,6 +37,25 @@ def _percentile(values: list[float], pct: float) -> float | None:
     return ordered[low] * (1.0 - weight) + ordered[high] * weight
 
 
+def _pace_source_until(target_ns: int) -> None:
+    """Pace the synthetic source without starving bridge worker threads.
+
+    The v1 transport deliberately uses a Python writer thread. A pure busy-spin
+    at a 200us source interval can retain the GIL long enough to prevent that
+    writer from observing queued events within the frozen 1ms batching window.
+    Sleeping/yielding here changes only benchmark scheduling, not the frozen
+    transport parameters or latency gates.
+    """
+    while True:
+        remaining_ns = target_ns - time.perf_counter_ns()
+        if remaining_ns <= 0:
+            return
+        if remaining_ns > 100_000:
+            time.sleep((remaining_ns - 50_000) / 1_000_000_000.0)
+        else:
+            time.sleep(0)
+
+
 def classify(report: dict[str, Any]) -> str:
     latency = report["round_trip_latency_ms"]
     achieved = float(report["achieved_ingress_events_per_second"])
@@ -214,13 +233,7 @@ def run_benchmark(
 
     for sequence in range(events):
         target_ns = source_started_ns + sequence * interval_ns
-        while True:
-            now_ns = time.perf_counter_ns()
-            remaining_ns = target_ns - now_ns
-            if remaining_ns <= 0:
-                break
-            if remaining_ns > 300_000:
-                time.sleep((remaining_ns - 150_000) / 1_000_000_000)
+        _pace_source_until(target_ns)
 
         row = input_row(sequence)
         key = str(row["event_key"])
@@ -316,6 +329,7 @@ def run_benchmark(
         "notes": [
             "v1 keeps the frozen Carbon 2.0.0 decoder and changes only the local transport boundary.",
             "Source availability time is recorded before the bounded batcher, so round-trip latency includes batching wait.",
+            "The source pacer explicitly yields the Python GIL so it does not invalidate the async batcher by starving its worker thread.",
             "Input and output are bounded NDJSON microbatches; exact event order/accounting remain mandatory.",
             "This is local IPC/decode only, not provider latency, live coverage, or economic evidence.",
         ],
