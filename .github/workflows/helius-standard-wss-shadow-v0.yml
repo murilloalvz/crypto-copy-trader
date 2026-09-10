@@ -16,6 +16,7 @@ on:
       - 'tests/test_helius_standard_wss_shadow_invalid_diagnostic_v0.py'
       - 'tests/test_helius_pumpswap_lazy_pool_context_replay_v0.py'
       - 'tests/test_helius_standard_wss_finalized_block_reconciler_v0.py'
+      - 'tests/test_helius_standard_wss_boundary_safe_finalized_recall_v0.py'
       - 'tests/test_jupiter_token_intelligence_probe_v0.py'
       - 'tests/test_dexscreener_market_probe_v0.py'
       - 'tests/test_external_market_evidence_comparison_v0.py'
@@ -50,6 +51,7 @@ jobs:
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/diagnose_invalid_matched_unit.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/lazy_pool_context_replay.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/reconcile_finalized_blocks.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/boundary_safe_finalized_recall.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/jupiter_token_intelligence_probe.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/dexscreener_market_probe.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/compare_external_market_evidence.py
@@ -78,6 +80,9 @@ jobs:
 
       - name: Run finalized block reconciler tests
         run: python -m unittest tests.test_helius_standard_wss_finalized_block_reconciler_v0 -v
+
+      - name: Run boundary-safe finalized recall tests
+        run: python -m unittest tests.test_helius_standard_wss_boundary_safe_finalized_recall_v0 -v
 
       - name: Run Jupiter token intelligence probe tests
         run: python -m unittest tests.test_jupiter_token_intelligence_probe_v0 -v
