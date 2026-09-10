@@ -38,7 +38,13 @@ jobs:
             --manifest-path benchmarks/carbon_decoder_parity_v1/rust_runner/Cargo.toml \
             --bin stream_decode_events
 
-      - name: Run 5k events-per-second bridge benchmark
+      - name: Run frozen transport diagnostic matrix
+        run: |
+          python -m benchmarks.carbon_stream_bridge_v0.diagnostic_matrix \
+            --binary benchmarks/carbon_decoder_parity_v1/rust_runner/target/release/stream_decode_events \
+            --out artifacts/carbon_stream_bridge_v0/diagnostic-matrix.json
+
+      - name: Run frozen 5k events-per-second bridge gate
         run: |
           python -m benchmarks.carbon_stream_bridge_v0.benchmark \
             --binary benchmarks/carbon_decoder_parity_v1/rust_runner/target/release/stream_decode_events \
@@ -46,10 +52,12 @@ jobs:
             --target-rate 5000 \
             --out artifacts/carbon_stream_bridge_v0/report.json
 
-      - name: Upload bridge report
+      - name: Upload bridge reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: carbon-stream-bridge-v0-report
-          path: artifacts/carbon_stream_bridge_v0/report.json
+          path: |
+            artifacts/carbon_stream_bridge_v0/report.json
+            artifacts/carbon_stream_bridge_v0/diagnostic-matrix.json
           if-no-files-found: ignore
