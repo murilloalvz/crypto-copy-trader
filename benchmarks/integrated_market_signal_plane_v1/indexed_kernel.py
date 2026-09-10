@@ -7,7 +7,6 @@ from benchmarks.commodity_signal_plane_v0.benchmark import TraceRecord
 from benchmarks.integrated_market_signal_plane_v1.optimized_kernel import (
     _coverage_pct,
     _is_pump_lifecycle,
-    _median,
     _uses_lifecycle,
 )
 from src.market_opportunity_radar import (
@@ -26,9 +25,17 @@ def build_features_from_indexed_windows(
     baseline_count: int,
     token_mint: str,
     as_of: int,
+    chain_as_of: int,
     lifecycle: MarketLifecycleObservation | None,
     config: MarketRadarConfig,
 ) -> MarketMovementFeatures:
+    """Build Radar features from already-selected chain-time windows.
+
+    ``as_of`` is the local evidence-availability clock. ``chain_as_of`` is the
+    monotone Solana/chain-time anchor used for market windows. The two domains are
+    deliberately never subtracted to manufacture a latency measurement.
+    """
+
     buys = [item for item in fast if item.side == "buy"]
     sells = [item for item in fast if item.side == "sell"]
 
@@ -85,10 +92,12 @@ def build_features_from_indexed_windows(
     market_age = None
     quality: list[str] = []
     if lifecycle is not None:
-        if lifecycle.observed_at <= as_of and lifecycle.market_started_at <= as_of:
-            market_age = as_of - lifecycle.market_started_at
-        else:
+        if lifecycle.observed_at > as_of:
             quality.append("lifecycle_not_available_by_as_of")
+        elif lifecycle.market_started_at <= chain_as_of:
+            market_age = chain_as_of - lifecycle.market_started_at
+        else:
+            quality.append("lifecycle_started_after_chain_as_of")
     else:
         quality.append("lifecycle_missing")
 
@@ -106,13 +115,17 @@ def build_features_from_indexed_windows(
         quality.append("no_fast_window_events")
     if baseline_count < config.min_baseline_events:
         quality.append("baseline_activity_insufficient")
+    if fast:
+        quality.append("observation_lag_unavailable_unaligned_clock_domains")
+    if any(item.chain_time > item.observed_at for item in fast):
+        quality.append("chain_clock_ahead_of_local_observation_clock_observed")
 
-    lags = [item.observed_at - item.chain_time for item in fast]
     venues = tuple(sorted({str(item.venue) for item in fast if item.venue is not None}))
 
     return MarketMovementFeatures(
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         fast_window_seconds=config.fast_window_seconds,
         baseline_horizon_seconds=config.baseline_horizon_seconds,
         fast_event_count=len(fast),
@@ -134,8 +147,8 @@ def build_features_from_indexed_windows(
         first_price_usd=first_price,
         last_price_usd=last_price,
         fast_return_pct=fast_return,
-        median_observation_lag_seconds=_median(lags),
-        max_observation_lag_seconds=max(lags) if lags else None,
+        median_observation_lag_seconds=None,
+        max_observation_lag_seconds=None,
         venues=venues,
         market_age_seconds=market_age,
         data_quality_flags=tuple(quality),
@@ -148,6 +161,7 @@ def detect_from_indexed_windows(
     baseline_count: int,
     token_mint: str,
     as_of: int,
+    chain_as_of: int,
     lifecycle: MarketLifecycleObservation | None,
     config: MarketRadarConfig,
 ) -> MarketMovementTrigger | None:
@@ -156,6 +170,7 @@ def detect_from_indexed_windows(
         baseline_count=baseline_count,
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         lifecycle=lifecycle,
         config=config,
     )
@@ -203,10 +218,11 @@ def detect_from_indexed_windows(
 
 
 class IndexedWindowRadarState:
-    """Benchmark candidate using binary-search window boundaries.
+    """Benchmark candidate using binary-search chain-window boundaries.
 
-    Same-asset `observed_at` must be monotonic, which is the canonical causal ingestion contract.
-    If violated, this candidate fails closed rather than silently changing semantics.
+    Availability ordering remains local-clock based. Each token carries a monotone
+    chain-time anchor equal to the greatest chain timestamp observed so far. Late
+    chain-time inserts never move that anchor backwards and cannot become fresh flow.
     """
 
     def __init__(self, config: MarketRadarConfig = MarketRadarConfig()) -> None:
@@ -214,16 +230,23 @@ class IndexedWindowRadarState:
         self.rows: dict[str, list[tuple[int, int, int, MarketTradeObservation]]] = defaultdict(list)
         self.lifecycle: dict[str, MarketLifecycleObservation] = {}
         self.last_observed_at: dict[str, int] = {}
+        self.latest_chain_time: dict[str, int] = {}
         self.late_chain_time_inserts = 0
         self.compactions = 0
 
-    def _insert_trade(self, record: TraceRecord) -> list[tuple[int, int, int, MarketTradeObservation]]:
+    def _insert_trade(
+        self, record: TraceRecord
+    ) -> tuple[list[tuple[int, int, int, MarketTradeObservation]], int]:
         assert record.trade is not None
         trade = record.trade
         previous_observed = self.last_observed_at.get(trade.token_mint)
         if previous_observed is not None and trade.observed_at < previous_observed:
             raise ValueError("same-asset observed_at regression")
         self.last_observed_at[trade.token_mint] = trade.observed_at
+
+        previous_chain = self.latest_chain_time.get(trade.token_mint)
+        chain_as_of = trade.chain_time if previous_chain is None else max(previous_chain, trade.chain_time)
+        self.latest_chain_time[trade.token_mint] = chain_as_of
 
         rows = self.rows[trade.token_mint]
         item = (trade.chain_time, trade.observed_at, record.sequence, trade)
@@ -235,12 +258,13 @@ class IndexedWindowRadarState:
             index = bisect.bisect_right(keys, item[:3])
             rows.insert(index, item)
 
-        cutoff = trade.observed_at - self.config.baseline_horizon_seconds
-        prune_to = bisect.bisect_right(rows, (cutoff, 2**63 - 1, 2**63 - 1, trade))
+        cutoff = chain_as_of - self.config.baseline_horizon_seconds
+        chain_keys = [row[0] for row in rows]
+        prune_to = bisect.bisect_right(chain_keys, cutoff)
         if prune_to:
             del rows[:prune_to]
             self.compactions += 1
-        return rows
+        return rows, chain_as_of
 
     def ingest(self, record: TraceRecord) -> MarketMovementTrigger | None:
         if record.kind == "lifecycle":
@@ -253,14 +277,13 @@ class IndexedWindowRadarState:
 
         assert record.trade is not None
         trade = record.trade
-        rows = self._insert_trade(record)
-        fast_lower = trade.observed_at - self.config.fast_window_seconds
-        baseline_lower = trade.observed_at - self.config.baseline_horizon_seconds
-
+        rows, chain_as_of = self._insert_trade(record)
         chain_keys = [row[0] for row in rows]
+        baseline_lower = chain_as_of - self.config.baseline_horizon_seconds
+        fast_lower = chain_as_of - self.config.fast_window_seconds
         baseline_start = bisect.bisect_right(chain_keys, baseline_lower)
         fast_start = bisect.bisect_right(chain_keys, fast_lower)
-        fast_end = bisect.bisect_right(chain_keys, trade.observed_at)
+        fast_end = bisect.bisect_right(chain_keys, chain_as_of)
         baseline_count = max(0, fast_start - baseline_start)
         fast = [row[3] for row in rows[fast_start:fast_end]]
 
@@ -270,6 +293,7 @@ class IndexedWindowRadarState:
             baseline_count=baseline_count,
             token_mint=trade.token_mint,
             as_of=trade.observed_at,
+            chain_as_of=chain_as_of,
             lifecycle=lifecycle,
             config=self.config,
         )
