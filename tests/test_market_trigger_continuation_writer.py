@@ -65,6 +65,40 @@ class ContinuationTriggerWriterTests(unittest.TestCase):
         self.assertEqual([item.trigger_key for item in triggers], ["t1", "t2", "t3"])
         self.assertEqual(int(row["n"]), 1)
 
+    def test_chain_clock_ahead_of_local_clock_is_valid_for_continuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "continuation-clock-domains.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                episode = assign_market_opportunity_trigger(
+                    acquisition_run_key="run-a",
+                    trigger_key="t1",
+                    token_mint="T",
+                    trigger_kind="activity_acceleration",
+                    direction="upward_pressure",
+                    chain_time=150,
+                    observed_at=100,
+                    method_version="market_opportunity_radar_v1",
+                    venue="pump_bonding_curve",
+                )
+                record = ContinuationTriggerRecord(
+                    acquisition_run_key="run-a",
+                    episode_key=episode.episode_key,
+                    trigger_key="t2",
+                    token_mint="T",
+                    trigger_kind="activity_acceleration",
+                    direction="upward_pressure",
+                    chain_time=200,
+                    observed_at=120,
+                    method_version="market_opportunity_radar_v1",
+                    venue="pump_bonding_curve",
+                )
+                results, _, _ = _persist_continuation_batch_db_stage((record,))
+                triggers = load_market_opportunity_episode_triggers(episode.episode_key)
+
+        self.assertEqual(results, (episode,))
+        self.assertEqual(triggers[-1].chain_time, 200)
+        self.assertEqual(triggers[-1].observed_at, 120)
+
     def test_exact_continuation_replay_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "continuations.db"
