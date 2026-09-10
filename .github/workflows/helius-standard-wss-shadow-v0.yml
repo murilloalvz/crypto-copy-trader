@@ -8,6 +8,7 @@ on:
       - 'benchmarks/helius_standard_wss_shadow_v0/**'
       - 'tests/test_helius_standard_wss_shadow_v0.py'
       - 'tests/test_helius_standard_wss_shadow_reduce_v0.py'
+      - 'tests/test_helius_standard_wss_shadow_adapt_v0.py'
       - '.github/workflows/helius-standard-wss-shadow-v0.yml'
   workflow_dispatch:
 
@@ -33,9 +34,13 @@ jobs:
         run: |
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/collect.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/reduce.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/adapt.py
 
       - name: Run WSS shadow contract tests
         run: python -m unittest tests.test_helius_standard_wss_shadow_v0 -v
 
       - name: Run WSS shadow reducer tests
         run: python -m unittest tests.test_helius_standard_wss_shadow_reduce_v0 -v
+
+      - name: Run WSS shadow adapter audit tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_adapt_v0 -v
