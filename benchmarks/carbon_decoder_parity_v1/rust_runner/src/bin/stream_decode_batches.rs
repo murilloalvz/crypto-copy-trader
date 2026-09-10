@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use base64::Engine as _;
+use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufWriter, Write};
