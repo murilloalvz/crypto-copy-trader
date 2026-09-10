@@ -65,8 +65,6 @@ def _validate_record(record: ContinuationTriggerRecord) -> None:
         _required(record.venue, "venue")
     if record.chain_time < 0 or record.observed_at < 0:
         raise ValueError("trigger timestamps must be non-negative")
-    if record.observed_at < record.chain_time:
-        raise ValueError("trigger observed_at cannot precede chain_time")
 
 
 def _identity(record: ContinuationTriggerRecord) -> tuple:
@@ -114,9 +112,10 @@ def _persist_continuation_batch_db_stage(
     """Append already-classified continuation triggers in one SQLite transaction.
 
     This function never opens or reshapes an episode. The caller must provide an already
-    persisted canonical episode whose window contains the trigger. Exact trigger replay is
-    idempotent and conflicting replay keeps the first persisted trigger canonical, matching
-    ``assign_market_opportunity_trigger`` semantics.
+    persisted canonical episode whose local availability window contains the trigger. Exact trigger
+    replay is idempotent and conflicting replay keeps the first persisted trigger canonical,
+    matching ``assign_market_opportunity_trigger`` semantics. `chain_time` remains a separate
+    on-chain ordering clock and is never compared directly with `observed_at`.
     """
 
     if not records:
