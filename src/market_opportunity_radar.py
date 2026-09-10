@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 
 
-MARKET_OPPORTUNITY_RADAR_VERSION = "market_opportunity_radar_v1_1_tx_aware"
+MARKET_OPPORTUNITY_RADAR_VERSION = "market_opportunity_radar_v1_2_clock_domains"
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class MarketLifecycleObservation:
 class MarketMovementFeatures:
     token_mint: str
     as_of: int
+    chain_as_of: int | None
     fast_window_seconds: int
     baseline_horizon_seconds: int
     fast_event_count: int
@@ -113,10 +114,15 @@ def _validate_trade(item: MarketTradeObservation) -> None:
     _required(item.token_mint, "token_mint")
     if item.side not in {"buy", "sell"}:
         raise ValueError("trade side must be buy or sell")
-    if item.chain_time < 0 or item.observed_at < 0:
-        raise ValueError("trade timestamps must be non-negative")
-    if item.observed_at < item.chain_time:
-        raise ValueError("trade observed_at cannot precede chain_time")
+    if (
+        not isinstance(item.chain_time, int)
+        or isinstance(item.chain_time, bool)
+        or not isinstance(item.observed_at, int)
+        or isinstance(item.observed_at, bool)
+        or item.chain_time < 0
+        or item.observed_at < 0
+    ):
+        raise ValueError("trade timestamps must be non-negative integers")
     if item.wallet_address is not None and not item.wallet_address.strip():
         raise ValueError("wallet_address cannot be blank")
     if item.venue is not None and not item.venue.strip():
@@ -135,10 +141,15 @@ def _validate_trade(item: MarketTradeObservation) -> None:
 
 def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
     _required(item.token_mint, "lifecycle token_mint")
-    if item.market_started_at < 0 or item.observed_at < 0:
-        raise ValueError("lifecycle timestamps must be non-negative")
-    if item.observed_at < item.market_started_at:
-        raise ValueError("lifecycle observed_at cannot precede market_started_at")
+    if (
+        not isinstance(item.market_started_at, int)
+        or isinstance(item.market_started_at, bool)
+        or not isinstance(item.observed_at, int)
+        or isinstance(item.observed_at, bool)
+        or item.market_started_at < 0
+        or item.observed_at < 0
+    ):
+        raise ValueError("lifecycle timestamps must be non-negative integers")
     if item.venue is not None and not item.venue.strip():
         raise ValueError("lifecycle venue cannot be blank")
 
@@ -150,6 +161,7 @@ def _coverage_pct(known: int, total: int) -> float | None:
 
 
 def _median(values: list[int]) -> float | None:
+    """Legacy helper kept for import compatibility; cross-clock lag is not computed."""
     if not values:
         return None
     ordered = sorted(values)
@@ -164,21 +176,28 @@ def build_market_movement_features(
     *,
     token_mint: str,
     as_of: int,
+    chain_as_of: int | None = None,
     lifecycle: MarketLifecycleObservation | None = None,
     config: MarketRadarConfig = MarketRadarConfig(),
 ) -> MarketMovementFeatures:
-    """Build a causal movement snapshot using market time and availability time.
+    """Build a causal movement snapshot with independent clock domains.
 
-    `chain_time` decides whether a trade belongs to the market window. `observed_at` proves that
-    the collector knew the trade by `as_of`. Late hydration therefore never turns an old trade
-    into fresh flow. `transaction_key`, when completely covered, separately measures transaction
-    breadth so a multi-event transaction/bundle cannot masquerade as independent activity.
+    ``as_of`` is the local evidence-availability cutoff. ``chain_as_of`` anchors
+    chain-time windows. When omitted, it is derived causally as the maximum
+    ``chain_time`` among same-token trades already observed by local ``as_of``.
+    Cross-domain timestamp subtraction is deliberately not reported as latency.
     """
 
     _validate_config(config)
     mint = _required(token_mint, "token_mint")
-    if as_of < 0:
-        raise ValueError("as_of must be non-negative")
+    if not isinstance(as_of, int) or isinstance(as_of, bool) or as_of < 0:
+        raise ValueError("as_of must be a non-negative integer")
+    if chain_as_of is not None and (
+        not isinstance(chain_as_of, int)
+        or isinstance(chain_as_of, bool)
+        or chain_as_of < 0
+    ):
+        raise ValueError("chain_as_of must be a non-negative integer when present")
 
     for item in observations:
         _validate_trade(item)
@@ -190,14 +209,26 @@ def build_market_movement_features(
     known = [
         item
         for item in observations
-        if item.token_mint == mint and item.observed_at <= as_of and item.chain_time <= as_of
+        if item.token_mint == mint and item.observed_at <= as_of
     ]
+    effective_chain_as_of = (
+        chain_as_of
+        if chain_as_of is not None
+        else (max((item.chain_time for item in known), default=None))
+    )
 
-    fast_lower = as_of - config.fast_window_seconds
-    baseline_lower = as_of - config.baseline_horizon_seconds
-
-    fast = [item for item in known if fast_lower < item.chain_time <= as_of]
-    baseline = [item for item in known if baseline_lower < item.chain_time <= fast_lower]
+    if effective_chain_as_of is None:
+        fast: list[MarketTradeObservation] = []
+        baseline: list[MarketTradeObservation] = []
+    else:
+        fast_lower = effective_chain_as_of - config.fast_window_seconds
+        baseline_lower = effective_chain_as_of - config.baseline_horizon_seconds
+        fast = [
+            item for item in known if fast_lower < item.chain_time <= effective_chain_as_of
+        ]
+        baseline = [
+            item for item in known if baseline_lower < item.chain_time <= fast_lower
+        ]
     fast.sort(key=lambda item: (item.chain_time, item.observed_at))
 
     buys = [item for item in fast if item.side == "buy"]
@@ -258,10 +289,14 @@ def build_market_movement_features(
     market_age = None
     quality: list[str] = []
     if lifecycle is not None:
-        if lifecycle.observed_at <= as_of and lifecycle.market_started_at <= as_of:
-            market_age = as_of - lifecycle.market_started_at
-        else:
+        if lifecycle.observed_at > as_of:
             quality.append("lifecycle_not_available_by_as_of")
+        elif effective_chain_as_of is None:
+            quality.append("chain_anchor_unavailable_for_market_age")
+        elif lifecycle.market_started_at <= effective_chain_as_of:
+            market_age = effective_chain_as_of - lifecycle.market_started_at
+        else:
+            quality.append("lifecycle_started_after_chain_as_of")
     else:
         quality.append("lifecycle_missing")
 
@@ -279,13 +314,17 @@ def build_market_movement_features(
         quality.append("no_fast_window_events")
     if len(baseline) < config.min_baseline_events:
         quality.append("baseline_activity_insufficient")
+    if fast:
+        quality.append("observation_lag_unavailable_unaligned_clock_domains")
+    if any(item.chain_time > item.observed_at for item in known):
+        quality.append("chain_clock_ahead_of_local_observation_clock_observed")
 
-    lags = [item.observed_at - item.chain_time for item in fast]
     venues = tuple(sorted({str(item.venue) for item in fast if item.venue is not None}))
 
     return MarketMovementFeatures(
         token_mint=mint,
         as_of=as_of,
+        chain_as_of=effective_chain_as_of,
         fast_window_seconds=config.fast_window_seconds,
         baseline_horizon_seconds=config.baseline_horizon_seconds,
         fast_event_count=len(fast),
@@ -307,8 +346,8 @@ def build_market_movement_features(
         first_price_usd=first_price,
         last_price_usd=last_price,
         fast_return_pct=fast_return,
-        median_observation_lag_seconds=_median(lags),
-        max_observation_lag_seconds=max(lags) if lags else None,
+        median_observation_lag_seconds=None,
+        max_observation_lag_seconds=None,
         venues=venues,
         market_age_seconds=market_age,
         data_quality_flags=tuple(quality),
@@ -320,6 +359,7 @@ def detect_market_movement(
     *,
     token_mint: str,
     as_of: int,
+    chain_as_of: int | None = None,
     lifecycle: MarketLifecycleObservation | None = None,
     config: MarketRadarConfig = MarketRadarConfig(),
 ) -> MarketMovementTrigger | None:
@@ -329,6 +369,7 @@ def detect_market_movement(
         observations,
         token_mint=token_mint,
         as_of=as_of,
+        chain_as_of=chain_as_of,
         lifecycle=lifecycle,
         config=config,
     )
