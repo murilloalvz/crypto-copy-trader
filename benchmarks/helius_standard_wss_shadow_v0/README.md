@@ -27,14 +27,9 @@ An active Standard WSS connection therefore MUST NOT be converted into
 `MarketCoverageInterval(coverage_kind="continuous_observed")` and MUST NOT turn empty
 seconds into numeric zero for the coverage-aware Page-Hinkley experiment.
 
-The trace is useful for:
-
-- actually observed events;
-- first local observation timestamps;
-- connection/reconnect behavior;
-- operational slot liveness;
-- downstream decoder experiments;
-- reconciliation against finalized chain truth.
+The trace is useful for actually observed events, first local observation timestamps,
+connection/reconnect behavior, operational slot liveness, downstream decoder experiments,
+and reconciliation against finalized chain truth.
 
 ## Clock-domain rule
 
@@ -134,20 +129,50 @@ python -m benchmarks.helius_standard_wss_shadow_v0.reconcile_finalized_blocks `
   --rps 5
 ```
 
-The reconciler:
+The reconciler derives the exact WSS slot range, enumerates finalized blocks, fetches each
+block with `transactionDetails="accounts"`, filters exact Pump/PumpSwap program mentions,
+and compares those signatures to the processed WSS signature sets.
 
-1. derives the exact min/max slot from Pump/PumpSwap WSS log notifications;
-2. calls `getBlocks` at `finalized` commitment;
-3. fetches each finalized block with `transactionDetails="accounts"`;
-4. filters transactions whose account keys mention Pump or PumpSwap;
-5. compares those signatures to the processed WSS signature sets.
+If any reference fetch is incomplete, recall percentages remain `null`; missing truth is
+never converted to zero. A WSS signature absent from finalized truth is surfaced for
+follow-up and is not automatically labeled a rollback. This is signature/program-mention
+recall only; instruction/event semantic recall remains separate.
 
-If any block/RPC reference fetch is incomplete, recall percentages remain `null`; missing
-truth is never converted to zero. A WSS signature absent from finalized truth is surfaced
-for follow-up and is not automatically labeled a rollback.
+## Existing-intelligence probes
 
-This is signature/program-mention recall only. Instruction/event semantic recall remains a
-separate later audit.
+External intelligence is collected only as timestamped provider-native evidence. A
+post-shadow fetch is never backfilled into that shadow's T0, and provider scores are not
+bot truth or trading recommendations.
+
+### Jupiter Tokens V2
+
+After the corrected adapter audit has produced an output file:
+
+```powershell
+python -m benchmarks.helius_standard_wss_shadow_v0.jupiter_token_intelligence_probe `
+  --adapter-output "artifacts\helius_standard_wss_shadow_v0\cache-shadow-60s-adapter-clockfixed.jsonl" `
+  --out "artifacts\helius_standard_wss_shadow_v0\cache-shadow-jupiter-token-intelligence.jsonl"
+```
+
+`JUPITER_API_KEY` is optional. Without it the probe uses the documented keyless gateway
+and intentionally paces below 0.5 requests/s. It queries exact adapted mints and retains
+Jupiter-native organic score, audit, holder, liquidity, pool-age and interval-stat fields
+when present.
+
+### DexScreener
+
+```powershell
+python -m benchmarks.helius_standard_wss_shadow_v0.dexscreener_market_probe `
+  --adapter-output "artifacts\helius_standard_wss_shadow_v0\cache-shadow-60s-adapter-clockfixed.jsonl" `
+  --out "artifacts\helius_standard_wss_shadow_v0\cache-shadow-dexscreener-market.jsonl"
+```
+
+This probe uses exact Solana mint matches only and keeps pair-level liquidity, price,
+transaction counts, volume, pair age and boost metadata provider-native. Those values are
+not silently mixed with event-native reserve/flow units.
+
+See `docs/existing-market-intelligence-sources-2026-09-10.md` for the buy-vs-build/source
+strategy and deferred providers such as Birdeye.
 
 ## Long-run policy
 
@@ -162,5 +187,5 @@ Estimate the cap from the measured event rate first, and do not start a long run
 ## Current scientific boundary
 
 Standard WSS is still operational-only. Systems health, decoder success, pool-context
-coverage, finalized signature recall, and economic edge are independent verdicts. None
-implies another.
+coverage, finalized signature recall, external-provider coverage, and economic edge are
+independent verdicts. None implies another.
