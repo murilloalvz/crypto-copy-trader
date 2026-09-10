@@ -19,6 +19,7 @@ on:
       - 'tests/test_jupiter_token_intelligence_probe_v0.py'
       - 'tests/test_dexscreener_market_probe_v0.py'
       - 'tests/test_external_market_evidence_comparison_v0.py'
+      - 'tests/test_jupiter_market_discovery_probe_v0.py'
       - '.github/workflows/helius-standard-wss-shadow-v0.yml'
   workflow_dispatch:
 
@@ -52,6 +53,7 @@ jobs:
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/jupiter_token_intelligence_probe.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/dexscreener_market_probe.py
           python -m py_compile benchmarks/helius_standard_wss_shadow_v0/compare_external_market_evidence.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/jupiter_market_discovery_probe.py
           python -m py_compile src/carbon_matched_unit_adapter.py
           python -m py_compile src/carbon_protocol_adapter.py
           python -m py_compile src/pumpswap_pool_identity.py
@@ -85,3 +87,6 @@ jobs:
 
       - name: Run external market evidence comparison tests
         run: python -m unittest tests.test_external_market_evidence_comparison_v0 -v
+
+      - name: Run Jupiter market discovery probe tests
+        run: python -m unittest tests.test_jupiter_market_discovery_probe_v0 -v
