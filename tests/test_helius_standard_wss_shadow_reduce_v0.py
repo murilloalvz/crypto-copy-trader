@@ -78,6 +78,8 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
         self.assertTrue(report["valid_for_carbon_decode"])
         self.assertEqual(report["accepted_success_target_events"], 1)
         self.assertEqual(report["program_log_stack_errors"], 0)
+        self.assertEqual(report["successful_tx_stack_errors"], 0)
+        self.assertEqual(report["failed_tx_stack_errors"], 0)
         self.assertEqual(carbon_rows[0]["event_type"], "pump_trade")
         self.assertEqual(manifest_rows[0]["first_received_wall_ns"], 1_000_000_000)
         self.assertTrue(manifest_rows[0]["accepted_for_market_research"])
@@ -151,7 +153,42 @@ class HeliusStandardWssShadowReduceV0Tests(unittest.TestCase):
             self._write_trace(trace, [self._header(), row, self._footer()])
             report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
         self.assertGreater(report["program_log_stack_errors"], 0)
+        self.assertGreater(report["successful_tx_stack_errors"], 0)
+        self.assertEqual(report["failed_tx_stack_errors"], 0)
         self.assertFalse(report["valid_for_carbon_decode"])
+
+    def test_failed_tx_stack_error_is_audited_without_poisoning_successful_input(self):
+        payload = PUMP_TRADE_EVENT_DISCRIMINATOR + b"failed-synthetic-payload"
+        malformed_failed_logs = [
+            f"Program {PUMP_PROGRAM_ID} invoke [1]",
+            "Program data: " + base64.b64encode(payload).decode("ascii"),
+        ]
+        succeeded = self._notification(signature="SIG_OK", received_wall_ns=1_000_000_000)
+        failed = self._notification(
+            signature="SIG_FAIL",
+            received_wall_ns=2_000_000_000,
+            err={"InstructionError": [1, "Custom"]},
+            logs=malformed_failed_logs,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "trace.jsonl"
+            carbon = root / "carbon.jsonl"
+            manifest = root / "manifest.jsonl"
+            self._write_trace(trace, [self._header(), succeeded, failed, self._footer()])
+            report = reduce_shadow(trace_path=trace, carbon_input_path=carbon, manifest_path=manifest)
+            carbon_rows = carbon.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(carbon_rows), 1)
+        self.assertEqual(report["accepted_success_target_events"], 1)
+        self.assertEqual(report["failed_transaction_target_events"], 1)
+        self.assertEqual(report["program_log_stack_errors"], 1)
+        self.assertEqual(report["successful_tx_stack_errors"], 0)
+        self.assertEqual(report["failed_tx_stack_errors"], 1)
+        self.assertTrue(report["valid_for_carbon_decode"])
+        self.assertEqual(report["stack_error_examples"][0]["signature"], "SIG_FAIL")
+        self.assertFalse(report["stack_error_examples"][0]["transaction_succeeded"])
 
 
 if __name__ == "__main__":
