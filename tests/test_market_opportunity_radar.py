@@ -39,10 +39,13 @@ class MarketOpportunityRadarTests(unittest.TestCase):
         assert trigger is not None
         self.assertEqual(trigger.method_version, MARKET_OPPORTUNITY_RADAR_VERSION)
         self.assertEqual(trigger.trigger_kind, "activity_acceleration")
+        self.assertEqual(trigger.features.chain_as_of, 995)
         self.assertEqual(trigger.features.fast_event_count, 6)
         self.assertEqual(trigger.features.baseline_event_count, 3)
         self.assertGreaterEqual(trigger.features.fast_unique_wallet_count, 4)
         self.assertGreaterEqual(trigger.features.activity_acceleration_ratio or 0, 3.0)
+        self.assertIsNone(trigger.features.median_observation_lag_seconds)
+        self.assertIsNone(trigger.features.max_observation_lag_seconds)
 
     def test_backfilled_old_trade_is_not_fresh_flow(self):
         rows = self._established_sample()
@@ -60,6 +63,7 @@ class MarketOpportunityRadarTests(unittest.TestCase):
             MarketTradeObservation("T", "buy", 999, 1005, "FUTURE", 1000.0, 8.0, "pump")
         )
         features = build_market_movement_features(rows, token_mint="T", as_of=1000)
+        self.assertEqual(features.chain_as_of, 995)
         self.assertEqual(features.fast_event_count, 6)
         self.assertNotIn("FUTURE", {row.wallet_address for row in rows if row.observed_at <= 1000})
 
@@ -78,7 +82,7 @@ class MarketOpportunityRadarTests(unittest.TestCase):
         assert trigger is not None
         self.assertEqual(trigger.trigger_kind, "fresh_market_burst")
         self.assertEqual(trigger.features.baseline_event_count, 0)
-        self.assertEqual(trigger.features.market_age_seconds, 70)
+        self.assertEqual(trigger.features.market_age_seconds, 65)
 
     def test_old_market_without_baseline_does_not_use_fresh_market_escape(self):
         rows = [
@@ -149,13 +153,33 @@ class MarketOpportunityRadarTests(unittest.TestCase):
         self.assertIsNone(features.signed_notional_imbalance_pct)
         self.assertIsNone(features.fast_return_pct)
 
-    def test_impossible_availability_timestamp_is_rejected(self):
-        with self.assertRaises(ValueError):
-            build_market_movement_features(
-                [MarketTradeObservation("T", "buy", 100, 99, "W")],
-                token_mint="T",
-                as_of=110,
-            )
+    def test_chain_clock_ahead_of_local_clock_is_valid_and_flagged(self):
+        features = build_market_movement_features(
+            [MarketTradeObservation("T", "buy", 100, 99, "W")],
+            token_mint="T",
+            as_of=99,
+        )
+        self.assertEqual(features.chain_as_of, 100)
+        self.assertEqual(features.fast_event_count, 1)
+        self.assertIn(
+            "chain_clock_ahead_of_local_observation_clock_observed",
+            features.data_quality_flags,
+        )
+        self.assertIn(
+            "observation_lag_unavailable_unaligned_clock_domains",
+            features.data_quality_flags,
+        )
+
+    def test_explicit_chain_anchor_controls_market_window_only(self):
+        rows = [
+            MarketTradeObservation("T", "buy", 100, 200, "A"),
+            MarketTradeObservation("T", "buy", 120, 201, "B"),
+        ]
+        features = build_market_movement_features(
+            rows, token_mint="T", as_of=201, chain_as_of=100
+        )
+        self.assertEqual(features.chain_as_of, 100)
+        self.assertEqual(features.fast_event_count, 1)
 
     def test_detector_has_no_trading_score_or_decision(self):
         trigger = detect_market_movement(
