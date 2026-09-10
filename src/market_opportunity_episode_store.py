@@ -234,6 +234,10 @@ def assign_market_opportunity_trigger(
     different direction/kind after more observations became available. The first persisted trigger
     therefore stays canonical; conflicting replays are audited instead of crashing acquisition.
 
+    Episode membership is defined by the local causal availability clock (`observed_at`).
+    `chain_time` is a separate on-chain ordering clock and is never compared directly with
+    `observed_at`.
+
     Distinct Pump/PumpSwap pipelines can finish out of order. If an older distinct trigger reaches
     this store only after a newer same-token episode was already persisted, and its hypothetical
     episode window would overlap that canonical episode, it is *not* allowed to open a retroactive
@@ -257,8 +261,6 @@ def assign_market_opportunity_trigger(
     normalized_venue = None if venue is None else _required(venue, "venue")
     if chain_time < 0 or observed_at < 0:
         raise ValueError("trigger timestamps must be non-negative")
-    if observed_at < chain_time:
-        raise ValueError("trigger observed_at cannot precede chain_time")
     if episode_window_seconds <= 0:
         raise ValueError("episode_window_seconds must be positive")
 
