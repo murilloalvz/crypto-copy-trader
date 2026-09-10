@@ -7,7 +7,10 @@ on:
     paths:
       - "src/market_signal_kernel.py"
       - "src/market_opportunity_radar.py"
+      - "src/carbon_market_trade_adapter.py"
+      - "src/carbon_matched_unit_adapter.py"
       - "tests/test_market_signal_kernel.py"
+      - "tests/test_carbon_market_trade_adapter.py"
       - ".github/workflows/market-signal-kernel-production.yml"
   workflow_dispatch:
 
@@ -37,11 +40,12 @@ jobs:
       - name: Compile sources
         run: python -m compileall -q src benchmarks tests
 
-      - name: Kernel differential tests
+      - name: Kernel and Carbon trade adapter differential tests
         run: |
           python -m unittest \
             tests.test_market_signal_kernel \
             tests.test_market_opportunity_radar \
+            tests.test_carbon_market_trade_adapter \
             tests.test_commodity_signal_plane_v0 \
             tests.test_integrated_market_signal_plane_v1 \
             -v
