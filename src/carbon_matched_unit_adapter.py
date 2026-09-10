@@ -5,6 +5,10 @@ so it can be adapted without external context. PumpSwap Buy/Sell events carry qu
 amount/reserves but not quote identity; they are adapted only when exact pool identity
 was already causally available by the event's local observation time. Missing context
 remains missing and is never backfilled or assumed to be SOL.
+
+``chain_time`` and local ``observed_at`` intentionally remain separate clock domains.
+Solana's on-chain Unix timestamp is approximate network time, so cross-domain ordering
+is diagnostic only and is never used as a causal validity gate.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from src.matched_unit_flow import MatchedUnitFlowObservation
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
-CARBON_MATCHED_UNIT_ADAPTER_VERSION = "carbon_matched_unit_adapter_v0"
+CARBON_MATCHED_UNIT_ADAPTER_VERSION = "carbon_matched_unit_adapter_v1_clock_domains"
 ADAPTED = "ADAPTED"
 MISSING_CONTEXT = "MISSING_CONTEXT"
 CONFLICTING_CONTEXT = "CONFLICTING_CONTEXT"
@@ -59,6 +63,12 @@ def _nonnegative_int(row: Mapping[str, Any], name: str) -> int | None:
 def _positive_int(row: Mapping[str, Any], name: str) -> int | None:
     value = _nonnegative_int(row, name)
     return value if value is not None and value > 0 else None
+
+
+def _cross_clock_flags(*, chain_time: int, observed_at: int) -> tuple[str, ...]:
+    if observed_at < chain_time:
+        return ("chain_clock_ahead_of_local_observation_clock",)
+    return ()
 
 
 def _result(
@@ -109,7 +119,6 @@ def adapt_carbon_pump_trade_v0(
         or chain_time is None
         or quote_amount is None
         or quote_reserve is None
-        or observed_at < chain_time
     ):
         return _result(
             event_key=event_key,
@@ -135,6 +144,7 @@ def adapt_carbon_pump_trade_v0(
         status=ADAPTED,
         observation=observation,
         provenance_keys=(event_key,),
+        flags=_cross_clock_flags(chain_time=chain_time, observed_at=observed_at),
     )
 
 
@@ -289,7 +299,6 @@ def adapt_carbon_pumpswap_trade_v0(
         or chain_time is None
         or quote_amount is None
         or quote_reserve is None
-        or observed_at < chain_time
     ):
         return _result(
             event_key=event_key,
@@ -297,6 +306,7 @@ def adapt_carbon_pumpswap_trade_v0(
             flags=("pumpswap_trade_missing_or_invalid_matched_unit_fields",),
         )
 
+    clock_flags = _cross_clock_flags(chain_time=chain_time, observed_at=observed_at)
     context, context_error = _causal_pool_context(
         pool=pool,
         event_chain_time=chain_time,
@@ -314,7 +324,7 @@ def adapt_carbon_pumpswap_trade_v0(
         return _result(
             event_key=event_key,
             status=context_error or MISSING_CONTEXT,
-            flags=(flag,),
+            flags=(flag, *clock_flags),
         )
 
     observation = MatchedUnitFlowObservation(
@@ -335,4 +345,5 @@ def adapt_carbon_pumpswap_trade_v0(
         status=ADAPTED,
         observation=observation,
         provenance_keys=(event_key, context.evidence_key),
+        flags=clock_flags,
     )
