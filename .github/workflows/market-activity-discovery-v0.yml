@@ -1,0 +1,71 @@
+name: Market Activity Discovery v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'src/market_activity_discovery_*.py'
+      - 'src/market_activity_dynamics_v0.py'
+      - 'src/market_episode_research_snapshot.py'
+      - 'src/market_episode_research_snapshot_store.py'
+      - 'src/market_first_prospective_coordinator.py'
+      - 'src/opportunity_forward_outcome_store.py'
+      - 'benchmarks/market_activity_discovery_v0/**'
+      - 'tests/test_market_activity_discovery_*.py'
+      - 'tests/test_market_activity_dynamics_v0.py'
+      - 'tests/test_market_episode_research_snapshot.py'
+      - 'tests/test_market_first_prospective_coordinator.py'
+      - '.github/workflows/market-activity-discovery-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile discovery research plane
+        run: |
+          python -m py_compile \
+            src/market_activity_discovery_run_v0.py \
+            src/market_activity_discovery_cohort_v0.py \
+            src/market_activity_discovery_admission_v0.py \
+            src/market_activity_dynamics_v0.py \
+            benchmarks/market_activity_discovery_v0/smoke.py \
+            benchmarks/market_activity_discovery_v0/cli.py
+
+      - name: Run focused discovery tests
+        run: |
+          python -m unittest \
+            tests.test_market_activity_discovery_smoke_v0 \
+            tests.test_market_activity_discovery_cli_v0 \
+            tests.test_market_activity_discovery_run_v0 \
+            tests.test_market_activity_discovery_admission_v0 \
+            tests.test_market_activity_discovery_cohort_v0 \
+            tests.test_market_activity_dynamics_v0 \
+            tests.test_market_episode_research_snapshot \
+            tests.test_market_first_prospective_coordinator \
+            -v
+
+      - name: Run deterministic offline smoke
+        run: python -m benchmarks.market_activity_discovery_v0.smoke
+
+      - name: Run full unit suite
+        run: python -m unittest discover -s tests -q
