@@ -1,5 +1,6 @@
 import unittest
 
+from src.market_activity_dynamics_v0 import build_market_activity_dynamics_v0
 from src.market_episode_research_snapshot import (
     MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION,
     MarketRegimeResearchFactsV0,
@@ -43,6 +44,17 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
         )
         return build_market_intelligence_baseline_v0(protocol=protocol, snapshot=core)
 
+    def _activity(self, *, token_mint="MINT_A", as_of=110, chain_as_of=None):
+        core = build_opportunity_snapshot_core_v1(
+            token_mint=token_mint,
+            as_of=as_of,
+            chain_as_of=chain_as_of,
+            flow_observations=(),
+            quotes=(),
+            flow_windows_seconds=(10, 30, 60, 300),
+        )
+        return build_market_activity_dynamics_v0(core)
+
     def _mode(self, *, token_mint="MINT_A", as_of=110):
         return build_pump_creation_mode_facts_v0(
             token_mint=token_mint,
@@ -70,12 +82,14 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
             episode=self._episode(),
             market_intelligence=self._baseline(),
             pump_creation_mode=self._mode(),
+            activity_dynamics=self._activity(),
             regime=self._regime(),
         )
         self.assertEqual(result.method_version, MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION)
         self.assertEqual(result.decision_as_of, 110)
         self.assertEqual(result.token_mint, "MINT_A")
         self.assertEqual(result.regime.detection_count, 1)
+        self.assertEqual(result.activity_dynamics.token_mint, "MINT_A")
         self.assertIn("pump_create_v2_mode_not_observed", result.data_quality_flags)
 
     def test_requires_frozen_decision_as_of(self):
@@ -102,6 +116,15 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
                 pump_creation_mode=self._mode(),
             )
 
+    def test_rejects_mismatched_activity_t0(self):
+        with self.assertRaises(ValueError):
+            build_market_episode_research_snapshot_v0(
+                episode=self._episode(),
+                market_intelligence=self._baseline(),
+                pump_creation_mode=self._mode(),
+                activity_dynamics=self._activity(as_of=109),
+            )
+
     def test_regime_chain_clock_ahead_of_local_decision_clock_is_valid(self):
         result = build_market_episode_research_snapshot_v0(
             episode=self._episode(),
@@ -122,11 +145,22 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
         self.assertIsNone(result.regime)
         self.assertIn("regime_evidence_not_available", result.data_quality_flags)
 
+    def test_missing_activity_dynamics_is_explicit_not_reconstructed(self):
+        result = build_market_episode_research_snapshot_v0(
+            episode=self._episode(),
+            market_intelligence=self._baseline(),
+            pump_creation_mode=self._mode(),
+            activity_dynamics=None,
+        )
+        self.assertIsNone(result.activity_dynamics)
+        self.assertIn("activity_dynamics_not_available", result.data_quality_flags)
+
     def test_output_has_no_outcome_score_or_social_fields(self):
         result = build_market_episode_research_snapshot_v0(
             episode=self._episode(),
             market_intelligence=self._baseline(),
             pump_creation_mode=self._mode(),
+            activity_dynamics=self._activity(),
         )
         forbidden = {
             "outcome",
