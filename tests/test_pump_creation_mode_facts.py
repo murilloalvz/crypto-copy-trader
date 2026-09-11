@@ -48,9 +48,35 @@ class PumpCreationModeFactsV0Tests(unittest.TestCase):
         )
         self.assertIsNone(facts.mayhem_mode)
 
-    def test_observation_cannot_precede_chain_time(self):
+    def test_chain_clock_ahead_of_local_observation_clock_is_valid(self):
+        observation = self._obs(chain_time=120, observed_at=100)
+        facts = build_pump_creation_mode_facts_v0(
+            token_mint="MINT_A",
+            as_of=100,
+            observations=(observation,),
+        )
+        self.assertTrue(facts.mayhem_mode)
+        self.assertEqual(facts.evidence_chain_time, 120)
+        self.assertEqual(facts.evidence_observed_at, 100)
+        self.assertIn(
+            "chain_clock_ahead_of_local_snapshot_clock_observed",
+            facts.data_quality_flags,
+        )
+
+    def test_local_observation_clock_alone_gates_causal_availability(self):
+        visible = self._obs(chain_time=120, observed_at=100, evidence_key="visible")
+        future_local = self._obs(chain_time=90, observed_at=101, evidence_key="future")
+        facts = build_pump_creation_mode_facts_v0(
+            token_mint="MINT_A",
+            as_of=100,
+            observations=(visible, future_local),
+        )
+        self.assertTrue(facts.mayhem_mode)
+        self.assertEqual(facts.provenance_keys, ("visible",))
+
+    def test_negative_timestamp_is_rejected(self):
         with self.assertRaises(ValueError):
-            self._obs(chain_time=101, observed_at=100)
+            self._obs(chain_time=-1)
 
     def test_exact_mint_isolation(self):
         facts = build_pump_creation_mode_facts_v0(
