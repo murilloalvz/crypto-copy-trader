@@ -4,6 +4,11 @@ This module does not detect opportunities or query providers. It only enforces t
 six-hour run boundary before either registering a denominator-only episode or delegating
 to the existing Market-First prospective T0 coordinator and then registering exact T0
 lineage in the immutable discovery cohort.
+
+For this discovery protocol the causal local T0 is frozen exactly at the canonical
+MarketOpportunityEpisode ``first_trigger_observed_at``. The independent on-chain anchor
+remains ``first_trigger_chain_time`` inside the T0 inputs. Later enrichment/quotes must not
+move T0 forward or be backfilled into the snapshot.
 """
 
 from __future__ import annotations
@@ -32,7 +37,9 @@ from src.opportunity_forward_outcome_store import FORWARD_OUTCOME_HORIZONS_SECON
 from src.pump_creation_mode_facts import PumpCreationModeFactsV0
 
 
-MARKET_ACTIVITY_DISCOVERY_ADMISSION_VERSION = "market_activity_discovery_admission_v0"
+MARKET_ACTIVITY_DISCOVERY_ADMISSION_VERSION = (
+    "market_activity_discovery_admission_v0_1_first_trigger_t0"
+)
 
 
 @dataclass(frozen=True)
@@ -106,15 +113,19 @@ def prepare_and_register_market_activity_episode_v0(
     regime: MarketRegimeResearchFactsV0 | None = None,
     horizons_seconds: tuple[int, ...] = FORWARD_OUTCOME_HORIZONS_SECONDS,
 ) -> MarketActivityDiscoveryAdmissionV0:
-    """Freeze/persist exact T0, schedule outcomes, then register immutable cohort lineage.
+    """Freeze/persist exact first-trigger T0, schedule outcomes, then register lineage.
 
-    The preregistered run boundary is checked before the prospective coordinator can freeze
-    the episode. Any T0 validation error propagates fail-closed; callers may explicitly use
-    `register_considered_market_activity_episode_v0` with no snapshot to preserve a failed or
-    missing T0 in the denominator rather than silently dropping it.
+    The preregistered run boundary and exact T0 clock are checked before the prospective
+    coordinator can freeze the episode. For this discovery, ``decision_as_of`` is not a
+    tunable delay: it must equal the canonical episode's ``first_trigger_observed_at``.
+    Inputs must therefore have been constructed with that same local availability cutoff.
+
+    Any T0 validation error propagates fail-closed; callers may explicitly use
+    ``register_considered_market_activity_episode_v0`` with no snapshot to preserve a
+    failed or missing T0 in the denominator rather than silently dropping it.
     """
 
-    run, _episode = _load_run_and_episode(
+    run, episode = _load_run_and_episode(
         acquisition_run_key=acquisition_run_key,
         episode_key=episode_key,
     )
@@ -122,9 +133,23 @@ def prepare_and_register_market_activity_episode_v0(
         run,
         considered_at=int(considered_at),
     )
+    decision = int(decision_as_of)
+    if decision != int(episode.first_trigger_observed_at):
+        raise ValueError(
+            "Market Activity discovery decision_as_of must equal first_trigger_observed_at"
+        )
+    if market_intelligence.chain_as_of != int(episode.first_trigger_chain_time):
+        raise ValueError(
+            "Market Activity discovery chain_as_of must equal first_trigger_chain_time"
+        )
+    if activity_dynamics.chain_as_of != int(episode.first_trigger_chain_time):
+        raise ValueError(
+            "Market Activity discovery Activity Dynamics chain_as_of must equal first_trigger_chain_time"
+        )
+
     preparation = prepare_market_first_prospective_episode_v0(
         episode_key=episode_key,
-        decision_as_of=int(decision_as_of),
+        decision_as_of=decision,
         market_intelligence=market_intelligence,
         pump_creation_mode=pump_creation_mode,
         activity_dynamics=activity_dynamics,
