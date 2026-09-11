@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.market_activity_dynamics_v0 import MarketActivityDynamicsV0
 from src.market_episode_research_snapshot import (
     MarketEpisodeResearchSnapshotV0,
     MarketRegimeResearchFactsV0,
@@ -33,7 +34,7 @@ from src.opportunity_forward_outcome_store import (
 from src.pump_creation_mode_facts import PumpCreationModeFactsV0
 
 
-MARKET_FIRST_PROSPECTIVE_COORDINATOR_VERSION = "market_first_prospective_coordinator_v0"
+MARKET_FIRST_PROSPECTIVE_COORDINATOR_VERSION = "market_first_prospective_coordinator_v0_1_activity_dynamics"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ def prepare_market_first_prospective_episode_v0(
     decision_as_of: int,
     market_intelligence: MarketIntelligenceBaselineV0,
     pump_creation_mode: PumpCreationModeFactsV0,
+    activity_dynamics: MarketActivityDynamicsV0 | None = None,
     regime: MarketRegimeResearchFactsV0 | None = None,
     horizons_seconds: tuple[int, ...] = FORWARD_OUTCOME_HORIZONS_SECONDS,
 ) -> MarketFirstProspectivePreparationV0:
@@ -60,6 +62,10 @@ def prepare_market_first_prospective_episode_v0(
     mutated, so malformed/cross-token/mismatched-local-clock/configuration inputs cannot
     accidentally freeze an episode. Once frozen, replay is idempotent only when the same
     exact T0 snapshot is reproduced; a divergent replay fails closed in the snapshot store.
+
+    Optional ``activity_dynamics`` must already be derived from the exact same T0 and
+    chain anchor as ``market_intelligence``. This coordinator never reconstructs activity
+    features after outcomes exist.
 
     No price/quote provider is called here. Scheduling creates PENDING future targets only.
     """
@@ -90,11 +96,22 @@ def prepare_market_first_prospective_episode_v0(
     if pump_creation_mode.as_of != decision:
         raise ValueError("pump creation mode as_of must equal requested decision_as_of")
 
+    if activity_dynamics is not None:
+        if activity_dynamics.token_mint != episode.token_mint:
+            raise ValueError("activity dynamics token_mint must match episode")
+        if activity_dynamics.as_of != decision:
+            raise ValueError("activity dynamics as_of must equal requested decision_as_of")
+        if activity_dynamics.chain_as_of != market_intelligence.chain_as_of:
+            raise ValueError(
+                "activity dynamics chain_as_of must match market intelligence chain_as_of"
+            )
+
     frozen = freeze_market_opportunity_decision_as_of(key, decision_as_of=decision)
     snapshot = build_market_episode_research_snapshot_v0(
         episode=frozen,
         market_intelligence=market_intelligence,
         pump_creation_mode=pump_creation_mode,
+        activity_dynamics=activity_dynamics,
         regime=regime,
     )
     snapshot_record = persist_market_episode_research_snapshot_v0(snapshot)
