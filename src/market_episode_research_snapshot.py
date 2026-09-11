@@ -11,12 +11,13 @@ in this object.
 
 from dataclasses import dataclass
 
+from src.market_activity_dynamics_v0 import MarketActivityDynamicsV0
 from src.market_intelligence_baseline import MarketIntelligenceBaselineV0
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
 from src.pump_creation_mode_facts import PumpCreationModeFactsV0
 
 
-MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION = "market_episode_research_snapshot_v0"
+MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION = "market_episode_research_snapshot_v0_1_activity_dynamics"
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class MarketEpisodeResearchSnapshotV0:
     first_trigger_observed_at: int
     market_intelligence: MarketIntelligenceBaselineV0
     pump_creation_mode: PumpCreationModeFactsV0
+    activity_dynamics: MarketActivityDynamicsV0 | None
     regime: MarketRegimeResearchFactsV0 | None
     data_quality_flags: tuple[str, ...]
 
@@ -83,6 +85,7 @@ def build_market_episode_research_snapshot_v0(
     episode: MarketOpportunityEpisode,
     market_intelligence: MarketIntelligenceBaselineV0,
     pump_creation_mode: PumpCreationModeFactsV0,
+    activity_dynamics: MarketActivityDynamicsV0 | None = None,
     regime: MarketRegimeResearchFactsV0 | None = None,
 ) -> MarketEpisodeResearchSnapshotV0:
     """Freeze a causal Market-First episode snapshot at the persisted decision T0.
@@ -90,6 +93,11 @@ def build_market_episode_research_snapshot_v0(
     The local causal boundary is `decision_as_of`. Inputs that expose a local `as_of`
     must match it exactly. On-chain ordering timestamps remain in their own clock domain
     and are preserved as evidence rather than compared numerically with `decision_as_of`.
+
+    ``activity_dynamics`` is optional for backward-compatible research preparation, but
+    when present it must describe the exact same token, local T0 and chain anchor as the
+    Market-First baseline. Its absence remains explicit rather than being reconstructed
+    later from post-outcome data.
     """
 
     if episode.decision_as_of is None:
@@ -107,8 +115,22 @@ def build_market_episode_research_snapshot_v0(
     if decision_as_of < episode.first_trigger_observed_at:
         raise ValueError("decision_as_of cannot precede first trigger observation")
 
+    if activity_dynamics is not None:
+        if activity_dynamics.token_mint != episode.token_mint:
+            raise ValueError("activity dynamics token_mint must match episode")
+        if activity_dynamics.as_of != decision_as_of:
+            raise ValueError("activity dynamics as_of must equal frozen decision_as_of")
+        if activity_dynamics.chain_as_of != market_intelligence.chain_as_of:
+            raise ValueError(
+                "activity dynamics chain_as_of must match market intelligence chain_as_of"
+            )
+
     quality = set(market_intelligence.data_quality_flags)
     quality.update(pump_creation_mode.data_quality_flags)
+    if activity_dynamics is None:
+        quality.add("activity_dynamics_not_available")
+    else:
+        quality.update(activity_dynamics.data_quality_flags)
     if regime is None:
         quality.add("regime_evidence_not_available")
     else:
@@ -127,6 +149,7 @@ def build_market_episode_research_snapshot_v0(
         first_trigger_observed_at=episode.first_trigger_observed_at,
         market_intelligence=market_intelligence,
         pump_creation_mode=pump_creation_mode,
+        activity_dynamics=activity_dynamics,
         regime=regime,
         data_quality_flags=tuple(sorted(quality)),
     )
