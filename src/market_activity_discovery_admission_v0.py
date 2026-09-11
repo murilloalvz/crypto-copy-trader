@@ -5,10 +5,11 @@ six-hour run boundary before either registering a denominator-only episode or de
 to the existing Market-First prospective T0 coordinator and then registering exact T0
 lineage in the immutable discovery cohort.
 
-For this discovery protocol the causal local T0 is frozen exactly at the canonical
-MarketOpportunityEpisode ``first_trigger_observed_at``. The independent on-chain anchor
-remains ``first_trigger_chain_time`` inside the T0 inputs. Later enrichment/quotes must not
-move T0 forward or be backfilled into the snapshot.
+For this discovery protocol both scientific admission time and causal local T0 are frozen
+exactly at the canonical MarketOpportunityEpisode ``first_trigger_observed_at``. The
+independent on-chain anchor remains ``first_trigger_chain_time``. Research-worker queue
+latency therefore cannot move an episode into or out of the six-hour denominator window.
+Later enrichment/quotes must not move T0 forward or be backfilled into the snapshot.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from src.pump_creation_mode_facts import PumpCreationModeFactsV0
 
 
 MARKET_ACTIVITY_DISCOVERY_ADMISSION_VERSION = (
-    "market_activity_discovery_admission_v0_1_first_trigger_t0"
+    "market_activity_discovery_admission_v0_2_first_trigger_admission_and_t0"
 )
 
 
@@ -66,6 +67,16 @@ def _load_run_and_episode(*, acquisition_run_key: str, episode_key: str):
     return run, episode
 
 
+def _validate_first_trigger_admission_time(*, episode, considered_at: int) -> int:
+    considered = int(considered_at)
+    expected = int(episode.first_trigger_observed_at)
+    if considered != expected:
+        raise ValueError(
+            "Market Activity discovery considered_at must equal first_trigger_observed_at"
+        )
+    return considered
+
+
 def register_considered_market_activity_episode_v0(
     *,
     acquisition_run_key: str,
@@ -73,24 +84,26 @@ def register_considered_market_activity_episode_v0(
     considered_at: int,
     snapshot_record: MarketEpisodeResearchSnapshotRecordV0 | None = None,
 ) -> MarketActivityDiscoveryAdmissionV0:
-    """Register one considered episode in the denominator without reconstructing T0.
+    """Register one first-trigger-considered episode without reconstructing T0.
 
-    This path is intentionally valid for missing/unfrozen T0. The first cohort disposition
-    remains immutable, so a later snapshot cannot upgrade an episode registered as missing.
+    Scientific admission time is the canonical ``first_trigger_observed_at``, never the
+    later Research Plane processing time. This path remains valid for missing/unfrozen T0;
+    the first cohort disposition is immutable and cannot be upgraded after outcomes exist.
     """
 
     run, episode = _load_run_and_episode(
         acquisition_run_key=acquisition_run_key,
         episode_key=episode_key,
     )
-    assert_market_activity_discovery_admission_open_v0(
-        run,
-        considered_at=int(considered_at),
+    considered = _validate_first_trigger_admission_time(
+        episode=episode,
+        considered_at=considered_at,
     )
+    assert_market_activity_discovery_admission_open_v0(run, considered_at=considered)
     member = register_market_activity_discovery_member_v0(
         cohort_key=run.cohort_key,
         episode=episode,
-        considered_at=int(considered_at),
+        considered_at=considered,
         snapshot_record=snapshot_record,
     )
     return MarketActivityDiscoveryAdmissionV0(
@@ -115,24 +128,21 @@ def prepare_and_register_market_activity_episode_v0(
 ) -> MarketActivityDiscoveryAdmissionV0:
     """Freeze/persist exact first-trigger T0, schedule outcomes, then register lineage.
 
-    The preregistered run boundary and exact T0 clock are checked before the prospective
-    coordinator can freeze the episode. For this discovery, ``decision_as_of`` is not a
-    tunable delay: it must equal the canonical episode's ``first_trigger_observed_at``.
-    Inputs must therefore have been constructed with that same local availability cutoff.
-
-    Any T0 validation error propagates fail-closed; callers may explicitly use
-    ``register_considered_market_activity_episode_v0`` with no snapshot to preserve a
-    failed or missing T0 in the denominator rather than silently dropping it.
+    Both run admission and ``decision_as_of`` are anchored to the canonical episode's
+    ``first_trigger_observed_at``. Research Plane processing delay is irrelevant to the
+    denominator. Inputs must have been built with that local cutoff and with
+    ``first_trigger_chain_time`` as their independent chain anchor.
     """
 
     run, episode = _load_run_and_episode(
         acquisition_run_key=acquisition_run_key,
         episode_key=episode_key,
     )
-    assert_market_activity_discovery_admission_open_v0(
-        run,
-        considered_at=int(considered_at),
+    considered = _validate_first_trigger_admission_time(
+        episode=episode,
+        considered_at=considered_at,
     )
+    assert_market_activity_discovery_admission_open_v0(run, considered_at=considered)
     decision = int(decision_as_of)
     if decision != int(episode.first_trigger_observed_at):
         raise ValueError(
@@ -159,7 +169,7 @@ def prepare_and_register_market_activity_episode_v0(
     member = register_market_activity_discovery_member_v0(
         cohort_key=run.cohort_key,
         episode=preparation.episode,
-        considered_at=int(considered_at),
+        considered_at=considered,
         snapshot_record=preparation.snapshot_record,
     )
     if not member.primary_analysis_eligible or member.disposition != "ANALYZABLE_T0":
