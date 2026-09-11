@@ -26,7 +26,7 @@ from src.opportunity_snapshot_core import build_opportunity_snapshot_core_v1
 from src.pump_creation_mode_facts import build_pump_creation_mode_facts_v0
 
 
-SMOKE_VERSION = "market_activity_discovery_offline_smoke_v0"
+SMOKE_VERSION = "market_activity_discovery_offline_smoke_v0_1_first_trigger_t0"
 PASS_CLASSIFICATION = "PASS_MARKET_ACTIVITY_DISCOVERY_V0_OFFLINE_SMOKE"
 
 
@@ -73,14 +73,14 @@ def run_offline_smoke() -> dict[str, object]:
             )
             baseline, mode, activity = _t0_inputs(
                 token_mint="SMOKE_MINT_A",
-                as_of=1_020,
-                chain_as_of=1_100,
+                as_of=analyzable_episode.first_trigger_observed_at,
+                chain_as_of=analyzable_episode.first_trigger_chain_time,
             )
             first = prepare_and_register_market_activity_episode_v0(
                 acquisition_run_key=run.acquisition_run_key,
                 episode_key=analyzable_episode.episode_key,
                 considered_at=1_020,
-                decision_as_of=1_020,
+                decision_as_of=analyzable_episode.first_trigger_observed_at,
                 market_intelligence=baseline,
                 pump_creation_mode=mode,
                 activity_dynamics=activity,
@@ -89,7 +89,7 @@ def run_offline_smoke() -> dict[str, object]:
                 acquisition_run_key=run.acquisition_run_key,
                 episode_key=analyzable_episode.episode_key,
                 considered_at=1_020,
-                decision_as_of=1_020,
+                decision_as_of=analyzable_episode.first_trigger_observed_at,
                 market_intelligence=baseline,
                 pump_creation_mode=mode,
                 activity_dynamics=activity,
@@ -100,6 +100,10 @@ def run_offline_smoke() -> dict[str, object]:
                 raise AssertionError("successful smoke admission lost T0 preparation")
             if first.preparation.snapshot_record != replay.preparation.snapshot_record:
                 raise AssertionError("exact T0 replay changed immutable snapshot lineage")
+            if first.preparation.snapshot.decision_as_of != analyzable_episode.first_trigger_observed_at:
+                raise AssertionError("offline smoke T0 drifted past first trigger observation")
+            if first.preparation.snapshot.market_intelligence.chain_as_of != analyzable_episode.first_trigger_chain_time:
+                raise AssertionError("offline smoke chain anchor drifted from first trigger")
 
             missing_episode = assign_market_opportunity_trigger(
                 acquisition_run_key=run.acquisition_run_key,
@@ -169,6 +173,8 @@ def run_offline_smoke() -> dict[str, object]:
             )
             if [item.horizon_seconds for item in outcomes] != [300, 900, 3600]:
                 raise AssertionError("smoke forward horizons differ from frozen defaults")
+            if [item.target_at for item in outcomes] != [1_310, 1_910, 4_610]:
+                raise AssertionError("smoke forward targets are not anchored to first-trigger T0")
             if any(item.status != "PENDING" for item in outcomes):
                 raise AssertionError("offline smoke must not fabricate completed outcomes")
 
@@ -182,6 +188,8 @@ def run_offline_smoke() -> dict[str, object]:
                 "duration_seconds": run.admission_closes_at - run.started_at,
                 "cohort_denominator": len(members),
                 "dispositions": dispositions,
+                "analyzable_decision_as_of": first.preparation.snapshot.decision_as_of,
+                "analyzable_chain_as_of": first.preparation.snapshot.market_intelligence.chain_as_of,
                 "analyzable_forward_outcomes": len(outcomes),
                 "forward_horizons_seconds": [item.horizon_seconds for item in outcomes],
                 "forward_statuses": [item.status for item in outcomes],
