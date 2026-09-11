@@ -8,12 +8,14 @@ forward outcome is missing. This module stores no outcome or economic label.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import threading
 
 from src import database
 from src.database import connection
 from src.market_activity_dynamics_v0 import MARKET_ACTIVITY_DYNAMICS_VERSION
+from src.market_episode_research_snapshot import MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION
 from src.market_episode_research_snapshot_store import MarketEpisodeResearchSnapshotRecordV0
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
 
@@ -152,6 +154,14 @@ def _row_to_member(row) -> MarketActivityDiscoveryCohortMemberV0:
     )
 
 
+def _validate_snapshot_payload_integrity(snapshot_record: MarketEpisodeResearchSnapshotRecordV0) -> None:
+    digest = hashlib.sha256(snapshot_record.payload_json.encode("utf-8")).hexdigest()
+    if digest != snapshot_record.payload_sha256:
+        raise ValueError("snapshot payload SHA-256 does not match canonical payload")
+    if snapshot_record.snapshot_method_version != MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION:
+        raise ValueError("snapshot method_version is not the preregistered Activity Dynamics T0 version")
+
+
 def _derive_disposition(
     *,
     episode: MarketOpportunityEpisode,
@@ -165,6 +175,7 @@ def _derive_disposition(
     if snapshot_record is None:
         return "T0_SNAPSHOT_MISSING", ("immutable_t0_snapshot_missing_at_first_registration",), None
 
+    _validate_snapshot_payload_integrity(snapshot_record)
     if snapshot_record.acquisition_run_key != episode.acquisition_run_key:
         raise ValueError("snapshot acquisition_run_key must match episode")
     if snapshot_record.episode_key != episode.episode_key:
