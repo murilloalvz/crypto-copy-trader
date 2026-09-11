@@ -6,6 +6,7 @@ import json
 import time
 from typing import Sequence
 
+from src.market_activity_discovery_audit_v0 import build_market_activity_discovery_audit_v0
 from src.market_activity_discovery_cohort_v0 import load_market_activity_discovery_members_v0
 from src.market_activity_discovery_run_v0 import (
     close_market_activity_discovery_run_v0,
@@ -13,10 +14,11 @@ from src.market_activity_discovery_run_v0 import (
     interrupt_market_activity_discovery_run_v0,
     load_market_activity_discovery_run_v0,
 )
+from src.market_activity_discovery_scanner_v0 import scan_open_market_activity_discovery_run_v0
 from src.opportunity_forward_outcome_store import load_opportunity_forward_outcomes
 
 
-CLI_VERSION = "market_activity_discovery_cli_v0"
+CLI_VERSION = "market_activity_discovery_cli_v0_1_safe_finalize"
 
 
 def _epoch_now() -> int:
@@ -81,7 +83,23 @@ def _parser() -> argparse.ArgumentParser:
     inspect_parser = sub.add_parser("inspect", help="Inspect run/cohort/outcome accounting only.")
     inspect_parser.add_argument("--run-key", required=True)
 
-    close_parser = sub.add_parser("close", help="Close normally after the frozen deadline.")
+    scan_parser = sub.add_parser("scan", help="Catch up unregistered canonical episodes for an OPEN run.")
+    scan_parser.add_argument("--run-key", required=True)
+
+    audit_parser = sub.add_parser("audit", help="Emit denominator/T0/outcome-status integrity only.")
+    audit_parser.add_argument("--run-key", required=True)
+
+    finalize_parser = sub.add_parser(
+        "finalize",
+        help="Catch up, require pre-economic integrity, then close after the frozen deadline.",
+    )
+    finalize_parser.add_argument("--run-key", required=True)
+    finalize_parser.add_argument("--observed-at", type=int, default=None)
+
+    close_parser = sub.add_parser(
+        "close",
+        help="Low-level normal close after deadline; prefer finalize for scientific runs.",
+    )
     close_parser.add_argument("--run-key", required=True)
     close_parser.add_argument("--observed-at", type=int, default=None)
 
@@ -91,6 +109,39 @@ def _parser() -> argparse.ArgumentParser:
     interrupt_parser.add_argument("--reason", required=True)
 
     return parser
+
+
+def _safe_finalize(*, run_key: str, observed_at: int) -> dict[str, object]:
+    run = _run_or_fail(run_key)
+    scan_payload: object = None
+    if run.status == "OPEN":
+        scan = scan_open_market_activity_discovery_run_v0(
+            acquisition_run_key=run.acquisition_run_key,
+        )
+        scan_payload = asdict(scan)
+    elif run.status == "INTERRUPTED":
+        raise ValueError("interrupted discovery run cannot be finalized as CLOSED")
+
+    audit = build_market_activity_discovery_audit_v0(
+        acquisition_run_key=run.acquisition_run_key,
+    )
+    if not audit.integrity_ready_for_close_or_analysis:
+        raise ValueError("pre-economic discovery integrity audit is not ready for close")
+
+    if run.status == "CLOSED":
+        closed = run
+    else:
+        closed = close_market_activity_discovery_run_v0(
+            acquisition_run_key=run.acquisition_run_key,
+            observed_at=int(observed_at),
+        )
+    return {
+        "cli_version": CLI_VERSION,
+        "scan": scan_payload,
+        "audit": asdict(audit),
+        "run": asdict(closed),
+        "economic_edge_evaluated": False,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -107,6 +158,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = inspect_market_activity_discovery_run_v0(
             acquisition_run_key=args.run_key,
         )
+    elif args.command == "scan":
+        payload = {
+            "cli_version": CLI_VERSION,
+            "scan": asdict(
+                scan_open_market_activity_discovery_run_v0(
+                    acquisition_run_key=args.run_key,
+                )
+            ),
+        }
+    elif args.command == "audit":
+        payload = {
+            "cli_version": CLI_VERSION,
+            "audit": asdict(
+                build_market_activity_discovery_audit_v0(
+                    acquisition_run_key=args.run_key,
+                )
+            ),
+        }
+    elif args.command == "finalize":
+        observed_at = int(args.observed_at) if args.observed_at is not None else _epoch_now()
+        payload = _safe_finalize(run_key=args.run_key, observed_at=observed_at)
     elif args.command == "close":
         observed_at = int(args.observed_at) if args.observed_at is not None else _epoch_now()
         run = close_market_activity_discovery_run_v0(
