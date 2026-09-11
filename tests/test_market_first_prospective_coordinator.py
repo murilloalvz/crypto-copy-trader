@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src import database
+from src.market_activity_dynamics_v0 import build_market_activity_dynamics_v0
 from src.market_episode_research_snapshot import MarketRegimeResearchFactsV0
 from src.market_episode_research_snapshot_store import (
     load_market_episode_research_snapshot_record_v0,
@@ -38,7 +39,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
             venue="pump",
         )
 
-    def _baseline(self, *, as_of=110, token_mint="MINT_A"):
+    def _baseline(self, *, as_of=110, token_mint="MINT_A", chain_as_of=None):
         protocol = build_market_protocol_facts_v0(
             token_mint=token_mint,
             as_of=as_of,
@@ -46,11 +47,23 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
         core = build_opportunity_snapshot_core_v1(
             token_mint=token_mint,
             as_of=as_of,
+            chain_as_of=chain_as_of,
             flow_observations=(),
             quotes=(),
             flow_windows_seconds=(30,),
         )
         return build_market_intelligence_baseline_v0(protocol=protocol, snapshot=core)
+
+    def _activity(self, *, as_of=110, token_mint="MINT_A", chain_as_of=None):
+        core = build_opportunity_snapshot_core_v1(
+            token_mint=token_mint,
+            as_of=as_of,
+            chain_as_of=chain_as_of,
+            flow_observations=(),
+            quotes=(),
+            flow_windows_seconds=(10, 30, 60, 300),
+        )
+        return build_market_activity_dynamics_v0(core)
 
     def _mode(self, *, as_of=110, token_mint="MINT_A"):
         return build_pump_creation_mode_facts_v0(
@@ -81,6 +94,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                     decision_as_of=110,
                     market_intelligence=self._baseline(),
                     pump_creation_mode=self._mode(),
+                    activity_dynamics=self._activity(),
                     regime=self._regime(),
                     horizons_seconds=(15, 30),
                 )
@@ -95,12 +109,17 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
         self.assertEqual(result.snapshot.decision_as_of, 110)
         self.assertIsNotNone(stored)
         self.assertEqual(stored.payload_sha256, result.snapshot_record.payload_sha256)
-        self.assertEqual(stored.payload()["episode_key"], episode.episode_key)
+        payload = stored.payload()
+        self.assertEqual(payload["episode_key"], episode.episode_key)
+        self.assertEqual(
+            payload["activity_dynamics"]["method_version"],
+            result.snapshot.activity_dynamics.method_version,
+        )
         self.assertEqual([item.horizon_seconds for item in result.forward_outcomes], [15, 30])
         self.assertEqual([item.target_at for item in result.forward_outcomes], [125, 140])
         self.assertTrue(all(item.status == "PENDING" for item in result.forward_outcomes))
 
-    def test_exact_replay_is_idempotent(self):
+    def test_exact_replay_with_activity_dynamics_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "replay.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
@@ -110,6 +129,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                     decision_as_of=110,
                     market_intelligence=self._baseline(),
                     pump_creation_mode=self._mode(),
+                    activity_dynamics=self._activity(),
                     horizons_seconds=(15, 30),
                 )
                 second = prepare_market_first_prospective_episode_v0(
@@ -117,6 +137,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                     decision_as_of=110,
                     market_intelligence=self._baseline(),
                     pump_creation_mode=self._mode(),
+                    activity_dynamics=self._activity(),
                     horizons_seconds=(15, 30),
                 )
 
@@ -141,6 +162,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                         decision_as_of=110,
                         market_intelligence=self._baseline(),
                         pump_creation_mode=self._mode(),
+                        activity_dynamics=self._activity(),
                         regime=self._regime(),
                         horizons_seconds=(15, 30),
                     )
@@ -162,6 +184,25 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                         decision_as_of=110,
                         market_intelligence=self._baseline(as_of=109),
                         pump_creation_mode=self._mode(),
+                        horizons_seconds=(15,),
+                    )
+                loaded = get_market_opportunity_episode(episode.episode_key)
+
+        self.assertIsNotNone(loaded)
+        self.assertIsNone(loaded.decision_as_of)
+
+    def test_mismatched_activity_t0_does_not_freeze_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bad-activity.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                episode = self._episode()
+                with self.assertRaises(ValueError):
+                    prepare_market_first_prospective_episode_v0(
+                        episode_key=episode.episode_key,
+                        decision_as_of=110,
+                        market_intelligence=self._baseline(),
+                        pump_creation_mode=self._mode(),
+                        activity_dynamics=self._activity(as_of=109),
                         horizons_seconds=(15,),
                     )
                 loaded = get_market_opportunity_episode(episode.episode_key)
@@ -197,6 +238,7 @@ class MarketFirstProspectiveCoordinatorV0Tests(unittest.TestCase):
                     decision_as_of=110,
                     market_intelligence=self._baseline(),
                     pump_creation_mode=self._mode(),
+                    activity_dynamics=self._activity(),
                     regime=self._regime(latest_chain_time=999),
                     horizons_seconds=(15,),
                 )
