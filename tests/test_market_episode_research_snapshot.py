@@ -94,7 +94,7 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
                 pump_creation_mode=self._mode(),
             )
 
-    def test_rejects_cross_clock_evidence(self):
+    def test_rejects_mismatched_local_as_of(self):
         with self.assertRaises(ValueError):
             build_market_episode_research_snapshot_v0(
                 episode=self._episode(),
@@ -102,14 +102,15 @@ class MarketEpisodeResearchSnapshotV0Tests(unittest.TestCase):
                 pump_creation_mode=self._mode(),
             )
 
-    def test_rejects_post_decision_regime_detection(self):
-        with self.assertRaises(ValueError):
-            build_market_episode_research_snapshot_v0(
-                episode=self._episode(),
-                market_intelligence=self._baseline(),
-                pump_creation_mode=self._mode(),
-                regime=self._regime(latest_detection_chain_time=111),
-            )
+    def test_regime_chain_clock_ahead_of_local_decision_clock_is_valid(self):
+        result = build_market_episode_research_snapshot_v0(
+            episode=self._episode(),
+            market_intelligence=self._baseline(),
+            pump_creation_mode=self._mode(),
+            regime=self._regime(latest_detection_chain_time=111),
+        )
+        self.assertEqual(result.decision_as_of, 110)
+        self.assertEqual(result.regime.latest_detection_chain_time, 111)
 
     def test_missing_regime_is_explicit_not_zero_or_false(self):
         result = build_market_episode_research_snapshot_v0(
