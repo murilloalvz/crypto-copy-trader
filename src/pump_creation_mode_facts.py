@@ -1,19 +1,23 @@
 """Causal Pump creation-mode facts.
 
-Mayhem Mode is a creation-time protocol fact.  It must come from explicit decoded
+Mayhem Mode is a creation-time protocol fact. It must come from explicit decoded
 Pump creation evidence (currently Carbon's maintained `CreateV2` decoder exposes
 `is_mayhem_mode`) and must never be inferred from trade intensity or wallet behavior.
 
 This module is versioned separately from `MarketProtocolFactsV0` so the already-frozen
-v0 contract is not silently widened.  A later protocol-facts version may compose this
+v0 contract is not silently widened. A later protocol-facts version may compose this
 surface once the live adapter emits the observation.
+
+`observed_at` is the local causal-availability clock. `chain_time` is an independent
+on-chain ordering clock; they are never ordered against each other to decide whether
+evidence existed at a local T0.
 """
 
 from dataclasses import dataclass
 from typing import Iterable
 
 
-PUMP_CREATION_MODE_FACTS_VERSION = "pump_creation_mode_facts_v0"
+PUMP_CREATION_MODE_FACTS_VERSION = "pump_creation_mode_facts_v0_clock_domains"
 
 _ALLOWED_EVIDENCE_KINDS = frozenset({"pump_create_v2_instruction"})
 
@@ -34,8 +38,6 @@ class PumpCreationModeObservation:
             raise ValueError("token_mint cannot be empty")
         if self.chain_time < 0 or self.observed_at < 0:
             raise ValueError("timestamps must be non-negative")
-        if self.observed_at < self.chain_time:
-            raise ValueError("observed_at cannot precede chain_time")
         if not self.evidence_key.strip():
             raise ValueError("evidence_key cannot be empty")
         if not self.source.strip():
@@ -48,7 +50,7 @@ class PumpCreationModeObservation:
             raise ValueError("decoder_version cannot be blank")
 
     def is_available_at(self, as_of: int) -> bool:
-        return self.chain_time <= as_of and self.observed_at <= as_of
+        return self.observed_at <= as_of
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,11 @@ def build_pump_creation_mode_facts_v0(
     rows.sort(key=lambda row: (row.chain_time, row.observed_at, row.evidence_key))
 
     provenance = tuple(sorted({row.evidence_key for row in rows}))
+    clock_flags = (
+        ("chain_clock_ahead_of_local_snapshot_clock_observed",)
+        if any(row.chain_time > as_of for row in rows)
+        else ()
+    )
     if not rows:
         return PumpCreationModeFactsV0(
             method_version=PUMP_CREATION_MODE_FACTS_VERSION,
@@ -115,7 +122,9 @@ def build_pump_creation_mode_facts_v0(
             source=None,
             decoder_version=None,
             provenance_keys=provenance,
-            data_quality_flags=("pump_create_v2_mayhem_mode_conflict",),
+            data_quality_flags=tuple(
+                sorted({"pump_create_v2_mayhem_mode_conflict", *clock_flags})
+            ),
         )
 
     latest = rows[-1]
@@ -130,5 +139,5 @@ def build_pump_creation_mode_facts_v0(
         source=latest.source,
         decoder_version=latest.decoder_version,
         provenance_keys=provenance,
-        data_quality_flags=(),
+        data_quality_flags=clock_flags,
     )
