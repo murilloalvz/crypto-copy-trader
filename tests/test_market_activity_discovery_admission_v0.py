@@ -23,15 +23,22 @@ from src.pump_creation_mode_facts import build_pump_creation_mode_facts_v0
 
 
 class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
-    def _episode(self, *, run_key="RUN1"):
+    def _episode(
+        self,
+        *,
+        run_key="RUN1",
+        observed_at=100,
+        chain_time=120,
+        trigger_key="trigger-1",
+    ):
         return assign_market_opportunity_trigger(
             acquisition_run_key=run_key,
-            trigger_key="trigger-1",
+            trigger_key=trigger_key,
             token_mint="MINT_A",
             trigger_kind="activity_acceleration",
             direction="upward_pressure",
-            chain_time=120,
-            observed_at=100,
+            chain_time=chain_time,
+            observed_at=observed_at,
             method_version="market_opportunity_radar_v1",
             venue="pump",
         )
@@ -63,7 +70,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                 result = prepare_and_register_market_activity_episode_v0(
                     acquisition_run_key="RUN1",
                     episode_key=episode.episode_key,
-                    considered_at=110,
+                    considered_at=episode.first_trigger_observed_at,
                     decision_as_of=episode.first_trigger_observed_at,
                     market_intelligence=baseline,
                     pump_creation_mode=mode,
@@ -73,6 +80,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
         self.assertEqual(result.cohort_member.disposition, "ANALYZABLE_T0")
         self.assertTrue(result.cohort_member.primary_analysis_eligible)
         self.assertIsNotNone(result.preparation)
+        self.assertEqual(result.cohort_member.first_considered_at, 100)
         self.assertEqual(result.preparation.snapshot.decision_as_of, 100)
         self.assertEqual(result.preparation.snapshot.market_intelligence.chain_as_of, 120)
         self.assertEqual(
@@ -88,6 +96,21 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
             [400, 1000, 3700],
         )
 
+    def test_research_processing_delay_cannot_move_scientific_admission_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "processing-delay.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                create_market_activity_discovery_run_v0(
+                    acquisition_run_key="RUN1", cohort_key="COHORT1", started_at=90
+                )
+                episode = self._episode()
+                with self.assertRaises(ValueError):
+                    register_considered_market_activity_episode_v0(
+                        acquisition_run_key="RUN1",
+                        episode_key=episode.episode_key,
+                        considered_at=101,
+                    )
+
     def test_decision_delay_after_first_trigger_is_rejected_before_freeze(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "late-t0.db"
@@ -101,7 +124,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                     prepare_and_register_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=110,
+                        considered_at=100,
                         decision_as_of=110,
                         market_intelligence=baseline,
                         pump_creation_mode=mode,
@@ -124,7 +147,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                     prepare_and_register_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=110,
+                        considered_at=100,
                         decision_as_of=100,
                         market_intelligence=baseline,
                         pump_creation_mode=mode,
@@ -146,7 +169,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                 kwargs = dict(
                     acquisition_run_key="RUN1",
                     episode_key=episode.episode_key,
-                    considered_at=110,
+                    considered_at=100,
                     decision_as_of=100,
                     market_intelligence=baseline,
                     pump_creation_mode=mode,
@@ -159,21 +182,28 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
         self.assertEqual(first.preparation.snapshot_record, second.preparation.snapshot_record)
         self.assertEqual(first.preparation.forward_outcomes, second.preparation.forward_outcomes)
 
-    def test_outside_window_rejects_before_episode_freeze(self):
+    def test_outside_window_rejects_episode_triggered_at_half_open_close_before_freeze(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "late.db"
             with patch.object(database, "settings", SimpleNamespace(database_path=path)):
                 run = create_market_activity_discovery_run_v0(
                     acquisition_run_key="RUN1", cohort_key="COHORT1", started_at=90
                 )
-                episode = self._episode()
-                baseline, mode, activity = self._t0_inputs()
+                episode = self._episode(
+                    observed_at=run.admission_closes_at,
+                    chain_time=99999,
+                    trigger_key="late-trigger",
+                )
+                baseline, mode, activity = self._t0_inputs(
+                    as_of=run.admission_closes_at,
+                    chain_as_of=99999,
+                )
                 with self.assertRaises(ValueError):
                     prepare_and_register_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=run.admission_closes_at,
-                        decision_as_of=100,
+                        considered_at=episode.first_trigger_observed_at,
+                        decision_as_of=episode.first_trigger_observed_at,
                         market_intelligence=baseline,
                         pump_creation_mode=mode,
                         activity_dynamics=activity,
@@ -194,7 +224,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                 result = register_considered_market_activity_episode_v0(
                     acquisition_run_key="RUN1",
                     episode_key=episode.episode_key,
-                    considered_at=110,
+                    considered_at=episode.first_trigger_observed_at,
                 )
 
         self.assertEqual(result.cohort_member.disposition, "T0_NOT_FROZEN")
@@ -215,7 +245,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                     prepare_and_register_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=110,
+                        considered_at=100,
                         decision_as_of=100,
                         market_intelligence=baseline,
                         pump_creation_mode=mode,
@@ -224,7 +254,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                 missing = register_considered_market_activity_episode_v0(
                     acquisition_run_key="RUN1",
                     episode_key=episode.episode_key,
-                    considered_at=110,
+                    considered_at=100,
                 )
                 good_activity = self._t0_inputs(as_of=100)[2]
                 prepared = prepare_market_first_prospective_episode_v0(
@@ -238,7 +268,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                     register_considered_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=110,
+                        considered_at=100,
                         snapshot_record=prepared.snapshot_record,
                     )
 
@@ -256,7 +286,7 @@ class MarketActivityDiscoveryAdmissionV0Tests(unittest.TestCase):
                     register_considered_market_activity_episode_v0(
                         acquisition_run_key="RUN1",
                         episode_key=episode.episode_key,
-                        considered_at=110,
+                        considered_at=episode.first_trigger_observed_at,
                     )
 
 
