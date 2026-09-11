@@ -1,7 +1,7 @@
 """Immutable causal MarketEpisode research snapshot.
 
 This module creates the unit that future outcome research can join against without
-reconstructing features after the fact.  It composes only evidence available at the
+reconstructing features after the fact. It composes only evidence available at the
 frozen episode `decision_as_of` and keeps Market-First evidence independent from any
 Social/Event-First track.
 
@@ -21,7 +21,12 @@ MARKET_EPISODE_RESEARCH_SNAPSHOT_VERSION = "market_episode_research_snapshot_v0"
 
 @dataclass(frozen=True)
 class MarketRegimeResearchFactsV0:
-    """Detector-agnostic descriptive regime evidence frozen at T0."""
+    """Detector-agnostic descriptive regime evidence frozen at T0.
+
+    `latest_detection_chain_time` is an on-chain ordering clock. Causal availability of
+    this object is established by the caller that builds the T0 inputs; it must never be
+    compared directly with the local `decision_as_of` clock.
+    """
 
     method_version: str
     detector: str
@@ -80,7 +85,12 @@ def build_market_episode_research_snapshot_v0(
     pump_creation_mode: PumpCreationModeFactsV0,
     regime: MarketRegimeResearchFactsV0 | None = None,
 ) -> MarketEpisodeResearchSnapshotV0:
-    """Freeze a causal Market-First episode snapshot at the persisted decision T0."""
+    """Freeze a causal Market-First episode snapshot at the persisted decision T0.
+
+    The local causal boundary is `decision_as_of`. Inputs that expose a local `as_of`
+    must match it exactly. On-chain ordering timestamps remain in their own clock domain
+    and are preserved as evidence rather than compared numerically with `decision_as_of`.
+    """
 
     if episode.decision_as_of is None:
         raise ValueError("market episode decision_as_of must be frozen before research snapshot")
@@ -96,9 +106,6 @@ def build_market_episode_research_snapshot_v0(
         raise ValueError("pump creation mode as_of must equal frozen decision_as_of")
     if decision_as_of < episode.first_trigger_observed_at:
         raise ValueError("decision_as_of cannot precede first trigger observation")
-    if regime is not None and regime.latest_detection_chain_time is not None:
-        if regime.latest_detection_chain_time > decision_as_of:
-            raise ValueError("regime evidence cannot contain post-decision detection")
 
     quality = set(market_intelligence.data_quality_flags)
     quality.update(pump_creation_mode.data_quality_flags)
