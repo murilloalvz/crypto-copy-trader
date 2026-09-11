@@ -15,6 +15,24 @@ This protocol operationalizes the already-preregistered `Market Activity Dynamic
 
 Each live acquisition execution must use a fresh `acquisition_run_key` and a fresh `cohort_key`. Keys identify the run; they must not encode or depend on economic outcomes.
 
+## Frozen T0 clock contract
+
+The local causal T0 for this discovery is **exactly the canonical episode `first_trigger_observed_at`**.
+
+The independent on-chain market anchor is **exactly the canonical episode `first_trigger_chain_time`**.
+
+Therefore:
+
+- `decision_as_of = first_trigger_observed_at`;
+- `chain_as_of = first_trigger_chain_time`;
+- the two clocks are independent and are never numerically compared as a latency claim;
+- no configurable post-trigger delay is allowed;
+- evidence observed after `first_trigger_observed_at` is not part of T0;
+- quotes, protocol enrichment, pool identity, research metadata, or any other evidence that arrives later remains missing from T0 rather than being backfilled;
+- forward targets are scheduled from the frozen local `decision_as_of` only after the immutable T0 snapshot is persisted.
+
+This contract is frozen before any outcome from the fresh discovery cohort has been inspected.
+
 ## Frozen stopping rule
 
 The discovery acquisition window is **6 continuous wall-clock hours from run start**.
@@ -63,11 +81,12 @@ An episode may not disappear because T0, Activity Dynamics, executable quotes, o
 
 For each considered Market-First episode:
 
-1. identify the already-admitted episode;
-2. attempt to freeze/build/persist the causal T0 using the existing prospective coordinator;
-3. register the episode once in the discovery cohort with the exact first scientific disposition;
-4. if T0 preparation succeeded, preserve the immutable snapshot lineage and already-scheduled forward outcomes;
-5. if T0 preparation failed or evidence is missing, preserve the denominator disposition rather than deleting the episode.
+1. identify the already-admitted canonical episode;
+2. freeze the local T0 at `first_trigger_observed_at` and the on-chain anchor at `first_trigger_chain_time`;
+3. build/persist the causal T0 using only evidence available at that local cutoff;
+4. register the episode once in the discovery cohort with the exact first scientific disposition;
+5. if T0 preparation succeeded, preserve the immutable snapshot lineage and already-scheduled forward outcomes;
+6. if T0 preparation failed or evidence is missing, preserve the denominator disposition rather than deleting the episode.
 
 The cohort registry never stores economic outcomes.
 
