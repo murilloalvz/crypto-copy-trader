@@ -49,6 +49,7 @@ jobs:
             src/market_activity_discovery_admission_v0.py \
             src/market_activity_discovery_t0_builder_v0.py \
             src/market_activity_discovery_handoff_v0.py \
+            src/market_activity_discovery_research_processor_v0.py \
             src/market_activity_dynamics_v0.py \
             benchmarks/market_activity_discovery_v0/smoke.py \
             benchmarks/market_activity_discovery_v0/cli.py
@@ -63,6 +64,7 @@ jobs:
             tests.test_market_activity_discovery_cohort_v0 \
             tests.test_market_activity_discovery_t0_builder_v0 \
             tests.test_market_activity_discovery_handoff_v0 \
+            tests.test_market_activity_discovery_research_processor_v0 \
             tests.test_market_activity_dynamics_v0 \
             tests.test_market_episode_research_snapshot \
             tests.test_market_first_prospective_coordinator \
