@@ -57,9 +57,9 @@ def prepare_market_first_prospective_episode_v0(
     """Freeze and persist exact T0 before scheduling future outcome targets.
 
     Preconditions are checked against the persisted episode before `decision_as_of` is
-    mutated, so malformed/cross-token/mismatched-local-clock inputs cannot accidentally
-    freeze an episode. Once frozen, replay is idempotent only when the same exact T0
-    snapshot is reproduced; a divergent replay fails closed in the snapshot store.
+    mutated, so malformed/cross-token/mismatched-local-clock/configuration inputs cannot
+    accidentally freeze an episode. Once frozen, replay is idempotent only when the same
+    exact T0 snapshot is reproduced; a divergent replay fails closed in the snapshot store.
 
     No price/quote provider is called here. Scheduling creates PENDING future targets only.
     """
@@ -70,6 +70,9 @@ def prepare_market_first_prospective_episode_v0(
     decision = int(decision_as_of)
     if decision < 0:
         raise ValueError("decision_as_of must be non-negative")
+    horizons = tuple(int(item) for item in horizons_seconds)
+    if not horizons or any(item <= 0 for item in horizons) or len(set(horizons)) != len(horizons):
+        raise ValueError("forward horizons must be unique positive seconds")
 
     episode = get_market_opportunity_episode(key)
     if episode is None:
@@ -97,7 +100,7 @@ def prepare_market_first_prospective_episode_v0(
     snapshot_record = persist_market_episode_research_snapshot_v0(snapshot)
     outcomes = schedule_opportunity_forward_outcomes(
         frozen,
-        horizons_seconds=horizons_seconds,
+        horizons_seconds=horizons,
     )
     return MarketFirstProspectivePreparationV0(
         method_version=MARKET_FIRST_PROSPECTIVE_COORDINATOR_VERSION,
