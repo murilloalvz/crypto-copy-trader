@@ -26,7 +26,7 @@ from src.opportunity_snapshot_core import build_opportunity_snapshot_core_v1
 from src.pump_creation_mode_facts import build_pump_creation_mode_facts_v0
 
 
-SMOKE_VERSION = "market_activity_discovery_offline_smoke_v0_1_first_trigger_t0"
+SMOKE_VERSION = "market_activity_discovery_offline_smoke_v0_2_first_trigger_admission"
 PASS_CLASSIFICATION = "PASS_MARKET_ACTIVITY_DISCOVERY_V0_OFFLINE_SMOKE"
 
 
@@ -79,7 +79,7 @@ def run_offline_smoke() -> dict[str, object]:
             first = prepare_and_register_market_activity_episode_v0(
                 acquisition_run_key=run.acquisition_run_key,
                 episode_key=analyzable_episode.episode_key,
-                considered_at=1_020,
+                considered_at=analyzable_episode.first_trigger_observed_at,
                 decision_as_of=analyzable_episode.first_trigger_observed_at,
                 market_intelligence=baseline,
                 pump_creation_mode=mode,
@@ -88,7 +88,7 @@ def run_offline_smoke() -> dict[str, object]:
             replay = prepare_and_register_market_activity_episode_v0(
                 acquisition_run_key=run.acquisition_run_key,
                 episode_key=analyzable_episode.episode_key,
-                considered_at=1_020,
+                considered_at=analyzable_episode.first_trigger_observed_at,
                 decision_as_of=analyzable_episode.first_trigger_observed_at,
                 market_intelligence=baseline,
                 pump_creation_mode=mode,
@@ -119,7 +119,7 @@ def run_offline_smoke() -> dict[str, object]:
             missing = register_considered_market_activity_episode_v0(
                 acquisition_run_key=run.acquisition_run_key,
                 episode_key=missing_episode.episode_key,
-                considered_at=1_040,
+                considered_at=missing_episode.first_trigger_observed_at,
             )
             if missing.cohort_member.disposition != "T0_NOT_FROZEN":
                 raise AssertionError("missing T0 episode did not remain in denominator")
@@ -130,8 +130,8 @@ def run_offline_smoke() -> dict[str, object]:
                 token_mint="SMOKE_MINT_C",
                 trigger_kind="activity_acceleration",
                 direction="upward_pressure",
-                chain_time=1_130,
-                observed_at=1_050,
+                chain_time=99_999,
+                observed_at=run.admission_closes_at,
                 method_version="market_opportunity_radar_v1",
                 venue="pump",
             )
@@ -140,7 +140,7 @@ def run_offline_smoke() -> dict[str, object]:
                 register_considered_market_activity_episode_v0(
                     acquisition_run_key=run.acquisition_run_key,
                     episode_key=late_episode.episode_key,
-                    considered_at=run.admission_closes_at,
+                    considered_at=late_episode.first_trigger_observed_at,
                 )
             except ValueError:
                 late_rejected = True
