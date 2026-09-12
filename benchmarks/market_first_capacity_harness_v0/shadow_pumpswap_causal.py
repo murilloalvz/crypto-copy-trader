@@ -66,12 +66,34 @@ def _first_existing(directory: Path, basename: str) -> Path | None:
     return None
 
 
+def _processed_chunk_directory_v0(processed_root: Path, raw_trace_path: Path) -> Path:
+    """Map a durable raw trace filename back to the live processor's chunk directory.
+
+    The live processor creates its directory while the raw trace is still named
+    `chunk-XXXXXX.jsonl`, so `Path.stem` yields `chunk-XXXXXX`. Later evidence
+    compression renames the raw file to `chunk-XXXXXX.jsonl.gz`. A replay that
+    blindly uses `.stem` on the compressed name would incorrectly look for
+    `processed/chunk-XXXXXX.jsonl`.
+    """
+
+    name = raw_trace_path.name
+    if name.endswith(".jsonl.gz"):
+        chunk_key = name[: -len(".jsonl.gz")]
+    elif name.endswith(".jsonl"):
+        chunk_key = name[: -len(".jsonl")]
+    else:
+        chunk_key = raw_trace_path.stem
+    if not chunk_key:
+        raise ValueError(f"cannot derive processed chunk directory from {raw_trace_path}")
+    return Path(processed_root) / chunk_key
+
+
 def load_recorded_identity_refresh_v0(
     *,
     processed_root: Path,
     raw_trace_path: Path,
 ) -> dict[str, Any]:
-    chunk_dir = Path(processed_root) / raw_trace_path.stem
+    chunk_dir = _processed_chunk_directory_v0(Path(processed_root), raw_trace_path)
     input_path = _first_existing(chunk_dir, "pool-account-input.jsonl")
     output_path = _first_existing(chunk_dir, "pool-account-output.jsonl")
     if (input_path is None) != (output_path is None):
