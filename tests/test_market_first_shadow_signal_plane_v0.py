@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from benchmarks.market_first_capacity_harness_v0.shadow_signal_plane import (
     compare_trigger_ledgers_v0,
     derive_signal_path_comparison_v0,
 )
+from src import database
 
 
 class MarketFirstShadowSignalPlaneV0Tests(unittest.TestCase):
@@ -40,6 +44,21 @@ class MarketFirstShadowSignalPlaneV0Tests(unittest.TestCase):
         self.assertEqual(result["shadow_saved_ms"], 2500.0)
         self.assertFalse(result["single_chunk_reference_le_5s"])
         self.assertFalse(result["single_chunk_reference_le_2s"])
+
+    def test_isolated_database_settings_replace_frozen_settings_object(self) -> None:
+        original = database.settings
+        replacement_path = Path("isolated-shadow.db")
+        replacement = replace(original, database_path=replacement_path)
+
+        self.assertIsNot(replacement, original)
+        self.assertEqual(replacement.database_path, replacement_path)
+        self.assertEqual(database.settings.database_path, original.database_path)
+
+        with patch.object(database, "settings", replacement):
+            self.assertIs(database.settings, replacement)
+            self.assertEqual(database.settings.database_path, replacement_path)
+
+        self.assertIs(database.settings, original)
 
 
 if __name__ == "__main__":
