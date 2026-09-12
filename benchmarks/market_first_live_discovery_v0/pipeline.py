@@ -34,6 +34,9 @@ from src.market_activity_discovery_handoff_v0 import build_market_activity_disco
 from src.market_activity_discovery_research_processor_v0 import (
     process_market_activity_discovery_handoff_v0,
 )
+from src.market_activity_discovery_signal_boundary_v0 import (
+    seal_market_activity_discovery_signal_boundary_v0,
+)
 from src.market_observation_store import record_market_lifecycle, record_market_trade
 from src.market_opportunity_episode_store import assign_market_opportunity_trigger
 from src.market_opportunity_radar import MarketLifecycleObservation
@@ -57,6 +60,7 @@ class LiveDiscoveryPipelineStateV0:
     matched_unit_statuses: dict[str, int] = field(default_factory=dict)
     triggers_emitted: int = 0
     first_trigger_episodes: int = 0
+    signal_boundaries_sealed: int = 0
     grouped_trigger_count: int = 0
     research_handoffs_processed: int = 0
     bootstrap_identity_count: int = 0
@@ -107,6 +111,7 @@ class LiveDiscoveryPipelineStateV0:
             "kernel_tracked_assets": stats.tracked_assets,
             "kernel_triggers_emitted": self.triggers_emitted,
             "first_trigger_episodes": self.first_trigger_episodes,
+            "signal_boundaries_sealed": self.signal_boundaries_sealed,
             "grouped_trigger_count": self.grouped_trigger_count,
             "research_handoffs_processed": self.research_handoffs_processed,
             "bootstrap_identity_count": self.bootstrap_identity_count,
@@ -361,6 +366,20 @@ def process_canonical_chunk_v0(
             state.grouped_trigger_count += 1
             continue
         state.first_trigger_episodes += 1
+
+        # Signal-Plane durable boundary: freeze canonical first-trigger T0 and create
+        # exact forward targets before any Research Plane snapshot/feature work. If the
+        # consumer itself is late, postrun readiness still fails closed on created_at > target_at.
+        try:
+            boundary = seal_market_activity_discovery_signal_boundary_v0(episode)
+            episode = boundary.episode
+            state.signal_boundaries_sealed += 1
+        except Exception as exc:
+            state.persistence_errors.append(
+                f"{event_key}:signal_boundary:{type(exc).__name__}:{exc}"
+            )
+            continue
+
         try:
             handoff = build_market_activity_discovery_handoff_v0(
                 episode=episode,
