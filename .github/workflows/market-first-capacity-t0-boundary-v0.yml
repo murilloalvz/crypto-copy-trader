@@ -1,0 +1,60 @@
+name: Market-First Capacity + T0 Boundary V0
+
+on:
+  push:
+    branches:
+      - fix/market-first-capacity-t0-boundary-v0
+    paths:
+      - 'src/market_activity_discovery_signal_boundary_v0.py'
+      - 'benchmarks/market_first_live_discovery_v0/pipeline.py'
+      - 'benchmarks/market_first_capacity_harness_v0/**'
+      - 'tests/test_market_activity_discovery_signal_boundary_v0.py'
+      - 'tests/test_market_first_capacity_harness_v0.py'
+      - '.github/workflows/market-first-capacity-t0-boundary-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: market-first-capacity-t0-boundary-v0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile changed modules
+        run: |
+          python -m py_compile src/market_activity_discovery_signal_boundary_v0.py
+          python -m py_compile benchmarks/market_first_live_discovery_v0/pipeline.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/run.py
+          python -m py_compile tests/test_market_activity_discovery_signal_boundary_v0.py
+          python -m py_compile tests/test_market_first_capacity_harness_v0.py
+
+      - name: Run new boundary and capacity tests
+        run: |
+          python -m unittest tests.test_market_activity_discovery_signal_boundary_v0 -v
+          python -m unittest tests.test_market_first_capacity_harness_v0 -v
+
+      - name: Re-run forward scheduling contracts
+        run: |
+          python -m unittest tests.test_opportunity_forward_outcome_store -v
+          python -m unittest tests.test_market_activity_discovery_handoff_v0 -v
+          python -m unittest tests.test_market_activity_discovery_research_processor_v0 -v
+          python -m unittest tests.test_market_activity_discovery_admission_v0 -v
+
+      - name: Re-run Market-First live contracts
+        run: python -m unittest tests.test_market_first_live_discovery_v0 -v
