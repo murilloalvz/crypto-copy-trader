@@ -33,7 +33,8 @@ class MarketFirstPostrunReadinessV0Tests(unittest.TestCase):
                 observed_at INTEGER,
                 quote_key TEXT,
                 error_type TEXT,
-                error_message TEXT
+                error_message TEXT,
+                created_at TEXT NOT NULL
             )"""
         )
         for horizon, status in zip((300, 900, 3600), statuses):
@@ -43,8 +44,9 @@ class MarketFirstPostrunReadinessV0Tests(unittest.TestCase):
                 """INSERT INTO opportunity_forward_outcomes(
                     outcome_key, acquisition_run_key, episode_key, token_mint,
                     decision_as_of, horizon_seconds, target_at, status, observed_at,
-                    quote_key, error_type, error_message
-                ) VALUES (?, 'RUN1', 'EP1', 'MINT1', 1000, ?, ?, ?, ?, ?, NULL, NULL)""",
+                    quote_key, error_type, error_message, created_at
+                ) VALUES (?, 'RUN1', 'EP1', 'MINT1', 1000, ?, ?, ?, ?, ?, NULL, NULL,
+                    datetime(1100, 'unixepoch'))""",
                 (
                     f"OUTCOME-{horizon}",
                     horizon,
@@ -102,6 +104,8 @@ class MarketFirstPostrunReadinessV0Tests(unittest.TestCase):
         self.assertEqual(readiness["forward_outcomes"]["pending_count"], 3)
         self.assertEqual(readiness["forward_outcomes"]["pending_due_count"], 2)
         self.assertEqual(readiness["forward_outcomes"]["pending_not_yet_due_count"], 1)
+        self.assertEqual(readiness["forward_outcomes"]["late_schedule_count"], 0)
+        self.assertTrue(readiness["gates"]["forward_outcomes_scheduled_no_later_than_target"])
         self.assertAlmostEqual(readiness["trade_coverage"]["missing_context_rate"], 0.10)
 
     def test_terminal_explicit_missingness_is_ready_without_requiring_all_available(self) -> None:
@@ -142,6 +146,28 @@ class MarketFirstPostrunReadinessV0Tests(unittest.TestCase):
             )
         self.assertEqual(readiness["classification"], FAIL_CLASSIFICATION)
         self.assertFalse(readiness["gates"]["exact_forward_target_clocks"])
+
+    def test_outcome_scheduled_after_target_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = self._database(root, ("AVAILABLE", "UNAVAILABLE", "PROVIDER_ERROR"))
+            conn = sqlite3.connect(db)
+            conn.execute(
+                """UPDATE opportunity_forward_outcomes
+                SET created_at=datetime(target_at + 1, 'unixepoch')
+                WHERE horizon_seconds=300"""
+            )
+            conn.commit()
+            conn.close()
+            report = self._report(root)
+            readiness = build_postrun_readiness_v0(
+                live_report_path=report, database_path=db, observed_at=5000
+            )
+        self.assertEqual(readiness["classification"], FAIL_CLASSIFICATION)
+        self.assertFalse(readiness["safe_to_start_economic_analysis"])
+        self.assertFalse(readiness["gates"]["forward_outcomes_scheduled_no_later_than_target"])
+        self.assertEqual(readiness["forward_outcomes"]["late_schedule_count"], 1)
+        self.assertEqual(readiness["forward_outcomes"]["per_horizon"]["300"]["late_schedule_count"], 1)
 
     def test_readiness_connection_is_query_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
