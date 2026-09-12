@@ -52,7 +52,8 @@ def _load_outcomes_read_only(*, database_path: Path, acquisition_run_key: str) -
         rows = conn.execute(
             """SELECT outcome_key, acquisition_run_key, episode_key, token_mint,
                 decision_as_of, horizon_seconds, target_at, status, observed_at,
-                quote_key, error_type, error_message
+                quote_key, error_type, error_message, created_at,
+                CAST(strftime('%s', created_at) AS INTEGER) AS scheduled_at
             FROM opportunity_forward_outcomes
             WHERE acquisition_run_key=?
             ORDER BY episode_key, horizon_seconds""",
@@ -99,12 +100,16 @@ def _validate_outcomes(
     by_episode: dict[str, list[dict[str, Any]]] = defaultdict(list)
     status_counts: Counter[str] = Counter()
     per_horizon: dict[int, Counter[str]] = {horizon: Counter() for horizon in expected_horizons}
+    per_horizon_late_schedule: Counter[int] = Counter()
     exact_target_clocks = True
     known_statuses = True
     terminal_semantics_valid = True
+    schedules_causally_eligible = True
     pending_count = 0
     pending_due_count = 0
     pending_not_yet_due_count = 0
+    late_schedule_count = 0
+    schedule_delay_from_t0_seconds: list[int] = []
 
     for row in outcomes:
         episode_key = str(row["episode_key"])
@@ -115,11 +120,27 @@ def _validate_outcomes(
         target_at = int(row["target_at"])
         observed = row["observed_at"]
         quote_key = row["quote_key"]
+        scheduled_raw = row.get("scheduled_at")
+        scheduled_at = int(scheduled_raw) if scheduled_raw is not None else None
         status_counts[status] += 1
         if horizon in per_horizon:
             per_horizon[horizon][status] += 1
         if horizon not in expected_set or target_at != decision_as_of + horizon:
             exact_target_clocks = False
+
+        # A prospective target must exist no later than its own target clock. If the
+        # Research Plane only schedules +5m/+15m/+60m after those clocks have already
+        # passed, a later provider observation cannot be treated as the preregistered
+        # forward horizon without historical backfill or silent horizon drift.
+        if scheduled_at is None:
+            schedules_causally_eligible = False
+        else:
+            schedule_delay_from_t0_seconds.append(scheduled_at - decision_as_of)
+            if scheduled_at > target_at:
+                schedules_causally_eligible = False
+                late_schedule_count += 1
+                per_horizon_late_schedule[horizon] += 1
+
         if status not in KNOWN_OUTCOME_STATUSES:
             known_statuses = False
             terminal_semantics_valid = False
@@ -157,11 +178,17 @@ def _validate_outcomes(
         "pending_due_count": pending_due_count,
         "pending_not_yet_due_count": pending_not_yet_due_count,
         "terminal_count": len(outcomes) - pending_count,
+        "late_schedule_count": late_schedule_count,
+        "schedule_before_or_at_target_count": len(outcomes) - late_schedule_count,
+        "max_schedule_delay_from_t0_seconds": (
+            max(schedule_delay_from_t0_seconds) if schedule_delay_from_t0_seconds else None
+        ),
         "per_horizon": {
             str(horizon): {
                 "expected": int(analyzable_t0_count),
                 "observed": sum(per_horizon[horizon].values()),
                 "status_counts": dict(sorted(per_horizon[horizon].items())),
+                "late_schedule_count": int(per_horizon_late_schedule[horizon]),
             }
             for horizon in expected_horizons
         },
@@ -169,6 +196,7 @@ def _validate_outcomes(
     gates = {
         "exact_forward_outcome_cardinality": exact_horizon_cardinality,
         "exact_forward_target_clocks": exact_target_clocks,
+        "forward_outcomes_scheduled_no_later_than_target": schedules_causally_eligible,
         "known_forward_outcome_statuses": known_statuses,
         "forward_outcome_terminal_semantics_valid": terminal_semantics_valid,
     }
