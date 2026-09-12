@@ -15,6 +15,7 @@ on:
       - 'tests/test_market_first_capacity_profile_v1.py'
       - 'tests/test_market_first_shadow_signal_plane_v0.py'
       - 'tests/test_market_first_shadow_result_gate_v1.py'
+      - 'tests/test_market_first_shadow_pumpswap_causal_v0.py'
       - '.github/workflows/market-first-capacity-t0-boundary-v0.yml'
   workflow_dispatch:
 
@@ -49,11 +50,13 @@ jobs:
           python -m py_compile benchmarks/market_first_capacity_harness_v0/profile_one_chunk.py
           python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_signal_plane.py
           python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_result_gate.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_pumpswap_causal.py
           python -m py_compile tests/test_market_activity_discovery_signal_boundary_v0.py
           python -m py_compile tests/test_market_first_capacity_harness_v0.py
           python -m py_compile tests/test_market_first_capacity_profile_v1.py
           python -m py_compile tests/test_market_first_shadow_signal_plane_v0.py
           python -m py_compile tests/test_market_first_shadow_result_gate_v1.py
+          python -m py_compile tests/test_market_first_shadow_pumpswap_causal_v0.py
 
       - name: Run new boundary and capacity tests
         run: |
@@ -62,6 +65,7 @@ jobs:
           python -m unittest tests.test_market_first_capacity_profile_v1 -v
           python -m unittest tests.test_market_first_shadow_signal_plane_v0 -v
           python -m unittest tests.test_market_first_shadow_result_gate_v1 -v
+          python -m unittest tests.test_market_first_shadow_pumpswap_causal_v0 -v
 
       - name: Re-run forward scheduling contracts
         run: |
