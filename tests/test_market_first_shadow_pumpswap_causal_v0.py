@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from benchmarks.market_first_capacity_harness_v0.shadow_pumpswap_causal import (
+    _processed_chunk_directory_v0,
     apply_recorded_identity_refresh_v0,
     load_recorded_identity_refresh_v0,
 )
@@ -21,13 +22,24 @@ def _write_gzip_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class MarketFirstShadowPumpSwapCausalV0Tests(unittest.TestCase):
+    def test_compressed_raw_name_maps_to_original_processed_chunk_directory(self) -> None:
+        root = Path("processed")
+        self.assertEqual(
+            _processed_chunk_directory_v0(root, Path("chunk-000001.jsonl.gz")),
+            root / "chunk-000001",
+        )
+        self.assertEqual(
+            _processed_chunk_directory_v0(root, Path("chunk-000002.jsonl")),
+            root / "chunk-000002",
+        )
+
     def test_recorded_refresh_preserves_original_identity_clock_and_applies_after_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             raw = root / "raw" / "chunk-000001.jsonl.gz"
             raw.parent.mkdir(parents=True)
             raw.write_bytes(b"placeholder")
-            chunk_dir = root / "processed" / raw.stem
+            chunk_dir = root / "processed" / "chunk-000001"
             _write_gzip_jsonl(
                 chunk_dir / "pool-account-input.jsonl.gz",
                 [
@@ -59,6 +71,7 @@ class MarketFirstShadowPumpSwapCausalV0Tests(unittest.TestCase):
                 raw_trace_path=raw,
             )
             self.assertTrue(refresh["evidence_present"])
+            self.assertEqual(Path(refresh["chunk_dir"]), chunk_dir)
             self.assertEqual(refresh["attempted_pools"], ("POOL1",))
             self.assertEqual(len(refresh["identities"]), 1)
             self.assertEqual(refresh["identities"][0].observed_wall_ns, 123456789)
@@ -95,7 +108,7 @@ class MarketFirstShadowPumpSwapCausalV0Tests(unittest.TestCase):
             root = Path(directory)
             raw = root / "chunk-000003.jsonl.gz"
             raw.write_bytes(b"placeholder")
-            chunk_dir = root / "processed" / raw.stem
+            chunk_dir = root / "processed" / "chunk-000003"
             _write_gzip_jsonl(
                 chunk_dir / "pool-account-input.jsonl.gz",
                 [{"type": "pumpswap_pool_account_input", "pool": "POOL1"}],
