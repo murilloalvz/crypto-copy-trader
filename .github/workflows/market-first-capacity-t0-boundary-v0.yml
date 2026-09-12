@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - fix/market-first-capacity-t0-boundary-v0
+      - fix/market-first-capacity-profile-v1
     paths:
       - 'src/market_activity_discovery_signal_boundary_v0.py'
       - 'benchmarks/market_first_live_discovery_v0/pipeline.py'
       - 'benchmarks/market_first_capacity_harness_v0/**'
       - 'tests/test_market_activity_discovery_signal_boundary_v0.py'
       - 'tests/test_market_first_capacity_harness_v0.py'
+      - 'tests/test_market_first_capacity_profile_v1.py'
       - '.github/workflows/market-first-capacity-t0-boundary-v0.yml'
   workflow_dispatch:
 
@@ -41,13 +43,16 @@ jobs:
           python -m py_compile src/market_activity_discovery_signal_boundary_v0.py
           python -m py_compile benchmarks/market_first_live_discovery_v0/pipeline.py
           python -m py_compile benchmarks/market_first_capacity_harness_v0/run.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/profile_one_chunk.py
           python -m py_compile tests/test_market_activity_discovery_signal_boundary_v0.py
           python -m py_compile tests/test_market_first_capacity_harness_v0.py
+          python -m py_compile tests/test_market_first_capacity_profile_v1.py
 
       - name: Run new boundary and capacity tests
         run: |
           python -m unittest tests.test_market_activity_discovery_signal_boundary_v0 -v
           python -m unittest tests.test_market_first_capacity_harness_v0 -v
+          python -m unittest tests.test_market_first_capacity_profile_v1 -v
 
       - name: Re-run forward scheduling contracts
         run: |
