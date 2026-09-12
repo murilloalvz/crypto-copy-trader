@@ -3,18 +3,26 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from benchmarks.market_first_live_discovery_v0.pipeline import LiveDiscoveryPipelineStateV0
 from benchmarks.market_first_signal_plane_v0.pipeline import (
+    DeferredResearchHandoffV0,
     DurableResearchStateV0,
     drain_deferred_operations_v0,
     process_canonical_chunk_signal_plane_v0,
 )
 from src import database
+from src.market_activity_discovery_handoff_v0 import MarketActivityDiscoveryHandoffV0
+from src.market_observation_batch_v0 import (
+    MarketObservationBatchResultV0,
+    MarketTradeWriteV0,
+)
 from src.market_observation_store import load_market_trades
+from src.market_opportunity_radar import MarketTradeObservation
 
 
 class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
@@ -82,6 +90,58 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
             self.assertEqual(durable.observation_writes_attempted, 1)
             self.assertEqual(durable.observation_writes_inserted, 1)
             self.assertEqual(durable.errors, [])
+
+    def test_durable_writes_flush_before_research_handoff(self) -> None:
+        order: list[str] = []
+        trade = MarketTradeWriteV0(
+            acquisition_run_key="RUN",
+            event_key="E1",
+            source_provider="helius",
+            observation=MarketTradeObservation(
+                token_mint="TOKEN",
+                side="buy",
+                chain_time=100,
+                observed_at=101,
+                wallet_address="W",
+                venue="pump",
+                transaction_key="SIG",
+            ),
+        )
+        handoff = DeferredResearchHandoffV0(
+            handoff=MarketActivityDiscoveryHandoffV0(
+                method_version="handoff-v0",
+                handoff_key="H1",
+                acquisition_run_key="RUN",
+                episode_key="EP1",
+                token_mint="TOKEN",
+                first_trigger_key="TR1",
+                decision_as_of=101,
+                chain_as_of=100,
+            )
+        )
+
+        def fake_batch(items):
+            order.append("flush")
+            return MarketObservationBatchResultV0(
+                attempted=len(items), inserted=len(items), replayed=0, conflicts=0
+            )
+
+        def fake_research(_handoff):
+            order.append("research")
+            return SimpleNamespace(provider_calls_performed=0)
+
+        with patch(
+            "benchmarks.market_first_signal_plane_v0.pipeline.record_market_observations_batch_v0",
+            side_effect=fake_batch,
+        ), patch(
+            "benchmarks.market_first_signal_plane_v0.pipeline.process_market_activity_discovery_handoff_v0",
+            side_effect=fake_research,
+        ):
+            state = drain_deferred_operations_v0((trade, handoff))
+
+        self.assertEqual(order, ["flush", "research"])
+        self.assertEqual(state.research_handoffs_processed, 1)
+        self.assertEqual(state.errors, [])
 
     def test_drain_rejects_nonpositive_batch_size(self) -> None:
         with self.assertRaises(ValueError):
