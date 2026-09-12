@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import shutil
@@ -326,7 +326,8 @@ def run_shadow_signal_plane_v0(
 
         print(f"[shadow] chunk={source.name} phase=baseline_canonical", flush=True)
         started = time.monotonic_ns()
-        with patch.object(database.settings, "database_path", baseline_db):
+        isolated_settings = replace(database.settings, database_path=baseline_db)
+        with patch.object(database, "settings", isolated_settings):
             baseline_unresolved = process_canonical_chunk_v0(
                 state=baseline_state,
                 acquisition_run_key=benchmark_run_key,
