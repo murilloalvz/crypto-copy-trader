@@ -88,3 +88,9 @@ jobs:
         run: |
           python -m unittest tests.test_route_research_forward_cohort_v43 -v
           python -m unittest tests.test_route_research_forward_cohort_v46 -v
+
+      - name: Full repository unit suite
+        env:
+          PYTHONUTF8: '1'
+          PYTHONUNBUFFERED: '1'
+        run: python -m unittest discover -s tests -q
