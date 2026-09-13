@@ -38,6 +38,7 @@ from benchmarks.market_first_live_smoke_v0.run import _run_carbon_decoder
 from benchmarks.market_first_signal_plane_v0 import SIGNAL_PLANE_VERSION
 from benchmarks.market_first_signal_plane_v0.pipeline import (
     DurableResearchStateV0,
+    SignalPlaneEpisodeTrackerV0,
     drain_deferred_operations_v0,
     process_canonical_chunk_signal_plane_v0,
 )
@@ -90,6 +91,7 @@ def run_signal_plane_replay_v0(
     seed_bootstrap_identities_v0(signal_state, identities)
     seed_bootstrap_identities_v0(shadow_state, identities)
     durable_state = DurableResearchStateV0()
+    episode_tracker = SignalPlaneEpisodeTrackerV0()
     chunk_results: list[dict[str, Any]] = []
     fatal_reason: str | None = None
 
@@ -148,6 +150,7 @@ def run_signal_plane_replay_v0(
                     target_manifest_path=manifest,
                     discovery_start_wall_ns=discovery_start_wall_ns,
                     discovery_close_wall_ns=discovery_close_wall_ns,
+                    episode_tracker=episode_tracker,
                 )
                 signal_canonical_ms = _elapsed_ms(started)
 
@@ -181,6 +184,7 @@ def run_signal_plane_replay_v0(
                     signal_result.deferred_operations,
                     state=durable_state,
                     max_observation_batch_size=256,
+                    max_continuation_trigger_batch_size=512,
                 )
                 durable_ms = _elapsed_ms(started)
                 new_durable_errors = durable_state.errors[errors_before:]
