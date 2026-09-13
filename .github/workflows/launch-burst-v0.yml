@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: launch-burst-v0-${{ github.ref }}-${{ matrix.python-version }}
+  group: launch-burst-v0-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
