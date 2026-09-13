@@ -42,7 +42,14 @@ from src.market_observation_batch_v0 import (
     MarketTradeWriteV0,
     record_market_observations_batch_v0,
 )
-from src.market_opportunity_episode_store import assign_market_opportunity_trigger
+from src.market_opportunity_episode_batch_v0 import (
+    MarketContinuationTriggerWriteV0,
+    record_market_continuation_triggers_batch_v0,
+)
+from src.market_opportunity_episode_store import (
+    MarketOpportunityEpisode,
+    assign_market_opportunity_trigger,
+)
 from src.market_opportunity_radar import MarketLifecycleObservation
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
@@ -52,7 +59,22 @@ class DeferredResearchHandoffV0:
     handoff: MarketActivityDiscoveryHandoffV0
 
 
-DeferredOperationV0 = MarketObservationWriteV0 | DeferredResearchHandoffV0
+DeferredOperationV0 = (
+    MarketObservationWriteV0 | MarketContinuationTriggerWriteV0 | DeferredResearchHandoffV0
+)
+
+
+@dataclass
+class SignalPlaneEpisodeTrackerV0:
+    """In-memory cache of the canonical episode already durably opened per token.
+
+    It never creates or mutates a durable episode. A trigger can bypass synchronous
+    SQLite only when its local observation clock is provably inside the already-open
+    persisted episode window. Any ambiguous/replay/late-earlier case falls back to the
+    canonical store synchronously.
+    """
+
+    active_by_token: dict[str, MarketOpportunityEpisode] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,6 +92,11 @@ class DurableResearchStateV0:
     observation_replays: int = 0
     observation_conflicts: int = 0
     batches_committed: int = 0
+    continuation_trigger_writes_attempted: int = 0
+    continuation_trigger_writes_inserted: int = 0
+    continuation_trigger_replays: int = 0
+    continuation_trigger_conflicts: int = 0
+    continuation_trigger_batches_committed: int = 0
     research_handoffs_processed: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -80,6 +107,11 @@ class DurableResearchStateV0:
             "observation_replays": self.observation_replays,
             "observation_conflicts": self.observation_conflicts,
             "batches_committed": self.batches_committed,
+            "continuation_trigger_writes_attempted": self.continuation_trigger_writes_attempted,
+            "continuation_trigger_writes_inserted": self.continuation_trigger_writes_inserted,
+            "continuation_trigger_replays": self.continuation_trigger_replays,
+            "continuation_trigger_conflicts": self.continuation_trigger_conflicts,
+            "continuation_trigger_batches_committed": self.continuation_trigger_batches_committed,
             "research_handoffs_processed": self.research_handoffs_processed,
             "errors": list(self.errors),
         }
@@ -114,6 +146,20 @@ def _defer_lifecycle(
     )
 
 
+def _tracked_continuation_episode_v0(
+    tracker: SignalPlaneEpisodeTrackerV0,
+    *,
+    token_mint: str,
+    observed_at: int,
+) -> MarketOpportunityEpisode | None:
+    episode = tracker.active_by_token.get(token_mint)
+    if episode is None:
+        return None
+    if episode.first_trigger_observed_at <= observed_at < episode.episode_closes_at:
+        return episode
+    return None
+
+
 def process_canonical_chunk_signal_plane_v0(
     *,
     state: LiveDiscoveryPipelineStateV0,
@@ -122,13 +168,15 @@ def process_canonical_chunk_signal_plane_v0(
     target_manifest_path: Path,
     discovery_start_wall_ns: int,
     discovery_close_wall_ns: int,
+    episode_tracker: SignalPlaneEpisodeTrackerV0 | None = None,
 ) -> SignalChunkResultV0:
     """Process one decoded chunk with only signal-critical synchronous work.
 
-    Observation persistence and Research Plane work are emitted as ordered deferred
-    operations. Episode assignment plus the exact first-trigger T0/forward boundary
-    remain synchronous because they are the minimal durable contract of a signal.
+    Observation persistence, continuation-trigger audit writes and Research Plane work
+    are emitted as deferred operations. Only opening/recovering the canonical episode
+    plus the exact first-trigger T0/forward boundary remain synchronous.
     """
+    episode_tracker = episode_tracker or SignalPlaneEpisodeTrackerV0()
     ordered, pairing_errors = _canonical_rows_in_receive_order(
         carbon_output_path=carbon_output_path,
         target_manifest_path=target_manifest_path,
@@ -268,6 +316,31 @@ def process_canonical_chunk_signal_plane_v0(
             state.semantic_errors.append(f"{event_key}:trigger_missing_chain_as_of")
             continue
         trigger_key = f"{event_key}:market-radar:{trigger.trigger_kind}"
+        trigger_observed_at = int(trigger.as_of)
+
+        tracked_episode = _tracked_continuation_episode_v0(
+            episode_tracker,
+            token_mint=trigger.token_mint,
+            observed_at=trigger_observed_at,
+        )
+        if tracked_episode is not None:
+            operations.append(
+                MarketContinuationTriggerWriteV0(
+                    acquisition_run_key=acquisition_run_key,
+                    episode_key=tracked_episode.episode_key,
+                    trigger_key=trigger_key,
+                    token_mint=trigger.token_mint,
+                    trigger_kind=trigger.trigger_kind,
+                    direction=trigger.direction,
+                    chain_time=int(chain_as_of),
+                    observed_at=trigger_observed_at,
+                    method_version=trigger.method_version,
+                    venue=observation.venue,
+                )
+            )
+            state.grouped_trigger_count += 1
+            continue
+
         try:
             episode = assign_market_opportunity_trigger(
                 acquisition_run_key=acquisition_run_key,
@@ -276,10 +349,11 @@ def process_canonical_chunk_signal_plane_v0(
                 trigger_kind=trigger.trigger_kind,
                 direction=trigger.direction,
                 chain_time=int(chain_as_of),
-                observed_at=int(trigger.as_of),
+                observed_at=trigger_observed_at,
                 method_version=trigger.method_version,
                 venue=observation.venue,
             )
+            episode_tracker.active_by_token[trigger.token_mint] = episode
         except Exception as exc:
             state.persistence_errors.append(
                 f"{event_key}:episode_assignment:{type(exc).__name__}:{exc}"
@@ -294,6 +368,7 @@ def process_canonical_chunk_signal_plane_v0(
         try:
             boundary = seal_market_activity_discovery_signal_boundary_v0(episode)
             episode = boundary.episode
+            episode_tracker.active_by_token[trigger.token_mint] = episode
             state.signal_boundaries_sealed += 1
         except Exception as exc:
             state.persistence_errors.append(
@@ -327,23 +402,27 @@ def drain_deferred_operations_v0(
     *,
     state: DurableResearchStateV0 | None = None,
     max_observation_batch_size: int = 256,
+    max_continuation_trigger_batch_size: int = 512,
 ) -> DurableResearchStateV0:
-    """Drain ordered work outside the Signal Plane.
+    """Drain non-signal work outside the Signal Plane.
 
-    Observation writes are committed in bounded batches. Before every Research handoff
-    all earlier observation writes are flushed, so the snapshot can see the same causal
-    prefix that had reached the kernel when the signal was emitted.
+    Observation and continuation-trigger writes are independently batched. Before every
+    Research handoff, both classes of earlier durable work are flushed so T0 sees the
+    full observation prefix and trigger audit state preceding that first-trigger handoff.
     """
     if max_observation_batch_size <= 0:
         raise ValueError("max_observation_batch_size must be positive")
+    if max_continuation_trigger_batch_size <= 0:
+        raise ValueError("max_continuation_trigger_batch_size must be positive")
     state = state or DurableResearchStateV0()
-    pending: list[MarketObservationWriteV0] = []
+    pending_observations: list[MarketObservationWriteV0] = []
+    pending_continuations: list[MarketContinuationTriggerWriteV0] = []
 
-    def flush() -> None:
-        if not pending:
+    def flush_observations() -> None:
+        if not pending_observations:
             return
-        batch = tuple(pending)
-        pending.clear()
+        batch = tuple(pending_observations)
+        pending_observations.clear()
         try:
             result = record_market_observations_batch_v0(batch)
             state.observation_writes_attempted += result.attempted
@@ -354,14 +433,38 @@ def drain_deferred_operations_v0(
         except Exception as exc:
             state.errors.append(f"observation_batch:{type(exc).__name__}:{exc}")
 
+    def flush_continuations() -> None:
+        if not pending_continuations:
+            return
+        batch = tuple(pending_continuations)
+        pending_continuations.clear()
+        try:
+            result = record_market_continuation_triggers_batch_v0(batch)
+            state.continuation_trigger_writes_attempted += result.attempted
+            state.continuation_trigger_writes_inserted += result.inserted
+            state.continuation_trigger_replays += result.replayed
+            state.continuation_trigger_conflicts += result.conflicts
+            state.continuation_trigger_batches_committed += 1
+        except Exception as exc:
+            state.errors.append(f"continuation_trigger_batch:{type(exc).__name__}:{exc}")
+
+    def flush_all() -> None:
+        flush_observations()
+        flush_continuations()
+
     for operation in operations:
         if isinstance(operation, (MarketTradeWriteV0, MarketLifecycleWriteV0)):
-            pending.append(operation)
-            if len(pending) >= max_observation_batch_size:
-                flush()
+            pending_observations.append(operation)
+            if len(pending_observations) >= max_observation_batch_size:
+                flush_observations()
+            continue
+        if isinstance(operation, MarketContinuationTriggerWriteV0):
+            pending_continuations.append(operation)
+            if len(pending_continuations) >= max_continuation_trigger_batch_size:
+                flush_continuations()
             continue
         if isinstance(operation, DeferredResearchHandoffV0):
-            flush()
+            flush_all()
             try:
                 result = process_market_activity_discovery_handoff_v0(operation.handoff)
                 if result.provider_calls_performed != 0:
@@ -373,5 +476,5 @@ def drain_deferred_operations_v0(
                 )
             continue
         state.errors.append(f"unsupported_operation:{type(operation).__name__}")
-    flush()
+    flush_all()
     return state
