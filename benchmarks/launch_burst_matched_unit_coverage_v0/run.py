@@ -22,8 +22,6 @@ from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
 MATCHED_UNIT_COVERAGE_VERSION = "launch_burst_matched_unit_coverage_v0_processed_evidence"
-SUPPORTED_LIFECYCLE_EVENTS = frozenset({"pump_create", "pumpswap_create_pool"})
-TRADE_EVENTS = frozenset({"pump_trade", "pumpswap_buy", "pumpswap_sell"})
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -86,7 +84,10 @@ def _nonnegative_int(row: dict[str, Any], name: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def _paired_rows(carbon_path: Path, manifest_path: Path) -> tuple[list[tuple[dict, dict]], list[str]]:
+def _paired_rows(
+    carbon_path: Path,
+    manifest_path: Path,
+) -> tuple[list[tuple[dict, dict]], list[str]]:
     manifests = {
         str(row["event_key"]): row
         for row in _read_jsonl(manifest_path)
@@ -215,6 +216,8 @@ def run_matched_unit_coverage_audit(
     run = live.get("run") or {}
     if run.get("status") != "CLOSED":
         raise ValueError("matched-unit coverage requires an authoritative CLOSED live discovery run")
+    if live.get("valid_live_discovery") is not True:
+        raise ValueError("matched-unit coverage requires valid_live_discovery=True")
     if live.get("bootstrap_validated") is not True:
         raise ValueError("live discovery bootstrap was not validated")
     discovery_start = int(live.get("discovery_start_wall_ns") or 0)
@@ -251,12 +254,28 @@ def run_matched_unit_coverage_audit(
     dynamic_identity_count = 0
     create_pool_identity_count = 0
     chunk_count = 0
+    no_target_event_chunk_count = 0
 
     chunk_dirs = sorted(path for path in processed_root.iterdir() if path.is_dir())
     for chunk_dir in chunk_dirs:
-        carbon_path = _evidence_file(chunk_dir, "carbon-canonical", required=True)
+        carbon_path = _evidence_file(chunk_dir, "carbon-canonical", required=False)
+        if carbon_path is None:
+            chunk_report_path = chunk_dir / "chunk-report.json"
+            if not chunk_report_path.exists():
+                raise ValueError(
+                    f"missing carbon evidence without chunk report: {chunk_dir}"
+                )
+            chunk_report = _read_json(chunk_report_path)
+            if chunk_report.get("status") != "NO_TARGET_EVENTS":
+                raise ValueError(
+                    f"missing carbon evidence not justified by NO_TARGET_EVENTS: {chunk_dir}"
+                )
+            no_target_event_chunk_count += 1
+            chunk_count += 1
+            continue
+
         manifest_path = _evidence_file(chunk_dir, "target-manifest", required=True)
-        assert carbon_path is not None and manifest_path is not None
+        assert manifest_path is not None
         ordered, errors = _paired_rows(carbon_path, manifest_path)
         pairing_errors.extend(f"{chunk_dir.name}:{item}" for item in errors)
         paired_event_count += len(ordered)
@@ -384,7 +403,9 @@ def run_matched_unit_coverage_audit(
         per_launch.append(
             {
                 "stratum": (
-                    "pump_launch" if anchor["venue"] == "pump" else "pumpswap_liquidity_launch"
+                    "pump_launch"
+                    if anchor["venue"] == "pump"
+                    else "pumpswap_liquidity_launch"
                 ),
                 "matched_unit_event_count": len(rows),
                 "has_matched_unit_evidence": bool(rows),
@@ -421,8 +442,10 @@ def run_matched_unit_coverage_audit(
         "window_seconds": window_seconds,
         "source_integrity": {
             "run_status": str(run.get("status")),
+            "valid_live_discovery": True,
             "bootstrap_validated": True,
             "processed_chunk_count": chunk_count,
+            "no_target_event_chunk_count": no_target_event_chunk_count,
             "canonical_manifest_paired_event_count": paired_event_count,
             "pairing_error_count": 0,
             "acquisition_spanned_discovery_window": True,
@@ -477,7 +500,9 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Outcome-blind Launch Burst matched-unit coverage audit from processed evidence"
+        description=(
+            "Outcome-blind Launch Burst matched-unit coverage audit from processed evidence"
+        )
     )
     parser.add_argument("--live-report", type=Path, required=True)
     parser.add_argument("--window-seconds", type=int, default=30)
