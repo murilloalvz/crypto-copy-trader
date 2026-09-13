@@ -69,6 +69,31 @@ class SystemsGateV43Tests(unittest.TestCase):
         self.assertAlmostEqual(result.true_backlog_pct, 2.5)
         self.assertIn(("no_worker_errors", True), result.checks)
 
+    def test_v68_release_181505_systems_shape_is_11_of_11_after_missingness_normalization(self):
+        output = """
+SUMMARY
+elapsed=120.0s received={'pump': 2676, 'pumpswap': 6002} enqueued={'pump': 2676, 'pumpswap': 6002} dropped={}
+persistence_completed={'pump': 2676, 'pumpswap': 6002} radar_processed={'pump': 2676, 'pumpswap': 5773} radar_coverage_pct=97.4% worker_errors={'pumpswap_demoted_audit_deadline': 149}
+backlog_at_deadline={'pump_ingress': 0, 'pump_inflight': 0, 'pump_reorder': 0, 'pumpswap_ingress': 0, 'pumpswap_inflight': 0, 'pumpswap_total_radar': 229, 'pumpswap_demoted_audit_pending_at_deadline': 149, 'pumpswap_ready': 8, 'pumpswap_waiting': 71}
+raw_radar_hits={'pumpswap': 2176, 'pump': 731} unique_episodes=116 reference_asset_episodes=0
+bundle_wallets_total=2660 bundle_flow30_total=3519 risk_missing=116
+pump_radar_end_to_end_wait_ms p50=144.5 p95=1573.8 max=2893.7
+pumpswap_pipeline_end_to_end_ms p50=819.8 p95=3837.5 max=9002.0
+pumpswap_historical_pool_hits=108 pumpswap_run_store_hits=4 cache_hits=6374 network_hydrations=213 hydration_successes=213 rpc_failures=0 budget_skips=0
+reservation_superset_violations=0
+continuation_writer_fatal_error=False
+TAILFIX V5
+budget_skips=0
+reservation_superset_violations=0
+"""
+        result = v43.audit_systems_gate_v43(output)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.passed_count, 11)
+        self.assertAlmostEqual(result.true_backlog_pct, 100.0 * 229 / 8678)
+        self.assertEqual(result.coverage_pct, 97.4)
+        self.assertEqual(result.pump_p95_ms, 1573.8)
+        self.assertEqual(result.pumpswap_p95_ms, 3837.5)
+
     def test_demoted_audit_deadline_marker_must_match_reported_backlog(self):
         output = PASS_OUTPUT.replace(
             "worker_errors={}",
