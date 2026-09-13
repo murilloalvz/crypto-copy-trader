@@ -73,6 +73,7 @@ class LaunchBurstMatchedUnitCoverageV0Tests(unittest.TestCase):
                         "acquisition_run_key": "live-run",
                         "status": "CLOSED",
                     },
+                    "valid_live_discovery": True,
                     "bootstrap_validated": True,
                     "discovery_start_wall_ns": discovery_start_ns,
                     "discovery_close_wall_ns": discovery_close_ns,
@@ -120,6 +121,13 @@ class LaunchBurstMatchedUnitCoverageV0Tests(unittest.TestCase):
             ]
             self._write_jsonl(chunk / "carbon-canonical.jsonl", canonical)
             self._write_jsonl(chunk / "target-manifest.jsonl", manifests)
+
+            empty_chunk = processed / "chunk-0001"
+            empty_chunk.mkdir(parents=True)
+            (empty_chunk / "chunk-report.json").write_text(
+                json.dumps({"status": "NO_TARGET_EVENTS"}), encoding="utf-8"
+            )
+
             bootstrap_report = self._bootstrap(root, discovery_start_ns=start)
             live_report = self._live_report(
                 root,
@@ -138,6 +146,8 @@ class LaunchBurstMatchedUnitCoverageV0Tests(unittest.TestCase):
         self.assertEqual(result["trade_adaptation"]["decoded_trade_count"], 1)
         self.assertEqual(result["trade_adaptation"]["adapted_count"], 1)
         self.assertEqual(result["launch_sample"]["complete_anchor_count"], 1)
+        self.assertEqual(result["source_integrity"]["processed_chunk_count"], 2)
+        self.assertEqual(result["source_integrity"]["no_target_event_chunk_count"], 1)
         pump = result["strata"]["pump_launch"]
         self.assertEqual(pump["complete_launch_count"], 1)
         self.assertEqual(pump["launches_with_matched_unit_evidence"], 1)
@@ -257,6 +267,32 @@ class LaunchBurstMatchedUnitCoverageV0Tests(unittest.TestCase):
                 json.dumps(
                     {
                         "run": {"acquisition_run_key": "run", "status": "OPEN"},
+                        "valid_live_discovery": True,
+                        "bootstrap_validated": True,
+                        "discovery_start_wall_ns": 1_000,
+                        "discovery_close_wall_ns": 2_000,
+                        "acquisition": {"ended_wall_ns": 3_000},
+                        "bootstrap": {"report_path": str(bootstrap_report)},
+                        "artifacts": {"processed_chunks": str(processed)},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                run_matched_unit_coverage_audit(live_report_path=report)
+
+    def test_closed_but_invalid_live_discovery_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            processed = root / "processed"
+            processed.mkdir()
+            bootstrap_report = self._bootstrap(root, discovery_start_ns=1_000)
+            report = root / "live-report.json"
+            report.write_text(
+                json.dumps(
+                    {
+                        "run": {"acquisition_run_key": "run", "status": "CLOSED"},
+                        "valid_live_discovery": False,
                         "bootstrap_validated": True,
                         "discovery_start_wall_ns": 1_000,
                         "discovery_close_wall_ns": 2_000,
