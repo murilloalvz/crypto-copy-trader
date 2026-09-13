@@ -1,0 +1,81 @@
+name: V68 Release Readiness V1
+
+on:
+  push:
+    branches:
+      - release/v68-readiness-v1
+    paths:
+      - 'route_research_v68_release.py'
+      - 'route_research_prospective_flow60_buy_share_holdout_v68.py'
+      - 'route_research_prospective_flow60_buy_share_holdout_v68_tailfix_v9.py'
+      - 'route_research_forward_cohort_v43.py'
+      - 'route_research_forward_cohort_v44.py'
+      - 'route_research_forward_cohort_v46.py'
+      - 'unified_market_route_research_smoke_tailfix_v*.py'
+      - 'src/market_signal_kernel_v3.py'
+      - 'tests/test_market_signal_kernel_v3.py'
+      - 'tests/test_route_research_v68_release.py'
+      - 'tests/test_route_research_prospective_flow60_buy_share_v68*.py'
+      - 'tests/test_unified_market_route_research_smoke_tailfix_v*.py'
+      - '.github/workflows/v68-release-readiness-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v68-release-readiness-v1-${{ github.ref }}-${{ matrix.python-version }}
+  cancel-in-progress: true
+
+jobs:
+  offline-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile V68 release path
+        run: |
+          python -m py_compile route_research_v68_release.py
+          python -m py_compile route_research_prospective_flow60_buy_share_holdout_v68.py
+          python -m py_compile route_research_prospective_flow60_buy_share_holdout_v68_tailfix_v9.py
+          python -m py_compile route_research_forward_cohort_v43.py
+          python -m py_compile route_research_forward_cohort_v44.py
+          python -m py_compile route_research_forward_cohort_v46.py
+          python -m py_compile src/market_signal_kernel_v3.py
+
+      - name: Exact kernel parity
+        run: python -m unittest tests.test_market_signal_kernel_v3 -v
+
+      - name: Canonical V68 release contract
+        run: |
+          python -m unittest tests.test_route_research_v68_release -v
+          python -m unittest tests.test_route_research_prospective_flow60_buy_share_v68 -v
+          python -m unittest tests.test_route_research_prospective_flow60_buy_share_v68_tailfix_v9 -v
+          python -m unittest tests.test_route_research_prospective_flow60_buy_share_v68_wiring -v
+
+      - name: V68 systems wrapper contracts
+        run: |
+          python -m unittest tests.test_unified_market_route_research_smoke_tailfix_v3_accounting -v
+          python -m unittest tests.test_unified_market_route_research_smoke_tailfix_v4 -v
+          python -m unittest tests.test_unified_market_route_research_smoke_tailfix_v5 -v
+          python -m unittest tests.test_unified_market_route_research_smoke_tailfix_v9 -v
+
+      - name: Cohort and systems gate contracts
+        run: |
+          python -m unittest tests.test_route_research_forward_cohort_v43 -v
+          python -m unittest tests.test_route_research_forward_cohort_v46 -v
