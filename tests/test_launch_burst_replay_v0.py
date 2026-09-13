@@ -19,15 +19,13 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="pump-anchor",
                     source_provider="native",
-                    observation=MarketLifecycleObservation(
-                        "TOKEN", 1000, 2000, "pump_bonding_curve"
-                    ),
+                    observation=MarketLifecycleObservation("TOKEN", 1000, 2000, "pump"),
                 )
                 record_market_lifecycle(
                     acquisition_run_key="run",
                     event_key="swap-anchor",
                     source_provider="native",
-                    observation=MarketLifecycleObservation("TOKEN", 1100, 2100, "pump_swap"),
+                    observation=MarketLifecycleObservation("TOKEN", 1100, 2100, "pumpswap"),
                 )
                 # Later evidence claims an earlier chain start for the Pump stratum. It is
                 # audit-visible but must not retroactively mutate the candidate anchor.
@@ -35,24 +33,14 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="pump-late-earlier",
                     source_provider="native",
-                    observation=MarketLifecycleObservation(
-                        "TOKEN", 990, 2040, "pump_bonding_curve"
-                    ),
+                    observation=MarketLifecycleObservation("TOKEN", 990, 2040, "pump"),
                 )
                 record_market_trade(
                     acquisition_run_key="run",
                     event_key="trade-pump",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TOKEN",
-                        "buy",
-                        1005,
-                        2005,
-                        "W1",
-                        10.0,
-                        1.0,
-                        "pump_bonding_curve",
-                        "TX1",
+                        "TOKEN", "buy", 1005, 2005, "W1", 10.0, 1.0, "pump", "TX1"
                     ),
                 )
                 record_market_trade(
@@ -60,15 +48,7 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     event_key="trade-swap",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TOKEN",
-                        "buy",
-                        1105,
-                        2105,
-                        "W2",
-                        20.0,
-                        2.0,
-                        "pump_swap",
-                        "TX2",
+                        "TOKEN", "buy", 1105, 2105, "W2", 20.0, 2.0, "pumpswap", "TX2"
                     ),
                 )
                 # Extend local evidence coverage beyond both 30s decision cutoffs.
@@ -77,27 +57,24 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     event_key="coverage-tail",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TAIL",
-                        "buy",
-                        2200,
-                        2200,
-                        "WT",
-                        1.0,
-                        1.0,
-                        "pump_swap",
-                        "TXT",
+                        "TAIL", "buy", 2200, 2200, "WT", 1.0, 1.0, "pumpswap", "TXT"
                     ),
                 )
                 report = run_replay(acquisition_run_key="run", window_seconds=30)
 
         self.assertEqual(report["snapshot_count"], 2)
+        self.assertEqual(report["unsupported_venue_count"], 0)
         self.assertEqual(report["strata"], {"pump_launch": 1, "pumpswap_liquidity_launch": 1})
         pump = next(item for item in report["snapshots"] if item["stratum"] == "pump_launch")
         self.assertEqual(pump["anchor_event_key"], "pump-anchor")
         self.assertEqual(pump["chain_t0"], 1000)
+        self.assertEqual(pump["event_count"], 1)
         self.assertEqual(report["late_earlier_lifecycle_audit_count"], 1)
         self.assertTrue(
             report["late_earlier_lifecycle_audit"][0]["candidate_snapshot_not_mutated"]
+        )
+        self.assertFalse(
+            report["scientific_scope"]["same_token_cross_venue_trade_mixing_allowed"]
         )
 
     def test_right_censored_anchor_is_not_emitted_as_complete_snapshot(self):
@@ -108,31 +85,23 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="anchor",
                     source_provider="native",
-                    observation=MarketLifecycleObservation(
-                        "TOKEN", 1000, 2000, "pump_bonding_curve"
-                    ),
+                    observation=MarketLifecycleObservation("TOKEN", 1000, 2000, "pump"),
                 )
                 record_market_trade(
                     acquisition_run_key="run",
                     event_key="short-tail",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TOKEN",
-                        "buy",
-                        1005,
-                        2010,
-                        "W",
-                        10.0,
-                        1.0,
-                        "pump_bonding_curve",
-                        "TX",
+                        "TOKEN", "buy", 1005, 2010, "W", 10.0, 1.0, "pump", "TX"
                     ),
                 )
                 report = run_replay(acquisition_run_key="run", window_seconds=30)
 
         self.assertEqual(report["snapshot_count"], 0)
         self.assertEqual(report["right_censored_count"], 1)
-        self.assertTrue(report["scientific_scope"]["future_outcomes_used_for_candidate_selection"] is False)
+        self.assertTrue(
+            report["scientific_scope"]["future_outcomes_used_for_candidate_selection"] is False
+        )
 
 
 if __name__ == "__main__":
