@@ -19,6 +19,7 @@ from benchmarks.market_first_signal_plane_v0.pipeline import (
 from src import database
 from src.database import connection
 from src.market_activity_discovery_handoff_v0 import MarketActivityDiscoveryHandoffV0
+from src.market_activity_discovery_run_v0 import create_market_activity_discovery_run_v0
 from src.market_observation_batch_v0 import (
     MarketObservationBatchResultV0,
     MarketTradeWriteV0,
@@ -193,6 +194,11 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
             tracker = SignalPlaneEpisodeTrackerV0()
 
             with patch.object(database, "settings", isolated):
+                create_market_activity_discovery_run_v0(
+                    acquisition_run_key="RUN-CONT",
+                    cohort_key="RUN-CONT:cohort",
+                    started_at=99,
+                )
                 result = process_canonical_chunk_signal_plane_v0(
                     state=state,
                     acquisition_run_key="RUN-CONT",
