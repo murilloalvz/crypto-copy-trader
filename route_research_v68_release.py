@@ -11,7 +11,7 @@ import route_research_prospective_flow60_buy_share_holdout_v68_tailfix_v9 as v68
 import unified_market_latency_smoke_v30 as v30
 import unified_market_route_research_smoke_tailfix_v9 as tailfix_v9
 from src.config import settings
-from src.sqlite_write_admission import sqlite_write_admission_snapshot
+import src.sqlite_write_admission as sqlite_admission
 
 
 V68_RELEASE_SYSTEMS_PROFILE = (
@@ -77,15 +77,6 @@ def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
     original_build_parser = v43.build_parser
     release_parser = _release_v43_parser_factory(original_build_parser)()
     defaults = _parser_defaults(release_parser)
-
-    sqlite_snapshot = sqlite_write_admission_snapshot()
-    sqlite_idle = not any(
-        (
-            sqlite_snapshot.max_resolution_waiters,
-            sqlite_snapshot.max_causal_waiters,
-            sqlite_snapshot.max_audit_waiters,
-        )
-    )
 
     db_path = Path(settings.database_path)
     db_parent = db_path.parent if str(db_path.parent) else Path(".")
@@ -163,8 +154,8 @@ def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
         ),
         ReadinessCheck(
             "sqlite_admission_idle",
-            sqlite_idle,
-            "no active waiter high-water observed in current process",
+            sqlite_admission._GLOBAL_WRITE_ADMISSION.is_idle(),
+            "shared SQLite writer admission has no active or waiting work",
         ),
     ]
     return tuple(checks)
