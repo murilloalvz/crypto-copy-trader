@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from os import getenv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ import route_research_prospective_flow60_buy_share_holdout_v68_tailfix_v9 as v68
 import unified_market_latency_smoke_v30 as v30
 import unified_market_route_research_smoke_tailfix_v9 as tailfix_v9
 from src.config import settings
+from src.database import connection
 import src.sqlite_write_admission as sqlite_admission
 
 
@@ -70,6 +72,56 @@ def _economic_contract() -> tuple[object, ...]:
     )
 
 
+def _quote_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _run_key_residue_counts(run_keys: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """Find any durable evidence already attached to candidate acquisition run keys.
+
+    Historical V68's freshness guard only looked at route outcomes. A crashed acquisition can leave
+    earlier observations, episodes, provider attempts or decisions without any outcome row. Reusing
+    such a key is not a fresh prospective cohort. Inspect every existing SQLite table that exposes
+    an `acquisition_run_key` column so new durable tables are covered automatically.
+    """
+
+    normalized = tuple(str(item).strip() for item in run_keys if str(item).strip())
+    residue: dict[str, dict[str, int]] = {item: {} for item in normalized}
+    if not normalized:
+        return residue
+
+    with connection() as conn:
+        table_rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        for table_row in table_rows:
+            table = str(table_row["name"])
+            quoted = _quote_identifier(table)
+            columns = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+            if "acquisition_run_key" not in {str(row["name"]) for row in columns}:
+                continue
+            for run_key in normalized:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {quoted} WHERE acquisition_run_key=?",
+                    (run_key,),
+                ).fetchone()
+                count = int(row["n"]) if row is not None else 0
+                if count:
+                    residue[run_key][table] = count
+    return residue
+
+
+def _format_residue(residue: dict[str, dict[str, int]]) -> str:
+    parts: list[str] = []
+    for run_key in sorted(residue):
+        tables = residue[run_key]
+        if not tables:
+            continue
+        body = ",".join(f"{name}:{count}" for name, count in sorted(tables.items()))
+        parts.append(f"{run_key}[{body}]")
+    return ";".join(parts) if parts else "none"
+
+
 def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
     base = str(run_key).strip()
     run_keys = (f"{base}-A", f"{base}-B") if base else ("", "")
@@ -78,15 +130,27 @@ def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
     release_parser = _release_v43_parser_factory(original_build_parser)()
     defaults = _parser_defaults(release_parser)
 
+    # Keep the historical guard, then add a stronger all-table residue audit below. Calling the
+    # historical guard also ensures the route-research schema exists before the generic audit.
+    historical_fresh = bool(base) and v68._fresh_run_preflight(run_keys)
+    residue = _run_key_residue_counts(run_keys) if base else {}
+    strict_fresh = historical_fresh and not any(residue.values())
+
     db_path = Path(settings.database_path)
     db_parent = db_path.parent if str(db_path.parent) else Path(".")
+    explicit_rpc = bool(getenv("SOLANA_RPC_URL", "").strip())
 
     checks = [
         ReadinessCheck("run_key_nonempty", bool(base), f"base={base or '<empty>'}"),
         ReadinessCheck(
             "fresh_v68_subcohort_keys",
-            bool(base) and v68._fresh_run_preflight(run_keys),
+            historical_fresh,
             f"run_keys={run_keys}",
+        ),
+        ReadinessCheck(
+            "no_v68_run_key_residue",
+            strict_fresh,
+            f"residue={_format_residue(residue)}",
         ),
         ReadinessCheck(
             "jupiter_api_key_present",
@@ -94,9 +158,14 @@ def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
             "JUPITER_API_KEY=set" if settings.jupiter_api_key.strip() else "JUPITER_API_KEY=missing",
         ),
         ReadinessCheck(
+            "explicit_primary_rpc_configured",
+            explicit_rpc,
+            "SOLANA_RPC_URL=explicit" if explicit_rpc else "SOLANA_RPC_URL=implicit_default_not_accepted_for_v68",
+        ),
+        ReadinessCheck(
             "rpc_url_present",
             bool(settings.rpc_url.strip()),
-            "SOLANA_RPC_URL=set" if settings.rpc_url.strip() else "SOLANA_RPC_URL=missing",
+            "rpc_url=available" if settings.rpc_url.strip() else "rpc_url=missing",
         ),
         ReadinessCheck(
             "database_parent_exists",
