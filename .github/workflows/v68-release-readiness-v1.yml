@@ -65,10 +65,11 @@ jobs:
       - name: Exact kernel parity
         run: python -m unittest tests.test_market_signal_kernel_v3 -v
 
-      - name: PumpSwap writer semantics and batch64 contract
-        run: |
-          python -m unittest tests.test_pumpswap_normalized_persistence_v4 -v
-          python -m unittest tests.test_v68_writer_batch64_contract -v
+      - name: Existing PumpSwap writer semantics
+        run: python -m unittest tests.test_pumpswap_normalized_persistence_v4 -v
+
+      - name: V68 batch64 writer contract
+        run: python -m unittest tests.test_v68_writer_batch64_contract -v
 
       - name: Canonical V68 release contract
         run: |
