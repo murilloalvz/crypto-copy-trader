@@ -41,8 +41,8 @@ def _build_features_single_pass_v3(
     unique_wallets: set[str] = set()
     unique_transactions: set[str] = set()
     venues: set[str] = set()
-    buy_notional = 0.0
-    sell_notional = 0.0
+    buy_notionals: list[float] = []
+    sell_notionals: list[float] = []
     chain_clock_ahead = False
 
     for item in fast:
@@ -59,10 +59,15 @@ def _build_features_single_pass_v3(
             unique_transactions.add(str(item.transaction_key))
         if item.notional_usd is not None:
             notional_known += 1
+            # Preserve V2 arithmetic semantics exactly. In CPython 3.12+ builtin
+            # sum(float_iterable) uses an improved float summation path, while a
+            # manual += accumulator can differ by a few ulps. V68/Signal Plane
+            # parity is intentionally bit-for-bit, so retain the per-side order
+            # from V2 and delegate the actual reduction to builtin sum().
             if item.side == "buy":
-                buy_notional += float(item.notional_usd)
+                buy_notionals.append(float(item.notional_usd))
             else:
-                sell_notional += float(item.notional_usd)
+                sell_notionals.append(float(item.notional_usd))
         if item.price_usd is not None:
             price_known += 1
         if item.venue is not None:
@@ -79,6 +84,8 @@ def _build_features_single_pass_v3(
 
     signed_notional_imbalance = None
     if notionals_complete:
+        buy_notional = sum(buy_notionals)
+        sell_notional = sum(sell_notionals)
         total_notional = buy_notional + sell_notional
         if total_notional > 0:
             signed_notional_imbalance = 100.0 * (buy_notional - sell_notional) / total_notional
