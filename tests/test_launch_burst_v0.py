@@ -60,7 +60,7 @@ class LaunchBurstV0Tests(unittest.TestCase):
         self.assertEqual(snapshot.chain_t0, 1000)
         self.assertEqual(snapshot.observed_t0, 2000)
         self.assertEqual(snapshot.chain_window_end, 1030)
-        self.assertEqual(snapshot.window_return_pct, 20.0)
+        self.assertAlmostEqual(snapshot.window_return_pct, 20.0)
         self.assertEqual(snapshot.method_version, LAUNCH_BURST_VERSION)
 
     def test_trade_not_locally_available_by_decision_is_never_used(self):
