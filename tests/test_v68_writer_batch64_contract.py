@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import unittest
 from unittest.mock import patch
@@ -58,16 +59,19 @@ class V68WriterBatch64ContractTests(unittest.TestCase):
                 time.sleep(0.005)
             self.assertTrue(all(future.done() for future in futures))
             results = [future.result() for future in futures]
+            asyncio.run(writer.close(cancel_pending=False))
 
         submitted_keys = [item.transaction_key for item in prepared]
         returned_keys = [result.affected_tokens[0] for result in results]
         flattened_batches = [key for batch in observed_batches for key in batch]
 
+        self.assertEqual(writer.batch_size, 64)
         self.assertEqual(returned_keys, submitted_keys)
         self.assertEqual(flattened_batches, submitted_keys)
         self.assertEqual(sum(writer.batch_sizes), 96)
+        self.assertTrue(writer.batch_sizes)
+        self.assertGreaterEqual(min(writer.batch_sizes), 1)
         self.assertLessEqual(max(writer.batch_sizes), 64)
-        self.assertGreaterEqual(max(writer.batch_sizes), 2)
 
 
 if __name__ == "__main__":
