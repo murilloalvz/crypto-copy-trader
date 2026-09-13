@@ -9,6 +9,7 @@ PASS_OUTPUT = """
 SUMMARY
 elapsed=120.0s received={'pump': 100, 'pumpswap': 900} enqueued={'pump': 100, 'pumpswap': 900} dropped={}
 persistence_completed={'pump': 100, 'pumpswap': 900} radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}
+backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}
 raw_radar_hits={'pump': 10, 'pumpswap': 20} unique_episodes=5 reference_asset_episodes=0
 bundle_wallets_total=50 bundle_flow30_total=60 risk_missing=5
 pump_radar_end_to_end_wait_ms p50=100.0 p95=1800.0 max=2000.0
@@ -52,6 +53,60 @@ class SystemsGateV43Tests(unittest.TestCase):
         result = v43.audit_systems_gate_v43(output)
         self.assertAlmostEqual(result.true_backlog_pct, 6.0)
         self.assertFalse(result.passed)
+
+    def test_demoted_audit_deadline_marker_is_bounded_missingness_when_counts_match(self):
+        output = PASS_OUTPUT.replace(
+            "radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}",
+            "radar_processed={'pump': 100, 'pumpswap': 875} radar_coverage_pct=97.5% "
+            "worker_errors={'pumpswap_demoted_audit_deadline': 25}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.passed_count, 11)
+        self.assertAlmostEqual(result.true_backlog_pct, 2.5)
+        self.assertIn(("no_worker_errors", True), result.checks)
+
+    def test_demoted_audit_deadline_marker_must_match_reported_backlog(self):
+        output = PASS_OUTPUT.replace(
+            "worker_errors={}",
+            "worker_errors={'pumpswap_demoted_audit_deadline': 24}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", False), result.checks)
+
+    def test_real_demoted_audit_exception_remains_fail_closed(self):
+        output = PASS_OUTPUT.replace(
+            "worker_errors={}",
+            "worker_errors={'pumpswap_demoted_audit_deadline': 25, 'pumpswap_demoted_audit': 1}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", False), result.checks)
+
+    def test_deadline_missingness_above_frozen_backlog_limit_still_fails(self):
+        output = PASS_OUTPUT.replace(
+            "radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}",
+            "radar_processed={'pump': 100, 'pumpswap': 840} radar_coverage_pct=94.0% "
+            "worker_errors={'pumpswap_demoted_audit_deadline': 60}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 60}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", True), result.checks)
+        self.assertIn(("coverage_ge_95pct", False), result.checks)
+        self.assertIn(("true_backlog_le_5pct", False), result.checks)
 
 
 class ForwardCollectionV43Tests(unittest.TestCase):
