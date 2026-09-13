@@ -6,12 +6,16 @@ import json
 from pathlib import Path
 
 from src.database import connection
-from src.launch_burst_v0 import LaunchBurstConfig, build_launch_burst_snapshot
+from src.launch_burst_v0 import (
+    SUPPORTED_LAUNCH_VENUES,
+    LaunchBurstConfig,
+    build_launch_burst_snapshot,
+)
 from src.market_observation_store import ensure_market_observation_schema
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
 
-REPLAY_VERSION = "launch_burst_replay_v0_feature_only"
+REPLAY_VERSION = "launch_burst_replay_v0_1_live_venue_isolated"
 
 
 def _load_rows(acquisition_run_key: str):
@@ -103,7 +107,7 @@ def run_replay(*, acquisition_run_key: str, window_seconds: int) -> dict:
     for (token_mint, venue), row in anchors.items():
         observed_t0 = int(row["observed_at"])
         decision_as_of = observed_t0 + window_seconds
-        if venue not in {"pump_bonding_curve", "pump_swap"}:
+        if venue not in SUPPORTED_LAUNCH_VENUES:
             unsupported_venue.append(
                 {
                     "token_mint": token_mint,
@@ -183,6 +187,7 @@ def run_replay(*, acquisition_run_key: str, window_seconds: int) -> dict:
             "automatic_trade_decision": False,
             "future_outcomes_used_for_candidate_selection": False,
             "pump_and_pumpswap_strata_kept_separate": True,
+            "same_token_cross_venue_trade_mixing_allowed": False,
         },
     }
 
