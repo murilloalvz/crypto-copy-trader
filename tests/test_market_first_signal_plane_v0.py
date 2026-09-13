@@ -12,6 +12,7 @@ from benchmarks.market_first_live_discovery_v0.pipeline import LiveDiscoveryPipe
 from benchmarks.market_first_signal_plane_v0.pipeline import (
     DeferredResearchHandoffV0,
     DurableResearchStateV0,
+    SignalPlaneEpisodeTrackerV0,
     drain_deferred_operations_v0,
     process_canonical_chunk_signal_plane_v0,
 )
@@ -23,6 +24,8 @@ from src.market_observation_batch_v0 import (
     MarketTradeWriteV0,
 )
 from src.market_observation_store import load_market_trades
+from src.market_opportunity_episode_batch_v0 import MarketContinuationTriggerWriteV0
+from src.market_opportunity_episode_store import load_market_opportunity_episode_triggers
 from src.market_opportunity_radar import MarketTradeObservation
 
 
@@ -31,6 +34,50 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _trigger_fixture(root: Path, *, trade_count: int) -> tuple[Path, Path]:
+    canonical = root / "canonical-trigger.jsonl"
+    manifest = root / "manifest-trigger.jsonl"
+    canonical_rows = [
+        {
+            "type": "carbon_canonical_event",
+            "status": "decoded",
+            "event_key": "CREATE",
+            "event_type": "pump_create",
+            "mint": "TOKEN",
+            "timestamp": 100,
+        }
+    ]
+    manifest_rows = [
+        {"event_key": "CREATE", "first_received_wall_ns": 100_000_000_000}
+    ]
+    for index in range(1, trade_count + 1):
+        canonical_rows.append(
+            {
+                "type": "carbon_canonical_event",
+                "status": "decoded",
+                "event_key": f"E{index}",
+                "event_type": "pump_trade",
+                "mint": "TOKEN",
+                "side": "buy",
+                "timestamp": 100 + index,
+                "wallet": f"W{index}",
+                "signature": f"SIG{index}",
+                "quote_mint": "SOL",
+                "quote_amount_raw": 10,
+                "virtual_quote_reserves_raw": 1000,
+            }
+        )
+        manifest_rows.append(
+            {
+                "event_key": f"E{index}",
+                "first_received_wall_ns": (100 + index) * 1_000_000_000,
+            }
+        )
+    _write_jsonl(canonical, canonical_rows)
+    _write_jsonl(manifest, manifest_rows)
+    return canonical, manifest
 
 
 class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
@@ -102,46 +149,7 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
     def test_first_trigger_schedules_forward_boundary_before_observation_drain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            canonical = root / "canonical-trigger.jsonl"
-            manifest = root / "manifest-trigger.jsonl"
-            canonical_rows = [
-                {
-                    "type": "carbon_canonical_event",
-                    "status": "decoded",
-                    "event_key": "CREATE",
-                    "event_type": "pump_create",
-                    "mint": "TOKEN",
-                    "timestamp": 100,
-                }
-            ]
-            manifest_rows = [
-                {"event_key": "CREATE", "first_received_wall_ns": 100_000_000_000}
-            ]
-            for index in range(1, 7):
-                canonical_rows.append(
-                    {
-                        "type": "carbon_canonical_event",
-                        "status": "decoded",
-                        "event_key": f"E{index}",
-                        "event_type": "pump_trade",
-                        "mint": "TOKEN",
-                        "side": "buy",
-                        "timestamp": 100 + index,
-                        "wallet": f"W{index}",
-                        "signature": f"SIG{index}",
-                        "quote_mint": "SOL",
-                        "quote_amount_raw": 10,
-                        "virtual_quote_reserves_raw": 1000,
-                    }
-                )
-                manifest_rows.append(
-                    {
-                        "event_key": f"E{index}",
-                        "first_received_wall_ns": (100 + index) * 1_000_000_000,
-                    }
-                )
-            _write_jsonl(canonical, canonical_rows)
-            _write_jsonl(manifest, manifest_rows)
+            canonical, manifest = _trigger_fixture(root, trade_count=6)
 
             db_path = root / "trigger.db"
             isolated = replace(database.settings, database_path=db_path)
@@ -159,7 +167,6 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
                 self.assertEqual(result.first_trigger_count, 1)
                 self.assertEqual(state.signal_boundaries_sealed, 1)
 
-                # Observation persistence is still deferred at the moment T0 is sealed.
                 self.assertEqual(
                     load_market_trades(acquisition_run_key="RUN-TRIGGER", token_mint="TOKEN"),
                     (),
@@ -175,6 +182,49 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
             self.assertTrue(
                 any(isinstance(item, DeferredResearchHandoffV0) for item in result.deferred_operations)
             )
+
+    def test_continuation_trigger_is_deferred_but_first_trigger_remains_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical, manifest = _trigger_fixture(root, trade_count=7)
+            db_path = root / "continuation.db"
+            isolated = replace(database.settings, database_path=db_path)
+            state = LiveDiscoveryPipelineStateV0()
+            tracker = SignalPlaneEpisodeTrackerV0()
+
+            with patch.object(database, "settings", isolated):
+                result = process_canonical_chunk_signal_plane_v0(
+                    state=state,
+                    acquisition_run_key="RUN-CONT",
+                    carbon_output_path=canonical,
+                    target_manifest_path=manifest,
+                    discovery_start_wall_ns=99_000_000_000,
+                    discovery_close_wall_ns=200_000_000_000,
+                    episode_tracker=tracker,
+                )
+                self.assertEqual(result.first_trigger_count, 1)
+                self.assertGreaterEqual(result.emitted_trigger_count, 2)
+                self.assertGreaterEqual(state.grouped_trigger_count, 1)
+                continuation_ops = [
+                    item
+                    for item in result.deferred_operations
+                    if isinstance(item, MarketContinuationTriggerWriteV0)
+                ]
+                self.assertTrue(continuation_ops)
+                episode = tracker.active_by_token["TOKEN"]
+                before = load_market_opportunity_episode_triggers(episode.episode_key)
+                self.assertEqual(len(before), 1)
+                self.assertEqual(before[0].trigger_key, episode.first_trigger_key)
+
+                durable = drain_deferred_operations_v0(result.deferred_operations)
+                after = load_market_opportunity_episode_triggers(episode.episode_key)
+
+            self.assertGreater(len(after), 1)
+            self.assertEqual(
+                durable.continuation_trigger_writes_attempted,
+                len(continuation_ops),
+            )
+            self.assertEqual(durable.errors, [])
 
     def test_durable_writes_flush_before_research_handoff(self) -> None:
         order: list[str] = []
@@ -231,11 +281,14 @@ class MarketFirstSignalPlaneV0Tests(unittest.TestCase):
     def test_drain_rejects_nonpositive_batch_size(self) -> None:
         with self.assertRaises(ValueError):
             drain_deferred_operations_v0((), max_observation_batch_size=0)
+        with self.assertRaises(ValueError):
+            drain_deferred_operations_v0((), max_continuation_trigger_batch_size=0)
 
     def test_durable_state_summary_is_explicit(self) -> None:
         state = DurableResearchStateV0()
         self.assertEqual(state.summary()["errors"], [])
         self.assertEqual(state.summary()["batches_committed"], 0)
+        self.assertEqual(state.summary()["continuation_trigger_batches_committed"], 0)
 
 
 if __name__ == "__main__":
