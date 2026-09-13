@@ -163,9 +163,14 @@ class PumpSwapNormalizedPersistenceV4Tests(unittest.IsolatedAsyncioTestCase):
             )
             futures = [writer.enqueue(item) for item in prepared]
 
-            # Deliberately block the asyncio thread. The writer must still form batches
-            # and finish work because its scheduling loop is owned by another OS thread.
-            time.sleep(0.05)
+            # Deliberately keep this async test's event-loop thread blocked while the
+            # dedicated writer thread drains. Do not couple correctness to one arbitrary
+            # 50 ms scheduler slice: loaded CI runners may not schedule the OS thread
+            # within that exact interval. Poll synchronously with a bounded deadline so
+            # the asyncio loop remains blocked for the entire proof.
+            deadline = time.monotonic() + 1.0
+            while not all(future.done() for future in futures) and time.monotonic() < deadline:
+                time.sleep(0.005)
 
             self.assertTrue(all(future.done() for future in futures))
             self.assertTrue(
