@@ -2,6 +2,9 @@ import unittest
 
 from src.launch_burst_v0 import (
     LAUNCH_BURST_VERSION,
+    PUMPSWAP_LAUNCH_VENUE,
+    PUMP_LAUNCH_VENUE,
+    SUPPORTED_LAUNCH_VENUES,
     LaunchBurstConfig,
     build_launch_burst_snapshot,
 )
@@ -9,7 +12,7 @@ from src.market_opportunity_radar import MarketLifecycleObservation, MarketTrade
 
 
 class LaunchBurstV0Tests(unittest.TestCase):
-    def _life(self, *, venue="pump_bonding_curve", started=1000, observed=2000):
+    def _life(self, *, venue="pump", started=1000, observed=2000):
         return MarketLifecycleObservation(
             token_mint="TOKEN",
             market_started_at=started,
@@ -28,7 +31,7 @@ class LaunchBurstV0Tests(unittest.TestCase):
         tx="tx",
         notional=10.0,
         price=1.0,
-        venue="pump_bonding_curve",
+        venue="pump",
     ):
         return MarketTradeObservation(
             token_mint=token,
@@ -41,6 +44,11 @@ class LaunchBurstV0Tests(unittest.TestCase):
             price_usd=price,
             venue=venue,
         )
+
+    def test_live_pipeline_venue_contract_is_frozen(self):
+        self.assertEqual(PUMP_LAUNCH_VENUE, "pump")
+        self.assertEqual(PUMPSWAP_LAUNCH_VENUE, "pumpswap")
+        self.assertEqual(SUPPORTED_LAUNCH_VENUES, frozenset({"pump", "pumpswap"}))
 
     def test_snapshot_uses_independent_chain_and_observation_cutoffs(self):
         trades = [
@@ -83,14 +91,36 @@ class LaunchBurstV0Tests(unittest.TestCase):
 
     def test_pump_and_pumpswap_are_separate_strata(self):
         pump = build_launch_burst_snapshot(
-            [], lifecycle=self._life(venue="pump_bonding_curve"), decision_as_of=2030
+            [], lifecycle=self._life(venue="pump"), decision_as_of=2030
         )
         swap = build_launch_burst_snapshot(
-            [], lifecycle=self._life(venue="pump_swap"), decision_as_of=2030
+            [], lifecycle=self._life(venue="pumpswap"), decision_as_of=2030
         )
         self.assertEqual(pump.stratum, "pump_launch")
         self.assertEqual(swap.stratum, "pumpswap_liquidity_launch")
         self.assertNotEqual(pump.stratum, swap.stratum)
+
+    def test_same_token_other_venue_does_not_cross_contaminate_launch_window(self):
+        snapshot = build_launch_burst_snapshot(
+            [
+                self._trade(chain_time=1005, observed_at=2005, tx="pump", venue="pump"),
+                self._trade(
+                    chain_time=1006,
+                    observed_at=2006,
+                    side="sell",
+                    tx="graduated",
+                    venue="pumpswap",
+                    notional=500.0,
+                    price=0.25,
+                ),
+            ],
+            lifecycle=self._life(venue="pump"),
+            decision_as_of=2030,
+        )
+        self.assertEqual(snapshot.event_count, 1)
+        self.assertEqual(snapshot.buy_count, 1)
+        self.assertEqual(snapshot.sell_count, 0)
+        self.assertEqual(snapshot.known_notional_usd, 10.0)
 
     def test_boundary_is_inclusive_at_chain_window_end(self):
         snapshot = build_launch_burst_snapshot(
