@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from benchmarks.launch_burst_candidate_parity_v0.run import run_candidate_parity_v0
 from benchmarks.launch_burst_coverage_audit_v0.run import run_coverage_audit
 from benchmarks.launch_burst_matched_unit_coverage_v0.run import (
     run_matched_unit_coverage_audit,
@@ -18,7 +19,7 @@ from src.launch_burst_source_capabilities_v0 import (
 )
 
 
-READINESS_VERSION = "launch_burst_readiness_v0_outcome_blind"
+READINESS_VERSION = "launch_burst_readiness_v0_outcome_blind_candidate_parity"
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -81,6 +82,10 @@ def run_launch_burst_readiness_v0(
         acquisition_run_key=run_key,
         artifacts_root=artifacts_root,
     )
+    candidate_parity = run_candidate_parity_v0(
+        acquisition_run_key=run_key,
+        live_report_path=live_report,
+    )
     db_coverage = run_coverage_audit(
         acquisition_run_key=run_key,
         window_seconds=window_seconds,
@@ -91,12 +96,17 @@ def run_launch_burst_readiness_v0(
     )
     capabilities = build_launch_burst_source_capabilities_v0().as_dict()
 
+    candidate_parity_exact = candidate_parity.get("exact_match") is True
     complete_snapshots = int(db_coverage["sample"]["complete_snapshot_count"])
     nonempty_snapshots = int(db_coverage["sample"]["nonempty_snapshot_count"])
     matched_complete = int(matched_coverage["launch_sample"]["complete_anchor_count"])
     adapted = int(matched_coverage["trade_adaptation"]["adapted_count"])
 
     blockers: list[str] = []
+    if not candidate_parity_exact:
+        blockers.append("candidate_anchor_ledger_parity_failed")
+    if int(candidate_parity["diagnostics"]["same_second_multi_candidate_count"]) > 0:
+        blockers.append("same_second_lifecycle_candidates_require_exact_receive_order_audit")
     if complete_snapshots == 0:
         blockers.append("no_complete_launch_burst_snapshot_in_selected_closed_run")
     if nonempty_snapshots == 0:
@@ -108,12 +118,18 @@ def run_launch_burst_readiness_v0(
     blockers.extend(str(item) for item in capabilities.get("blockers", ()))
 
     feature_research_ready = bool(
-        complete_snapshots > 0 and nonempty_snapshots > 0
+        candidate_parity_exact and complete_snapshots > 0 and nonempty_snapshots > 0
     )
-    matched_unit_research_ready = bool(matched_complete > 0 and adapted > 0)
-    economic_outcome_ready = bool(capabilities.get("economic_outcome_ready"))
+    matched_unit_research_ready = bool(
+        candidate_parity_exact and matched_complete > 0 and adapted > 0
+    )
+    economic_outcome_ready = bool(
+        candidate_parity_exact and capabilities.get("economic_outcome_ready")
+    )
 
-    if not feature_research_ready:
+    if not candidate_parity_exact:
+        classification = "CANDIDATE_LEDGER_PARITY_FAILED"
+    elif not feature_research_ready:
         classification = "NEEDS_MORE_OR_BETTER_LAUNCH_SAMPLE"
     elif not matched_unit_research_ready:
         classification = "CORE_FEATURES_READY_MATCHED_UNIT_NOT_READY"
@@ -130,17 +146,20 @@ def run_launch_burst_readiness_v0(
         "source_live_report": str(live_report),
         "window_seconds": window_seconds,
         "readiness": {
+            "candidate_ledger_parity_ready": candidate_parity_exact,
             "feature_research_ready": feature_research_ready,
             "matched_unit_research_ready": matched_unit_research_ready,
             "economic_outcome_ready": economic_outcome_ready,
             "automatic_trade_ready": False,
         },
         "blockers": list(dict.fromkeys(blockers)),
+        "candidate_parity": candidate_parity,
         "db_coverage": db_coverage,
         "matched_unit_coverage": matched_coverage,
         "source_capabilities": capabilities,
         "scientific_lock": {
             "coverage_only": True,
+            "candidate_parity_required": True,
             "economic_outcomes_loaded": False,
             "future_outcomes_reported": False,
             "return_values_reported": False,
