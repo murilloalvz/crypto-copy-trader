@@ -18,6 +18,7 @@ on:
       - 'tests/test_pumpswap_normalized_persistence_v4.py'
       - 'tests/test_v68_writer_batch64_contract.py'
       - 'tests/test_route_research_v68_release.py'
+      - 'tests/test_route_research_forward_cohort_v43.py'
       - 'tests/test_route_research_prospective_flow60_buy_share_v68*.py'
       - 'tests/test_unified_market_route_research_smoke_tailfix_v*.py'
       - '.github/workflows/v68-release-readiness-v1.yml'
