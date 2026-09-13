@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import argparse
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import route_research_forward_cohort_v43 as v43
 import route_research_prospective_flow60_buy_share_holdout_v68 as v68
 import route_research_v68_release as release
 import unified_market_route_research_smoke_tailfix_v9 as tailfix_v9
+from src import database
 
 
 class V68ReleaseReadinessTests(unittest.TestCase):
@@ -41,6 +44,34 @@ class V68ReleaseReadinessTests(unittest.TestCase):
             release._economic_contract(),
             release._EXPECTED_V68_ECONOMIC_CONTRACT,
         )
+
+    def test_residue_audit_scans_every_table_with_acquisition_run_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "v68-release-residue.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                with database.connection() as conn:
+                    conn.execute(
+                        "CREATE TABLE old_observations(id INTEGER PRIMARY KEY, acquisition_run_key TEXT NOT NULL)"
+                    )
+                    conn.execute(
+                        "CREATE TABLE unrelated(id INTEGER PRIMARY KEY, value TEXT)"
+                    )
+                    conn.execute(
+                        "INSERT INTO old_observations(acquisition_run_key) VALUES (?)",
+                        ("fresh-base-A",),
+                    )
+                    conn.execute(
+                        "INSERT INTO old_observations(acquisition_run_key) VALUES (?)",
+                        ("some-other-run",),
+                    )
+
+                residue = release._run_key_residue_counts(
+                    ("fresh-base-A", "fresh-base-B")
+                )
+
+        self.assertEqual(residue["fresh-base-A"], {"old_observations": 1})
+        self.assertEqual(residue["fresh-base-B"], {})
+        self.assertIn("fresh-base-A[old_observations:1]", release._format_residue(residue))
 
     def test_release_main_installs_v9_and_batch64_then_restores(self):
         original_v68_main = v68.main
