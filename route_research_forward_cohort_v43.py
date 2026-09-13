@@ -65,6 +65,35 @@ def _dict_after(label: str, text: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _worker_error_gate_v43(output: str, worker_errors: dict) -> bool:
+    """Return True only when there are no real worker exceptions.
+
+    V9 moves proof-based continuation work into a bounded audit lane. Work still queued in
+    that lane when the frozen 120s systems deadline arrives is explicit incomplete coverage,
+    not an exception. V19 historically mirrored that count into
+    ``worker_errors['pumpswap_demoted_audit_deadline']`` while also reporting the same count
+    in ``backlog_at_deadline``. Treat that one legacy marker as deadline missingness only when
+    the counts match exactly. The existing frozen coverage>=95% and true-backlog<=5% gates
+    remain responsible for deciding whether that missingness is acceptable.
+
+    Any actual worker exception (including ``pumpswap_demoted_audit``), a mismatched legacy
+    marker, or a marker without independently reported backlog remains fail-closed.
+    """
+
+    remaining = dict(worker_errors)
+    legacy_marker = int(remaining.pop("pumpswap_demoted_audit_deadline", 0) or 0)
+    pending_values = _all_ints(
+        r"pumpswap_demoted_audit_pending_at_deadline['\"]?\s*[:=]\s*(\d+)",
+        output,
+    )
+    pending = pending_values[-1] if pending_values else None
+    marker_is_bounded_missingness = (
+        legacy_marker == 0
+        or (pending is not None and legacy_marker == int(pending))
+    )
+    return not remaining and marker_is_bounded_missingness
+
+
 def audit_systems_gate_v43(output: str) -> SystemsGateV43:
     received = _dict_after("received", output)
     processed = _dict_after("radar_processed", output)
@@ -93,7 +122,7 @@ def audit_systems_gate_v43(output: str) -> SystemsGateV43:
     replay_auditable = "continuation_writer_fatal_error=False" in output
 
     checks = (
-        ("no_worker_errors", not worker_errors),
+        ("no_worker_errors", _worker_error_gate_v43(output, worker_errors)),
         ("drops_zero", not dropped),
         ("reference_asset_episodes_zero", bool(reference_assets) and max(reference_assets) == 0),
         ("coverage_ge_95pct", coverage >= 95.0),
