@@ -7,8 +7,12 @@ on:
     paths:
       - 'src/launch_burst_v0.py'
       - 'benchmarks/launch_burst_replay_v0/**'
+      - 'benchmarks/launch_burst_coverage_audit_v0/**'
       - 'tests/test_launch_burst_v0.py'
       - 'tests/test_launch_burst_replay_v0.py'
+      - 'tests/test_launch_burst_coverage_audit_v0.py'
+      - 'docs/LAUNCH_BURST_PROTOCOL_V0.md'
+      - 'docs/LAUNCH_BURST_OUTCOME_PREREG_V0.md'
       - 'src/market_observation_store.py'
       - 'src/market_opportunity_radar.py'
       - 'tests/test_market_observation_store.py'
@@ -48,13 +52,16 @@ jobs:
         run: |
           python -m py_compile src/launch_burst_v0.py
           python -m py_compile benchmarks/launch_burst_replay_v0/run.py
+          python -m py_compile benchmarks/launch_burst_coverage_audit_v0/run.py
           python -m py_compile tests/test_launch_burst_v0.py
           python -m py_compile tests/test_launch_burst_replay_v0.py
+          python -m py_compile tests/test_launch_burst_coverage_audit_v0.py
 
       - name: Launch Burst causal contracts
         run: |
           python -m unittest tests.test_launch_burst_v0 -v
           python -m unittest tests.test_launch_burst_replay_v0 -v
+          python -m unittest tests.test_launch_burst_coverage_audit_v0 -v
 
       - name: Retained market observation contracts
         run: |
