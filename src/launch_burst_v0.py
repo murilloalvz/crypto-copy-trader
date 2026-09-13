@@ -6,8 +6,10 @@ import math
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
 
-LAUNCH_BURST_VERSION = "launch_burst_v0_causal_lifecycle_snapshot"
-SUPPORTED_LAUNCH_VENUES = frozenset({"pump_bonding_curve", "pump_swap"})
+LAUNCH_BURST_VERSION = "launch_burst_v0_1_live_venue_isolated"
+PUMP_LAUNCH_VENUE = "pump"
+PUMPSWAP_LAUNCH_VENUE = "pumpswap"
+SUPPORTED_LAUNCH_VENUES = frozenset({PUMP_LAUNCH_VENUE, PUMPSWAP_LAUNCH_VENUE})
 
 
 @dataclass(frozen=True)
@@ -97,9 +99,9 @@ def _validate_trade(trade: MarketTradeObservation) -> None:
 
 def launch_stratum_for_venue(venue: str) -> str:
     normalized = _required(venue, "venue")
-    if normalized == "pump_bonding_curve":
+    if normalized == PUMP_LAUNCH_VENUE:
         return "pump_launch"
-    if normalized == "pump_swap":
+    if normalized == PUMPSWAP_LAUNCH_VENUE:
         return "pumpswap_liquidity_launch"
     raise ValueError(f"unsupported launch venue: {normalized}")
 
@@ -117,9 +119,11 @@ def build_launch_burst_snapshot(
     ``observed_at`` and ``decision_as_of`` form the local evidence-availability clock.
     The two domains are never subtracted from one another.
 
-    A trade is eligible only when it belongs to the same token, was available locally by
-    ``decision_as_of``, and its chain timestamp is inside the fixed post-launch window.
-    The function produces research features only; it never emits a BUY/SELL decision.
+    A trade is eligible only when it belongs to the same token and venue, was available
+    locally by ``decision_as_of``, and its chain timestamp is inside the fixed post-launch
+    window. Venue isolation prevents Pump and PumpSwap observations from contaminating
+    one another around a rapid graduation. The function produces research features only;
+    it never emits a BUY/SELL decision.
     """
 
     _validate_config(config)
@@ -140,6 +144,7 @@ def build_launch_burst_snapshot(
         trade
         for trade in trades
         if trade.token_mint == token
+        and trade.venue == venue
         and trade.observed_at <= decision_as_of
         and chain_t0 <= trade.chain_time <= chain_window_end
     ]
