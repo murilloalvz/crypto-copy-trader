@@ -27,6 +27,16 @@ class LaunchBurstReadinessV0Tests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _parity(self, *, exact: bool = True, same_second: int = 0) -> dict:
+        return {
+            "exact_match": exact,
+            "diagnostics": {"same_second_multi_candidate_count": same_second},
+            "scientific_lock": {
+                "economic_outcomes_loaded": False,
+                "return_values_reported": False,
+            },
+        }
+
     def test_find_live_report_ignores_open_and_invalid_candidates(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -104,6 +114,9 @@ class LaunchBurstReadinessV0Tests(unittest.TestCase):
             "benchmarks.launch_burst_readiness_v0.run.find_live_report_for_run",
             return_value=Path("report.json"),
         ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.run_candidate_parity_v0",
+            return_value=self._parity(),
+        ), patch(
             "benchmarks.launch_burst_readiness_v0.run.run_coverage_audit",
             return_value=db_coverage,
         ), patch(
@@ -119,6 +132,7 @@ class LaunchBurstReadinessV0Tests(unittest.TestCase):
             result["classification"],
             "FEATURE_RESEARCH_READY_ECONOMIC_OUTCOME_BLOCKED",
         )
+        self.assertTrue(result["readiness"]["candidate_ledger_parity_ready"])
         self.assertTrue(result["readiness"]["feature_research_ready"])
         self.assertTrue(result["readiness"]["matched_unit_research_ready"])
         self.assertFalse(result["readiness"]["economic_outcome_ready"])
@@ -126,6 +140,51 @@ class LaunchBurstReadinessV0Tests(unittest.TestCase):
         self.assertFalse(result["scientific_lock"]["economic_outcomes_loaded"])
         self.assertFalse(result["scientific_lock"]["return_values_reported"])
         self.assertFalse(result["scientific_lock"]["candidate_thresholds_defined"])
+
+    def test_candidate_parity_failure_blocks_all_downstream_readiness(self):
+        capabilities = SimpleNamespace(
+            as_dict=lambda: {
+                "feature_only_ready": True,
+                "economic_outcome_ready": True,
+                "blockers": [],
+            }
+        )
+        with patch(
+            "benchmarks.launch_burst_readiness_v0.run.select_latest_closed_launch_run_key",
+            return_value="closed-run",
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.find_live_report_for_run",
+            return_value=Path("report.json"),
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.run_candidate_parity_v0",
+            return_value=self._parity(exact=False, same_second=1),
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.run_coverage_audit",
+            return_value={
+                "sample": {"complete_snapshot_count": 5, "nonempty_snapshot_count": 5}
+            },
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.run_matched_unit_coverage_audit",
+            return_value={
+                "launch_sample": {"complete_anchor_count": 5},
+                "trade_adaptation": {"adapted_count": 10},
+            },
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.build_launch_burst_source_capabilities_v0",
+            return_value=capabilities,
+        ):
+            result = run_launch_burst_readiness_v0()
+
+        self.assertEqual(result["classification"], "CANDIDATE_LEDGER_PARITY_FAILED")
+        self.assertFalse(result["readiness"]["candidate_ledger_parity_ready"])
+        self.assertFalse(result["readiness"]["feature_research_ready"])
+        self.assertFalse(result["readiness"]["matched_unit_research_ready"])
+        self.assertFalse(result["readiness"]["economic_outcome_ready"])
+        self.assertIn("candidate_anchor_ledger_parity_failed", result["blockers"])
+        self.assertIn(
+            "same_second_lifecycle_candidates_require_exact_receive_order_audit",
+            result["blockers"],
+        )
 
     def test_no_complete_launch_sample_blocks_feature_readiness(self):
         capabilities = SimpleNamespace(
@@ -141,6 +200,9 @@ class LaunchBurstReadinessV0Tests(unittest.TestCase):
         ), patch(
             "benchmarks.launch_burst_readiness_v0.run.find_live_report_for_run",
             return_value=Path("report.json"),
+        ), patch(
+            "benchmarks.launch_burst_readiness_v0.run.run_candidate_parity_v0",
+            return_value=self._parity(),
         ), patch(
             "benchmarks.launch_burst_readiness_v0.run.run_coverage_audit",
             return_value={
