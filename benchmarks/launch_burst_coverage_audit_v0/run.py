@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Iterable
 
 from benchmarks.launch_burst_replay_v0.run import run_replay
+from benchmarks.launch_burst_run_inventory_v0.run import (
+    select_latest_closed_launch_run_key,
+)
 
 
 COVERAGE_AUDIT_VERSION = "launch_burst_coverage_audit_v0_outcome_blind"
@@ -201,7 +204,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Outcome-blind Launch Burst feature coverage audit v0"
     )
-    parser.add_argument("--run-key", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--run-key")
+    selection.add_argument(
+        "--latest-closed",
+        action="store_true",
+        help=(
+            "Use only the newest authoritative CLOSED Market Activity Discovery run "
+            "that has persisted lifecycle evidence."
+        ),
+    )
     parser.add_argument("--window-seconds", type=int, default=30)
     parser.add_argument(
         "--output",
@@ -211,15 +223,20 @@ def main() -> int:
     if args.window_seconds <= 0:
         parser.error("--window-seconds must be positive")
 
+    run_key = (
+        select_latest_closed_launch_run_key()
+        if args.latest_closed
+        else str(args.run_key)
+    )
     report = run_coverage_audit(
-        acquisition_run_key=args.run_key,
+        acquisition_run_key=run_key,
         window_seconds=args.window_seconds,
     )
     output = Path(args.output)
     _write_json(output, report)
     print(
         "Launch Burst Coverage Audit V0 "
-        f"run={args.run_key} complete={report['sample']['complete_snapshot_count']} "
+        f"run={run_key} complete={report['sample']['complete_snapshot_count']} "
         f"nonempty={report['sample']['nonempty_snapshot_count']} "
         f"censored={report['sample']['right_censored_count']}"
     )
