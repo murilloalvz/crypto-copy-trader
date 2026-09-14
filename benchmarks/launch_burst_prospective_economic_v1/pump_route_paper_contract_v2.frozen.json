@@ -1,0 +1,70 @@
+{
+  "schema_version": "launch_burst_route_paper_contract_v2",
+  "status": "FROZEN",
+  "supersedes_contract_hash_sha256": "859a071145395789956d8df27bf348c134c1031eb43bc6e3ccf3aeec820222a5",
+  "supersession_reason": "V1 requires liquidity_usd and executable SELL evidence that the current read-only Jupiter paper path cannot honestly provide without a landed BUY position.",
+  "source_feature_report_sha256": "8419dbb2b7e3dec6f6a521d828cfee7489807d344ab926ab18c2a336d5a211f7",
+  "selection_preregistration_sha256": "9a2f666a2e03e9c2ba39fc69ae9377de2ea2a0fcb2455e31256fdb473041865a",
+  "primary_evidence": {
+    "window_seconds": 5,
+    "confirmation_window_seconds": null
+  },
+  "strata": [
+    "pump_launch",
+    "pumpswap_liquidity_launch"
+  ],
+  "active_strata": [
+    "pump_launch"
+  ],
+  "selection_rule": {
+    "mode": "all_of",
+    "predicates": [
+      {
+        "feature": "signed_flow_over_event_reserve",
+        "op": ">=",
+        "value": 0.08
+      }
+    ]
+  },
+  "entry": {
+    "latency_seconds": 2,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "require_assembled_transaction": true
+  },
+  "position": {
+    "notional_usd": 25.0
+  },
+  "route_quality": {
+    "require_provider_price_impact": true,
+    "max_provider_price_impact_pct_points": 2.0
+  },
+  "costs": {
+    "entry_fee_bps": 20,
+    "exit_fee_bps": 20,
+    "entry_adverse_slippage_bps": 100,
+    "exit_adverse_slippage_bps": 100
+  },
+  "exit": {
+    "policy": "fixed_horizon_from_entry",
+    "horizon_seconds": 60,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "evidence_mode": "route_only_exact_entry_quantity",
+    "require_assembled_transaction": false
+  },
+  "failure_policy": {
+    "entry_unavailable_return_pct": 0.0,
+    "unexitable_return_pct": -100.0
+  },
+  "scientific_guardrails": {
+    "feature_selection_frozen_before_route_outcomes": true,
+    "inactive_strata_produce_no_route_outcome": true,
+    "entry_is_candidate_assembled_transaction_not_fill": true,
+    "exit_is_route_only_not_executable_fill": true,
+    "route_paper_return_is_not_realized_pnl": true,
+    "edge_claim_requires_landed_fill_validation": true,
+    "post_hoc_mutation_invalidates_hash": true
+  },
+  "contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d"
+}
