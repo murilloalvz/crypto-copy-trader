@@ -14,7 +14,6 @@ import os
 import socket
 import ssl
 import time
-from typing import Mapping
 from urllib.parse import urlsplit
 
 
@@ -183,43 +182,12 @@ def validate_handshake_response_v0(
 def decode_server_frames_v0(buffer: bytes) -> tuple[tuple[ServerFrameV0, ...], bytes]:
     frames: list[ServerFrameV0] = []
     cursor = 0
-    size = len(buffer)
-    while size - cursor >= 2:
-        first = buffer[cursor]
-        second = buffer[cursor + 1]
-        fin = bool(first & 0x80)
-        rsv = first & 0x70
-        opcode = first & 0x0F
-        masked = bool(second & 0x80)
-        length = second & 0x7F
-        if rsv:
-            raise WebSocketProtocolError("unexpected RSV bits without negotiated extension")
-        if masked:
-            raise WebSocketProtocolError("server-to-client WebSocket frame must not be masked")
-        header_len = 2
-        if length == 126:
-            if size - cursor < 4:
-                break
-            length = int.from_bytes(buffer[cursor + 2 : cursor + 4], "big")
-            header_len = 4
-        elif length == 127:
-            if size - cursor < 10:
-                break
-            length = int.from_bytes(buffer[cursor + 2 : cursor + 10], "big")
-            if length >> 63:
-                raise WebSocketProtocolError("invalid 64-bit WebSocket payload length")
-            header_len = 10
-        end = cursor + header_len + length
-        if end > size:
+    while cursor < len(buffer):
+        frame, consumed = _decode_first_server_frame_v0(buffer[cursor:])
+        if frame is None:
             break
-        payload = buffer[cursor + header_len : end]
-        if opcode >= 0x8:
-            if not fin:
-                raise WebSocketProtocolError("fragmented control frame")
-            if length > 125:
-                raise WebSocketProtocolError("oversized control frame")
-        frames.append(ServerFrameV0(fin=fin, opcode=opcode, payload=payload))
-        cursor = end
+        frames.append(frame)
+        cursor += consumed
     return tuple(frames), buffer[cursor:]
 
 
@@ -325,27 +293,14 @@ class NitroSequencerFeedClientV0:
         if self.sock is None:
             raise RuntimeError("feed client is not connected")
         while True:
-            frames, remainder = decode_server_frames_v0(self._buffer)
-            if frames:
-                first, *rest = frames
-                rebuilt = bytearray()
-                for frame in rest:
-                    # Rest frames are uncommon because recv chunks usually end at arbitrary
-                    # boundaries. Re-encode-free buffering would complicate the parser; keep
-                    # one frame per decode by retaining the original bytes on the next read.
-                    # To avoid dropping frames, decode only after each recv below instead.
-                    raise WebSocketProtocolError("multiple frames decoded in one buffer")
-                self._buffer = remainder
-                return first
-            chunk = self.sock.recv(64 * 1024)
-            if not chunk:
-                raise EOFError("sequencer feed closed")
-            self._buffer += chunk
-            # Decode one frame boundary directly so multiple coalesced frames are retained.
             frame, consumed = _decode_first_server_frame_v0(self._buffer)
             if frame is not None:
                 self._buffer = self._buffer[consumed:]
                 return frame
+            chunk = self.sock.recv(64 * 1024)
+            if not chunk:
+                raise EOFError("sequencer feed closed")
+            self._buffer += chunk
 
     def read_text(self) -> tuple[str, int]:
         """Return one complete text message and its local receive-complete clock."""
