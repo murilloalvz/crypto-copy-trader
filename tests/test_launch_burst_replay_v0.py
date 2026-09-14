@@ -19,7 +19,9 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="pump-anchor",
                     source_provider="native",
-                    observation=MarketLifecycleObservation("TOKEN", 1000, 2000, "pump"),
+                    observation=MarketLifecycleObservation(
+                        "TOKEN", 1000, 2000, "pump_bonding_curve"
+                    ),
                 )
                 record_market_lifecycle(
                     acquisition_run_key="run",
@@ -33,14 +35,34 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="pump-late-earlier",
                     source_provider="native",
-                    observation=MarketLifecycleObservation("TOKEN", 990, 2040, "pump"),
+                    observation=MarketLifecycleObservation(
+                        "TOKEN", 990, 2040, "pump_bonding_curve"
+                    ),
                 )
+                # V68 persists Pump trades as pump_bonding_curve; older raw adapters may use pump.
+                # Both labels represent the same canonical Pump venue and must remain pre-graduation.
                 record_market_trade(
                     acquisition_run_key="run",
                     event_key="trade-pump",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TOKEN", "buy", 1005, 2005, "W1", 10.0, 1.0, "pump", "TX1"
+                        "TOKEN",
+                        "buy",
+                        1005,
+                        2005,
+                        "W1",
+                        10.0,
+                        1.0,
+                        "pump_bonding_curve",
+                        "TX1",
+                    ),
+                )
+                record_market_trade(
+                    acquisition_run_key="run",
+                    event_key="trade-pump-alias",
+                    source_provider="native",
+                    observation=MarketTradeObservation(
+                        "TOKEN", "buy", 1006, 2006, "W1B", 11.0, 1.1, "pump", "TX1B"
                     ),
                 )
                 record_market_trade(
@@ -67,8 +89,9 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
         self.assertEqual(report["strata"], {"pump_launch": 1, "pumpswap_liquidity_launch": 1})
         pump = next(item for item in report["snapshots"] if item["stratum"] == "pump_launch")
         self.assertEqual(pump["anchor_event_key"], "pump-anchor")
+        self.assertEqual(pump["venue"], "pump")
         self.assertEqual(pump["chain_t0"], 1000)
-        self.assertEqual(pump["event_count"], 1)
+        self.assertEqual(pump["event_count"], 2)
         self.assertEqual(report["late_earlier_lifecycle_audit_count"], 1)
         self.assertTrue(
             report["late_earlier_lifecycle_audit"][0]["candidate_snapshot_not_mutated"]
@@ -85,14 +108,24 @@ class LaunchBurstReplayV0Tests(unittest.TestCase):
                     acquisition_run_key="run",
                     event_key="anchor",
                     source_provider="native",
-                    observation=MarketLifecycleObservation("TOKEN", 1000, 2000, "pump"),
+                    observation=MarketLifecycleObservation(
+                        "TOKEN", 1000, 2000, "pump_bonding_curve"
+                    ),
                 )
                 record_market_trade(
                     acquisition_run_key="run",
                     event_key="short-tail",
                     source_provider="native",
                     observation=MarketTradeObservation(
-                        "TOKEN", "buy", 1005, 2010, "W", 10.0, 1.0, "pump", "TX"
+                        "TOKEN",
+                        "buy",
+                        1005,
+                        2010,
+                        "W",
+                        10.0,
+                        1.0,
+                        "pump_bonding_curve",
+                        "TX",
                     ),
                 )
                 report = run_replay(acquisition_run_key="run", window_seconds=30)
