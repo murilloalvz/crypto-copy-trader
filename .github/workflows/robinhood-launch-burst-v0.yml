@@ -10,6 +10,7 @@ on:
       - 'tests/test_robinhood_pons_launch_burst_v0.py'
       - 'tests/test_robinhood_launch_burst_integrity_v0.py'
       - 'tests/test_robinhood_fee_dynamics_v0.py'
+      - 'tests/test_robinhood_acquisition_parity_v0.py'
       - 'docs/robinhood_launch_burst_v0.md'
       - '.github/workflows/robinhood-launch-burst-v0.yml'
   workflow_dispatch:
@@ -39,11 +40,14 @@ jobs:
           python -m py_compile benchmarks/robinhood_launch_burst_v0/factory_discovery.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/audit.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/fee_dynamics.py
+          python -m py_compile benchmarks/robinhood_launch_burst_v0/acquisition_parity.py
           python -m py_compile tests/test_robinhood_pons_launch_burst_v0.py
           python -m py_compile tests/test_robinhood_launch_burst_integrity_v0.py
           python -m py_compile tests/test_robinhood_fee_dynamics_v0.py
+          python -m py_compile tests/test_robinhood_acquisition_parity_v0.py
       - name: Test
         run: |
           python -m unittest tests.test_robinhood_pons_launch_burst_v0 -v
           python -m unittest tests.test_robinhood_launch_burst_integrity_v0 -v
           python -m unittest tests.test_robinhood_fee_dynamics_v0 -v
+          python -m unittest tests.test_robinhood_acquisition_parity_v0 -v
