@@ -1,0 +1,46 @@
+{
+  "schema_version": "launch_burst_economic_contract_v1",
+  "status": "DRAFT_UNARMED",
+  "source_feature_report_sha256": null,
+  "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": 10},
+  "strata": ["pump_launch", "pumpswap_liquidity_launch"],
+  "selection_rule": {"mode": "all_of", "predicates": []},
+  "entry": {
+    "latency_seconds": null,
+    "max_quote_age_seconds": null,
+    "max_quote_wait_seconds": null,
+    "require_executable": true
+  },
+  "costs": {
+    "entry_fee_bps": null,
+    "exit_fee_bps": null,
+    "entry_adverse_slippage_bps": null,
+    "exit_adverse_slippage_bps": null
+  },
+  "position": {
+    "notional_usd": null,
+    "max_fraction_of_reported_liquidity": null,
+    "require_liquidity_observation": true,
+    "max_provider_price_impact_pct_points": null
+  },
+  "exit": {
+    "policy": "fixed_horizon_from_entry",
+    "horizon_seconds": null,
+    "max_quote_age_seconds": null,
+    "max_quote_wait_seconds": null,
+    "require_executable": true
+  },
+  "failure_policy": {
+    "entry_unavailable_return_pct": null,
+    "unexitable_return_pct": null
+  },
+  "contract_hash_sha256": null,
+  "scientific_guardrails": {
+    "outcomes_must_remain_closed_while_draft": true,
+    "right_censoring_is_not_zero": true,
+    "feature_snapshot_is_immutable_after_decision": true,
+    "pump_and_pumpswap_headlines_are_separate": true,
+    "mark_to_market_is_not_realized_return": true,
+    "post_hoc_mutation_invalidates_hash": true
+  }
+}
