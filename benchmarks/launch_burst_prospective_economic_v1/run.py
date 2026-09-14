@@ -12,8 +12,10 @@ from src.launch_burst_economic_v1 import (
     RUNNER_VERSION,
     decision_to_dict,
     evaluate_episode,
+    feature_snapshot_hash_sha256,
     validate_contract,
 )
+from src.launch_burst_v0 import canonical_launch_venue, launch_stratum_for_venue
 
 PASS_CLASSIFICATION = "PASS_LAUNCH_BURST_PROSPECTIVE_ECONOMIC_V1"
 BLOCKED_CLASSIFICATION = "BLOCKED_LAUNCH_BURST_ECONOMIC_CONTRACT_NOT_FROZEN"
@@ -42,6 +44,49 @@ def _quote(raw: dict[str, Any]) -> CausalQuoteObservation:
     return CausalQuoteObservation(**raw)
 
 
+def _validated_active_strata(contract: dict[str, Any]) -> tuple[str, ...]:
+    all_strata = tuple(str(value) for value in (contract.get("strata") or ()))
+    raw = contract.get("active_strata")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("frozen contract requires non-empty active_strata")
+    active = tuple(str(value) for value in raw)
+    if len(set(active)) != len(active):
+        raise ValueError("active_strata cannot contain duplicates")
+    unknown = [value for value in active if value not in all_strata]
+    if unknown:
+        raise ValueError("active_strata must be a subset of contract.strata")
+    return active
+
+
+def _hold_row(
+    *,
+    episode_key: str,
+    token_mint: str,
+    stratum: str,
+    feature_snapshot: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    decision_as_of = feature_snapshot.get("decision_as_of")
+    if isinstance(decision_as_of, bool) or not isinstance(decision_as_of, int) or decision_as_of < 0:
+        raise ValueError("held feature_snapshot.decision_as_of must be a non-negative integer")
+    return {
+        "token_mint": token_mint,
+        "stratum": stratum,
+        "decision_as_of": decision_as_of,
+        "feature_snapshot_hash": feature_snapshot_hash_sha256(feature_snapshot),
+        "admitted": False,
+        "decision_reason": "STRATUM_HOLD",
+        "entry_quote": None,
+        "exit_quote": None,
+        "status": "STRATUM_HOLD",
+        "gross_return_pct": None,
+        "net_return_pct": None,
+        "pnl_usd": None,
+        "contract_hash_sha256": contract["contract_hash_sha256"],
+        "episode_key": episode_key,
+    }
+
+
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     realized = [row for row in rows if row.get("net_return_pct") is not None]
     values = [float(row["net_return_pct"]) for row in realized]
@@ -55,6 +100,7 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     profit_factor = (sum(profits) / sum(losses)) if losses else (float("inf") if profits else None)
     return {
         "n": len(rows),
+        "held": sum(1 for row in rows if row["status"] == "STRATUM_HOLD"),
         "admitted": sum(1 for row in rows if row["admitted"]),
         "closed": sum(1 for row in rows if row["status"] == "CLOSED"),
         "economic_results": len(realized),
@@ -80,6 +126,7 @@ def run_economic_v1(*, contract_path: Path, input_path: Path, output_path: Path)
             "reason": "contract is DRAFT_UNARMED; freeze selection and economics before opening outcomes",
         }
     validate_contract(contract, require_frozen=True)
+    active_strata = _validated_active_strata(contract)
 
     source = _read_json(input_path)
     if source.get("type") != "launch_burst_prospective_economic_input_v1":
@@ -101,17 +148,37 @@ def run_economic_v1(*, contract_path: Path, input_path: Path, output_path: Path)
         quotes_raw = episode.get("quotes") or []
         if not isinstance(quotes_raw, list):
             raise ValueError(f"episode {index} quotes must be a list")
-        decision = evaluate_episode(
-            token_mint=str(episode.get("token_mint") or ""),
-            venue=str(episode.get("venue") or ""),
-            feature_snapshot=feature_snapshot,
-            quotes=tuple(_quote(item) for item in quotes_raw),
-            contract=contract,
-        )
-        row = decision_to_dict(decision)
-        row["episode_key"] = str(episode.get("episode_key") or f"episode-{index}")
+
+        token_mint = str(episode.get("token_mint") or "")
+        venue = str(episode.get("venue") or "")
+        episode_key = str(episode.get("episode_key") or f"episode-{index}")
+        stratum = launch_stratum_for_venue(canonical_launch_venue(venue))
+        if stratum not in contract["strata"]:
+            raise ValueError(f"episode {index} launch stratum is not declared by contract")
+        if feature_snapshot.get("stratum") != stratum:
+            raise ValueError(f"episode {index} feature snapshot stratum does not match episode venue")
+
+        if stratum not in active_strata:
+            row = _hold_row(
+                episode_key=episode_key,
+                token_mint=token_mint,
+                stratum=stratum,
+                feature_snapshot=feature_snapshot,
+                contract=contract,
+            )
+        else:
+            decision = evaluate_episode(
+                token_mint=token_mint,
+                venue=venue,
+                feature_snapshot=feature_snapshot,
+                quotes=tuple(_quote(item) for item in quotes_raw),
+                contract=contract,
+            )
+            row = decision_to_dict(decision)
+            row["episode_key"] = episode_key
+
         rows.append(row)
-        strata[decision.stratum].append(row)
+        strata[stratum].append(row)
 
     result = {
         "type": "launch_burst_prospective_economic_result",
@@ -119,13 +186,14 @@ def run_economic_v1(*, contract_path: Path, input_path: Path, output_path: Path)
         "classification": PASS_CLASSIFICATION,
         "economic_outcomes_opened": True,
         "contract_hash_sha256": contract["contract_hash_sha256"],
+        "active_strata": list(active_strata),
         "episode_count": len(rows),
         "status_counts": dict(Counter(row["status"] for row in rows)),
         "strata": {name: _metrics(strata.get(name, [])) for name in contract["strata"]},
         "decisions": rows,
         "interpretation": (
-            "PASS means frozen causal accounting completed. It does not by itself establish edge; "
-            "Pump and PumpSwap metrics remain separate and require independent prospective evidence."
+            "PASS means frozen causal accounting completed for active_strata only. It does not by itself "
+            "establish edge; held strata produce no economic outcome and Pump/PumpSwap remain independent."
         ),
     }
     _write_json(output_path, result)
