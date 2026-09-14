@@ -3,10 +3,12 @@ import unittest
 from src.launch_burst_v0 import (
     LAUNCH_BURST_VERSION,
     PUMPSWAP_LAUNCH_VENUE,
+    PUMP_BONDING_CURVE_VENUE,
     PUMP_LAUNCH_VENUE,
     SUPPORTED_LAUNCH_VENUES,
     LaunchBurstConfig,
     build_launch_burst_snapshot,
+    canonical_launch_venue,
 )
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
@@ -45,10 +47,17 @@ class LaunchBurstV0Tests(unittest.TestCase):
             venue=venue,
         )
 
-    def test_live_pipeline_venue_contract_is_frozen(self):
+    def test_live_pipeline_venue_contract_accepts_both_pump_aliases(self):
         self.assertEqual(PUMP_LAUNCH_VENUE, "pump")
+        self.assertEqual(PUMP_BONDING_CURVE_VENUE, "pump_bonding_curve")
         self.assertEqual(PUMPSWAP_LAUNCH_VENUE, "pumpswap")
-        self.assertEqual(SUPPORTED_LAUNCH_VENUES, frozenset({"pump", "pumpswap"}))
+        self.assertEqual(
+            SUPPORTED_LAUNCH_VENUES,
+            frozenset({"pump", "pump_bonding_curve", "pumpswap"}),
+        )
+        self.assertEqual(canonical_launch_venue("pump"), "pump")
+        self.assertEqual(canonical_launch_venue("pump_bonding_curve"), "pump")
+        self.assertEqual(canonical_launch_venue("pumpswap"), "pumpswap")
 
     def test_snapshot_uses_independent_chain_and_observation_cutoffs(self):
         trades = [
@@ -89,9 +98,32 @@ class LaunchBurstV0Tests(unittest.TestCase):
         self.assertEqual(snapshot.sell_count, 0)
         self.assertEqual(snapshot.known_notional_usd, 10.0)
 
+    def test_pump_aliases_map_to_same_stratum_and_match_each_other(self):
+        snapshot = build_launch_burst_snapshot(
+            [
+                self._trade(
+                    chain_time=1005,
+                    observed_at=2005,
+                    tx="legacy-pump-label",
+                    venue="pump",
+                ),
+                self._trade(
+                    chain_time=1006,
+                    observed_at=2006,
+                    tx="v68-pump-label",
+                    venue="pump_bonding_curve",
+                ),
+            ],
+            lifecycle=self._life(venue="pump_bonding_curve"),
+            decision_as_of=2030,
+        )
+        self.assertEqual(snapshot.venue, "pump")
+        self.assertEqual(snapshot.stratum, "pump_launch")
+        self.assertEqual(snapshot.event_count, 2)
+
     def test_pump_and_pumpswap_are_separate_strata(self):
         pump = build_launch_burst_snapshot(
-            [], lifecycle=self._life(venue="pump"), decision_as_of=2030
+            [], lifecycle=self._life(venue="pump_bonding_curve"), decision_as_of=2030
         )
         swap = build_launch_burst_snapshot(
             [], lifecycle=self._life(venue="pumpswap"), decision_as_of=2030
@@ -103,7 +135,12 @@ class LaunchBurstV0Tests(unittest.TestCase):
     def test_same_token_other_venue_does_not_cross_contaminate_launch_window(self):
         snapshot = build_launch_burst_snapshot(
             [
-                self._trade(chain_time=1005, observed_at=2005, tx="pump", venue="pump"),
+                self._trade(
+                    chain_time=1005,
+                    observed_at=2005,
+                    tx="pump",
+                    venue="pump_bonding_curve",
+                ),
                 self._trade(
                     chain_time=1006,
                     observed_at=2006,
@@ -114,7 +151,7 @@ class LaunchBurstV0Tests(unittest.TestCase):
                     price=0.25,
                 ),
             ],
-            lifecycle=self._life(venue="pump"),
+            lifecycle=self._life(venue="pump_bonding_curve"),
             decision_as_of=2030,
         )
         self.assertEqual(snapshot.event_count, 1)
@@ -155,6 +192,25 @@ class LaunchBurstV0Tests(unittest.TestCase):
         self.assertIn("partial_transaction_identity_coverage", snapshot.data_quality_flags)
         self.assertIn("partial_notional_coverage", snapshot.data_quality_flags)
         self.assertIn("partial_price_coverage", snapshot.data_quality_flags)
+
+    def test_unknown_trade_venue_is_dropped_but_quality_flagged(self):
+        snapshot = build_launch_burst_snapshot(
+            [
+                self._trade(
+                    chain_time=1005,
+                    observed_at=2005,
+                    venue="unknown",
+                    tx="unknown",
+                )
+            ],
+            lifecycle=self._life(venue="pump_bonding_curve"),
+            decision_as_of=2030,
+        )
+        self.assertEqual(snapshot.event_count, 0)
+        self.assertIn(
+            "unsupported_or_missing_trade_venue_in_launch_window",
+            snapshot.data_quality_flags,
+        )
 
     def test_unsupported_lifecycle_venue_fails_closed(self):
         with self.assertRaises(ValueError):
