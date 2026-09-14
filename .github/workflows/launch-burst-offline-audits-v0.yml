@@ -5,11 +5,15 @@ on:
     branches:
       - spike/launch-burst-v0
     paths:
+      - 'src/launch_burst_v0.py'
+      - 'benchmarks/launch_burst_replay_v0/**'
       - 'benchmarks/launch_burst_run_inventory_v0/**'
       - 'benchmarks/launch_burst_coverage_audit_v0/**'
       - 'benchmarks/launch_burst_matched_unit_coverage_v0/**'
       - 'benchmarks/launch_burst_readiness_v0/**'
       - 'benchmarks/launch_burst_shadow_v0/**'
+      - 'tests/test_launch_burst_v0.py'
+      - 'tests/test_launch_burst_replay_v0.py'
       - 'tests/test_launch_burst_run_inventory_v0.py'
       - 'tests/test_launch_burst_coverage_audit_v0.py'
       - 'tests/test_launch_burst_matched_unit_coverage_v0.py'
@@ -37,11 +41,15 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Compile
         run: |
+          python -m py_compile src/launch_burst_v0.py
+          python -m py_compile benchmarks/launch_burst_replay_v0/run.py
           python -m py_compile benchmarks/launch_burst_run_inventory_v0/run.py
           python -m py_compile benchmarks/launch_burst_coverage_audit_v0/run.py
           python -m py_compile benchmarks/launch_burst_matched_unit_coverage_v0/run.py
           python -m py_compile benchmarks/launch_burst_readiness_v0/run.py
           python -m py_compile benchmarks/launch_burst_shadow_v0/run.py
+          python -m py_compile tests/test_launch_burst_v0.py
+          python -m py_compile tests/test_launch_burst_replay_v0.py
           python -m py_compile tests/test_launch_burst_run_inventory_v0.py
           python -m py_compile tests/test_launch_burst_coverage_audit_v0.py
           python -m py_compile tests/test_launch_burst_matched_unit_coverage_v0.py
@@ -49,6 +57,8 @@ jobs:
           python -m py_compile tests/test_launch_burst_shadow_v0.py
       - name: Run offline audit contracts
         run: |
+          python -m unittest tests.test_launch_burst_v0 -v
+          python -m unittest tests.test_launch_burst_replay_v0 -v
           python -m unittest tests.test_launch_burst_run_inventory_v0 -v
           python -m unittest tests.test_launch_burst_coverage_audit_v0 -v
           python -m unittest tests.test_launch_burst_matched_unit_coverage_v0 -v
