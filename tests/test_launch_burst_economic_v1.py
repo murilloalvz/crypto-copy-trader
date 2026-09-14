@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -16,14 +17,19 @@ from src.launch_burst_economic_v1 import (
 )
 
 
+PREREG_PATH = Path("benchmarks/launch_burst_prospective_economic_v1/pump_selection_preregistration_v1.json")
+
+
 def draft_contract():
     # Synthetic test values only; these are not the production Launch Burst hypothesis.
     return {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "status": "DRAFT_UNARMED",
         "source_feature_report_sha256": "a" * 64,
-        "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": 10},
+        "selection_preregistration_sha256": "b" * 64,
+        "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": None},
         "strata": ["pump_launch", "pumpswap_liquidity_launch"],
+        "active_strata": ["pump_launch"],
         "selection_rule": {"mode": "all_of", "predicates": [{"feature": "event_count", "op": ">=", "value": 5}]},
         "entry": {"latency_seconds": 1, "max_quote_age_seconds": 10, "max_quote_wait_seconds": 10, "require_executable": True},
         "costs": {"entry_fee_bps": 25, "exit_fee_bps": 25, "entry_adverse_slippage_bps": 50, "exit_adverse_slippage_bps": 50},
@@ -132,6 +138,53 @@ class LaunchBurstEconomicV1Tests(unittest.TestCase):
             result = run_economic_v1(contract_path=contract_path, input_path=root / "must-not-be-read.json", output_path=root / "result.json")
         self.assertEqual(result["classification"], BLOCKED_CLASSIFICATION)
         self.assertFalse(result["economic_outcomes_opened"])
+
+    def test_runner_holds_inactive_pumpswap_without_economic_result(self):
+        contract = freeze_contract(draft_contract())
+        source = {
+            "type": "launch_burst_prospective_economic_input_v1",
+            "feature_snapshot_frozen_before_outcomes": True,
+            "episodes": [
+                {
+                    "episode_key": "pumpswap-held",
+                    "token_mint": "TOKEN2",
+                    "venue": "pumpswap",
+                    "feature_snapshot": snapshot(stratum="pumpswap_liquidity_launch"),
+                    "quotes": [],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contract_path = root / "contract.json"
+            input_path = root / "input.json"
+            output_path = root / "output.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            input_path.write_text(json.dumps(source), encoding="utf-8")
+            result = run_economic_v1(contract_path=contract_path, input_path=input_path, output_path=output_path)
+        self.assertEqual(result["active_strata"], ["pump_launch"])
+        self.assertEqual(result["status_counts"], {"STRATUM_HOLD": 1})
+        self.assertEqual(result["strata"]["pumpswap_liquidity_launch"]["held"], 1)
+        self.assertEqual(result["strata"]["pumpswap_liquidity_launch"]["economic_results"], 0)
+        self.assertIsNone(result["decisions"][0]["net_return_pct"])
+
+    def test_pump_selection_preregistration_is_frozen_and_outcome_blind(self):
+        prereg = json.loads(PREREG_PATH.read_text(encoding="utf-8"))
+        expected_hash = prereg.pop("preregistration_sha256")
+        canonical = json.dumps(prereg, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        actual_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        self.assertEqual(expected_hash, actual_hash)
+        self.assertEqual(expected_hash, "9a2f666a2e03e9c2ba39fc69ae9377de2ea2a0fcb2455e31256fdb473041865a")
+        self.assertFalse(prereg["outcomes_opened"])
+        self.assertEqual(prereg["economic_parameters_status"], "UNARMED")
+        pump = prereg["strata"]["pump_launch"]
+        self.assertEqual(pump["decision"], "ACTIVE_PROSPECTIVE_HYPOTHESIS")
+        self.assertEqual(pump["primary_evidence"], {"window_seconds": 5, "confirmation_window_seconds": None})
+        self.assertEqual(
+            pump["selection_rule"]["predicates"],
+            [{"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08}],
+        )
+        self.assertEqual(prereg["strata"]["pumpswap_liquidity_launch"]["decision"], "HOLD_INSUFFICIENT_FEATURE_SAMPLE")
 
 
 if __name__ == "__main__":
