@@ -25,6 +25,8 @@ class RotatingTraceHandleV0:
 
     Each finalized chunk has exactly one ordinary Helius shadow header/footer, so the
     frozen reducer can consume chunks independently. Rotation never edits a notification.
+    Optional explicit timed rotation is exposed for causal prospective consumers; existing
+    size-only callers retain the same behavior.
     """
 
     def __init__(
@@ -52,11 +54,24 @@ class RotatingTraceHandleV0:
         self._bytes = 0
         self._payload_rows = 0
         self._closed = False
+        self._opened_monotonic = 0.0
+        self._finalized_wall_ns: dict[str, int] = {}
         self._open_chunk()
 
     @property
     def chunk_count(self) -> int:
         return self._index
+
+    @property
+    def payload_rows(self) -> int:
+        return self._payload_rows
+
+    @property
+    def opened_monotonic(self) -> float:
+        return self._opened_monotonic
+
+    def finalized_wall_ns(self, path: Path) -> int | None:
+        return self._finalized_wall_ns.get(str(Path(path).resolve()))
 
     def _raw_line(self, row: dict[str, Any]) -> str:
         return json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
@@ -75,6 +90,7 @@ class RotatingTraceHandleV0:
         )
         self._bytes = 0
         self._payload_rows = 0
+        self._opened_monotonic = time.monotonic()
         header = trace_header(
             duration_seconds=self.duration_seconds,
             max_log_notifications=0,
@@ -90,7 +106,7 @@ class RotatingTraceHandleV0:
         self._direct_write(self._raw_line(header))
         self._handle.flush()
 
-    def _footer(self, *, stop_reason: str) -> dict[str, Any]:
+    def _footer(self, *, stop_reason: str, finalized_wall_ns: int) -> dict[str, Any]:
         return {
             "type": "trace_footer",
             "version": TRACE_VERSION,
@@ -103,21 +119,35 @@ class RotatingTraceHandleV0:
             "trace_chunk_index": self._index,
             "live_discovery_version": LIVE_DISCOVERY_VERSION,
             "payload_rows": self._payload_rows,
+            "finalized_wall_ns": int(finalized_wall_ns),
             "counters_snapshot": asdict(self.counters),
         }
 
-    def _finalize_chunk(self, *, stop_reason: str, open_next: bool) -> None:
+    def _finalize_chunk(self, *, stop_reason: str, open_next: bool) -> Path | None:
         if self._handle is None or self._path is None:
-            return
-        self._direct_write(self._raw_line(self._footer(stop_reason=stop_reason)))
+            return None
+        finalized_wall_ns = time.time_ns()
+        self._direct_write(
+            self._raw_line(
+                self._footer(stop_reason=stop_reason, finalized_wall_ns=finalized_wall_ns)
+            )
+        )
         self._handle.flush()
         self._handle.close()
         finalized = self._path
+        self._finalized_wall_ns[str(finalized.resolve())] = finalized_wall_ns
         self._handle = None
         self._path = None
         self.finalized_queue.put_nowait(finalized)
         if open_next:
             self._open_chunk()
+        return finalized
+
+    def rotate_if_nonempty(self, *, stop_reason: str = "timed_rotation") -> Path | None:
+        """Finalize the current chunk only when it has payload rows beyond the header."""
+        if self._closed or self._payload_rows <= 0:
+            return None
+        return self._finalize_chunk(stop_reason=stop_reason, open_next=True)
 
     def write(self, text: str) -> int:
         if self._closed:
