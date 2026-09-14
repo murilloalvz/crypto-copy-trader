@@ -2,8 +2,10 @@
   "schema_version": "launch_burst_economic_contract_v1",
   "status": "DRAFT_UNARMED",
   "source_feature_report_sha256": null,
-  "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": 10},
+  "selection_preregistration_sha256": null,
+  "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": null},
   "strata": ["pump_launch", "pumpswap_liquidity_launch"],
+  "active_strata": [],
   "selection_rule": {"mode": "all_of", "predicates": []},
   "entry": {
     "latency_seconds": null,
@@ -39,6 +41,7 @@
     "outcomes_must_remain_closed_while_draft": true,
     "right_censoring_is_not_zero": true,
     "feature_snapshot_is_immutable_after_decision": true,
+    "inactive_strata_produce_no_economic_outcome": true,
     "pump_and_pumpswap_headlines_are_separate": true,
     "mark_to_market_is_not_realized_return": true,
     "post_hoc_mutation_invalidates_hash": true
