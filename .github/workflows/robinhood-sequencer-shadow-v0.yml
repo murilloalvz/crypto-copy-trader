@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/robinhood-sequencer-shadow-v0
+      - research/robinhood-launch-burst-v0
     paths:
       - 'src/robinhood_nitro_feed_v0.py'
       - 'benchmarks/robinhood_sequencer_shadow_v0/**'
