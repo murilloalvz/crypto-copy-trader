@@ -57,7 +57,7 @@ class PumpBondingCurveBuyQuoteV0Tests(unittest.TestCase):
         self.assertEqual(quote.computed_total_quote_raw, 283_089)
         self.assertTrue(quote.executable_amount_claimed)
 
-    def test_reverse_quote_forward_roundtrip_yields_at_least_desired_tokens(self):
+    def test_reverse_quote_exposes_split_fee_rounding_gap_and_safe_total_roundtrips(self):
         desired = 123_456_789_000
         reverse = quote_buy_desired_tokens_v0(
             state=self.state,
@@ -65,13 +65,29 @@ class PumpBondingCurveBuyQuoteV0Tests(unittest.TestCase):
             desired_tokens_raw=desired,
         )
         self.assertEqual(reverse.status, STATUS_OK)
-        forward = quote_buy_exact_quote_in_v0(
+
+        # Pump's documented reverse formula applies total_fee_bps in one ceil. The
+        # forward path separately ceils protocol and creator fees, so their sum can be
+        # one raw quote unit larger. Preserve both numbers instead of hiding the gap.
+        self.assertEqual(
+            reverse.computed_total_quote_raw - reverse.documented_spendable_quote_raw,
+            1,
+        )
+
+        documented_forward = quote_buy_exact_quote_in_v0(
             state=self.state,
             fee_bps=self.fees,
             spendable_quote_raw=reverse.documented_spendable_quote_raw,
         )
-        self.assertEqual(forward.status, STATUS_OK)
-        self.assertGreaterEqual(forward.curve_tokens_out_raw, desired)
+        self.assertLess(documented_forward.curve_tokens_out_raw, desired)
+
+        fee_exact_forward = quote_buy_exact_quote_in_v0(
+            state=self.state,
+            fee_bps=self.fees,
+            spendable_quote_raw=reverse.computed_total_quote_raw,
+        )
+        self.assertEqual(fee_exact_forward.status, STATUS_OK)
+        self.assertGreaterEqual(fee_exact_forward.curve_tokens_out_raw, desired)
 
     def test_curve_complete_refuses_buy_quote(self):
         complete = PumpBondingCurveStateV0(
