@@ -1,0 +1,34 @@
+name: Pump Direct Buy Quote V0
+
+on:
+  push:
+    branches:
+      - feat/pump-direct-quote-v0
+    paths:
+      - 'src/pump_bonding_curve_buy_quote_v0.py'
+      - 'tests/test_pump_bonding_curve_buy_quote_v0.py'
+      - 'docs/pump_direct_buy_quote_v0.md'
+      - '.github/workflows/pump-direct-buy-quote-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quote-math:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile
+        run: |
+          python -m py_compile src/pump_bonding_curve_buy_quote_v0.py
+          python -m py_compile tests/test_pump_bonding_curve_buy_quote_v0.py
+      - name: Test
+        run: python -m unittest tests.test_pump_bonding_curve_buy_quote_v0 -v
