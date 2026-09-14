@@ -143,12 +143,17 @@ def read_curve_quote_state_v0(
     curve: str,
     recipient: str,
     capability_report: Mapping[str, Any],
+    block_number: int | None = None,
 ) -> tuple[PonsCurveQuoteStateV0, dict[str, Any]]:
     """Read one internally consistent Pons quote state at a pinned block.
 
     ``capability_report`` must come from ``probe_protocol_capabilities_v0``.
     A snipe-enabled generation requires a recipient-specific live snipe read;
     a proven no-snipe generation never silently infers a nonzero snipe rate.
+
+    ``block_number`` allows paired infrastructure experiments to force multiple
+    readers onto exactly the same chain state. When omitted, the latest block is
+    sampled once at the beginning of the read.
     """
     curve = _address(curve, "curve")
     recipient = _address(recipient, "recipient")
@@ -162,11 +167,13 @@ def read_curve_quote_state_v0(
     if not factory:
         raise ValueError("capability_report has no factory provenance")
 
-    block_number = int(client.block_number())
-    if block_number < 0:
+    pinned_block_number = int(client.block_number()) if block_number is None else int(block_number)
+    if pinned_block_number < 0:
         raise ValueError("negative block number")
-    block_tag = hex(block_number)
+    block_tag = hex(pinned_block_number)
     before = _block_identity(client, block_tag)
+    if before["number"] != pinned_block_number:
+        raise RuntimeError("provider returned a different block number than requested")
 
     code = client.call("eth_getCode", [curve, block_tag])
     if not isinstance(code, str) or code in {"0x", "0x0", ""}:
@@ -204,7 +211,7 @@ def read_curve_quote_state_v0(
         f"factory={factory}",
         f"curve={curve}",
         f"recipient={recipient}",
-        f"block_number={block_number}",
+        f"block_number={pinned_block_number}",
         f"block_hash={before['hash']}",
         f"capability_classification={classification}",
         f"transport_mode={transport_mode}",
@@ -229,6 +236,7 @@ def read_curve_quote_state_v0(
         "recipient": recipient,
         "factory": factory,
         "block": before,
+        "pinned_block_requested": pinned_block_number,
         "observed_at_ns": observed_at_ns,
         "capability_classification": classification,
         "protocol_generation_key": generation_key,
