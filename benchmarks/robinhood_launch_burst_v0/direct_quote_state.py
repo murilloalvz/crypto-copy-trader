@@ -3,6 +3,11 @@
 All state is pinned to one explicit block tag. The adapter re-reads the block
 header after the eth_calls and rejects a hash change, so a reorg cannot silently
 mix reserve/tax/graduation state from different canonical histories.
+
+When the client exposes ``batch_call`` the independent curve views are requested
+in one JSON-RPC round trip. Response ordering is a transport concern only; the
+batch client must reconstruct results by JSON-RPC id. Clients without batching
+retain the exact sequential semantics.
 """
 from __future__ import annotations
 
@@ -38,55 +43,20 @@ def _selector(client, signature: str) -> str:
     return value[:10]
 
 
-def _call(client, *, curve: str, data: str, block_tag: str) -> str:
-    value = client.call("eth_call", [{"to": curve, "data": data}, block_tag])
-    if not isinstance(value, str) or not value.startswith("0x"):
-        raise RuntimeError("invalid eth_call response")
-    return value
-
-
 def _decode_words(value: str, count: int) -> tuple[int, ...]:
+    if not isinstance(value, str) or not value.startswith("0x"):
+        raise ValueError("ABI result must be 0x-prefixed hex")
     body = value[2:]
     if len(body) != 64 * count:
         raise ValueError(f"expected {count} ABI words, got {len(body) // 64}")
     return tuple(int(body[index : index + 64], 16) for index in range(0, len(body), 64))
 
 
-def _uint_view(client, *, curve: str, signature: str, block_tag: str) -> tuple[int, str]:
-    raw = _call(client, curve=curve, data=_selector(client, signature), block_tag=block_tag)
-    return _decode_words(raw, 1)[0], raw
-
-
-def _bool_view(client, *, curve: str, signature: str, block_tag: str) -> tuple[bool, str]:
-    raw = _call(client, curve=curve, data=_selector(client, signature), block_tag=block_tag)
-    word = _decode_words(raw, 1)[0]
+def _decode_bool(value: str, signature: str) -> bool:
+    word = _decode_words(value, 1)[0]
     if word not in (0, 1):
         raise ValueError(f"{signature} returned non-bool ABI word: {word}")
-    return bool(word), raw
-
-
-def _reserves_view(client, *, curve: str, block_tag: str) -> tuple[tuple[int, int], str]:
-    raw = _call(client, curve=curve, data=_selector(client, "getReserves()"), block_tag=block_tag)
-    values = _decode_words(raw, 2)
-    return (values[0], values[1]), raw
-
-
-def _address_uint_view(
-    client,
-    *,
-    curve: str,
-    signature: str,
-    address: str,
-    block_tag: str,
-) -> tuple[int, str]:
-    encoded = _address(address, "address")[2:].rjust(64, "0")
-    raw = _call(
-        client,
-        curve=curve,
-        data=_selector(client, signature) + encoded,
-        block_tag=block_tag,
-    )
-    return _decode_words(raw, 1)[0], raw
+    return bool(word)
 
 
 def _block_identity(client, block_tag: str) -> dict[str, Any]:
@@ -103,6 +73,70 @@ def _block_identity(client, block_tag: str) -> dict[str, Any]:
     }
 
 
+def _view_call_specs(client, *, curve: str, recipient: str, block_tag: str, include_snipe: bool):
+    specs = [
+        ("feeBps", _selector(client, "feeBps()")),
+        ("creatorTaxBps", _selector(client, "creatorTaxBps()")),
+        ("getReserves", _selector(client, "getReserves()")),
+        ("sellableTokens", _selector(client, "sellableTokens()")),
+        ("readyToGraduate", _selector(client, "readyToGraduate()")),
+        ("graduated", _selector(client, "graduated()")),
+    ]
+    if include_snipe:
+        encoded_recipient = recipient[2:].rjust(64, "0")
+        specs.append(
+            (
+                "currentSnipeTaxBps",
+                _selector(client, "currentSnipeTaxBps(address)") + encoded_recipient,
+            )
+        )
+    return [
+        (
+            name,
+            "eth_call",
+            [{"to": curve, "data": data}, block_tag],
+        )
+        for name, data in specs
+    ]
+
+
+def _read_raw_views(
+    client,
+    *,
+    curve: str,
+    recipient: str,
+    block_tag: str,
+    include_snipe: bool,
+) -> tuple[dict[str, str], str, dict[str, Any] | None]:
+    specs = _view_call_specs(
+        client,
+        curve=curve,
+        recipient=recipient,
+        block_tag=block_tag,
+        include_snipe=include_snipe,
+    )
+    batch = getattr(client, "batch_call", None)
+    if callable(batch):
+        values = batch([(method, params) for _, method, params in specs])
+        if len(values) != len(specs):
+            raise RuntimeError("batch quote-state response count mismatch")
+        raw_calls = {}
+        for (name, _, _), value in zip(specs, values):
+            if not isinstance(value, str) or not value.startswith("0x"):
+                raise RuntimeError(f"invalid eth_call response for {name}")
+            raw_calls[name] = value
+        report = getattr(client, "last_batch_report", None)
+        return raw_calls, "JSON_RPC_BATCH", dict(report) if isinstance(report, dict) else None
+
+    raw_calls = {}
+    for name, method, params in specs:
+        value = client.call(method, params)
+        if not isinstance(value, str) or not value.startswith("0x"):
+            raise RuntimeError(f"invalid eth_call response for {name}")
+        raw_calls[name] = value
+    return raw_calls, "SEQUENTIAL_JSON_RPC", None
+
+
 def read_curve_quote_state_v0(
     client,
     *,
@@ -114,7 +148,7 @@ def read_curve_quote_state_v0(
 
     ``capability_report`` must come from ``probe_protocol_capabilities_v0``.
     A snipe-enabled generation requires a recipient-specific live snipe read;
-    a proven no-snipe generation never silently attempts to infer one.
+    a proven no-snipe generation never silently infers a nonzero snipe rate.
     """
     curve = _address(curve, "curve")
     recipient = _address(recipient, "recipient")
@@ -138,33 +172,23 @@ def read_curve_quote_state_v0(
     if not isinstance(code, str) or code in {"0x", "0x0", ""}:
         raise RuntimeError("target curve has no bytecode at pinned block")
 
-    raw_calls: dict[str, str] = {}
-    fee_bps, raw_calls["feeBps"] = _uint_view(
-        client, curve=curve, signature="feeBps()", block_tag=block_tag
+    raw_calls, transport_mode, batch_report = _read_raw_views(
+        client,
+        curve=curve,
+        recipient=recipient,
+        block_tag=block_tag,
+        include_snipe=classification == PASS_SNIPE,
     )
-    creator_tax_bps, raw_calls["creatorTaxBps"] = _uint_view(
-        client, curve=curve, signature="creatorTaxBps()", block_tag=block_tag
-    )
-    reserves, raw_calls["getReserves"] = _reserves_view(client, curve=curve, block_tag=block_tag)
-    sellable, raw_calls["sellableTokens"] = _uint_view(
-        client, curve=curve, signature="sellableTokens()", block_tag=block_tag
-    )
-    ready, raw_calls["readyToGraduate"] = _bool_view(
-        client, curve=curve, signature="readyToGraduate()", block_tag=block_tag
-    )
-    graduated, raw_calls["graduated"] = _bool_view(
-        client, curve=curve, signature="graduated()", block_tag=block_tag
-    )
+    fee_bps = _decode_words(raw_calls["feeBps"], 1)[0]
+    creator_tax_bps = _decode_words(raw_calls["creatorTaxBps"], 1)[0]
+    reserves = _decode_words(raw_calls["getReserves"], 2)
+    sellable = _decode_words(raw_calls["sellableTokens"], 1)[0]
+    ready = _decode_bool(raw_calls["readyToGraduate"], "readyToGraduate()")
+    graduated = _decode_bool(raw_calls["graduated"], "graduated()")
 
     if classification == PASS_SNIPE:
         snipe_mode = SNIPE_MODE_LIVE_VIEW
-        current_snipe, raw_calls["currentSnipeTaxBps"] = _address_uint_view(
-            client,
-            curve=curve,
-            signature="currentSnipeTaxBps(address)",
-            address=recipient,
-            block_tag=block_tag,
-        )
+        current_snipe = _decode_words(raw_calls["currentSnipeTaxBps"], 1)[0]
     else:
         snipe_mode = SNIPE_MODE_PROVEN_ABSENT
         current_snipe = 0
@@ -183,6 +207,7 @@ def read_curve_quote_state_v0(
         f"block_number={block_number}",
         f"block_hash={before['hash']}",
         f"capability_classification={classification}",
+        f"transport_mode={transport_mode}",
     )
     state = PonsCurveQuoteStateV0(
         quote_reserve_raw=reserves[0],
@@ -208,6 +233,8 @@ def read_curve_quote_state_v0(
         "capability_classification": classification,
         "protocol_generation_key": generation_key,
         "snipe_mode": snipe_mode,
+        "transport_mode": transport_mode,
+        "batch_report": batch_report,
         "raw_calls": raw_calls,
         "bytecode_observed": True,
         "reorg_guard_passed": True,
