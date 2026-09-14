@@ -98,7 +98,11 @@ def _read_json(path: Path | None) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def _terminate_process(process: subprocess.Popen, *, grace_seconds: float = 3.0) -> None:
+def _report_passed(report: dict[str, Any] | None) -> bool:
+    return bool(report and str(report.get("classification") or "").startswith("PASS"))
+
+
+def _terminate_process(process, *, grace_seconds: float = 3.0) -> None:
     if process.poll() is not None:
         return
     process.terminate()
@@ -119,6 +123,8 @@ def run_coordinated_shadow_v0(
     factory_address: str | None = None,
     python_executable: str = sys.executable,
     child_timeout_slack_seconds: float = 90.0,
+    popen_factory: Any = subprocess.Popen,
+    bootstrap_classifier: Any = classify_capture_v0,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
@@ -161,14 +167,14 @@ def run_coordinated_shadow_v0(
             # Start RPC first so executed-event polling is already active when the
             # feed handshake begins. The exact skew is retained in the parent report.
             rpc_started_at_ns = time.time_ns()
-            rpc_process = subprocess.Popen(
+            rpc_process = popen_factory(
                 rpc_command,
                 stdout=rpc_stdout,
                 stderr=rpc_stderr,
                 env=os.environ.copy(),
             )
             feed_started_at_ns = time.time_ns()
-            feed_process = subprocess.Popen(
+            feed_process = popen_factory(
                 feed_command,
                 stdout=feed_stdout,
                 stderr=feed_stderr,
@@ -199,7 +205,7 @@ def run_coordinated_shadow_v0(
     bootstrap_error = None
     if feed_run_dir is not None and feed_report is not None:
         try:
-            bootstrap_report = classify_capture_v0(
+            bootstrap_report = bootstrap_classifier(
                 run_dir=feed_run_dir,
                 rpc_url=rpc_url,
             )
@@ -210,9 +216,23 @@ def run_coordinated_shadow_v0(
     feed_return_code = feed_process.returncode if feed_process is not None else None
     child_processes_ok = rpc_return_code == 0 and feed_return_code == 0 and not timed_out
     artifacts_present = rpc_report is not None and feed_report is not None
+    rpc_capture_ok = _report_passed(rpc_report)
+    feed_capture_ok = (
+        feed_report is not None
+        and feed_report.get("classification") == "PASS_RAW_CAPTURE"
+    )
+    bootstrap_ok = bool(
+        bootstrap_report
+        and bootstrap_report.get("classification") == "PASS_BOOTSTRAP_CLASSIFICATION"
+    )
     anchor_ok = bool(
         bootstrap_report
         and bootstrap_report.get("anchor_reorg_guard_passed") is True
+    )
+    eligible_messages = (
+        int(bootstrap_report.get("latency_eligible_messages") or 0)
+        if bootstrap_report
+        else 0
     )
 
     if timed_out:
@@ -221,10 +241,16 @@ def run_coordinated_shadow_v0(
         classification = "FAIL_COORDINATED_SHADOW_CHILD_PROCESS"
     elif not artifacts_present:
         classification = "FAIL_COORDINATED_SHADOW_ARTIFACTS"
-    elif bootstrap_report is None:
+    elif not rpc_capture_ok:
+        classification = "FAIL_COORDINATED_SHADOW_RPC_CAPTURE"
+    elif not feed_capture_ok:
+        classification = "FAIL_COORDINATED_SHADOW_FEED_CAPTURE"
+    elif bootstrap_report is None or not bootstrap_ok:
         classification = "FAIL_COORDINATED_SHADOW_BOOTSTRAP_CLASSIFICATION"
     elif not anchor_ok:
         classification = "FAIL_COORDINATED_SHADOW_ANCHOR_GUARD"
+    elif eligible_messages == 0:
+        classification = "PASS_COORDINATED_SHADOW_ACQUISITION_V0_NO_LIVE_CANDIDATES"
     else:
         classification = "PASS_COORDINATED_SHADOW_ACQUISITION_V0"
 
@@ -262,11 +288,7 @@ def run_coordinated_shadow_v0(
             bootstrap_report.get("classification") if bootstrap_report else None
         ),
         "bootstrap_anchor_reorg_guard_passed": anchor_ok,
-        "bootstrap_latency_eligible_messages": (
-            bootstrap_report.get("latency_eligible_messages")
-            if bootstrap_report
-            else None
-        ),
+        "bootstrap_latency_eligible_messages": eligible_messages,
         "bootstrap_error": bootstrap_error,
         "execution_reconciliation_opened": False,
         "latency_claim_opened": False,
@@ -277,6 +299,7 @@ def run_coordinated_shadow_v0(
             "rpc_process_is_started_before_feed_process_and_start_skew_is_recorded",
             "initial_feed_sequence_zero_is_bootstrap_only",
             "bootstrap_classification_is_required_before_latency_analysis",
+            "zero_post_anchor_messages_is_coverage_not_failure",
             "this_runner_does_not_compute_feed_advantage_or_trade_returns",
         ],
     }
