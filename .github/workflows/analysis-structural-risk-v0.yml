@@ -1,0 +1,34 @@
+name: Structural Risk Facts V0
+
+on:
+  push:
+    branches:
+      - feat/structural-risk-facts-v0
+    paths:
+      - 'src/token_structural_risk_v0.py'
+      - 'tests/test_token_structural_risk_v0.py'
+      - 'docs/analysis_capability_inventory_v0.md'
+      - '.github/workflows/analysis-structural-risk-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-risk-facts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile
+        run: |
+          python -m py_compile src/token_structural_risk_v0.py
+          python -m py_compile tests/test_token_structural_risk_v0.py
+      - name: Test
+        run: python -m unittest tests.test_token_structural_risk_v0 -v
