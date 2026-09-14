@@ -6,6 +6,7 @@ on:
       - spike/launch-burst-v0
     paths:
       - 'src/launch_burst_v0.py'
+      - 'src/launch_burst_economic_v1.py'
       - 'benchmarks/launch_burst_replay_v0/**'
       - 'benchmarks/launch_burst_run_inventory_v0/**'
       - 'benchmarks/launch_burst_coverage_audit_v0/**'
@@ -19,6 +20,7 @@ on:
       - 'benchmarks/launch_burst_live_capture_v2/**'
       - 'benchmarks/launch_burst_live_feature_analysis_v0/**'
       - 'benchmarks/launch_burst_feature_redundancy_v0/**'
+      - 'benchmarks/launch_burst_prospective_economic_v1/**'
       - 'tests/test_launch_burst_v0.py'
       - 'tests/test_launch_burst_replay_v0.py'
       - 'tests/test_launch_burst_run_inventory_v0.py'
@@ -33,6 +35,7 @@ on:
       - 'tests/test_launch_burst_live_capture_v2.py'
       - 'tests/test_launch_burst_live_feature_analysis_v0.py'
       - 'tests/test_launch_burst_feature_redundancy_v0.py'
+      - 'tests/test_launch_burst_economic_v1.py'
       - '.github/workflows/launch-burst-offline-audits-v0.yml'
   workflow_dispatch:
 
@@ -56,6 +59,7 @@ jobs:
       - name: Compile
         run: |
           python -m py_compile src/launch_burst_v0.py
+          python -m py_compile src/launch_burst_economic_v1.py
           python -m py_compile benchmarks/launch_burst_replay_v0/run.py
           python -m py_compile benchmarks/launch_burst_run_inventory_v0/run.py
           python -m py_compile benchmarks/launch_burst_coverage_audit_v0/run.py
@@ -69,6 +73,7 @@ jobs:
           python -m py_compile benchmarks/launch_burst_live_capture_v2/run.py
           python -m py_compile benchmarks/launch_burst_live_feature_analysis_v0/run.py
           python -m py_compile benchmarks/launch_burst_feature_redundancy_v0/run.py
+          python -m py_compile benchmarks/launch_burst_prospective_economic_v1/run.py
           python -m py_compile tests/test_launch_burst_v0.py
           python -m py_compile tests/test_launch_burst_replay_v0.py
           python -m py_compile tests/test_launch_burst_run_inventory_v0.py
@@ -83,6 +88,7 @@ jobs:
           python -m py_compile tests/test_launch_burst_live_capture_v2.py
           python -m py_compile tests/test_launch_burst_live_feature_analysis_v0.py
           python -m py_compile tests/test_launch_burst_feature_redundancy_v0.py
+          python -m py_compile tests/test_launch_burst_economic_v1.py
       - name: Run offline audit contracts
         run: |
           python -m unittest tests.test_launch_burst_v0 -v
@@ -99,3 +105,4 @@ jobs:
           python -m unittest tests.test_launch_burst_live_capture_v2 -v
           python -m unittest tests.test_launch_burst_live_feature_analysis_v0 -v
           python -m unittest tests.test_launch_burst_feature_redundancy_v0 -v
+          python -m unittest tests.test_launch_burst_economic_v1 -v
