@@ -1,0 +1,34 @@
+name: Social Event Evidence V0
+
+on:
+  push:
+    branches:
+      - research/social-event-evidence-v0
+    paths:
+      - 'src/social_event_evidence_v0.py'
+      - 'tests/test_social_event_evidence_v0.py'
+      - 'docs/social_event_first_evidence_v0.md'
+      - '.github/workflows/social-event-evidence-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  social-event-evidence:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile
+        run: |
+          python -m py_compile src/social_event_evidence_v0.py
+          python -m py_compile tests/test_social_event_evidence_v0.py
+      - name: Test
+        run: python -m unittest tests.test_social_event_evidence_v0 -v
