@@ -82,7 +82,7 @@ class LaunchBurstEconomicV1Tests(unittest.TestCase):
     def test_decision_snapshot_must_be_exactly_observed_t0_plus_5s(self):
         bad = snapshot()
         bad["decision_as_of"] = 106
-        with self.assertRaisesRegex(ValueError, "observed_t0 \+ 5s"):
+        with self.assertRaisesRegex(ValueError, r"observed_t0 \+ 5s"):
             evaluate_episode(token_mint="TOKEN", venue="pump", feature_snapshot=bad, quotes=(), contract=self.contract)
 
     def test_no_future_leakage_entry_is_after_cutoff_plus_latency(self):
