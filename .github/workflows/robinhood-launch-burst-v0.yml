@@ -6,13 +6,17 @@ on:
       - research/robinhood-launch-burst-v0
     paths:
       - 'src/robinhood_pons_launch_burst_v0.py'
+      - 'src/pons_v2_curve_quote_v0.py'
       - 'benchmarks/robinhood_launch_burst_v0/**'
       - 'tests/test_robinhood_pons_launch_burst_v0.py'
       - 'tests/test_robinhood_launch_burst_integrity_v0.py'
       - 'tests/test_robinhood_fee_dynamics_v0.py'
       - 'tests/test_robinhood_acquisition_parity_v0.py'
       - 'tests/test_robinhood_protocol_capabilities_v0.py'
+      - 'tests/test_pons_v2_curve_quote_v0.py'
+      - 'tests/test_pons_v2_curve_quote_state_v0.py'
       - 'docs/robinhood_launch_burst_v0.md'
+      - 'docs/pons_direct_quote_v0.md'
       - '.github/workflows/robinhood-launch-burst-v0.yml'
   workflow_dispatch:
 
@@ -34,6 +38,7 @@ jobs:
       - name: Compile
         run: |
           python -m py_compile src/robinhood_pons_launch_burst_v0.py
+          python -m py_compile src/pons_v2_curve_quote_v0.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/offline.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/live.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/preflight.py
@@ -43,11 +48,15 @@ jobs:
           python -m py_compile benchmarks/robinhood_launch_burst_v0/fee_dynamics.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/acquisition_parity.py
           python -m py_compile benchmarks/robinhood_launch_burst_v0/protocol_capabilities.py
+          python -m py_compile benchmarks/robinhood_launch_burst_v0/direct_quote_state.py
+          python -m py_compile benchmarks/robinhood_launch_burst_v0/direct_quote.py
           python -m py_compile tests/test_robinhood_pons_launch_burst_v0.py
           python -m py_compile tests/test_robinhood_launch_burst_integrity_v0.py
           python -m py_compile tests/test_robinhood_fee_dynamics_v0.py
           python -m py_compile tests/test_robinhood_acquisition_parity_v0.py
           python -m py_compile tests/test_robinhood_protocol_capabilities_v0.py
+          python -m py_compile tests/test_pons_v2_curve_quote_v0.py
+          python -m py_compile tests/test_pons_v2_curve_quote_state_v0.py
       - name: Test
         run: |
           python -m unittest tests.test_robinhood_pons_launch_burst_v0 -v
@@ -55,3 +64,5 @@ jobs:
           python -m unittest tests.test_robinhood_fee_dynamics_v0 -v
           python -m unittest tests.test_robinhood_acquisition_parity_v0 -v
           python -m unittest tests.test_robinhood_protocol_capabilities_v0 -v
+          python -m unittest tests.test_pons_v2_curve_quote_v0 -v
+          python -m unittest tests.test_pons_v2_curve_quote_state_v0 -v
