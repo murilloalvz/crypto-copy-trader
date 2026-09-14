@@ -6,10 +6,12 @@ import math
 from src.market_opportunity_radar import MarketLifecycleObservation, MarketTradeObservation
 
 
-LAUNCH_BURST_VERSION = "launch_burst_v0_1_live_venue_isolated"
+LAUNCH_BURST_VERSION = "launch_burst_v0_2_live_venue_alias_normalized"
 PUMP_LAUNCH_VENUE = "pump"
+PUMP_BONDING_CURVE_VENUE = "pump_bonding_curve"
 PUMPSWAP_LAUNCH_VENUE = "pumpswap"
-SUPPORTED_LAUNCH_VENUES = frozenset({PUMP_LAUNCH_VENUE, PUMPSWAP_LAUNCH_VENUE})
+PUMP_LAUNCH_VENUE_ALIASES = frozenset({PUMP_LAUNCH_VENUE, PUMP_BONDING_CURVE_VENUE})
+SUPPORTED_LAUNCH_VENUES = frozenset({*PUMP_LAUNCH_VENUE_ALIASES, PUMPSWAP_LAUNCH_VENUE})
 
 
 @dataclass(frozen=True)
@@ -71,11 +73,27 @@ def _validate_config(config: LaunchBurstConfig) -> None:
         raise ValueError("observation_window_seconds must be positive")
 
 
+def canonical_launch_venue(venue: str) -> str:
+    normalized = _required(venue, "venue")
+    if normalized in PUMP_LAUNCH_VENUE_ALIASES:
+        return PUMP_LAUNCH_VENUE
+    if normalized == PUMPSWAP_LAUNCH_VENUE:
+        return PUMPSWAP_LAUNCH_VENUE
+    raise ValueError(f"unsupported launch venue: {normalized}")
+
+
+def _canonical_trade_venue(venue: str | None) -> str | None:
+    if venue is None or not str(venue).strip():
+        return None
+    try:
+        return canonical_launch_venue(str(venue))
+    except ValueError:
+        return None
+
+
 def _validate_lifecycle(lifecycle: MarketLifecycleObservation) -> tuple[str, str]:
     token = _required(lifecycle.token_mint, "lifecycle token_mint")
-    venue = _required(lifecycle.venue or "", "lifecycle venue")
-    if venue not in SUPPORTED_LAUNCH_VENUES:
-        raise ValueError(f"unsupported launch venue: {venue}")
+    venue = canonical_launch_venue(lifecycle.venue or "")
     if lifecycle.market_started_at < 0 or lifecycle.observed_at < 0:
         raise ValueError("lifecycle timestamps must be non-negative")
     return token, venue
@@ -98,7 +116,7 @@ def _validate_trade(trade: MarketTradeObservation) -> None:
 
 
 def launch_stratum_for_venue(venue: str) -> str:
-    normalized = _required(venue, "venue")
+    normalized = canonical_launch_venue(venue)
     if normalized == PUMP_LAUNCH_VENUE:
         return "pump_launch"
     if normalized == PUMPSWAP_LAUNCH_VENUE:
@@ -119,11 +137,15 @@ def build_launch_burst_snapshot(
     ``observed_at`` and ``decision_as_of`` form the local evidence-availability clock.
     The two domains are never subtracted from one another.
 
-    A trade is eligible only when it belongs to the same token and venue, was available
-    locally by ``decision_as_of``, and its chain timestamp is inside the fixed post-launch
-    window. Venue isolation prevents Pump and PumpSwap observations from contaminating
-    one another around a rapid graduation. The function produces research features only;
-    it never emits a BUY/SELL decision.
+    Pump's live pipeline has historically emitted both ``pump`` and
+    ``pump_bonding_curve`` labels for the same pre-graduation venue. They are normalized
+    to the same canonical Pump venue before lifecycle/trade matching. PumpSwap remains a
+    distinct canonical venue, so a rapid graduation cannot contaminate the Pump window.
+
+    A trade is eligible only when it belongs to the same token and canonical venue, was
+    available locally by ``decision_as_of``, and its chain timestamp is inside the fixed
+    post-launch window. The function produces research features only; it never emits a
+    BUY/SELL decision.
     """
 
     _validate_config(config)
@@ -140,13 +162,17 @@ def build_launch_burst_snapshot(
     observed_t0 = int(lifecycle.observed_at)
     chain_window_end = chain_t0 + config.observation_window_seconds
 
-    eligible = [
+    clock_eligible = [
         trade
         for trade in trades
         if trade.token_mint == token
-        and trade.venue == venue
         and trade.observed_at <= decision_as_of
         and chain_t0 <= trade.chain_time <= chain_window_end
+    ]
+    eligible = [
+        trade
+        for trade in clock_eligible
+        if _canonical_trade_venue(trade.venue) == venue
     ]
     eligible.sort(
         key=lambda trade: (
@@ -187,6 +213,8 @@ def build_launch_burst_snapshot(
     flags: list[str] = []
     if not eligible:
         flags.append("no_events_in_launch_window")
+    if any(_canonical_trade_venue(trade.venue) is None for trade in clock_eligible):
+        flags.append("unsupported_or_missing_trade_venue_in_launch_window")
     if eligible and len(wallet_rows) < len(eligible):
         flags.append("partial_wallet_identity_coverage")
     if eligible and len(transaction_rows) < len(eligible):
