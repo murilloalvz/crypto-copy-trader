@@ -32,9 +32,10 @@ After factory discovery, preflight selects a recent real curve and probes deploy
 - `getReserves()`;
 - `sellableTokens()`;
 - `readyToGraduate()`;
+- `graduated()`;
 - `currentSnipeTaxBps(address)`.
 
-The resulting `protocol_generation_key` is part of the evidence. A successful `currentSnipeTaxBps` call proves that view exists on the deployed generation; it does not by itself prove a nonzero tax at probe time. If the core curve views are absent, preflight fails. A core curve without the snipe view is retained as a separate valid generation rather than being silently interpreted as the snipe-enabled generation.
+The first six are required for honest direct BUY/SELL quote state. The resulting `protocol_generation_key` is part of the evidence. A successful `currentSnipeTaxBps` call proves that view exists on the deployed generation; it does not by itself prove a nonzero tax at probe time. If any required core curve view is absent, preflight fails. A core curve without the snipe view is retained as a separate valid generation rather than being silently interpreted as the snipe-enabled generation.
 
 ## Headline cohort
 
@@ -87,6 +88,28 @@ Because deployed generations and published source can drift, V0 always treats `f
 
 V0 does **not** infer `snipe_tax = fee - assumed_base_fee` without causally observed per-launch fee state. Launch-specific exemptions can exist, so a non-deployer buy is not automatically labelled taxed.
 
+## Direct curve quote V0
+
+`src/pons_v2_curve_quote_v0.py` and `benchmarks.robinhood_launch_burst_v0.direct_quote_state` add a read-only way to separate provider/router coverage from the curve's own mathematical quotability.
+
+The state reader pins every view to one explicit block number and requires the same block hash before and after the read. It records:
+
+- target curve and public recipient;
+- factory + deployed generation key;
+- block number/hash/timestamp;
+- `feeBps` and `creatorTaxBps`;
+- tradeable quote/token reserves;
+- `sellableTokens`;
+- `readyToGraduate` and `graduated`;
+- recipient-specific `currentSnipeTaxBps` when the deployed generation supports it;
+- raw ABI responses and local observation time.
+
+The pure quote layer then reproduces Pons integer BUY/SELL math, including exact-output `+1` rounding and BUY partial-fill/refund behavior near graduation. A snipe-enabled generation refuses BUY quoting if recipient-specific snipe state was not causally read. SELL is treated closed as soon as `readyToGraduate()` is true, even before `graduated` necessarily flips.
+
+Every result preserves `fill_claimed = false`. Direct Quote V0 is mathematical curve evidence, **not** transaction simulation, landed-fill evidence, a selector, or an economic outcome.
+
+See `docs/pons_direct_quote_v0.md` for the full contract.
+
 ## Acquisition V0
 
 `benchmarks.robinhood_launch_burst_v0.live` bootstraps acquisition with standard Robinhood JSON-RPC: `eth_chainId`, `eth_blockNumber`, `eth_getLogs`, `eth_getBlockByNumber`, `eth_getCode`, and `web3_sha3` for event topics.
@@ -129,7 +152,8 @@ V0:
 - keeps Social/Event-First separate;
 - does not use post-graduation Uniswap V4 activity as pre-graduation evidence;
 - does not treat graduation as quality;
-- does not convert missing evidence into returns.
+- does not convert missing evidence into returns;
+- does not call direct curve math a fill or executable transaction.
 
 ## Next phases
 
