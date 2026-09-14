@@ -40,29 +40,57 @@ def _quote(raw: dict[str, Any]) -> CausalQuoteObservation:
     return CausalQuoteObservation(**raw)
 
 
+def _pct(numerator: int, denominator: int) -> float | None:
+    return 100.0 * numerator / denominator if denominator else None
+
+
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    realized = [row for row in rows if row.get("net_route_return_pct") is not None]
-    values = [float(row["net_route_return_pct"]) for row in realized]
-    profits = [v for v in values if v > 0]
-    losses = [-v for v in values if v < 0]
+    admitted_rows = [row for row in rows if row["admitted"]]
+    entry_quote_observed = [row for row in admitted_rows if row.get("entry_quote") is not None]
+    entry_unavailable = [row for row in admitted_rows if row["status"] == "ENTRY_UNAVAILABLE"]
+    entry_rejected = [row for row in admitted_rows if str(row["status"]).startswith("ENTRY_REJECTED")]
+
+    # Economic/route-return metrics are conditional on a usable entry. Provider misses and
+    # entry-quality rejections are coverage evidence, not zero-return trades. Once an entry is
+    # usable, an unroutable exit remains an explicit negative outcome under the frozen contract.
+    conditional_rows = [
+        row
+        for row in admitted_rows
+        if row["status"] == "ROUTE_CLOSED"
+        or str(row["status"]).startswith("UNROUTABLE_EXIT")
+    ]
+    values = [
+        float(row["net_route_return_pct"])
+        for row in conditional_rows
+        if row.get("net_route_return_pct") is not None
+    ]
+    profits = [value for value in values if value > 0]
+    losses = [-value for value in values if value < 0]
     ordered = sorted(values)
     median = None
     if ordered:
         mid = len(ordered) // 2
         median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
+    entry_usable = len(conditional_rows)
     return {
         "n": len(rows),
-        "admitted": sum(1 for row in rows if row["admitted"]),
-        "route_closed": sum(1 for row in rows if row["status"] == "ROUTE_CLOSED"),
-        "route_results": len(values),
-        "failed_exits": sum(1 for row in rows if str(row["status"]).startswith("UNROUTABLE_EXIT")),
-        "entry_unavailable": sum(1 for row in rows if str(row["status"]).startswith("ENTRY_")),
-        "positive_share_pct": (100.0 * len(profits) / len(values)) if values else None,
-        "mean_net_route_return_pct": (sum(values) / len(values)) if values else None,
-        "median_net_route_return_pct": median,
-        "profit_factor": (sum(profits) / sum(losses)) if losses else (float("inf") if profits else None),
-        "best_net_route_return_pct": max(values) if values else None,
-        "worst_net_route_return_pct": min(values) if values else None,
+        "admitted": len(admitted_rows),
+        "entry_quote_observed": len(entry_quote_observed),
+        "entry_provider_coverage_pct": _pct(len(entry_quote_observed), len(admitted_rows)),
+        "entry_unavailable": len(entry_unavailable),
+        "entry_rejected": len(entry_rejected),
+        "entry_usable": entry_usable,
+        "entry_usable_pct_of_admitted": _pct(entry_usable, len(admitted_rows)),
+        "route_closed": sum(1 for row in conditional_rows if row["status"] == "ROUTE_CLOSED"),
+        "failed_exits": sum(1 for row in conditional_rows if str(row["status"]).startswith("UNROUTABLE_EXIT")),
+        "conditional_route_results": len(values),
+        "conditional_positive_share_pct": _pct(len(profits), len(values)),
+        "conditional_mean_net_route_return_pct": (sum(values) / len(values)) if values else None,
+        "conditional_median_net_route_return_pct": median,
+        "conditional_profit_factor": (sum(profits) / sum(losses)) if losses else (float("inf") if profits else None),
+        "conditional_best_net_route_return_pct": max(values) if values else None,
+        "conditional_worst_net_route_return_pct": min(values) if values else None,
     }
 
 
@@ -112,9 +140,11 @@ def run_route_paper_v2(*, contract_path: Path, input_path: Path, output_path: Pa
         "strata": {name: _metrics(strata.get(name, [])) for name in contract["strata"]},
         "decisions": rows,
         "interpretation": (
-            "PASS means frozen prospective route-paper accounting completed. BUY evidence is an assembled "
-            "candidate transaction and SELL evidence is a route-only exact-quantity quote. These are not landed "
-            "fills or realized PnL, and cannot by themselves establish executable trading edge."
+            "PASS means frozen prospective route-paper accounting completed. Entry-provider misses and "
+            "entry-quality rejections are reported as provider/route coverage and are excluded from conditional "
+            "return metrics; after a usable entry, failed exits remain explicit negative outcomes. BUY evidence "
+            "is an assembled candidate transaction and SELL evidence is a route-only exact-quantity quote. "
+            "These are not landed fills or realized PnL, and cannot by themselves establish executable trading edge."
         ),
     }
     _write_json(output_path, result)
