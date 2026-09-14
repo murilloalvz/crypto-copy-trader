@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from benchmarks.launch_burst_prospective_route_paper_v2.run import run_route_paper_v2
+from benchmarks.launch_burst_prospective_route_paper_v2.run import _metrics, run_route_paper_v2
 from src.causal_quotes import CausalQuoteObservation
 from src.launch_burst_route_paper_v2 import (
     contract_hash_sha256,
@@ -127,6 +127,39 @@ class LaunchBurstRoutePaperV2Tests(unittest.TestCase):
         self.assertEqual(decision.status, "UNROUTABLE_EXIT")
         self.assertEqual(decision.net_route_return_pct, -100.0)
         self.assertEqual(decision.route_paper_pnl_usd, -25.0)
+
+    def test_entry_provider_miss_is_coverage_not_zero_return(self):
+        rows = [
+            {
+                "admitted": True,
+                "status": "ENTRY_UNAVAILABLE",
+                "entry_quote": None,
+                "net_route_return_pct": 0.0,
+            }
+        ]
+        metrics = _metrics(rows)
+        self.assertEqual(metrics["admitted"], 1)
+        self.assertEqual(metrics["entry_unavailable"], 1)
+        self.assertEqual(metrics["entry_provider_coverage_pct"], 0.0)
+        self.assertEqual(metrics["entry_usable"], 0)
+        self.assertEqual(metrics["conditional_route_results"], 0)
+        self.assertIsNone(metrics["conditional_mean_net_route_return_pct"])
+
+    def test_failed_exit_stays_negative_in_conditional_return_metrics(self):
+        rows = [
+            {
+                "admitted": True,
+                "status": "UNROUTABLE_EXIT",
+                "entry_quote": {"route_id": "entry"},
+                "net_route_return_pct": -100.0,
+            }
+        ]
+        metrics = _metrics(rows)
+        self.assertEqual(metrics["entry_provider_coverage_pct"], 100.0)
+        self.assertEqual(metrics["entry_usable"], 1)
+        self.assertEqual(metrics["failed_exits"], 1)
+        self.assertEqual(metrics["conditional_route_results"], 1)
+        self.assertEqual(metrics["conditional_mean_net_route_return_pct"], -100.0)
 
     def test_runner_requires_prospective_attestations(self):
         source = {
