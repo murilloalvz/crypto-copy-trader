@@ -1,16 +1,9 @@
-"""Lossless scientific envelope for independent multichain launch-burst research.
-
-The envelope standardizes clocks, provenance, quote-unit metadata and research-state
-flags.  It deliberately does *not* standardize protocol-specific features.  A Pump
-reserve-normalized flow feature and a Pons raw-curve flow feature remain different
-namespaced facts unless a later preregistered hypothesis explicitly relates them.
-"""
+"""Lossless scientific envelope for independent multichain launch-burst research."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
 from typing import Any, Mapping
-
 
 CONTRACT_VERSION = "multichain_launch_burst_contract_v0"
 RAW_QUOTE_UNIT = "raw_quote_asset_units"
@@ -40,8 +33,6 @@ def _copy_json(encoded: str) -> Any:
 
 @dataclass(frozen=True)
 class QuoteUnitV0:
-    """Metadata required before any raw quote number can be compared."""
-
     unit_kind: str
     asset_id: str | None = None
     semantic_asset_id: str | None = None
@@ -53,9 +44,12 @@ class QuoteUnitV0:
             _nonempty(self.asset_id, "asset_id")
         if self.semantic_asset_id is not None:
             _nonempty(self.semantic_asset_id, "semantic_asset_id")
-        if self.decimals is not None:
-            if not isinstance(self.decimals, int) or isinstance(self.decimals, bool) or not 0 <= self.decimals <= 36:
-                raise ValueError("decimals must be an integer in [0, 36] when present")
+        if self.decimals is not None and (
+            not isinstance(self.decimals, int)
+            or isinstance(self.decimals, bool)
+            or not 0 <= self.decimals <= 36
+        ):
+            raise ValueError("decimals must be an integer in [0, 36] when present")
 
     @property
     def is_raw_comparison_ready(self) -> bool:
@@ -92,26 +86,31 @@ class LaunchBurstEnvelopeV0:
     def __post_init__(self) -> None:
         if self.contract_version != CONTRACT_VERSION:
             raise ValueError("unexpected multichain contract version")
-        for name in ("chain_namespace", "protocol_namespace", "stratum", "launch_id", "token_id", "feature_namespace"):
+        for name in (
+            "chain_namespace", "protocol_namespace", "stratum",
+            "launch_id", "token_id", "feature_namespace",
+        ):
             _nonempty(getattr(self, name), name)
         if self.chain_id is not None:
             _nonempty(self.chain_id, "chain_id")
-        for name in ("anchor_observed_at_ns", "cutoff_observed_at_ns", "snapshot_observed_at_ns", "horizon_seconds"):
+        for name in (
+            "anchor_observed_at_ns", "cutoff_observed_at_ns",
+            "snapshot_observed_at_ns", "horizon_seconds",
+        ):
             _nonnegative(getattr(self, name), name)
         if self.horizon_seconds <= 0:
             raise ValueError("horizon_seconds must be positive")
-        expected_cutoff = self.anchor_observed_at_ns + self.horizon_seconds * 1_000_000_000
-        if self.cutoff_observed_at_ns != expected_cutoff:
+        if self.cutoff_observed_at_ns != (
+            self.anchor_observed_at_ns + self.horizon_seconds * 1_000_000_000
+        ):
             raise ValueError("cutoff must equal anchor + horizon on the local causal clock")
         if self.snapshot_observed_at_ns < self.cutoff_observed_at_ns:
             raise ValueError("snapshot cannot freeze before its causal cutoff")
         if self.economic_outcomes_opened and self.feature_only:
             raise ValueError("feature_only cannot be true after economic outcomes are opened")
-        features = _copy_json(self.features_json)
-        extension = _copy_json(self.protocol_extension_json)
-        if not isinstance(features, dict):
+        if not isinstance(_copy_json(self.features_json), dict):
             raise ValueError("features_json must encode an object")
-        if not isinstance(extension, dict):
+        if not isinstance(_copy_json(self.protocol_extension_json), dict):
             raise ValueError("protocol_extension_json must encode an object")
         for item in self.provenance:
             _nonempty(item, "provenance item")
@@ -163,32 +162,15 @@ class LaunchBurstEnvelopeV0:
 
 
 def _envelope(
-    *,
-    chain_namespace: str,
-    chain_id: str | None,
-    protocol_namespace: str,
-    stratum: str,
-    launch_id: str,
-    token_id: str,
-    anchor_ns: int,
-    cutoff_ns: int,
-    snapshot_ns: int,
-    horizon_seconds: int,
-    quote_unit: QuoteUnitV0,
-    feature_namespace: str,
-    features: Mapping[str, Any],
-    source_snapshot: Mapping[str, Any],
-    adapter_inputs: Mapping[str, Any],
-    provenance: tuple[str, ...],
-    data_quality_flags: tuple[str, ...],
-    feature_only: bool,
-    economic_outcomes_opened: bool,
-    selector_frozen: bool,
+    *, chain_namespace: str, chain_id: str | None, protocol_namespace: str,
+    stratum: str, launch_id: str, token_id: str, anchor_ns: int,
+    cutoff_ns: int, snapshot_ns: int, horizon_seconds: int,
+    quote_unit: QuoteUnitV0, feature_namespace: str,
+    features: Mapping[str, Any], source_snapshot: Mapping[str, Any],
+    adapter_inputs: Mapping[str, Any], provenance: tuple[str, ...],
+    data_quality_flags: tuple[str, ...], feature_only: bool,
+    economic_outcomes_opened: bool, selector_frozen: bool,
 ) -> LaunchBurstEnvelopeV0:
-    extension = {
-        "source_snapshot": dict(source_snapshot),
-        "adapter_inputs": dict(adapter_inputs),
-    }
     return LaunchBurstEnvelopeV0(
         contract_version=CONTRACT_VERSION,
         chain_namespace=chain_namespace,
@@ -204,7 +186,10 @@ def _envelope(
         quote_unit=quote_unit,
         feature_namespace=feature_namespace,
         features_json=_canonical_json(dict(features)),
-        protocol_extension_json=_canonical_json(extension),
+        protocol_extension_json=_canonical_json({
+            "source_snapshot": dict(source_snapshot),
+            "adapter_inputs": dict(adapter_inputs),
+        }),
         provenance=tuple(provenance),
         data_quality_flags=tuple(data_quality_flags),
         feature_only=bool(feature_only),
@@ -214,9 +199,7 @@ def _envelope(
 
 
 def adapt_solana_pump_snapshot_v0(
-    *,
-    token_mint: str,
-    snapshot: Mapping[str, Any],
+    *, token_mint: str, snapshot: Mapping[str, Any],
     snapshot_observed_at_ns: int | None = None,
     quote_asset_id: str | None = None,
     quote_asset_decimals: int | None = None,
@@ -226,12 +209,7 @@ def adapt_solana_pump_snapshot_v0(
     economic_outcomes_opened: bool = False,
     selector_frozen: bool = False,
 ) -> LaunchBurstEnvelopeV0:
-    """Losslessly wrap the frozen Solana/Pump feature snapshot.
-
-    The frozen snapshot does not itself expose the concrete quote-asset identity.
-    Therefore quote metadata stays missing unless supplied from causal source evidence.
-    Missing identity is never silently replaced with SOL/USDC/zero.
-    """
+    """Wrap a frozen Solana/Pump snapshot without inventing missing quote metadata."""
     source = dict(snapshot)
     features = source.get("features")
     if not isinstance(features, Mapping):
@@ -241,21 +219,24 @@ def adapt_solana_pump_snapshot_v0(
     horizon = int(source["evidence_window_seconds"])
     frozen_ns = cutoff_ns if snapshot_observed_at_ns is None else int(snapshot_observed_at_ns)
     quote_unit = QuoteUnitV0(
-        unit_kind=RAW_QUOTE_UNIT if features.get("raw_quote_amount_aggregation_valid") is True else UNKNOWN_QUOTE_UNIT,
+        unit_kind=(
+            RAW_QUOTE_UNIT
+            if features.get("raw_quote_amount_aggregation_valid") is True
+            else UNKNOWN_QUOTE_UNIT
+        ),
         asset_id=quote_asset_id,
         semantic_asset_id=quote_semantic_asset_id,
         decimals=quote_asset_decimals,
     )
-    flags = tuple(
-        sorted(
-            {
-                *("source_snapshot_incomplete",) if source.get("complete") is not True else (),
-                *("raw_quote_aggregation_invalid",) if features.get("raw_quote_amount_aggregation_valid") is not True else (),
-                *("quote_asset_identity_missing",) if quote_asset_id is None else (),
-                *("quote_decimals_missing",) if quote_asset_decimals is None else (),
-            }
-        )
-    )
+    flags: set[str] = set()
+    if source.get("complete") is not True:
+        flags.add("source_snapshot_incomplete")
+    if features.get("raw_quote_amount_aggregation_valid") is not True:
+        flags.add("raw_quote_aggregation_invalid")
+    if quote_asset_id is None:
+        flags.add("quote_asset_identity_missing")
+    if quote_asset_decimals is None:
+        flags.add("quote_decimals_missing")
     return _envelope(
         chain_namespace="solana-mainnet-beta",
         chain_id=None,
@@ -279,7 +260,7 @@ def adapt_solana_pump_snapshot_v0(
             "snapshot_observed_at_ns": frozen_ns,
         },
         provenance=provenance,
-        data_quality_flags=flags,
+        data_quality_flags=tuple(sorted(flags)),
         feature_only=feature_only,
         economic_outcomes_opened=economic_outcomes_opened,
         selector_frozen=selector_frozen,
@@ -287,8 +268,7 @@ def adapt_solana_pump_snapshot_v0(
 
 
 def adapt_robinhood_pons_snapshot_v0(
-    *,
-    snapshot: Mapping[str, Any],
+    *, snapshot: Mapping[str, Any],
     quote_asset_decimals: int | None = None,
     quote_semantic_asset_id: str | None = None,
     provenance: tuple[str, ...] = (),
@@ -296,7 +276,7 @@ def adapt_robinhood_pons_snapshot_v0(
     economic_outcomes_opened: bool = False,
     selector_frozen: bool = False,
 ) -> LaunchBurstEnvelopeV0:
-    """Losslessly wrap one Pons V2 burst snapshot."""
+    """Wrap one Pons V2 burst snapshot losslessly."""
     source = dict(snapshot)
     required = (
         "token", "curve", "pair_token", "launch_observed_at_ns",
@@ -308,9 +288,9 @@ def adapt_robinhood_pons_snapshot_v0(
     metadata = {
         "method_version", "token", "curve", "deployer", "pair_token",
         "native_eth_cohort", "graduation_threshold_raw", "horizon_seconds",
-        "launch_observed_at_ns", "cutoff_observed_at_ns", "snapshot_observed_at_ns",
-        "snapshot_dispatch_lag_ms", "first_chain_order", "last_chain_order",
-        "data_quality_flags",
+        "launch_observed_at_ns", "cutoff_observed_at_ns",
+        "snapshot_observed_at_ns", "snapshot_dispatch_lag_ms",
+        "first_chain_order", "last_chain_order", "data_quality_flags",
     }
     features = {key: value for key, value in source.items() if key not in metadata}
     pair_token = str(source["pair_token"]).lower()
@@ -319,11 +299,11 @@ def adapt_robinhood_pons_snapshot_v0(
     semantic = "ETH" if native and quote_semantic_asset_id is None else quote_semantic_asset_id
     quote_unit = QuoteUnitV0(
         unit_kind=RAW_QUOTE_UNIT,
-        asset_id=("robinhood:native-eth" if native else pair_token),
+        asset_id="robinhood:native-eth" if native else pair_token,
         semantic_asset_id=semantic,
         decimals=decimals,
     )
-    flags = set(str(item) for item in (source.get("data_quality_flags") or ()))
+    flags = {str(item) for item in (source.get("data_quality_flags") or ())}
     if not native:
         flags.add("custom_pair_nonheadline")
     if semantic is None:
@@ -357,10 +337,13 @@ def adapt_robinhood_pons_snapshot_v0(
     )
 
 
-def assert_raw_quote_comparable_v0(left: LaunchBurstEnvelopeV0, right: LaunchBurstEnvelopeV0) -> None:
-    """Reject raw-quote comparisons unless semantic asset and raw unit match explicitly."""
+def assert_raw_quote_comparable_v0(
+    left: LaunchBurstEnvelopeV0, right: LaunchBurstEnvelopeV0
+) -> None:
     if not left.quote_unit.is_raw_comparison_ready or not right.quote_unit.is_raw_comparison_ready:
-        raise ValueError("raw quote comparison requires explicit semantic asset identity and decimals on both snapshots")
+        raise ValueError(
+            "raw quote comparison requires explicit semantic asset identity and decimals on both snapshots"
+        )
     if left.quote_unit.semantic_asset_id != right.quote_unit.semantic_asset_id:
         raise ValueError("raw quote assets are semantically different")
     if left.quote_unit.decimals != right.quote_unit.decimals:
@@ -381,16 +364,12 @@ class NormalizedFeatureV0:
 
 
 def normalize_feature_v0(
-    snapshot: LaunchBurstEnvelopeV0,
-    *,
-    source_feature_name: str,
-    semantic_feature_name: str,
-    factor: float,
-    common_unit: str,
+    snapshot: LaunchBurstEnvelopeV0, *, source_feature_name: str,
+    semantic_feature_name: str, factor: float, common_unit: str,
     normalization_observed_at_ns: int,
     normalization_provenance: tuple[str, ...],
 ) -> NormalizedFeatureV0:
-    """Explicit normalization only; there is no implicit cross-chain feature mapping."""
+    """Normalize only through an explicit causal mapping and provenance."""
     source = snapshot.features.get(source_feature_name)
     if not isinstance(source, (int, float)) or isinstance(source, bool):
         raise ValueError("source feature must be a numeric observed feature")
@@ -418,7 +397,9 @@ def normalize_feature_v0(
     )
 
 
-def assert_normalized_comparable_v0(left: NormalizedFeatureV0, right: NormalizedFeatureV0) -> None:
+def assert_normalized_comparable_v0(
+    left: NormalizedFeatureV0, right: NormalizedFeatureV0
+) -> None:
     if left.common_unit != right.common_unit:
         raise ValueError("normalized common units differ")
     if left.semantic_feature_name != right.semantic_feature_name:
