@@ -17,9 +17,24 @@ V0 does **not** ask whether any feature is profitable.
 - `TokenLaunched(token, curve, deployer, pairToken, launchConfigId, graduationThreshold)` discovers each launch and per-launch curve.
 - `CurveBuy(buyer, recipient, quoteIn, tokensOut, fee, tax)` and `CurveSell(seller, recipient, tokensIn, quoteOut, fee, tax)` form the pre-graduation tape.
 
-The production-observed Pons V2 factory used by multiple live-chain integrations is `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`. A newer Pons repository revision has also published `0x7E1EAbd52Ae29598e6483F72dCf1a70b14284dB8`. V0 therefore does not silently trust either address: preflight requires runtime bytecode plus recent `TokenLaunched` activity and selects only a unique active candidate. If more than one candidate is active, the run is held and the factories must be studied as separate strata.
+The production-observed Pons V2 factory used by live integrations is `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`. Repository/source revisions may publish other candidate addresses. V0 therefore does not silently trust an address: preflight requires runtime bytecode plus recent `TokenLaunched` activity and selects only a unique active candidate. If more than one candidate is active, the run is held and the factories must be studied as separate strata.
 
 An explicit `--factory-address` override is allowed only after bytecode is observed at that address and is recorded in the preflight artifact.
+
+## Deployed capability binding
+
+Pons public documentation describes a V2 generation with `currentSnipeTaxBps(address)`, while published repository snapshots have at times contained a version mix in which factory source references snipe functions not present in the accompanying curve source. V0 therefore does **not** assign fee/snipe semantics from repository text alone.
+
+After factory discovery, preflight selects a recent real curve and probes deployed bytecode through `eth_call` for:
+
+- `feeBps()`;
+- `creatorTaxBps()`;
+- `getReserves()`;
+- `sellableTokens()`;
+- `readyToGraduate()`;
+- `currentSnipeTaxBps(address)`.
+
+The resulting `protocol_generation_key` is part of the evidence. A successful `currentSnipeTaxBps` call proves that view exists on the deployed generation; it does not by itself prove a nonzero tax at probe time. If the core curve views are absent, preflight fails. A core curve without the snipe view is retained as a separate valid generation rather than being silently interpreted as the snipe-enabled generation.
 
 ## Headline cohort
 
@@ -52,8 +67,8 @@ No window is primary in V0.
 - gross BUY quote input and SELL quote output;
 - signed quote flow and signed-flow/activity ratio;
 - token demand;
-- observed fee and creator-tax load;
-- opening BUY fee share, which includes Pons snipe tax folded into `fee`;
+- event-observed fee and creator-tax load;
+- opening BUY fee dynamics, interpreted according to the deployed generation capability evidence;
 - deployer BUY share;
 - top-1 / top-3 buyer concentration;
 - actor/recipient mismatch;
@@ -66,9 +81,11 @@ No feature becomes a selector until a feature-only corpus is frozen and audited.
 
 ## Pons-specific opening tax
 
-Pons V2 documents a decaying snipe tax on early BUYs. On `CurveBuy`, that opening tax is folded into `fee`, while creator tax is reported separately in `tax`.
+Pons public V2 documentation describes a decaying snipe tax on early BUYs and states that, on the snipe-enabled generation, that opening tax is folded into `CurveBuy.fee`, while creator tax is reported separately in `tax`.
 
-V0 therefore has a dedicated feature-only `fee_dynamics` report that measures first/last/min/median event-observed buy fee, known deployer-exempt buys, non-deployer buys, and local/chain age. It does **not** infer `snipe_tax = fee - assumed_base_fee` without causally observed curve fee state. Launch-specific exemptions can also exist, so a non-deployer buy is not automatically labelled taxed.
+Because deployed generations and published source can drift, V0 always treats `fee` first as **event-observed fee**. The dedicated `fee_dynamics` report measures first/last/min/median observed buy fee, known deployer buys, non-deployer buys and local/chain age. It may be interpreted as base-plus-snipe only when the run's deployed capability probe establishes the snipe-enabled interface and later causal curve state supports the decomposition.
+
+V0 does **not** infer `snipe_tax = fee - assumed_base_fee` without causally observed per-launch fee state. Launch-specific exemptions can exist, so a non-deployer buy is not automatically labelled taxed.
 
 ## Acquisition V0
 
@@ -107,7 +124,8 @@ V0:
 - freezes no selector;
 - imports no Solana threshold;
 - keeps custom-pair launches separate;
-- keeps multiple active Pons factories separate;
+- keeps multiple active Pons factories/generations separate;
+- binds protocol semantics to deployed capability evidence;
 - keeps Social/Event-First separate;
 - does not use post-graduation Uniswap V4 activity as pre-graduation evidence;
 - does not treat graduation as quality;
@@ -115,11 +133,11 @@ V0:
 
 ## Next phases
 
-1. pass network/factory preflight;
+1. pass network/factory/capability preflight;
 2. collect and integrity-audit a feature-only corpus;
 3. inspect feature coverage, opening-fee dynamics, missingness and redundancy;
 4. freeze exactly one Robinhood-specific hypothesis;
-5. freeze entry delay, snipe-tax treatment, fees, slippage, exit and failed-exit policy;
+5. freeze entry delay, deployed-generation fee/snipe treatment, slippage, exit and failed-exit policy;
 6. open prospective outcomes;
 7. compare Robinhood and Solana only as separate strata.
 
