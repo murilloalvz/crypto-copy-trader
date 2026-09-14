@@ -18,6 +18,7 @@ from src.launch_burst_economic_v1 import (
 
 
 PREREG_PATH = Path("benchmarks/launch_burst_prospective_economic_v1/pump_selection_preregistration_v1.json")
+FROZEN_CONTRACT_PATH = Path("benchmarks/launch_burst_prospective_economic_v1/pump_economic_contract_v1.frozen.json")
 
 
 def draft_contract():
@@ -185,6 +186,28 @@ class LaunchBurstEconomicV1Tests(unittest.TestCase):
             [{"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08}],
         )
         self.assertEqual(prereg["strata"]["pumpswap_liquidity_launch"]["decision"], "HOLD_INSUFFICIENT_FEATURE_SAMPLE")
+
+    def test_frozen_pump_economic_contract_matches_preregistration(self):
+        contract = json.loads(FROZEN_CONTRACT_PATH.read_text(encoding="utf-8"))
+        validate_contract(contract, require_frozen=True)
+        self.assertEqual(contract["contract_hash_sha256"], contract_hash_sha256(contract))
+        self.assertEqual(
+            contract["contract_hash_sha256"],
+            "859a071145395789956d8df27bf348c134c1031eb43bc6e3ccf3aeec820222a5",
+        )
+        self.assertEqual(contract["active_strata"], ["pump_launch"])
+        self.assertEqual(
+            contract["selection_preregistration_sha256"],
+            "9a2f666a2e03e9c2ba39fc69ae9377de2ea2a0fcb2455e31256fdb473041865a",
+        )
+        self.assertEqual(
+            contract["selection_rule"]["predicates"],
+            [{"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08}],
+        )
+        self.assertEqual(contract["entry"]["latency_seconds"], 2)
+        self.assertEqual(contract["position"]["notional_usd"], 25.0)
+        self.assertEqual(contract["exit"]["horizon_seconds"], 60)
+        self.assertEqual(contract["failure_policy"]["unexitable_return_pct"], -100.0)
 
 
 if __name__ == "__main__":
