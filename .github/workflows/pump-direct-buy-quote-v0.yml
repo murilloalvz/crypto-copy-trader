@@ -6,7 +6,9 @@ on:
       - feat/pump-direct-quote-v0
     paths:
       - 'src/pump_bonding_curve_buy_quote_v0.py'
+      - 'src/pump_direct_buy_quote_state_adapter_v0.py'
       - 'tests/test_pump_bonding_curve_buy_quote_v0.py'
+      - 'tests/test_pump_direct_buy_quote_state_adapter_v0.py'
       - 'docs/pump_direct_buy_quote_v0.md'
       - '.github/workflows/pump-direct-buy-quote-v0.yml'
   workflow_dispatch:
@@ -29,6 +31,10 @@ jobs:
       - name: Compile
         run: |
           python -m py_compile src/pump_bonding_curve_buy_quote_v0.py
+          python -m py_compile src/pump_direct_buy_quote_state_adapter_v0.py
           python -m py_compile tests/test_pump_bonding_curve_buy_quote_v0.py
+          python -m py_compile tests/test_pump_direct_buy_quote_state_adapter_v0.py
       - name: Test
-        run: python -m unittest tests.test_pump_bonding_curve_buy_quote_v0 -v
+        run: |
+          python -m unittest tests.test_pump_bonding_curve_buy_quote_v0 -v
+          python -m unittest tests.test_pump_direct_buy_quote_state_adapter_v0 -v
