@@ -6,7 +6,9 @@ on:
       - feat/structural-risk-facts-v0
     paths:
       - 'src/token_structural_risk_v0.py'
+      - 'src/solana_tracker_structural_risk_v0.py'
       - 'tests/test_token_structural_risk_v0.py'
+      - 'tests/test_solana_tracker_structural_risk_v0.py'
       - 'docs/analysis_capability_inventory_v0.md'
       - '.github/workflows/analysis-structural-risk-v0.yml'
   workflow_dispatch:
@@ -29,6 +31,10 @@ jobs:
       - name: Compile
         run: |
           python -m py_compile src/token_structural_risk_v0.py
+          python -m py_compile src/solana_tracker_structural_risk_v0.py
           python -m py_compile tests/test_token_structural_risk_v0.py
+          python -m py_compile tests/test_solana_tracker_structural_risk_v0.py
       - name: Test
-        run: python -m unittest tests.test_token_structural_risk_v0 -v
+        run: |
+          python -m unittest tests.test_token_structural_risk_v0 -v
+          python -m unittest tests.test_solana_tracker_structural_risk_v0 -v
