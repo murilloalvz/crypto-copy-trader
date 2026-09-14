@@ -21,7 +21,7 @@ def draft_contract():
     return {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "status": "DRAFT_UNARMED",
-        "source_feature_report_sha256": "fixture-feature-report",
+        "source_feature_report_sha256": "a" * 64,
         "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": 10},
         "strata": ["pump_launch", "pumpswap_liquidity_launch"],
         "selection_rule": {"mode": "all_of", "predicates": [{"feature": "event_count", "op": ">=", "value": 5}]},
@@ -33,14 +33,21 @@ def draft_contract():
     }
 
 
-def snapshot(stratum="pump_launch", complete=True, event_count=6, decision_as_of=105):
-    return {"stratum": stratum, "complete": complete, "decision_as_of": decision_as_of, "features": {"event_count": event_count, "unique_wallet_count": 4}}
+def snapshot(stratum="pump_launch", complete=True, event_count=6, observed_t0=100):
+    return {
+        "stratum": stratum,
+        "complete": complete,
+        "observed_t0": observed_t0,
+        "evidence_window_seconds": 5,
+        "decision_as_of": observed_t0 + 5,
+        "features": {"event_count": event_count, "unique_wallet_count": 4},
+    }
 
 
-def quote(side, observed_at, price, token="TOKEN"):
+def quote(side, observed_at, price, token="TOKEN", liquidity=10_000.0):
     return CausalQuoteObservation(
         token_mint=token, side=side, market_time=observed_at, observed_at=observed_at,
-        price_usd=price, source="fixture", executable=True, liquidity_usd=10_000.0,
+        price_usd=price, source="fixture", executable=True, liquidity_usd=liquidity,
         input_mint="USDC" if side == "buy" else token,
         output_mint=token if side == "buy" else "USDC",
         input_amount_raw="25000000", output_amount_raw="25000000",
@@ -72,6 +79,12 @@ class LaunchBurstEconomicV1Tests(unittest.TestCase):
         self.assertEqual(decision.status, "RIGHT_CENSORED")
         self.assertIsNone(decision.net_return_pct)
 
+    def test_decision_snapshot_must_be_exactly_observed_t0_plus_5s(self):
+        bad = snapshot()
+        bad["decision_as_of"] = 106
+        with self.assertRaisesRegex(ValueError, "observed_t0 \+ 5s"):
+            evaluate_episode(token_mint="TOKEN", venue="pump", feature_snapshot=bad, quotes=(), contract=self.contract)
+
     def test_no_future_leakage_entry_is_after_cutoff_plus_latency(self):
         decision = evaluate_episode(
             token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(),
@@ -89,6 +102,13 @@ class LaunchBurstEconomicV1Tests(unittest.TestCase):
         self.assertEqual(decision.status, "CLOSED")
         self.assertAlmostEqual(decision.gross_return_pct, 10.0)
         self.assertLess(decision.net_return_pct, decision.gross_return_pct)
+
+    def test_zero_liquidity_rejects_entry_without_division_by_zero(self):
+        decision = evaluate_episode(
+            token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(),
+            quotes=(quote("buy", 106, 1.0, liquidity=0.0),), contract=self.contract,
+        )
+        self.assertEqual(decision.status, "ENTRY_REJECTED:LIQUIDITY_UNAVAILABLE")
 
     def test_unexitable_exit_is_counted(self):
         decision = evaluate_episode(token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(), quotes=(quote("buy", 106, 1.0),), contract=self.contract)
