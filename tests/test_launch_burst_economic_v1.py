@@ -1,0 +1,118 @@
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from benchmarks.launch_burst_prospective_economic_v1.run import BLOCKED_CLASSIFICATION, run_economic_v1
+from src.causal_quotes import CausalQuoteObservation
+from src.launch_burst_economic_v1 import (
+    CONTRACT_SCHEMA_VERSION,
+    contract_hash_sha256,
+    evaluate_episode,
+    feature_snapshot_hash_sha256,
+    freeze_contract,
+    validate_contract,
+)
+
+
+def draft_contract():
+    # Synthetic test values only; these are not the production Launch Burst hypothesis.
+    return {
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "status": "DRAFT_UNARMED",
+        "source_feature_report_sha256": "fixture-feature-report",
+        "primary_evidence": {"window_seconds": 5, "confirmation_window_seconds": 10},
+        "strata": ["pump_launch", "pumpswap_liquidity_launch"],
+        "selection_rule": {"mode": "all_of", "predicates": [{"feature": "event_count", "op": ">=", "value": 5}]},
+        "entry": {"latency_seconds": 1, "max_quote_age_seconds": 10, "max_quote_wait_seconds": 10, "require_executable": True},
+        "costs": {"entry_fee_bps": 25, "exit_fee_bps": 25, "entry_adverse_slippage_bps": 50, "exit_adverse_slippage_bps": 50},
+        "position": {"notional_usd": 25.0, "max_fraction_of_reported_liquidity": 0.01, "require_liquidity_observation": True, "max_provider_price_impact_pct_points": 2.0},
+        "exit": {"policy": "fixed_horizon_from_entry", "horizon_seconds": 60, "max_quote_age_seconds": 10, "max_quote_wait_seconds": 10, "require_executable": True},
+        "failure_policy": {"entry_unavailable_return_pct": 0.0, "unexitable_return_pct": -100.0},
+    }
+
+
+def snapshot(stratum="pump_launch", complete=True, event_count=6, decision_as_of=105):
+    return {"stratum": stratum, "complete": complete, "decision_as_of": decision_as_of, "features": {"event_count": event_count, "unique_wallet_count": 4}}
+
+
+def quote(side, observed_at, price, token="TOKEN"):
+    return CausalQuoteObservation(
+        token_mint=token, side=side, market_time=observed_at, observed_at=observed_at,
+        price_usd=price, source="fixture", executable=True, liquidity_usd=10_000.0,
+        input_mint="USDC" if side == "buy" else token,
+        output_mint=token if side == "buy" else "USDC",
+        input_amount_raw="25000000", output_amount_raw="25000000",
+        route_id=f"{side}-{observed_at}", provider_price_impact_pct_points=0.5,
+    )
+
+
+class LaunchBurstEconomicV1Tests(unittest.TestCase):
+    def setUp(self):
+        self.contract = freeze_contract(draft_contract())
+
+    def test_contract_hash_and_no_post_hoc_threshold_mutation(self):
+        validate_contract(self.contract, require_frozen=True)
+        self.assertEqual(self.contract["contract_hash_sha256"], contract_hash_sha256(self.contract))
+        mutated = copy.deepcopy(self.contract)
+        mutated["selection_rule"]["predicates"][0]["value"] = 6
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            validate_contract(mutated, require_frozen=True)
+
+    def test_immutable_decision_snapshot_hash(self):
+        original = snapshot()
+        changed = copy.deepcopy(original)
+        changed["features"]["event_count"] = 99
+        self.assertNotEqual(feature_snapshot_hash_sha256(original), feature_snapshot_hash_sha256(changed))
+
+    def test_right_censoring_is_not_zero(self):
+        decision = evaluate_episode(token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(complete=False, event_count=0), quotes=(), contract=self.contract)
+        self.assertFalse(decision.admitted)
+        self.assertEqual(decision.status, "RIGHT_CENSORED")
+        self.assertIsNone(decision.net_return_pct)
+
+    def test_no_future_leakage_entry_is_after_cutoff_plus_latency(self):
+        decision = evaluate_episode(
+            token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(),
+            quotes=(quote("buy", 105, 0.5), quote("buy", 106, 1.0), quote("sell", 166, 1.1)),
+            contract=self.contract,
+        )
+        self.assertEqual(decision.entry_quote.observed_at, 106)
+        self.assertEqual(decision.entry_quote.price_usd, 1.0)
+
+    def test_fees_and_slippage_are_applied(self):
+        decision = evaluate_episode(
+            token_mint="TOKEN", venue="pump_bonding_curve", feature_snapshot=snapshot(),
+            quotes=(quote("buy", 106, 1.0), quote("sell", 166, 1.1)), contract=self.contract,
+        )
+        self.assertEqual(decision.status, "CLOSED")
+        self.assertAlmostEqual(decision.gross_return_pct, 10.0)
+        self.assertLess(decision.net_return_pct, decision.gross_return_pct)
+
+    def test_unexitable_exit_is_counted(self):
+        decision = evaluate_episode(token_mint="TOKEN", venue="pump", feature_snapshot=snapshot(), quotes=(quote("buy", 106, 1.0),), contract=self.contract)
+        self.assertEqual(decision.status, "UNEXITABLE")
+        self.assertEqual(decision.net_return_pct, -100.0)
+        self.assertEqual(decision.pnl_usd, -25.0)
+
+    def test_pump_and_pumpswap_separation(self):
+        pump = evaluate_episode(token_mint="TOKEN", venue="pump_bonding_curve", feature_snapshot=snapshot(), quotes=(), contract=self.contract)
+        pumpswap = evaluate_episode(token_mint="TOKEN2", venue="pumpswap", feature_snapshot=snapshot(stratum="pumpswap_liquidity_launch"), quotes=(), contract=self.contract)
+        self.assertEqual(pump.stratum, "pump_launch")
+        self.assertEqual(pumpswap.stratum, "pumpswap_liquidity_launch")
+
+    def test_draft_blocks_before_outcome_input_is_read(self):
+        draft = draft_contract()
+        draft["selection_rule"]["predicates"] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contract_path = root / "contract.json"
+            contract_path.write_text(json.dumps(draft), encoding="utf-8")
+            result = run_economic_v1(contract_path=contract_path, input_path=root / "must-not-be-read.json", output_path=root / "result.json")
+        self.assertEqual(result["classification"], BLOCKED_CLASSIFICATION)
+        self.assertFalse(result["economic_outcomes_opened"])
+
+
+if __name__ == "__main__":
+    unittest.main()
