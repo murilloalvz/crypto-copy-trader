@@ -5,7 +5,10 @@ import tempfile
 import unittest
 
 from benchmarks.helius_standard_wss_shadow_v0.collect import Counters
-from benchmarks.launch_burst_prospective_route_paper_v2.live import OnlinePumpFeatureState
+from benchmarks.launch_burst_prospective_route_paper_v2.live import (
+    OnlinePumpFeatureState,
+    _entry_ready_second,
+)
 from benchmarks.market_first_live_discovery_v0.rotating_trace import RotatingTraceHandleV0
 
 
@@ -70,6 +73,13 @@ class LaunchBurstProspectiveRouteLiveV2Tests(unittest.TestCase):
         self.assertEqual(snapshot["decision_cutoff_wall_ns"], 115_250_000_000)
         self.assertEqual(snapshot["features"]["event_count"], 1)
         self.assertAlmostEqual(snapshot["features"]["signed_flow_over_event_reserve"], 0.1)
+
+    def test_entry_ready_second_ceil_preserves_exact_ns_cutoff(self):
+        snapshot = {"decision_cutoff_wall_ns": 115_250_000_000}
+        contract = {"entry": {"latency_seconds": 2}}
+        self.assertEqual(_entry_ready_second(snapshot, contract), 118)
+        snapshot["decision_cutoff_wall_ns"] = 115_000_000_000
+        self.assertEqual(_entry_ready_second(snapshot, contract), 117)
 
     def test_uncovered_anchor_remains_right_censored(self):
         with tempfile.TemporaryDirectory() as directory:
