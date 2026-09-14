@@ -358,7 +358,7 @@ def extract_signed_tx_intents_v0(message: NitroFeedMessageV0) -> tuple[NitroSign
     output: list[NitroSignedTxIntentV0] = []
 
     def visit(raw: bytes, path: tuple[int, ...], depth: int) -> None:
-        if depth > MAX_BATCH_DEPTH:
+        if depth >= MAX_BATCH_DEPTH:
             raise ValueError("Nitro L2 batch exceeds maximum depth")
         if not raw:
             raise ValueError("empty L2 message")
