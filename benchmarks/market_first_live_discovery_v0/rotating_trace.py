@@ -70,6 +70,10 @@ class RotatingTraceHandleV0:
     def opened_monotonic(self) -> float:
         return self._opened_monotonic
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def finalized_wall_ns(self, path: Path) -> int | None:
         return self._finalized_wall_ns.get(str(Path(path).resolve()))
 
@@ -146,6 +150,17 @@ class RotatingTraceHandleV0:
     def rotate_if_nonempty(self, *, stop_reason: str = "timed_rotation") -> Path | None:
         """Finalize the current chunk only when it has payload rows beyond the header."""
         if self._closed or self._payload_rows <= 0:
+            return None
+        return self._finalize_chunk(stop_reason=stop_reason, open_next=True)
+
+    def rotate_for_watermark(self, *, stop_reason: str = "timed_watermark") -> Path | None:
+        """Finalize even an empty open chunk to advance an auditable local receive-time watermark.
+
+        This is opt-in. Existing callers using rotate_if_nonempty retain their old behavior.
+        The resulting header/footer-only chunk is intentionally reducer-compatible and proves
+        that no trace payload row had reached this sink before its finalized_wall_ns clock.
+        """
+        if self._closed:
             return None
         return self._finalize_chunk(stop_reason=stop_reason, open_next=True)
 
