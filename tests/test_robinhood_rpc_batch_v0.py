@@ -2,8 +2,10 @@ import json
 import unittest
 from unittest.mock import patch
 
-from benchmarks.robinhood_launch_burst_v0.live import JsonRpcError
-from benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0 import BatchRpcClientV0
+from benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0 import (
+    BatchRpcClientV0,
+    JsonRpcErrorV0,
+)
 
 
 class FakeHttpResponse:
@@ -55,7 +57,7 @@ class RobinhoodRpcBatchV0Tests(unittest.TestCase):
             "benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0.urllib.request.urlopen",
             return_value=response,
         ):
-            with self.assertRaisesRegex(JsonRpcError, "duplicate id"):
+            with self.assertRaisesRegex(JsonRpcErrorV0, "duplicate id"):
                 client.batch_call([("a", []), ("b", [])])
 
     def test_missing_or_unexpected_response_id_fails_batch(self):
@@ -68,7 +70,7 @@ class RobinhoodRpcBatchV0Tests(unittest.TestCase):
             "benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0.urllib.request.urlopen",
             return_value=response,
         ):
-            with self.assertRaisesRegex(JsonRpcError, "batch id mismatch"):
+            with self.assertRaisesRegex(JsonRpcErrorV0, "batch id mismatch"):
                 client.batch_call([("a", []), ("b", [])])
 
     def test_per_item_rpc_error_fails_whole_state_batch(self):
@@ -81,8 +83,31 @@ class RobinhoodRpcBatchV0Tests(unittest.TestCase):
             "benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0.urllib.request.urlopen",
             return_value=response,
         ):
-            with self.assertRaisesRegex(JsonRpcError, "batch\[1\].*rpc error"):
+            with self.assertRaisesRegex(JsonRpcErrorV0, "batch\\[1\\].*rpc error"):
                 client.batch_call([("a", []), ("b", [])])
+
+    def test_single_call_surface_is_also_dependency_free_and_id_checked(self):
+        client = BatchRpcClientV0("https://rpc.invalid")
+        response = FakeHttpResponse(
+            {"jsonrpc": "2.0", "id": 1, "result": "0x123"}
+        )
+        with patch(
+            "benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0.urllib.request.urlopen",
+            return_value=response,
+        ):
+            self.assertEqual(client.call("eth_test", []), "0x123")
+
+    def test_single_call_wrong_id_is_rejected(self):
+        client = BatchRpcClientV0("https://rpc.invalid")
+        response = FakeHttpResponse(
+            {"jsonrpc": "2.0", "id": 999, "result": "0x123"}
+        )
+        with patch(
+            "benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0.urllib.request.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(JsonRpcErrorV0, "response id mismatch"):
+                client.call("eth_test", [])
 
 
 if __name__ == "__main__":
