@@ -16,8 +16,9 @@ from dotenv import load_dotenv
 
 from benchmarks.robinhood_launch_burst_v0.direct_quote_state import read_curve_quote_state_v0
 from benchmarks.robinhood_launch_burst_v0.factory_discovery import discover_factory_v0
-from benchmarks.robinhood_launch_burst_v0.live import DEFAULT_PUBLIC_RPC, RpcClient
+from benchmarks.robinhood_launch_burst_v0.live import DEFAULT_PUBLIC_RPC
 from benchmarks.robinhood_launch_burst_v0.protocol_capabilities import probe_protocol_capabilities_v0
+from benchmarks.robinhood_launch_burst_v0.rpc_batch_contract_v0 import BatchRpcClientV0
 from src.pons_v2_curve_quote_v0 import quote_buy_v0, quote_sell_v0
 from src.robinhood_pons_launch_burst_v0 import TOKEN_LAUNCHED_SIGNATURE
 
@@ -115,7 +116,7 @@ def main() -> None:
         parser.error("--tokens-in-raw must be positive")
 
     url = args.rpc_url or os.environ.get("ROBINHOOD_RPC_URL") or DEFAULT_PUBLIC_RPC
-    client = RpcClient(url, 10)
+    client = BatchRpcClientV0(url, 10)
     try:
         result = run_direct_quote_probe_v0(
             client=client,
