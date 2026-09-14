@@ -1,6 +1,6 @@
 """Read-only deployed-capability probe for Pons V2 curve generations.
 
-The public Pons source/docs can move at different speeds.  V0 therefore records
+The public Pons source/docs can move at different speeds. V0 therefore records
 what a real recently launched curve exposes through eth_call instead of assigning
 fee/snipe semantics from repository text alone.
 """
@@ -93,6 +93,7 @@ def probe_protocol_capabilities_v0(
         "getReserves": "getReserves()",
         "sellableTokens": "sellableTokens()",
         "readyToGraduate": "readyToGraduate()",
+        "graduated": "graduated()",
     }
     for name, signature in simple.items():
         ok, value, error = _eth_call(client, curve, _selector(client, signature))
@@ -103,7 +104,15 @@ def probe_protocol_capabilities_v0(
     ok, value, error = _eth_call(client, curve, snipe_data)
     probes["currentSnipeTaxBps"] = {"supported": ok, "result": value, "error": error}
 
-    base_ok = all(probes[name]["supported"] for name in ("feeBps", "creatorTaxBps", "getReserves", "sellableTokens"))
+    quote_required_views = (
+        "feeBps",
+        "creatorTaxBps",
+        "getReserves",
+        "sellableTokens",
+        "readyToGraduate",
+        "graduated",
+    )
+    base_ok = all(probes[name]["supported"] for name in quote_required_views)
     snipe_ok = probes["currentSnipeTaxBps"]["supported"]
     if not base_ok:
         classification = "FAIL_PONS_PROTOCOL_CAPABILITIES_V0_CORE_VIEW_MISSING"
@@ -121,9 +130,12 @@ def probe_protocol_capabilities_v0(
         "generation_key": f"pons_v2:{factory.lower()}:{suffix}",
         "recent_curve": recent,
         "capabilities": probes,
+        "quote_required_views": list(quote_required_views),
+        "quote_state_readable": base_ok,
         "notes": [
             "capability_semantics_are_bound_to_deployed_bytecode_not_repo_assumptions",
             "successful_currentSnipeTaxBps_call_proves_interface_presence_not_nonzero_tax_at_probe_time",
+            "readyToGraduate_and_graduated_are_required_for_honest_sell_quotability",
             "exact_fee_model_still_requires_causal_per_launch_state",
         ],
     }
