@@ -33,6 +33,27 @@ The documented reverse BUY quote for desired tokens is also implemented:
 
 All arithmetic is integer/raw-unit arithmetic.
 
+### Split-fee rounding nuance
+
+V0 intentionally preserves both the documented reverse budget and the sum obtained by separately rounding protocol and creator fees.
+
+Because:
+
+`ceil(protocol_fee) + ceil(creator_fee)`
+
+can be one raw quote unit larger than:
+
+`ceil(total_fee)`
+
+the documented reverse `spendable_quote` can occasionally be one raw unit below `net_quote + protocol_fee + creator_fee`. The forward exact-input formula then performs its documented overrun correction and may return slightly fewer tokens than the requested reverse amount.
+
+V0 exposes:
+
+- `documented_spendable_quote_raw` — the canonical reverse formula result;
+- `computed_total_quote_raw` — `net_quote + separately_rounded_protocol_fee + separately_rounded_creator_fee`.
+
+Downstream execution research must preserve this distinction rather than silently modifying the canonical formula. If a fee-exact conservative max-cost is required, `computed_total_quote_raw` is the safer raw-unit budget to test, subject to later validation against the actual Pump instruction/runtime.
+
 ## Fee policy
 
 V0 **does not derive fee tiers**.
