@@ -1,0 +1,71 @@
+{
+  "type": "launch_burst_selection_preregistration",
+  "version": "launch_burst_pump_selection_v1",
+  "status": "FROZEN_FEATURE_SELECTION",
+  "outcomes_opened": false,
+  "source": {
+    "capture_id": "launch_burst_live_capture_v2_signal_only-1789354105-28893e8ba2",
+    "analysis_report_sha256": "8419dbb2b7e3dec6f6a521d828cfee7489807d344ab926ab18c2a336d5a211f7",
+    "analysis_classification": "PASS_LAUNCH_BURST_LIVE_FEATURE_ANALYSIS_V0",
+    "redundancy_classification": "PASS_LAUNCH_BURST_FEATURE_REDUNDANCY_V0",
+    "outcome_blind": true
+  },
+  "strata": {
+    "pump_launch": {
+      "decision": "ACTIVE_PROSPECTIVE_HYPOTHESIS",
+      "feature_sample": {
+        "anchor_count": 275,
+        "complete_count": 275,
+        "right_censored_count": 0,
+        "nonempty_count": 260
+      },
+      "primary_evidence": {
+        "window_seconds": 5,
+        "confirmation_window_seconds": null
+      },
+      "selection_rule": {
+        "mode": "all_of",
+        "predicates": [
+          {
+            "feature": "signed_flow_over_event_reserve",
+            "op": ">=",
+            "value": 0.08
+          }
+        ]
+      },
+      "feature_basis": {
+        "coverage_pct": 100.0,
+        "p50": 0.008224044427622524,
+        "p75": 0.07935703240011051,
+        "p90": 0.23081115443764705
+      },
+      "excluded_from_v1": {
+        "unique_wallet_count": "wallet identity coverage is 0% for pump_launch",
+        "time_to_5_events_ms": "coverage is 42.18181818181818%",
+        "buy_sell_count_imbalance": "strongly redundant with flow_efficiency and saturated near 1",
+        "flow_efficiency": "strongly redundant with buy_sell_count_imbalance",
+        "event_count": "kept out to preserve a single-feature V1 hypothesis",
+        "gross_turnover_over_event_reserve": "kept out to preserve a single-feature V1 hypothesis"
+      }
+    },
+    "pumpswap_liquidity_launch": {
+      "decision": "HOLD_INSUFFICIENT_FEATURE_SAMPLE",
+      "feature_sample": {
+        "anchor_count": 17,
+        "complete_count": 17,
+        "right_censored_count": 0,
+        "nonempty_count": 17
+      },
+      "selection_rule": null,
+      "reason": "n=17 is insufficient to freeze a PumpSwap threshold; collect more feature-only launches"
+    }
+  },
+  "economic_parameters_status": "UNARMED",
+  "scientific_guardrails": {
+    "no_economic_outcomes_used_for_selection": true,
+    "pump_and_pumpswap_independent": true,
+    "no_post_hoc_threshold_retuning": true,
+    "economic_runner_remains_blocked_until_full_contract_frozen": true
+  },
+  "preregistration_sha256": "9a2f666a2e03e9c2ba39fc69ae9377de2ea2a0fcb2455e31256fdb473041865a"
+}
