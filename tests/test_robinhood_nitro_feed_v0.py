@@ -7,6 +7,7 @@ from src.robinhood_nitro_feed_v0 import (
     L1_MESSAGE_TYPE_L2_MESSAGE,
     L2_MESSAGE_KIND_BATCH,
     L2_MESSAGE_KIND_SIGNED_TX,
+    MAX_BATCH_DEPTH,
     classify_pons_intent_v0,
     extract_signed_tx_intents_v0,
     parse_broadcast_message_v0,
@@ -42,9 +43,9 @@ def _rlp(item):
 
 def _legacy_tx(*, to, value=0, data=b""):
     return _rlp([
-        1,       # nonce
-        2,       # gasPrice
-        50_000,  # gasLimit
+        1,
+        2,
+        50_000,
         to,
         value,
         data,
@@ -56,15 +57,15 @@ def _legacy_tx(*, to, value=0, data=b""):
 
 def _type2_tx(*, to, value=0, data=b""):
     return b"\x02" + _rlp([
-        4663,    # chainId
-        1,       # nonce
-        2,       # maxPriorityFeePerGas
-        3,       # maxFeePerGas
-        50_000,  # gasLimit
+        4663,
+        1,
+        2,
+        3,
+        50_000,
         to,
         value,
         data,
-        [],      # accessList
+        [],
         0,
         1,
         1,
@@ -95,6 +96,10 @@ def _feed_payload(l2_messages, *, kind=L1_MESSAGE_TYPE_L2_MESSAGE):
             "blockMetadata": base64.b64encode(b"\x00\x02").decode(),
         })
     return json.dumps({"version": 1, "messages": rows})
+
+
+def _wrap_batch(child):
+    return bytes([L2_MESSAGE_KIND_BATCH]) + len(child).to_bytes(8, "big") + child
 
 
 class RobinhoodNitroFeedV0Tests(unittest.TestCase):
@@ -179,6 +184,19 @@ class RobinhoodNitroFeedV0Tests(unittest.TestCase):
         self.assertEqual(intents[1].batch_path, (1,))
         self.assertEqual(intents[0].calldata_selector, "0x11111111")
         self.assertEqual(intents[1].calldata_selector, "0x22222222")
+
+    def test_batch_at_depth_16_is_rejected_exactly_like_nitro(self):
+        leaf = bytes([L2_MESSAGE_KIND_SIGNED_TX]) + _legacy_tx(
+            to=bytes.fromhex("ab" * 20), data=bytes.fromhex("01020304")
+        )
+        nested = leaf
+        for _ in range(MAX_BATCH_DEPTH):
+            nested = _wrap_batch(nested)
+        message = parse_broadcast_message_v0(
+            _feed_payload([nested]), observed_at_ns=3_500
+        )[0]
+        with self.assertRaisesRegex(ValueError, "maximum depth"):
+            extract_signed_tx_intents_v0(message)
 
     def test_pons_classification_is_target_and_selector_based_but_intent_only(self):
         factory = "0x" + "88" * 20
