@@ -47,9 +47,11 @@ class ArtifactPopenFactory:
         self.feed_error = feed_error
         self.rpc_ready = rpc_ready
         self.commands = []
+        self.envs = []
 
     def __call__(self, command, **kwargs):
         self.commands.append(list(command))
+        self.envs.append(dict(kwargs.get("env") or {}))
         module = command[command.index("-m") + 1]
         artifacts_root = Path(command[command.index("--artifacts-root") + 1])
         is_rpc = "launch_burst_v0.live" in module
@@ -118,12 +120,12 @@ def _bootstrap(
 
 
 class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
-    def test_child_commands_keep_rpc_and_feed_on_same_requested_window(self):
+    def test_child_commands_keep_rpc_and_feed_on_same_requested_window_without_rpc_secret(self):
         rpc, feed = build_child_commands_v0(
             python_executable="python",
             duration_seconds=180,
             poll_ms=350,
-            rpc_url="https://rpc.example",
+            rpc_url="https://provider.example/v2/SECRET",
             feed_url="wss://feed.example",
             rpc_artifacts_root=Path("rpc-root"),
             feed_artifacts_root=Path("feed-root"),
@@ -138,14 +140,19 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
         self.assertEqual(rpc[rpc.index("--ready-file") + 1], "rpc-ready.json")
         self.assertIn("--factory-address", rpc)
         self.assertNotIn("--factory-address", feed)
+        self.assertNotIn("--rpc-url", rpc)
+        self.assertNotIn("--rpc-url", feed)
+        self.assertNotIn("SECRET", str(rpc))
+        self.assertNotIn("SECRET", str(feed))
 
     def test_coordinated_pass_requires_rpc_ready_and_both_child_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             factory = ArtifactPopenFactory()
+            secret_rpc = "https://provider.example/v2/SECRET"
             report = run_coordinated_shadow_v0(
                 duration_seconds=1,
                 poll_ms=350,
-                rpc_url="https://rpc.example",
+                rpc_url=secret_rpc,
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
@@ -171,6 +178,10 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             self.assertTrue(report["rpc_report_present"])
             self.assertTrue(report["feed_report_present"])
             self.assertEqual(len(factory.commands), 2)
+            self.assertEqual(factory.envs[0]["ROBINHOOD_RPC_URL"], secret_rpc)
+            self.assertEqual(factory.envs[1]["ROBINHOOD_RPC_URL"], secret_rpc)
+            self.assertTrue(report["rpc_endpoint"]["path_redacted"])
+            self.assertNotIn("SECRET", str(report))
 
     def test_rpc_not_ready_blocks_feed_start(self):
         with tempfile.TemporaryDirectory() as directory:
