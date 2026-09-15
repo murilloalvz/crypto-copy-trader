@@ -22,6 +22,7 @@ FEED_CLIENT_VERSION = 2
 FEED_SERVER_VERSION = 2
 ROBINHOOD_CHAIN_ID = 4663
 DEFAULT_FEED_URL = "wss://feed.mainnet.chain.robinhood.com"
+USER_AGENT = "crypto-copy-trader-robinhood-shadow-v0/0"
 
 HEADER_CLIENT_VERSION = "arbitrum-feed-client-version"
 HEADER_REQUESTED_SEQUENCE = "arbitrum-requested-sequence-number"
@@ -43,8 +44,10 @@ class NitroHandshakeV0:
     path: str
     requested_sequence_number: int
     feed_client_version: int
-    feed_server_version: int
-    chain_id: int
+    feed_server_version: int | None
+    chain_id: int | None
+    feed_server_version_header_present: bool
+    chain_id_header_present: bool
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,7 @@ def build_handshake_request_v0(
     lines = [
         f"GET {path} HTTP/1.1",
         f"Host: {host_header}",
+        f"User-Agent: {USER_AGENT}",
         "Upgrade: websocket",
         "Connection: Upgrade",
         f"Sec-WebSocket-Key: {websocket_key}",
@@ -137,6 +141,15 @@ def validate_handshake_response_v0(
     requested_sequence_number: int,
     expected_chain_id: int = ROBINHOOD_CHAIN_ID,
 ) -> NitroHandshakeV0:
+    """Validate the WebSocket upgrade and any Nitro metadata that is present.
+
+    Current Nitro clients do not require feed-version or chain-id response
+    headers unless configured to do so. Absence therefore remains explicit
+    evidence (``None`` + ``*_header_present=False``), while a present value is
+    still validated fail-closed. The caller must not infer chain identity from a
+    missing response header; the coordinated pipeline verifies chain id through
+    RPC separately before feed acquisition opens.
+    """
     status, headers = _parse_http_headers(raw_headers)
     if status != 101:
         raise WebSocketProtocolError(f"WebSocket upgrade rejected with HTTP {status}")
@@ -154,19 +167,27 @@ def validate_handshake_response_v0(
         raise WebSocketProtocolError("Sec-WebSocket-Accept mismatch")
     if "sec-websocket-extensions" in headers:
         raise WebSocketProtocolError("unexpected WebSocket extension negotiation")
+
+    server_version_present = HEADER_SERVER_VERSION in headers
+    chain_id_present = HEADER_CHAIN_ID in headers
+    server_version: int | None = None
+    chain_id: int | None = None
+
     try:
-        server_version = int(headers[HEADER_SERVER_VERSION], 0)
-        chain_id = int(headers[HEADER_CHAIN_ID], 0)
-    except KeyError as exc:
-        raise WebSocketProtocolError(f"missing Nitro handshake header: {exc.args[0]}") from exc
+        if server_version_present:
+            server_version = int(headers[HEADER_SERVER_VERSION], 0)
+        if chain_id_present:
+            chain_id = int(headers[HEADER_CHAIN_ID], 0)
     except ValueError as exc:
         raise WebSocketProtocolError("malformed Nitro handshake integer header") from exc
-    if server_version != FEED_SERVER_VERSION:
+
+    if server_version is not None and server_version != FEED_SERVER_VERSION:
         raise WebSocketProtocolError(
             f"unexpected feed server version: {server_version}"
         )
-    if chain_id != expected_chain_id:
+    if chain_id is not None and chain_id != expected_chain_id:
         raise WebSocketProtocolError(f"unexpected feed chain id: {chain_id}")
+
     host, _, path = _feed_target(feed_url)
     return NitroHandshakeV0(
         feed_url=feed_url,
@@ -176,6 +197,8 @@ def validate_handshake_response_v0(
         feed_client_version=FEED_CLIENT_VERSION,
         feed_server_version=server_version,
         chain_id=chain_id,
+        feed_server_version_header_present=server_version_present,
+        chain_id_header_present=chain_id_present,
     )
 
 
