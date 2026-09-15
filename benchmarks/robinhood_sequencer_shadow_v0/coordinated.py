@@ -221,10 +221,13 @@ def run_coordinated_shadow_v0(
     child_processes_ok = rpc_return_code == 0 and feed_return_code == 0 and not timed_out
     artifacts_present = rpc_report is not None and feed_report is not None
     rpc_capture_ok = _report_passed(rpc_report)
-    bootstrap_ok = bool(
-        bootstrap_report
-        and bootstrap_report.get("classification") == "PASS_BOOTSTRAP_CLASSIFICATION"
+    bootstrap_classification = (
+        str(bootstrap_report.get("classification") or "")
+        if bootstrap_report
+        else ""
     )
+    bootstrap_ok = bootstrap_classification == "PASS_BOOTSTRAP_CLASSIFICATION"
+    bootstrap_hold = bootstrap_classification.startswith("HOLD_")
     anchor_ok = bool(
         bootstrap_report
         and bootstrap_report.get("anchor_reorg_guard_passed") is True
@@ -245,10 +248,14 @@ def run_coordinated_shadow_v0(
         classification = "FAIL_COORDINATED_SHADOW_RPC_CAPTURE"
     elif not feed_capture_ok:
         classification = "FAIL_COORDINATED_SHADOW_FEED_CAPTURE"
-    elif bootstrap_report is None or not bootstrap_ok:
+    elif bootstrap_report is None:
         classification = "FAIL_COORDINATED_SHADOW_BOOTSTRAP_CLASSIFICATION"
-    elif not anchor_ok:
+    elif bootstrap_classification == "FAIL_ANCHOR_REORG_GUARD" or not anchor_ok:
         classification = "FAIL_COORDINATED_SHADOW_ANCHOR_GUARD"
+    elif bootstrap_hold:
+        classification = "INCONCLUSIVE_COORDINATED_SHADOW_BOOTSTRAP_COVERAGE"
+    elif not bootstrap_ok:
+        classification = "FAIL_COORDINATED_SHADOW_BOOTSTRAP_CLASSIFICATION"
     elif eligible_messages == 0:
         classification = "PASS_COORDINATED_SHADOW_ACQUISITION_V0_NO_LIVE_CANDIDATES"
     else:
@@ -304,6 +311,23 @@ def run_coordinated_shadow_v0(
             bootstrap_report.get("classification") if bootstrap_report else None
         ),
         "bootstrap_anchor_reorg_guard_passed": anchor_ok,
+        "bootstrap_messages_seen": (
+            bootstrap_report.get("messages_seen") if bootstrap_report else None
+        ),
+        "bootstrap_parse_errors": (
+            bootstrap_report.get("parse_errors") if bootstrap_report else None
+        ),
+        "bootstrap_block_resolution_errors": (
+            bootstrap_report.get("block_resolution_errors") if bootstrap_report else None
+        ),
+        "bootstrap_classification_counts": (
+            bootstrap_report.get("classification_counts") if bootstrap_report else None
+        ),
+        "bootstrap_causal_classification_coverage_pct": (
+            bootstrap_report.get("causal_classification_coverage_pct")
+            if bootstrap_report
+            else None
+        ),
         "bootstrap_latency_eligible_messages": eligible_messages,
         "bootstrap_error": bootstrap_error,
         "execution_reconciliation_opened": False,
@@ -317,7 +341,9 @@ def run_coordinated_shadow_v0(
             "bootstrap_classification_is_required_before_latency_analysis",
             "bootstrap_runs_only_after_PASS_RAW_CAPTURE",
             "child_preflight_errors_are_surfaced_in_parent_report",
-            "zero_post_anchor_messages_is_coverage_not_failure",
+            "bootstrap_parse_or_resolution_failures_cannot_be_promoted_to_no_live_candidates",
+            "bootstrap_hold_is_inconclusive_coverage_not_systems_pass",
+            "zero_post_anchor_messages_is_coverage_not_failure_only_after_clean_bootstrap",
             "this_runner_does_not_compute_feed_advantage_or_trade_returns",
         ],
     }
