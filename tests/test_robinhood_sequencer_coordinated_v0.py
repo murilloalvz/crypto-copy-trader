@@ -67,11 +67,25 @@ class ArtifactPopenFactory:
         return FakeProcess(0)
 
 
-def _bootstrap(*, eligible=1, classification="PASS_BOOTSTRAP_CLASSIFICATION", anchor=True):
+def _bootstrap(
+    *,
+    eligible=1,
+    classification="PASS_BOOTSTRAP_CLASSIFICATION",
+    anchor=True,
+    messages_seen=1,
+    parse_errors=0,
+    block_resolution_errors=0,
+    coverage_pct=100.0,
+):
     def classify(**kwargs):
         return {
             "classification": classification,
             "anchor_reorg_guard_passed": anchor,
+            "messages_seen": messages_seen,
+            "parse_errors": parse_errors,
+            "block_resolution_errors": block_resolution_errors,
+            "classification_counts": {},
+            "causal_classification_coverage_pct": coverage_pct,
             "latency_eligible_messages": eligible,
         }
     return classify
@@ -113,6 +127,10 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             )
             self.assertEqual(report["classification"], "PASS_COORDINATED_SHADOW_ACQUISITION_V0")
             self.assertEqual(report["bootstrap_latency_eligible_messages"], 3)
+            self.assertEqual(report["bootstrap_messages_seen"], 1)
+            self.assertEqual(report["bootstrap_parse_errors"], 0)
+            self.assertEqual(report["bootstrap_block_resolution_errors"], 0)
+            self.assertEqual(report["bootstrap_causal_classification_coverage_pct"], 100.0)
             self.assertFalse(report["execution_reconciliation_opened"])
             self.assertFalse(report["latency_claim_opened"])
             self.assertFalse(report["economic_outcomes_opened"])
@@ -120,7 +138,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             self.assertTrue(report["feed_report_present"])
             self.assertEqual(len(factory.commands), 2)
 
-    def test_zero_live_candidates_is_pass_without_latency_coverage(self):
+    def test_zero_live_candidates_is_pass_only_after_clean_bootstrap(self):
         with tempfile.TemporaryDirectory() as directory:
             report = run_coordinated_shadow_v0(
                 duration_seconds=1,
@@ -138,6 +156,8 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 "PASS_COORDINATED_SHADOW_ACQUISITION_V0_NO_LIVE_CANDIDATES",
             )
             self.assertEqual(report["bootstrap_latency_eligible_messages"], 0)
+            self.assertEqual(report["bootstrap_parse_errors"], 0)
+            self.assertEqual(report["bootstrap_block_resolution_errors"], 0)
 
     def test_feed_report_failure_cannot_be_promoted_by_zero_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +209,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 {"classification": "SYNTHETIC_FACTORY_STATE"},
             )
 
-    def test_anchor_guard_failure_blocks_pass(self):
+    def test_anchor_guard_failure_has_specific_parent_classification(self):
         with tempfile.TemporaryDirectory() as directory:
             report = run_coordinated_shadow_v0(
                 duration_seconds=1,
@@ -201,15 +221,62 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(),
                 bootstrap_classifier=_bootstrap(
-                    eligible=1,
+                    eligible=0,
                     classification="FAIL_ANCHOR_REORG_GUARD",
                     anchor=False,
                 ),
             )
             self.assertEqual(
                 report["classification"],
+                "FAIL_COORDINATED_SHADOW_ANCHOR_GUARD",
+            )
+
+    def test_bootstrap_hold_is_inconclusive_not_fail_or_no_live_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = run_coordinated_shadow_v0(
+                duration_seconds=1,
+                poll_ms=350,
+                rpc_url="https://rpc.example",
+                feed_url="wss://feed.example",
+                artifacts_root=Path(directory),
+                python_executable="python",
+                child_timeout_slack_seconds=1,
+                popen_factory=ArtifactPopenFactory(),
+                bootstrap_classifier=_bootstrap(
+                    eligible=0,
+                    classification="HOLD_BOOTSTRAP_NO_CAUSAL_BLOCK_HASH_COVERAGE",
+                    coverage_pct=0.0,
+                ),
+            )
+            self.assertEqual(
+                report["classification"],
+                "INCONCLUSIVE_COORDINATED_SHADOW_BOOTSTRAP_COVERAGE",
+            )
+            self.assertEqual(report["bootstrap_causal_classification_coverage_pct"], 0.0)
+
+    def test_bootstrap_parse_failure_is_systems_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = run_coordinated_shadow_v0(
+                duration_seconds=1,
+                poll_ms=350,
+                rpc_url="https://rpc.example",
+                feed_url="wss://feed.example",
+                artifacts_root=Path(directory),
+                python_executable="python",
+                child_timeout_slack_seconds=1,
+                popen_factory=ArtifactPopenFactory(),
+                bootstrap_classifier=_bootstrap(
+                    eligible=0,
+                    classification="FAIL_BOOTSTRAP_PARSE_ERRORS",
+                    parse_errors=1,
+                    coverage_pct=0.0,
+                ),
+            )
+            self.assertEqual(
+                report["classification"],
                 "FAIL_COORDINATED_SHADOW_BOOTSTRAP_CLASSIFICATION",
             )
+            self.assertEqual(report["bootstrap_parse_errors"], 1)
 
 
 if __name__ == "__main__":
