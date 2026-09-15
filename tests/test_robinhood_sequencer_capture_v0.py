@@ -8,6 +8,7 @@ from benchmarks.robinhood_sequencer_shadow_v0.capture import (
     CAPTURE_VERSION,
     JsonRpcClientV0,
     SequenceTrackerV0,
+    USER_AGENT,
     _existing_capture_run_dirs_v0,
     _persist_cli_failure_report_v0,
 )
@@ -77,6 +78,20 @@ class RobinhoodSequencerCaptureV0Tests(unittest.TestCase):
     def test_negative_sequence_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             SequenceTrackerV0().observe(-1)
+
+    def test_rpc_request_identifies_client(self):
+        client = JsonRpcClientV0("https://rpc.example")
+
+        def fake_urlopen(request, timeout):
+            self.assertEqual(request.get_header("User-agent"), USER_AGENT)
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+            return FakeHttpResponse({"jsonrpc": "2.0", "id": 1, "result": "0x123"})
+
+        with patch(
+            "benchmarks.robinhood_sequencer_shadow_v0.capture.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            self.assertEqual(client.call("eth_test", []), "0x123")
 
     def test_rpc_transport_failure_includes_method_name(self):
         client = JsonRpcClientV0("https://rpc.example")
