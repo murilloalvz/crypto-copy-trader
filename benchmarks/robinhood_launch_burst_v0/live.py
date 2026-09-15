@@ -26,6 +26,7 @@ from src.robinhood_pons_launch_burst_v0 import (
 )
 
 DEFAULT_PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
+READY_VERSION = "robinhood_launch_burst_rpc_ready_v0"
 
 
 class JsonRpcError(RuntimeError):
@@ -121,6 +122,20 @@ class RpcClient:
 def _write(path, row):
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def _write_json_atomic(path: Path, row: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise FileExistsError(f"readiness path already exists: {path}")
+    temporary = path.with_name(path.name + f".tmp-{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(json.dumps(row, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _percentile(values, q):
@@ -223,6 +238,7 @@ def run(args):
     events_path = run_dir / "events.jsonl"
     snapshots_path = run_dir / "snapshots.jsonl"
     report_path = run_dir / "report.json"
+    ready_path = Path(args.ready_file) if getattr(args, "ready_file", None) else None
 
     client = RpcClient(rpc_url, args.rpc_timeout_seconds)
     errors = []
@@ -230,7 +246,8 @@ def run(args):
     snapshots = []
     block_timestamp_cache = {}
     poll_latency_ms = []
-    start_ns = time.time_ns()
+    process_start_ns = time.time_ns()
+    capture_start_ns = None
     stop_reason = "unknown"
     initial_block = None
     final_block = None
@@ -239,6 +256,7 @@ def run(args):
     selected_factory = None
     failure_stage = "preflight_chain_id"
     preflight_completed = False
+    ready_file_written = False
 
     try:
         chain_id = client.chain_id()
@@ -270,10 +288,31 @@ def run(args):
         initial_block = latest
         next_block = latest + 1
         preflight_completed = True
-        failure_stage = "capture_loop"
+        capture_start_ns = time.time_ns()
 
+        if ready_path is not None:
+            failure_stage = "preflight_ready_signal"
+            _write_json_atomic(
+                ready_path,
+                {
+                    "type": READY_VERSION,
+                    "run_id": run_id,
+                    "run_dir": str(run_dir),
+                    "preflight_completed": True,
+                    "capture_started_at_ns": capture_start_ns,
+                    "initial_block": initial_block,
+                    "factory": selected_factory,
+                    "chain_id": chain_id,
+                    "economic_outcomes_opened": False,
+                    "selector_frozen": False,
+                },
+            )
+            ready_file_written = True
+
+        failure_stage = "capture_loop"
         while True:
-            if (time.time_ns() - start_ns) / 1e9 >= args.duration_seconds:
+            assert capture_start_ns is not None
+            if (time.time_ns() - capture_start_ns) / 1e9 >= args.duration_seconds:
                 stop_reason = "duration_elapsed"
                 break
 
@@ -375,12 +414,19 @@ def run(args):
             "economic_outcomes_opened": False,
             "selector_frozen": False,
             "preflight_completed": preflight_completed,
+            "ready_file_written": ready_file_written,
             "chain_id": chain_id,
             "factory": selected_factory,
             "factory_discovery": discovery,
             "rpc_kind": "json_rpc_polling_v0",
             "public_rpc_default_used": rpc_url == DEFAULT_PUBLIC_RPC,
-            "start_wall_ns": start_ns,
+            "process_started_at_ns": process_start_ns,
+            "capture_started_at_ns": capture_start_ns,
+            "preflight_duration_ms": (
+                (capture_start_ns - process_start_ns) / 1_000_000.0
+                if capture_start_ns is not None
+                else None
+            ),
             "finished_wall_ns": time.time_ns(),
             "duration_seconds_requested": args.duration_seconds,
             "stop_reason": stop_reason,
@@ -403,6 +449,8 @@ def run(args):
                 "json_rpc_polling_is_bootstrap_acquisition_not_final_sequencer_feed",
                 "factory_selected_by_live_bytecode_plus_recent_event_discovery",
                 "single_rpc_responses_are_matched_to_request_id_fail_closed",
+                "requested_capture_duration_starts_after_preflight",
+                "optional_ready_file_is_written_only_after_initial_block_is_frozen",
             ],
         }
     except Exception as exc:
@@ -414,6 +462,7 @@ def run(args):
             "economic_outcomes_opened": False,
             "selector_frozen": False,
             "preflight_completed": preflight_completed,
+            "ready_file_written": ready_file_written,
             "failure_stage": failure_stage,
             "factory": selected_factory,
             "factory_discovery": discovery,
@@ -436,6 +485,7 @@ def main():
     parser.add_argument("--rpc-url")
     parser.add_argument("--factory-address")
     parser.add_argument("--factory-lookback-blocks", type=int, default=5_000)
+    parser.add_argument("--ready-file")
     parser.add_argument("--artifacts-root", default="artifacts/robinhood_launch_burst_v0")
     args = parser.parse_args()
     run(args)
