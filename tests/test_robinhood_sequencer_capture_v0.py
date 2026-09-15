@@ -1,6 +1,14 @@
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
-from benchmarks.robinhood_sequencer_shadow_v0.capture import SequenceTrackerV0
+from benchmarks.robinhood_sequencer_shadow_v0.capture import (
+    CAPTURE_VERSION,
+    SequenceTrackerV0,
+    _existing_capture_run_dirs_v0,
+    _persist_cli_failure_report_v0,
+)
 
 
 class RobinhoodSequencerCaptureV0Tests(unittest.TestCase):
@@ -53,6 +61,58 @@ class RobinhoodSequencerCaptureV0Tests(unittest.TestCase):
     def test_negative_sequence_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             SequenceTrackerV0().observe(-1)
+
+    def test_cli_preflight_failure_is_persisted_into_the_single_new_run_dir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_run = root / f"{CAPTURE_VERSION}-old"
+            old_run.mkdir()
+            before = _existing_capture_run_dirs_v0(root)
+            new_run = root / f"{CAPTURE_VERSION}-new"
+            new_run.mkdir()
+            result = {
+                "capture_version": CAPTURE_VERSION,
+                "classification": "FAIL_CAPTURE_PREFLIGHT",
+                "error": "RuntimeError:synthetic",
+            }
+
+            persisted = _persist_cli_failure_report_v0(
+                artifacts_root=root,
+                before_run_dirs=before,
+                result=result,
+            )
+
+            self.assertEqual(persisted, new_run)
+            self.assertTrue(result["artifact_report_persisted"])
+            self.assertEqual(result["run_dir"], str(new_run))
+            report = json.loads((new_run / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["classification"], "FAIL_CAPTURE_PREFLIGHT")
+            self.assertEqual(report["error"], "RuntimeError:synthetic")
+
+    def test_cli_failure_persistence_fails_closed_when_new_run_dir_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = _existing_capture_run_dirs_v0(root)
+            first = root / f"{CAPTURE_VERSION}-one"
+            second = root / f"{CAPTURE_VERSION}-two"
+            first.mkdir()
+            second.mkdir()
+            result = {
+                "capture_version": CAPTURE_VERSION,
+                "classification": "FAIL_CAPTURE_PREFLIGHT",
+            }
+
+            persisted = _persist_cli_failure_report_v0(
+                artifacts_root=root,
+                before_run_dirs=before,
+                result=result,
+            )
+
+            self.assertIsNone(persisted)
+            self.assertFalse(result["artifact_report_persisted"])
+            self.assertIn("found 2", result["artifact_report_persist_error"])
+            self.assertFalse((first / "report.json").exists())
+            self.assertFalse((second / "report.json").exists())
 
 
 if __name__ == "__main__":
