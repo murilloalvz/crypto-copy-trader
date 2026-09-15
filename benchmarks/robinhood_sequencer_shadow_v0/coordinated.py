@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+from urllib.parse import urlsplit
 import uuid
 
 from benchmarks.robinhood_sequencer_shadow_v0.classify_bootstrap import (
@@ -29,6 +30,17 @@ RUNNER_VERSION = "robinhood_sequencer_coordinated_shadow_v0"
 DEFAULT_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
 DEFAULT_ARTIFACTS_ROOT = Path("artifacts/robinhood_sequencer_coordinated_shadow_v0")
 RPC_READY_VERSION = "robinhood_launch_burst_rpc_ready_v0"
+
+
+def _endpoint_identity_v0(url: str) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    return {
+        "scheme": parsed.scheme,
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "path_redacted": bool(parsed.path and parsed.path != "/"),
+        "query_redacted": bool(parsed.query),
+    }
 
 
 def build_child_commands_v0(
@@ -47,6 +59,8 @@ def build_child_commands_v0(
         raise ValueError("duration_seconds must be positive")
     if poll_ms <= 0:
         raise ValueError("poll_ms must be positive")
+    if not isinstance(rpc_url, str) or not rpc_url.strip():
+        raise ValueError("rpc_url must be non-empty")
     rpc_command = [
         python_executable,
         "-m",
@@ -55,8 +69,6 @@ def build_child_commands_v0(
         str(duration_seconds),
         "--poll-ms",
         str(poll_ms),
-        "--rpc-url",
-        rpc_url,
         "--ready-file",
         str(rpc_ready_file),
         "--artifacts-root",
@@ -71,8 +83,6 @@ def build_child_commands_v0(
         "benchmarks.robinhood_sequencer_shadow_v0.capture",
         "--duration-seconds",
         str(duration_seconds),
-        "--rpc-url",
-        rpc_url,
         "--feed-url",
         feed_url,
         "--initial-requested-sequence",
@@ -204,6 +214,8 @@ def run_coordinated_shadow_v0(
         rpc_ready_file=rpc_ready_path,
         factory_address=factory_address,
     )
+    child_env = os.environ.copy()
+    child_env["ROBINHOOD_RPC_URL"] = rpc_url
 
     started_at_ns = time.time_ns()
     rpc_started_at_ns = None
@@ -225,7 +237,7 @@ def run_coordinated_shadow_v0(
                 rpc_command,
                 stdout=rpc_stdout,
                 stderr=rpc_stderr,
-                env=os.environ.copy(),
+                env=child_env,
             )
             rpc_ready_report, rpc_ready_error = _wait_for_rpc_ready_v0(
                 process=rpc_process,
@@ -239,7 +251,7 @@ def run_coordinated_shadow_v0(
                     feed_command,
                     stdout=feed_stdout,
                     stderr=feed_stderr,
-                    env=os.environ.copy(),
+                    env=child_env,
                 )
                 deadline = time.monotonic() + duration_seconds + child_timeout_slack_seconds
                 for process in (rpc_process, feed_process):
@@ -342,7 +354,7 @@ def run_coordinated_shadow_v0(
         "started_at_ns": started_at_ns,
         "finished_at_ns": finished_at_ns,
         "duration_seconds_requested": duration_seconds,
-        "rpc_url": rpc_url,
+        "rpc_endpoint": _endpoint_identity_v0(rpc_url),
         "feed_url": feed_url,
         "rpc_started_at_ns": rpc_started_at_ns,
         "rpc_ready": rpc_ready,
@@ -428,6 +440,8 @@ def run_coordinated_shadow_v0(
         "selector_frozen": False,
         "notes": [
             "rpc_and_feed_run_on_same_machine_and_wall_clock",
+            "rpc_provider_url_is_passed_to_children_only_via_environment",
+            "rpc_provider_url_is_redacted_from_commands_and_reports",
             "feed_process_starts_only_after_rpc_preflight_and_initial_block_readiness",
             "rpc_capture_duration_starts_after_rpc_preflight",
             "rpc_ready_to_feed_start_skew_is_recorded",
