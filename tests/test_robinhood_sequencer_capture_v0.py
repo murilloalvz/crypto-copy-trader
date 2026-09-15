@@ -2,13 +2,29 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from benchmarks.robinhood_sequencer_shadow_v0.capture import (
     CAPTURE_VERSION,
+    JsonRpcClientV0,
     SequenceTrackerV0,
     _existing_capture_run_dirs_v0,
     _persist_cli_failure_report_v0,
 )
+
+
+class FakeHttpResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class RobinhoodSequencerCaptureV0Tests(unittest.TestCase):
@@ -61,6 +77,42 @@ class RobinhoodSequencerCaptureV0Tests(unittest.TestCase):
     def test_negative_sequence_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             SequenceTrackerV0().observe(-1)
+
+    def test_rpc_transport_failure_includes_method_name(self):
+        client = JsonRpcClientV0("https://rpc.example")
+        with patch(
+            "benchmarks.robinhood_sequencer_shadow_v0.capture.urlopen",
+            side_effect=OSError("synthetic transport failure"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "eth_chainId transport/response failure: OSError:synthetic transport failure",
+            ):
+                client.call("eth_chainId", [])
+
+    def test_rpc_error_payload_includes_method_name(self):
+        client = JsonRpcClientV0("https://rpc.example")
+        response = FakeHttpResponse({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32000, "message": "synthetic rpc failure"},
+        })
+        with patch(
+            "benchmarks.robinhood_sequencer_shadow_v0.capture.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "eth_chainId JSON-RPC error"):
+                client.call("eth_chainId", [])
+
+    def test_invalid_chain_id_result_has_method_context(self):
+        client = JsonRpcClientV0("https://rpc.example")
+        response = FakeHttpResponse({"jsonrpc": "2.0", "id": 1, "result": None})
+        with patch(
+            "benchmarks.robinhood_sequencer_shadow_v0.capture.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "eth_chainId invalid result"):
+                client.chain_id()
 
     def test_cli_preflight_failure_is_persisted_into_the_single_new_run_dir(self):
         with tempfile.TemporaryDirectory() as directory:
