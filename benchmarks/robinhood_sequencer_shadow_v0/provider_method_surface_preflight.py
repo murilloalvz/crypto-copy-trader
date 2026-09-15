@@ -48,13 +48,21 @@ def _endpoint_identity(url: str) -> dict[str, Any]:
     }
 
 
+def _validate_rpc_url_v0(url: str) -> str:
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("rpc url must be non-empty")
+    value = url.strip()
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("rpc url must be an absolute http(s) URL")
+    return value
+
+
 class RpcProbeV0:
     def __init__(self, url: str, *, timeout_seconds: float = 10.0):
-        if not isinstance(url, str) or not url.strip():
-            raise ValueError("rpc url must be non-empty")
+        self.url = _validate_rpc_url_v0(url)
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        self.url = url.strip()
         self.timeout_seconds = float(timeout_seconds)
         self._next_id = 1
 
@@ -159,6 +167,7 @@ def run_method_surface_preflight_v0(
     log_window_blocks: int = 32,
     client: RpcProbeV0 | None = None,
 ) -> dict[str, Any]:
+    rpc_url = _validate_rpc_url_v0(rpc_url)
     if log_window_blocks <= 0:
         raise ValueError("log_window_blocks must be positive")
     rpc = client or RpcProbeV0(rpc_url, timeout_seconds=timeout_seconds)
@@ -268,6 +277,24 @@ def run_method_surface_preflight_v0(
     }
 
 
+def _config_failure_report_v0(rpc_url: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "type": PREFLIGHT_VERSION,
+        "classification": "FAIL_ROBINHOOD_RPC_METHOD_SURFACE_CONFIG_V0",
+        "rpc_endpoint": _endpoint_identity(rpc_url),
+        "error": f"{type(exc).__name__}:{exc}",
+        "acquisition_opened": False,
+        "execution_reconciliation_opened": False,
+        "latency_claim_opened": False,
+        "economic_outcomes_opened": False,
+        "selector_frozen": False,
+        "notes": [
+            "provider_method_surface_not_opened_due_to_invalid_rpc_configuration",
+            "full_provider_url_is_not_serialized",
+        ],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpc-url")
@@ -276,12 +303,15 @@ def main() -> None:
     parser.add_argument("--log-window-blocks", type=int, default=32)
     args = parser.parse_args()
     rpc_url = args.rpc_url or os.environ.get("ROBINHOOD_RPC_URL") or DEFAULT_RPC_URL
-    result = run_method_surface_preflight_v0(
-        rpc_url=rpc_url,
-        factory_address=args.factory_address,
-        timeout_seconds=args.timeout_seconds,
-        log_window_blocks=args.log_window_blocks,
-    )
+    try:
+        result = run_method_surface_preflight_v0(
+            rpc_url=rpc_url,
+            factory_address=args.factory_address,
+            timeout_seconds=args.timeout_seconds,
+            log_window_blocks=args.log_window_blocks,
+        )
+    except ValueError as exc:
+        result = _config_failure_report_v0(rpc_url, exc)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
