@@ -34,14 +34,21 @@ class JsonRpcError(RuntimeError):
 
 class RpcClient:
     def __init__(self, url, timeout_s=10.0):
-        self.url = url
-        self.timeout_s = timeout_s
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("RPC url must be non-empty")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        self.url = url.strip()
+        self.timeout_s = float(timeout_s)
         self._id = 0
 
     def call(self, method, params):
+        if not isinstance(method, str) or not method:
+            raise ValueError("method must be non-empty")
         self._id += 1
+        request_id = self._id
         payload = json.dumps(
-            {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
         ).encode()
         request = urllib.request.Request(
             self.url,
@@ -54,21 +61,42 @@ class RpcClient:
                 body = json.loads(response.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise JsonRpcError(f"{method} transport failure: {exc}") from exc
+        if not isinstance(body, dict):
+            raise JsonRpcError(f"{method} response must be a JSON object")
+        if body.get("id") != request_id:
+            raise JsonRpcError(
+                f"{method} response id mismatch: expected={request_id} got={body.get('id')}"
+            )
         if body.get("error") is not None:
             raise JsonRpcError(f"{method} rpc error: {body['error']}")
-        return body.get("result")
+        if "result" not in body:
+            raise JsonRpcError(f"{method} response missing result")
+        return body["result"]
 
     def chain_id(self):
-        return int(str(self.call("eth_chainId", [])), 16)
+        value = self.call("eth_chainId", [])
+        try:
+            return int(str(value), 16)
+        except (TypeError, ValueError) as exc:
+            raise JsonRpcError(f"invalid eth_chainId response: {value!r}") from exc
 
     def block_number(self):
-        return int(str(self.call("eth_blockNumber", [])), 16)
+        value = self.call("eth_blockNumber", [])
+        try:
+            return int(str(value), 16)
+        except (TypeError, ValueError) as exc:
+            raise JsonRpcError(f"invalid eth_blockNumber response: {value!r}") from exc
 
     def block_timestamp(self, number):
         row = self.call("eth_getBlockByNumber", [hex(number), False])
         if not isinstance(row, dict) or row.get("timestamp") is None:
             raise JsonRpcError(f"missing block timestamp for {number}")
-        return int(str(row["timestamp"]), 16)
+        try:
+            return int(str(row["timestamp"]), 16)
+        except (TypeError, ValueError) as exc:
+            raise JsonRpcError(
+                f"invalid block timestamp for {number}: {row.get('timestamp')!r}"
+            ) from exc
 
     def sha3_text(self, text):
         value = self.call("web3_sha3", ["0x" + text.encode().hex()])
@@ -209,17 +237,22 @@ def run(args):
     polls = 0
     discovery = None
     selected_factory = None
+    failure_stage = "preflight_chain_id"
+    preflight_completed = False
 
     try:
         chain_id = client.chain_id()
         if chain_id != ROBINHOOD_CHAIN_ID:
             raise RuntimeError(f"wrong chain id: {chain_id}")
 
+        failure_stage = "preflight_topic_hashes"
         topics = {
             "token_launched": client.sha3_text(TOKEN_LAUNCHED_SIGNATURE),
             "curve_buy": client.sha3_text(CURVE_BUY_SIGNATURE),
             "curve_sell": client.sha3_text(CURVE_SELL_SIGNATURE),
         }
+
+        failure_stage = "preflight_factory_discovery"
         discovery = discover_factory_v0(
             client,
             token_launched_topic0=topics["token_launched"],
@@ -232,9 +265,12 @@ def run(args):
             )
         selected_factory = discovery["selected_factory"]
 
+        failure_stage = "preflight_initial_block"
         latest = client.block_number()
         initial_block = latest
         next_block = latest + 1
+        preflight_completed = True
+        failure_stage = "capture_loop"
 
         while True:
             if (time.time_ns() - start_ns) / 1e9 >= args.duration_seconds:
@@ -307,12 +343,14 @@ def run(args):
             poll_latency_ms.append((time.perf_counter_ns() - poll_started) / 1e6)
             time.sleep(args.poll_ms / 1000)
 
+        failure_stage = "final_snapshot_flush"
         snapshot_now_ns = time.time_ns()
         for snapshot in book.ready_snapshots(snapshot_now_ns):
             row = snapshot.to_dict()
             snapshots.append(row)
             _write(snapshots_path, row)
 
+        failure_stage = "report_build"
         counts = book.counts()
         gates = {
             "chain_id_correct": chain_id == ROBINHOOD_CHAIN_ID,
@@ -336,6 +374,7 @@ def run(args):
             "feature_only": True,
             "economic_outcomes_opened": False,
             "selector_frozen": False,
+            "preflight_completed": preflight_completed,
             "chain_id": chain_id,
             "factory": selected_factory,
             "factory_discovery": discovery,
@@ -363,6 +402,7 @@ def run(args):
                 "block_timestamp_lookup_does_not_move_availability_clock",
                 "json_rpc_polling_is_bootstrap_acquisition_not_final_sequencer_feed",
                 "factory_selected_by_live_bytecode_plus_recent_event_discovery",
+                "single_rpc_responses_are_matched_to_request_id_fail_closed",
             ],
         }
     except Exception as exc:
@@ -373,6 +413,8 @@ def run(args):
             "feature_only": True,
             "economic_outcomes_opened": False,
             "selector_frozen": False,
+            "preflight_completed": preflight_completed,
+            "failure_stage": failure_stage,
             "factory": selected_factory,
             "factory_discovery": discovery,
             "error": f"{type(exc).__name__}:{exc}",
