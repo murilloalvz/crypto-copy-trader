@@ -1,6 +1,7 @@
 import unittest
 
 from benchmarks.robinhood_sequencer_shadow_v0.provider_method_surface_preflight import (
+    _config_failure_report_v0,
     run_method_surface_preflight_v0,
 )
 
@@ -79,6 +80,24 @@ class RobinhoodProviderMethodSurfacePreflightV0Tests(unittest.TestCase):
             report["classification"],
             "INCONCLUSIVE_ROBINHOOD_RPC_METHOD_SURFACE_RATE_LIMITED_V0",
         )
+
+    def test_invalid_placeholder_url_fails_closed_before_rpc(self):
+        with self.assertRaisesRegex(ValueError, "absolute http"):
+            run_method_surface_preflight_v0(
+                rpc_url="COLE_AQUI_SUA_URL_ALCHEMY_COMPLETA",
+                factory_address="0x" + "33" * 20,
+            )
+
+        report = _config_failure_report_v0(
+            "COLE_AQUI_SUA_URL_ALCHEMY_COMPLETA",
+            ValueError("rpc url must be an absolute http(s) URL"),
+        )
+        self.assertEqual(
+            report["classification"],
+            "FAIL_ROBINHOOD_RPC_METHOD_SURFACE_CONFIG_V0",
+        )
+        self.assertIsNone(report["rpc_endpoint"]["host"])
+        self.assertFalse(report["acquisition_opened"])
 
 
 if __name__ == "__main__":
