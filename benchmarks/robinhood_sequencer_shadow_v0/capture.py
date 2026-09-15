@@ -137,6 +137,46 @@ def _append_jsonl(handle, row: dict[str, Any]) -> None:
     handle.flush()
 
 
+def _existing_capture_run_dirs_v0(artifacts_root: Path) -> set[Path]:
+    if not artifacts_root.exists():
+        return set()
+    return {
+        path.resolve()
+        for path in artifacts_root.iterdir()
+        if path.is_dir() and path.name.startswith(CAPTURE_VERSION + "-")
+    }
+
+
+def _persist_cli_failure_report_v0(
+    *,
+    artifacts_root: Path,
+    before_run_dirs: set[Path],
+    result: dict[str, Any],
+) -> Path | None:
+    """Persist a CLI preflight failure only when this invocation created one run dir."""
+    if not artifacts_root.exists():
+        result["artifact_report_persisted"] = False
+        return None
+    created = [
+        path
+        for path in artifacts_root.iterdir()
+        if path.is_dir()
+        and path.name.startswith(CAPTURE_VERSION + "-")
+        and path.resolve() not in before_run_dirs
+    ]
+    if len(created) != 1:
+        result["artifact_report_persisted"] = False
+        result["artifact_report_persist_error"] = (
+            f"expected exactly one newly-created capture run dir, found {len(created)}"
+        )
+        return None
+    run_dir = created[0]
+    result["run_dir"] = str(run_dir)
+    result["artifact_report_persisted"] = True
+    _write_json(run_dir / "report.json", result)
+    return run_dir
+
+
 def run_capture_v0(
     *,
     rpc_url: str,
@@ -295,6 +335,7 @@ def main() -> None:
     parser.add_argument("--max-reconnects", type=int, default=5)
     args = parser.parse_args()
     rpc_url = args.rpc_url or os.environ.get("ROBINHOOD_RPC_URL") or DEFAULT_RPC_URL
+    before_run_dirs = _existing_capture_run_dirs_v0(args.artifacts_root)
     try:
         result = run_capture_v0(
             rpc_url=rpc_url,
@@ -315,6 +356,11 @@ def main() -> None:
             "economic_outcomes_opened": False,
             "latency_claim_opened": False,
         }
+        _persist_cli_failure_report_v0(
+            artifacts_root=args.artifacts_root,
+            before_run_dirs=before_run_dirs,
+            result=result,
+        )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
