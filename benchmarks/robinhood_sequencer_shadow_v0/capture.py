@@ -20,6 +20,7 @@ from pathlib import Path
 import socket
 import time
 from typing import Any
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
@@ -37,6 +38,17 @@ from src.robinhood_nitro_ws_v0 import (
 DEFAULT_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
 DEFAULT_ARTIFACTS_ROOT = Path("artifacts/robinhood_sequencer_shadow_v0")
 CAPTURE_VERSION = "robinhood_sequencer_shadow_capture_v0"
+
+
+def _endpoint_identity_v0(url: str) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    return {
+        "scheme": parsed.scheme,
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "path_redacted": bool(parsed.path and parsed.path != "/"),
+        "query_redacted": bool(parsed.query),
+    }
 
 
 class JsonRpcClientV0:
@@ -313,7 +325,7 @@ def run_capture_v0(
         "classification": "PASS_RAW_CAPTURE" if frame_count > 0 else "FAIL_NO_FEED_FRAMES",
         "run_id": run_id,
         "run_dir": str(run_dir),
-        "rpc_url": rpc_url,
+        "rpc_endpoint": _endpoint_identity_v0(rpc_url),
         "feed_url": feed_url,
         "chain_id": chain_id,
         "started_at_ns": start_ns,
@@ -336,6 +348,7 @@ def run_capture_v0(
         "latency_claim_opened": False,
         "notes": [
             "rpc_chain_identity_is_verified_before_feed_acquisition",
+            "rpc_provider_url_is_redacted_from_capture_artifacts",
             "feed_response_chain_id_and_server_version_headers_are_optional_metadata",
             "present_feed_metadata_is_validated_fail_closed",
             "rpc_and_feed_transports_use_explicit_user_agent",
