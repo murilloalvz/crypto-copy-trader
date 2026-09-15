@@ -27,29 +27,43 @@ class FakeProcess:
 
 
 class ArtifactPopenFactory:
-    def __init__(self, *, rpc_classification=None, feed_classification=None):
+    def __init__(
+        self,
+        *,
+        rpc_classification=None,
+        feed_classification=None,
+        rpc_error=None,
+        feed_error=None,
+    ):
         self.rpc_classification = (
             rpc_classification
             or "PASS_ROBINHOOD_LAUNCH_BURST_CAPTURE_V0_NO_NATIVE_LAUNCHES"
         )
         self.feed_classification = feed_classification or "PASS_RAW_CAPTURE"
+        self.rpc_error = rpc_error
+        self.feed_error = feed_error
         self.commands = []
 
     def __call__(self, command, **kwargs):
         self.commands.append(list(command))
         module = command[command.index("-m") + 1]
         artifacts_root = Path(command[command.index("--artifacts-root") + 1])
-        child = artifacts_root / ("rpc-fixture" if "launch_burst_v0.live" in module else "feed-fixture")
+        is_rpc = "launch_burst_v0.live" in module
+        child = artifacts_root / ("rpc-fixture" if is_rpc else "feed-fixture")
         child.mkdir(parents=True)
-        classification = (
-            self.rpc_classification
-            if "launch_burst_v0.live" in module
-            else self.feed_classification
-        )
+        classification = self.rpc_classification if is_rpc else self.feed_classification
+        error = self.rpc_error if is_rpc else self.feed_error
         report = {"classification": classification}
-        (child / "report.json").write_text(json.dumps(report), encoding="utf-8")
-        if "sequencer_shadow_v0.capture" in module:
+        if error is not None:
+            report["error"] = error
+        if is_rpc:
+            report["factory_discovery"] = {"classification": "SYNTHETIC_FACTORY_STATE"}
+            report["transport_errors"] = []
+        else:
+            report["frame_count"] = 1 if classification == "PASS_RAW_CAPTURE" else None
+            report["transport_errors"] = []
             (child / "raw-frames.jsonl").write_text("", encoding="utf-8")
+        (child / "report.json").write_text(json.dumps(report), encoding="utf-8")
         return FakeProcess(0)
 
 
@@ -102,6 +116,8 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             self.assertFalse(report["execution_reconciliation_opened"])
             self.assertFalse(report["latency_claim_opened"])
             self.assertFalse(report["economic_outcomes_opened"])
+            self.assertTrue(report["rpc_report_present"])
+            self.assertTrue(report["feed_report_present"])
             self.assertEqual(len(factory.commands), 2)
 
     def test_zero_live_candidates_is_pass_without_latency_coverage(self):
@@ -125,6 +141,12 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
 
     def test_feed_report_failure_cannot_be_promoted_by_zero_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
+            bootstrap_calls = []
+
+            def should_not_run(**kwargs):
+                bootstrap_calls.append(kwargs)
+                raise AssertionError("bootstrap must not run after failed raw capture")
+
             report = run_coordinated_shadow_v0(
                 duration_seconds=1,
                 poll_ms=350,
@@ -133,10 +155,16 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 artifacts_root=Path(directory),
                 python_executable="python",
                 child_timeout_slack_seconds=1,
-                popen_factory=ArtifactPopenFactory(feed_classification="FAIL_NO_FEED_FRAMES"),
-                bootstrap_classifier=_bootstrap(eligible=1),
+                popen_factory=ArtifactPopenFactory(
+                    feed_classification="FAIL_CAPTURE_PREFLIGHT",
+                    feed_error="RuntimeError:feed preflight failed",
+                ),
+                bootstrap_classifier=should_not_run,
             )
             self.assertEqual(report["classification"], "FAIL_COORDINATED_SHADOW_FEED_CAPTURE")
+            self.assertEqual(report["feed_capture_error"], "RuntimeError:feed preflight failed")
+            self.assertEqual(bootstrap_calls, [])
+            self.assertIsNone(report["bootstrap_error"])
 
     def test_rpc_report_failure_cannot_be_promoted_by_zero_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,10 +176,18 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 artifacts_root=Path(directory),
                 python_executable="python",
                 child_timeout_slack_seconds=1,
-                popen_factory=ArtifactPopenFactory(rpc_classification="FAIL_RPC_CAPTURE"),
+                popen_factory=ArtifactPopenFactory(
+                    rpc_classification="FAIL_ROBINHOOD_LAUNCH_BURST_PREFLIGHT_V0",
+                    rpc_error="JsonRpcError:synthetic",
+                ),
                 bootstrap_classifier=_bootstrap(eligible=1),
             )
             self.assertEqual(report["classification"], "FAIL_COORDINATED_SHADOW_RPC_CAPTURE")
+            self.assertEqual(report["rpc_capture_error"], "JsonRpcError:synthetic")
+            self.assertEqual(
+                report["rpc_factory_discovery"],
+                {"classification": "SYNTHETIC_FACTORY_STATE"},
+            )
 
     def test_anchor_guard_failure_blocks_pass(self):
         with tempfile.TemporaryDirectory() as directory:
