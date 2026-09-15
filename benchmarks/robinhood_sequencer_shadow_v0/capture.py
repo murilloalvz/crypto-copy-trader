@@ -57,17 +57,25 @@ class JsonRpcClientV0:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            row = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                row = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"{method} transport/response failure: {type(exc).__name__}:{exc}"
+            ) from exc
         if not isinstance(row, dict) or row.get("id") != request_id:
-            raise RuntimeError("invalid JSON-RPC response identity")
+            raise RuntimeError(f"{method} invalid JSON-RPC response identity")
         if row.get("error") is not None:
-            raise RuntimeError(f"JSON-RPC error: {row['error']}")
+            raise RuntimeError(f"{method} JSON-RPC error: {row['error']}")
         return row.get("result")
 
     def chain_id(self) -> int:
         value = self.call("eth_chainId", [])
-        return int(str(value), 16)
+        try:
+            return int(str(value), 16)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"eth_chainId invalid result: {value!r}") from exc
 
     def latest_block(self) -> dict[str, Any]:
         row = self.call("eth_getBlockByNumber", ["latest", False])
