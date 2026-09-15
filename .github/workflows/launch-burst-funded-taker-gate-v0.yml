@@ -8,7 +8,9 @@ on:
     paths:
       - 'benchmarks/launch_burst_prospective_route_live_v4/funded_taker_fixture_v0.frozen.json'
       - 'benchmarks/launch_burst_prospective_route_live_v4/funded_taker_preflight.py'
+      - 'benchmarks/launch_burst_prospective_route_live_v4/no_funds_assembly_diagnostic.py'
       - 'tests/test_launch_burst_funded_taker_preflight_v0.py'
+      - 'tests/test_launch_burst_no_funds_assembly_diagnostic_v0.py'
       - 'docs/launch-burst-v4-funded-taker-gate-v0.md'
       - '.github/workflows/launch-burst-funded-taker-gate-v0.yml'
   workflow_dispatch:
@@ -44,7 +46,12 @@ jobs:
       - name: Compile funded taker gate
         run: |
           python -m py_compile benchmarks/launch_burst_prospective_route_live_v4/funded_taker_preflight.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_live_v4/no_funds_assembly_diagnostic.py
           python -m py_compile tests/test_launch_burst_funded_taker_preflight_v0.py
+          python -m py_compile tests/test_launch_burst_no_funds_assembly_diagnostic_v0.py
 
       - name: Funded taker fail-closed contracts
         run: python -m unittest tests.test_launch_burst_funded_taker_preflight_v0 -v
+
+      - name: No-funds assembly diagnostic contracts
+        run: python -m unittest tests.test_launch_burst_no_funds_assembly_diagnostic_v0 -v
