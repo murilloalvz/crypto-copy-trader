@@ -6,6 +6,9 @@ clock and never moves the original feed availability time earlier.
 
 RPC launch/trade events remain execution evidence. A feed intent without a
 matched tracked event is UNKNOWN, not a failed trade or zero-return outcome.
+Raw feed-to-RPC observation deltas are diagnostic only. A row is a causal lead
+candidate only when post-anchor bootstrap eligibility is explicitly present and
+the observation delta is non-negative.
 """
 from __future__ import annotations
 
@@ -71,6 +74,7 @@ def resolve_chain_tx_hash_v0(client, intent: NitroSignedTxIntentV0) -> dict[str,
         "calldata_selector": intent.calldata_selector,
         "raw_tx_sha256": intent.raw_tx_sha256,
         "chain_tx_hash": chain_tx_hash,
+        "feed_block_hash": intent.feed_block_hash,
         "feed_observed_at_ns": intent.observed_at_ns,
         "hash_resolution_started_at_ns": started_ns,
         "hash_resolved_at_ns": resolved_ns,
@@ -145,9 +149,14 @@ def _semantic_match(intent: Mapping[str, Any], event: Mapping[str, Any]) -> bool
             and str(event.get("curve") or "").lower() == target
         )
     if kind == "PONS_FACTORY_TARGET_INTENT":
+        # The canonical tx-hash join already binds the event to the submitted tx.
+        # The RPC collector only records launches from its selected factory stratum.
         return event_kind == "launch"
     if kind == "PONS_CURVE_OTHER_INTENT":
-        return str(event.get("curve") or "").lower() == target
+        # An arbitrary call into a curve is not semantically equivalent to the
+        # tracked BUY/SELL execution events. Keep tx-hash parity as evidence but
+        # never promote this ambiguous intent to executed trade semantics.
+        return False
     return False
 
 
@@ -158,10 +167,13 @@ def reconcile_pons_intents_to_rpc_events_v0(
     """Match feed Pons intents to tracked executed Pons events by canonical tx hash."""
     executed = _rpc_events_by_tx(rpc_events)
     rows = []
-    exact_latencies_ms: list[float] = []
+    exact_observation_deltas_ms: list[float] = []
+    causal_lead_candidate_deltas_ms: list[float] = []
     tx_hash_match_count = 0
     semantic_match_count = 0
-    unresolved_count = 0
+    tx_hash_unresolved_count = 0
+    negative_delta_count = 0
+    bootstrap_eligible_semantic_match_count = 0
 
     for index, source in enumerate(resolved_pons_intents):
         intent = dict(source)
@@ -169,27 +181,36 @@ def reconcile_pons_intents_to_rpc_events_v0(
         feed_ns = intent.get("feed_observed_at_ns")
         if not isinstance(feed_ns, int) or isinstance(feed_ns, bool) or feed_ns < 0:
             raise ValueError(f"intents[{index}] has invalid feed_observed_at_ns")
+        bootstrap_eligible = intent.get("eligible_for_feed_latency") is True
         matches = executed.get(chain_tx_hash, [])
         tx_hash_matched = bool(matches)
         if tx_hash_matched:
             tx_hash_match_count += 1
         semantic = [event for event in matches if _semantic_match(intent, event)]
         semantic_matched = bool(semantic)
+        causal_lead_candidate = False
         if semantic_matched:
             semantic_match_count += 1
             first_event_ns = min(int(event["observed_at_ns"]) for event in semantic)
-            latency_ms = (first_event_ns - feed_ns) / 1_000_000.0
-            exact_latencies_ms.append(latency_ms)
+            delta_ms = (first_event_ns - feed_ns) / 1_000_000.0
+            exact_observation_deltas_ms.append(delta_ms)
+            if delta_ms < 0:
+                negative_delta_count += 1
+            if bootstrap_eligible:
+                bootstrap_eligible_semantic_match_count += 1
+                if delta_ms >= 0:
+                    causal_lead_candidate = True
+                    causal_lead_candidate_deltas_ms.append(delta_ms)
             status = "MATCHED_EXECUTED_PONS_EVENT"
         elif tx_hash_matched:
             first_event_ns = min(int(event["observed_at_ns"]) for event in matches)
-            latency_ms = (first_event_ns - feed_ns) / 1_000_000.0
+            delta_ms = (first_event_ns - feed_ns) / 1_000_000.0
             status = "TX_HASH_MATCH_SEMANTIC_EVENT_NOT_MATCHED"
         else:
             first_event_ns = None
-            latency_ms = None
+            delta_ms = None
             status = "NO_TRACKED_RPC_EVENT_OBSERVED"
-            unresolved_count += 1
+            tx_hash_unresolved_count += 1
 
         rows.append(
             {
@@ -199,34 +220,47 @@ def reconcile_pons_intents_to_rpc_events_v0(
                 "intent_kind": intent.get("intent_kind"),
                 "target": intent.get("target"),
                 "feed_observed_at_ns": feed_ns,
+                "eligible_for_feed_latency": bootstrap_eligible,
                 "status": status,
                 "tx_hash_matched": tx_hash_matched,
                 "semantic_event_matched": semantic_matched,
                 "matched_event_count": len(matches),
                 "semantic_event_count": len(semantic),
                 "first_rpc_observed_at_ns": first_event_ns,
-                "feed_to_rpc_observation_delta_ms": latency_ms,
+                "feed_to_rpc_observation_delta_ms": delta_ms,
+                "causal_lead_candidate": causal_lead_candidate,
             }
         )
 
     total = len(rows)
+    semantic_unresolved_count = total - semantic_match_count
     return {
         "method_version": "robinhood_sequencer_rpc_reconciliation_v0",
         "intent_count": total,
         "tx_hash_match_count": tx_hash_match_count,
         "semantic_match_count": semantic_match_count,
-        "unresolved_count": unresolved_count,
+        "unresolved_count": tx_hash_unresolved_count,
+        "tx_hash_unresolved_count": tx_hash_unresolved_count,
+        "semantic_unresolved_count": semantic_unresolved_count,
         "tx_hash_match_pct": (100.0 * tx_hash_match_count / total) if total else None,
         "semantic_match_pct": (100.0 * semantic_match_count / total) if total else None,
-        "matched_feed_to_rpc_delta_ms": _distribution(exact_latencies_ms),
+        "negative_semantic_observation_delta_count": negative_delta_count,
+        "bootstrap_eligible_semantic_match_count": bootstrap_eligible_semantic_match_count,
+        "matched_feed_to_rpc_delta_ms": _distribution(exact_observation_deltas_ms),
+        "causal_lead_candidate_delta_ms": _distribution(causal_lead_candidate_deltas_ms),
         "rows": rows,
         "feed_evidence_scope": "INTENT_ONLY_NOT_EXECUTION_PROOF",
         "rpc_evidence_scope": "EXECUTED_EVENT_OBSERVATION",
+        "latency_claim_opened": False,
         "economic_outcomes_opened": False,
         "trade_returns_computed": False,
         "notes": [
             "no_tracked_rpc_event_is_unknown_not_failed_execution",
-            "negative_feed_to_rpc_delta_is_retained_and_can_indicate_feed_backfill_or_clock_ordering",
+            "tx_hash_match_without_semantic_match_is_not_execution_parity",
+            "curve_other_intent_is_never_promoted_to_buy_or_sell_execution_semantics",
+            "raw_feed_to_rpc_deltas_are_diagnostic_not_a_latency_claim",
+            "negative_feed_to_rpc_delta_is_retained_for_backfill_or_clock_ordering_diagnostics",
+            "causal_lead_candidate_requires_explicit_post_anchor_eligibility_and_nonnegative_delta",
             "hash_resolution_occurs_after_feed_observation_and_does_not_change_feed_clock",
         ],
     }
