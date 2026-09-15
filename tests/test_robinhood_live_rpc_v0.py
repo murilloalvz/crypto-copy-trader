@@ -8,6 +8,7 @@ from unittest.mock import patch
 from benchmarks.robinhood_launch_burst_v0.live import (
     JsonRpcError,
     RpcClient,
+    USER_AGENT,
     run,
 )
 
@@ -27,14 +28,19 @@ class FakeHttpResponse:
 
 
 class RobinhoodLiveRpcV0Tests(unittest.TestCase):
-    def test_single_call_accepts_matching_id_and_result(self):
+    def test_single_call_accepts_matching_id_and_result_and_identifies_client(self):
         client = RpcClient("https://rpc.invalid")
-        response = FakeHttpResponse(
-            {"jsonrpc": "2.0", "id": 1, "result": "0x123"}
-        )
+
+        def fake_urlopen(request, timeout):
+            self.assertEqual(request.get_header("User-agent"), USER_AGENT)
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+            return FakeHttpResponse(
+                {"jsonrpc": "2.0", "id": 1, "result": "0x123"}
+            )
+
         with patch(
             "benchmarks.robinhood_launch_burst_v0.live.urllib.request.urlopen",
-            return_value=response,
+            side_effect=fake_urlopen,
         ):
             self.assertEqual(client.call("eth_test", []), "0x123")
 
@@ -91,6 +97,7 @@ class RobinhoodLiveRpcV0Tests(unittest.TestCase):
                 rpc_url="https://rpc.invalid",
                 factory_address=None,
                 factory_lookback_blocks=5_000,
+                ready_file=None,
                 artifacts_root=directory,
             )
             with patch(
