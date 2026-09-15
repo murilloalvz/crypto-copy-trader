@@ -1,463 +1,343 @@
-# Crypto Copy Trader — Project Context
-
-Este arquivo é o **source of truth operacional e científico atual** do projeto. Histórico detalhado, protocolos e resultados ficam em `docs/`.
-
-## Estado canônico
-
-- Repositório: `murilloalvz/crypto-copy-trader`
-- Branch científica base: `feat/exit-engine-v1`
-- Head científico canônico pré-hardening: `94017d7d96231a5bcd05a6d2a69d8d2ee90e231c`
-- Branch systems ativa: `fix/pumpswap-causal-throughput-v5`
-- Modo: **PAPER / RESEARCH / READ ONLY**
-- Tese: **market-first Opportunity Intelligence / Opportunity Engine**
-- Laboratório principal: **Solana**
-- Detector Solana: **FROZEN**
-- Wallet: evidência pós-episódio, nunca whitelist de aquisição
-- Fluxo oficial: `market -> radar -> causal episode -> enrichment -> research decision -> forward outcomes -> prospective validation -> execution research -> shadow`
+# Crypto Copy Trader / Opportunity Intelligence Engine — Current Context
 
-## Status executivo
+Este arquivo resume apenas o **estado operacional e científico atual**. Histórico detalhado, protocolos antigos e resultados completos permanecem em `docs/`, artifacts e Git.
 
-### Sistemas / aquisição
+Precedência de evidência:
 
-- v54 demand-only resolver admission: **historical accepted systems profile / PASS 11/11**
-- Tailfix v1: cross-source token commit isolation implemented/tested
-- Tailfix v2: bounded shared RPC transport + early decision release implemented/tested
-- Tailfix v3: resolver latency class fixed live, but run failed 9/11 on persistence drain capacity
-- Tailfix v4: persistence drain fixed live, but run failed 10/11 on PumpSwap causal latency due normalization/single-flight amplification
-- Tailfix v5: **failed live on unchanged global-prefix HOL; retained as base**
-- Tailfix v6: **active structural correction; causal per-asset partial-order admission implemented/tests required before live**
-- Tailfix v8: **live failed under a different high-load profile; authoritative writer admission was insufficient**
-- Tailfix v9: **LIVE PASS 11/11; PumpSwap p95 3.151s, Pump p95 1.478s, coverage 99.6%, backlog 0.408%**
-- SQLite cleanup: **Windows/Python 3.14 test-handle fix committed; full suite 1049/1049**
-- official Pump/PumpSwap p95 gate: **5s unchanged**
-- preventive causal-stage warning: **4s p95**
-- V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
-- provider pacing: **650/1000/250ms frozen** for current route research
-- route-only research: **US$25 / 100 bps / 300-900-3600s**
-
-### Ciência econômica Solana
-
-- v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
-- v55 causal discovery: **COMPLETE / CLEAN**
-- v55 rank #1: `flow60_buy_share_pct`, favorable LOW / opposite HIGH
-- v68 prospective Flow60 buy-share holdout: **IMPLEMENTED + PRE-REGISTERED / ECONOMIC VERDICT NOT OBTAINED**
-- profitable prospective route-only selection edge: **NOT YET ESTABLISHED**
-
-All systems-aborted v68 attempts stopped before valid forward economic collection.
-
-Therefore:
-
-`V68 ECONOMIC HYPOTHESIS = NOT_EVALUATED`
-
-Do not classify Flow60 buy-share as PASS/FAIL from a systems abort. Never reuse a failed/partial acquisition key as a clean prospective cohort.
-
-## Frozen systems gate — 11/11
-
-Every systems-sensitive acquisition must pass all:
-
-1. no worker/traceback errors
-2. drops = 0
-3. reference asset episodes = 0
-4. radar coverage >=95%
-5. true backlog <=5%
-6. Pump p95 <=5s
-7. PumpSwap causal pipeline p95 <=5s
-8. hydration budget skips = 0
-9. wallet/flow bundles nonempty
-10. replay/audit valid
-11. reservation superset violations = 0
-
-Never relax the 5s thresholds to rescue an experiment.
-
-## Historical accepted v54 profile
-
-Run: `route-research-systems-stability-20260907-54`
-
-- coverage 98.1%
-- true backlog 1.913%
-- Pump p95 ~1.906s
-- PumpSwap p95 ~1.626s
-- 11/11 PASS
-- zero worker errors / drops / hydration skips / reservation-superset violations
-
-This is historical evidence only; it does not guarantee future high-load acquisitions.
-
-## Tailfix v3 — latency fixed, throughput failed
-
-Protocol: `docs/pumpswap-latency-hardening-tailfix-v3-protocol-2026-09-08.md`
+`código + resultados mais recentes > decisões científicas recentes > PROJECT_CONTEXT.md > handoffs antigos > ideias antigas`
 
-V3 moved pool-store lookup/write/reload off the asyncio event loop, retained same-pool single-flight until durable canonical identity, retained one physical SQLite writer, added `RESOLUTION > CAUSAL > AUDIT` admission, preserved bounded RPC transport and added causal-stage headroom telemetry.
+## CURRENT STATE
 
-Fresh v3 live systems result:
+Objetivo de longo prazo:
 
-- PumpSwap received: 2,969
-- persistence completed: 2,559
-- radar processed: 2,551
-- coverage: **90.4% FAIL**
-- true backlog: **9.597% FAIL**
-- Pump p95: **1.516s PASS**
-- PumpSwap p95: **1.894s PASS**
-- systems: **9/11**
-- writer queue at deadline: 224
-- all monitored V3 latency stages <4s
-- `event_loop_store_calls=0`
-- mapping sync started/admitted/completed 243/243/243
-- transport violations=0
-- same-token overlap violations=0
-
-Interpretation: the latency class targeted by V3 was fixed; the remaining failure was sustained persistence drain capacity.
+`information/narrative -> token -> early activity -> Burst -> capital quality -> structural quality -> executability -> signal -> entry/exit -> positive net EV`
 
-## Tailfix v4 — throughput fixed, normalization latency failed
-
-Protocol: `docs/pumpswap-persistence-throughput-hardening-v4-protocol-2026-09-08.md`
+Regra de produto e pesquisa: **cada camada só entra se provar valor incremental**. Não construir mega-score, feature creep ou automação de execução antes de existir evidência prospectiva.
 
-V4 added:
-
-- bounded SQLite resolution fairness: when causal work waits, at most one consecutive resolution grant goes first;
-- optimistic pool mapping insert-first fast path;
-- writer pressure instrumentation;
-- V3 latency headroom retained;
-- no detector/economic/RPC-worker/FIFO changes.
-
-Fresh v4 live systems result on 2026-09-08:
-
-- PumpSwap received / persisted / processed: **5,191 / 5,191 / 5,191**
-- Pump received / persisted / processed: **2,107 / 2,107 / 2,107**
-- coverage: **100.0% PASS**
-- true backlog: **0.000% PASS**
-- drops: 0
-- worker errors: 0
-- Pump p95: **2.463s PASS**
-- PumpSwap p95: **19.066s FAIL**
-- systems: **10/11**
-- normalization->reservation p95: ~17.421s
-- global prefix normalization barrier p95: ~17.412s
-- resolver pool-lock hold p95: ~4.439s
-- resolver durable mapping write p95: ~4.221s
-- SQLite resolution admission p95: ~3.566s
-- demand same-pool lock wait p95: ~14.934s
-- RPC decision p95: ~0.534s; capacity/transport violations=0
-- mapping writes: 560
-- pool mapping collision reads: **238 / 560 = 42.5%**
-- identity conflicts: 0
-- writer submitted/completed: 5,191 / 5,191
-- writer pending at close: 0
-- writer queue high-water: 222
-- writer result wait p95: ~2.030s
-
-Interpretation:
-
-**V4 fixed the V3 throughput failure.** It did not fail because SQLite could not drain. It failed because the critical identity/normalization path accumulated repeated same-pool work and SQLite-resolution admission waits; strict ingress-order reservation then amplified a few slow predecessors into a ~17s global barrier.
-
-The 42.5% pool-mapping collision rate with zero identity conflicts is consistent with repeated writes of already-present same identities. Code review identified two concrete sources: historical promotion before the per-pool single-flight lock and older queued notifications re-resolving identities learned later in the same run.
-
-Do not tune the v4 fairness constant by trial and error. The active V5 removes redundant demand while preserving the v4 fairness rule.
-
-## Tailfix v5 — failed live causal-throughput hardening
-
-Protocol: `docs/pumpswap-causal-throughput-hardening-v5-protocol-2026-09-08.md`
-
-Main additions:
+Modo atual: **NO-CAPITAL / PAPER / SHADOW / READ-ONLY RESEARCH**.
 
-- `src/pumpswap_normalization_resolver_v5.py`
-- `src/pumpswap_causal_normalization_v5.py`
-- `src/pumpswap_writer_headroom_v5.py`
-- `unified_market_route_research_smoke_tailfix_v5.py`
-- `route_research_systems_stability_tailfix_v5.py`
-- V5-specific deterministic tests
-
-### V5 fixes failure classes instead of tuning one threshold
-
-1. **Historical promotion is inside per-pool single-flight.** Concurrent notifications cannot all promote the same prior-run mapping independently.
-2. **Current-run durable identity may be reused as delayed knowledge.** If notification time is 120 and mapping becomes known at 130, the normalized event is persisted at `observed_at=130`, never 120. This prevents redundant re-resolution without lookahead/backdating.
-3. **Prior-run historical reuse stays strict.** A historical mapping observed after the notification cutoff is not reused as if it were already known.
-4. **CreatePool identity persistence becomes async/off-loop.** The remaining synchronous pool-store write in normalization is removed from the asyncio event loop.
-5. **V4 fairness stays unchanged.** V5 tests removal of redundant resolution demand instead of simultaneously changing the fairness knob.
-6. **Writer pressure becomes sustained evidence.** Queue high-water remains diagnostic, but promotion uses queue-depth p95, writer-result-wait p95 and complete drain.
-7. **One PumpSwap finalizer remains intentionally unchanged.** V4 ready-queue tails happened downstream of the ~17s normalization burst and are not yet proven to be an independent root cause. Do not increase finalizer workers preemptively.
-
-### Delayed-availability causal rule
-
-For a current-run mapping learned later than an already queued notification:
-
-`effective_event_observed_at = max(notification.observed_at, mapping.observed_at)`
+Prioridade ativa:
 
-This means identity learned later can unblock old queued work only at the later availability timestamp. It cannot create evidence before the identity became known.
+1. **Robinhood/Pons systems + acquisition**, enquanto Solana está bloqueada apenas por execution-fixture funding.
+2. **Solana Launch Burst V4** permanece congelada até funded-taker preflight válido.
+3. Social/Event, Narrative Revival, Convergence, wallet/deployer scores e exit optimization continuam congelados.
 
-### V5 preventive classifications
+## CURRENT SYSTEMS STATUS
 
-`FAIL_TAILFIX_V5_UNCHANGED_11_GATE`
-- frozen 11/11 failed;
-- V68 remains blocked.
+### Solana
 
-`HOLD_TAILFIX_V5_PREVENTIVE_HEADROOM`
-- 11/11 passed but required preventive evidence is missing, at least one monitored causal stage p95 >=4s, sustained writer pressure is too high, writer result-wait p95 >=4s, or writer did not drain;
-- V68 remains blocked.
+- Launch Burst V4 systems/timing: **PASS / CLOSED**.
+- V4 systems live: 84/84 selected before entry-ready/deadline, zero missed deadlines, max queue depth 1.
+- Jupiter pricing/route availability: **CONFIRMED**.
+- Jupiter candidate transaction assembly capability: **CONFIRMED** via diagnostic-only public funded control for both liquid control and representative Burst token.
+- Frozen controlled taker: unfunded (`0 USDC`, `0 SOL`).
+- Official funded-taker preflight: **FAIL-CLOSED BY DESIGN** until balances are present.
+- Solana active systems blocker: **execution fixture funding only**.
 
-`PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`
-- 11/11 PASS;
-- all V3 monitored causal stages p95 <4s;
-- V5 resolver/coalescing evidence present;
-- writer queue-depth p95 <80% of persistence-worker reservoir;
-- writer result-wait p95 <4s;
-- writer fully drained;
-- only this exact classification can be considered for a fresh V68 acquisition.
+Freeze status document:
 
-## Tailfix v6 — structural partial-order correction after V5 FAIL
+`docs/launch-burst-v4-solana-freeze-status.md`
 
-V5 removed duplicate normalization demand but retained the strict global reservation prefix. The
-V5 live result therefore showed the same structural HOL in reservation admission and downstream
-stateful/demoted ready queues even though RPC and finalizer service were small.
+### Robinhood / Pons
 
-V6 adds `src/pumpswap_partial_order_v6.py` and V6 wrappers. Reservations are admitted when their
-causal normalization hint is available. The existing scheduler still issues one FIFO ticket chain
-per asset, while disjoint assets have no dependency edge. The ordering contract is explicitly
-causal admission order, not ingress FIFO across an unresolved normalization gap; late episode
-ordering remains fail-closed through the existing canonical episode store semantics.
+Active branch:
 
-V6 does not change detector, V68, economics, 5s gate, RPC ceiling, SQLite writer count, writer
-authority, persistence superset guard, or stateful/demoted queue policy. Its deterministic tests
-prove disjoint bypass, same-asset serialization, multi-asset acyclicity, stateful priority over
-proven demotion, and asynchronous writer interaction inherited from V5.
-
-### Tailfix V7 — remaining-HOL attribution only
+`research/robinhood-launch-burst-v0`
 
-V7 diagnostic wrappers preserve V6 scheduling and add observation-only attribution for predecessor
-wait versus post-ready shared capacity, stateful/demoted finalizer occupancy, authoritative writer
-result correlation, per-asset dependency p95, top-hot-asset concentration, and proven demotion rate.
-No V7 structural correction is authorized until a systems-only run proves an avoidable cause while
-the V6 same-asset and fail-closed invariants remain green.
+Robinhood V0 already contains:
 
-### Tailfix V8 — authoritative writer HOL correction
+- Pons V2 factory discovery;
+- RPC executed-event acquisition;
+- direct BUY/SELL quote math;
+- pinned-block state reads;
+- protocol capability / fee / tax detection;
+- Nitro Sequencer raw capture;
+- bootstrap classification;
+- coordinated RPC + Sequencer runner;
+- reconciliation plumbing.
 
-V8 keeps V6 partial-order semantics and makes the existing authoritative PumpSwap batch enter the
-shared SQLite admission gate as `CAUSAL`; resolver mapping writes remain `RESOLUTION` under the
-existing bounded fairness rule. The physical PumpSwap writer remains one dedicated thread. V8 also
-groups canonical affected-token readback for batches with distinct transaction keys, while duplicate
-transaction keys retain per-item readback for replay correctness. Continuation/audit persistence is
-not mixed into this authoritative queue.
-
-### Tailfix V9 — proven-demotion causal acknowledgement
-
-V8 proved the remaining tail had moved after submit: 913 pending jobs were proven demoted, but the
-V34/V42/V51 scheduler still put those continuation payloads into the shared stateful ready queue
-for an audit/finalizer acknowledgement. V9 keeps the exact proof and per-asset ticket ordering, but
-routs proven demoted payloads to a bounded audit-only queue multiplexed by the existing finalizer.
-Their causal tickets are consumed immediately; later state-changing work cannot be blocked by
-audit-only queueing. The existing V27
-continuation writer, canonical-hit accounting, replay and fail-closed audit behavior remain active.
-Ambiguous, ready, running and state-changing work remains on the original causal path.
-
-## Current product direction — Signal-First / Human-Executed
-
-The project is an **Opportunity Intelligence Engine**, not a product whose initial value depends
-on full automatic trading. The current product path is:
-
-`opportunity intelligence -> research signal -> validated signal -> human TAKE/SKIP -> manual execution -> automatic outcome tracking -> shadow execution -> assisted/selective automation -> eventual full automation`
-
-Separate these claims:
-
-1. finding an opportunity or edge;
-2. emitting a useful, prospective and auditable decision;
-3. capturing the opportunity economically;
-4. automating that capture.
-
-Proof of the first three must not depend on completing the fourth. Automation may be delayed, but
-execution realism may not: executable quotes, liquidity, slippage, latency, entry geometry, exit
-behavior, route availability and net economics remain required research evidence.
-
-### Future signal contract
-
-A research signal is an immutable, versioned prospective decision. It must preserve at least:
-
-- `signal_id`, `signal_version`, `episode_id`;
-- `detected_at`, `emitted_at`, `decision_as_of`;
-- detector/strategy versions and signal class/status;
-- reference quote and its observation time;
-- market, participant, wallet, social, launch-quality and execution-reality evidence;
-- explicit missingness, risk flags and reason codes;
-- confidence method/version/value, or `confidence=NOT_AVAILABLE` until calibrated.
-
-Later information creates an update, a new version or a new event. It never silently rewrites the
-original signal. No arbitrary percentage confidence is allowed without prospective calibration.
-
-### Independent outcome populations
-
-Future human-execution experiments must retain three independent sets:
-
-- **ALL SIGNALS:** every prospective signal emitted;
-- **HUMAN SELECTED:** Murillo's pre-outcome `TAKE`/`SKIP`, timestamp, optional reason and signal
-  version seen;
-- **SHADOW AUTO:** the same frozen execution policy applied independently of the human choice.
-
-Human-selected performance cannot be called incremental edge merely because its median exceeds all
-signals; comparisons must control for evidence available in the original signal.
-
-### Signal taxonomy and evidence families
-
-- **Research Signal:** hypothesis/evidence under research; not an operating recommendation.
-- **Validated Signal:** rule survived the declared prospective protocol; execution is not yet proven.
-- **Operational Signal:** opportunity, execution realism, exit behavior, shadow validation and risk
-  specification are all sufficiently evidenced; it still does not authorize live money.
-
-Evidence families remain distinct: market/flow, participant structure, wallet intelligence,
-social/narrative, launch/token quality, execution reality and future cross-market/multichain
-context. Wallet intelligence is post-opportunity evidence, never a primary acquisition whitelist.
-Social `created_at` is not causal availability, and non-Solana research cannot rescue a failed
-Solana hypothesis.
-
-### Product roadmap
-
-1. Opportunity Intelligence: detect and structure causal opportunities.
-2. Research Signals: emit versioned, auditable prospective signals.
-3. Validated Signal Bot: promote only rules that pass prospective validation.
-4. Human-Executed Workflow: record TAKE/SKIP before outcome and track outcomes automatically.
-5. Shadow Execution: compare all signals, human selections and frozen shadow policy.
-6. Assisted Execution: prepare execution while retaining human confirmation.
-7. Selective Automation: automate only validated contexts.
-8. Full Automation: consider only after later evidence justifies it.
-
-Current execution state remains: funded executable BUY `BLOCKED_BY_FUNDING`, landing/fill
-validation `NOT_RELEASED`, market-first exit `NOT_VALIDATED`, shadow `NOT_RELEASED`, live money
-`NOT_AUTHORIZED`.
-
-### Deterministic V5/V6 requirements before live
-
-Tests must prove:
-
-- many concurrent historical same-pool requests -> one promotion;
-- many older queued same-pool requests -> one network resolution;
-- delayed current-run mapping reuse clamps observed availability forward;
-- prior-run future historical mapping is not looked ahead;
-- CreatePool identity is async + durable;
-- V5 seams restore after success and exception;
-- transient max queue spike alone does not HOLD;
-- sustained queue p95 does HOLD;
-- writer result-wait p95 >=4s does HOLD;
-- incomplete drain does HOLD;
-- official systems FAIL cannot be rescued;
-- missing preventive evidence causes HOLD;
-- full repository compile/tests green.
-
-## v48 Flow60 prospective result — CLOSED
-
-Classification: `FAIL_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
+Authoritative 180s coordinated-shadow attempt:
+
+- requested duration: 180s;
+- parent lifetime: ~1.73s;
+- child start skew: ~11.89ms;
+- `rpc_return_code = 0`;
+- `feed_return_code = 0`;
+- RPC report: `FAIL_ROBINHOOD_LAUNCH_BURST_PREFLIGHT_V0`;
+- parent classification: `FAIL_COORDINATED_SHADOW_ARTIFACTS`;
+- bootstrap not opened;
+- latency claim not opened;
+- execution reconciliation not opened;
+- economic outcomes not opened;
+- selector remains unfrozen.
+
+Interpretation: **SYSTEMS FAILURE BEFORE SCIENTIFIC ACQUISITION**, not evidence against Robinhood/Pons or Burst.
+
+Confirmed observability bug: the Sequencer capture CLI printed `FAIL_CAPTURE_PREFLIGHT` on an exception after creating a run directory but did not persist `report.json`; the coordinated parent therefore masked the real feed cause as an artifact failure.
+
+Minimal repair applied:
+
+- persist CLI preflight failure report into the run directory when exactly one new capture run directory belongs to that invocation;
+- fail closed if artifact ownership is ambiguous;
+- add unit coverage;
+- compile/test capture + coordinated paths in Robinhood Sequencer CI.
+
+The repair is **observability-only**. It does not alter feed parsing, RPC acquisition, event semantics, ordering, selector, economics or reconciliation rules.
+
+Current repair HEAD at time of consolidation:
+
+`ffc6228a9353d73e31a043482fbdc8e2a24b35ea`
+
+CI status must be checked from GitHub before treating that HEAD as validated.
+
+## CURRENT SCIENTIFIC STATUS
+
+### Solana Launch Burst
 
 Frozen hypothesis:
-- `flow60_event_count`
-- LOW<=25 / MID=26..47 / HIGH>47
-- primary 900s LOW vs HIGH
 
-Do not retune bins/horizon or reuse the burned sample.
+- stratum: `pump_launch`;
+- primary window: `5s`;
+- feature: `signed_flow_over_event_reserve`;
+- selector: `>= 0.08`;
+- confirmation: none.
 
-## v55 causal discovery — COMPLETE
+Scientific state: **NOT REJECTED**.
 
-Fresh discovery rows=79; A=39 / B=40; lineage/causal audit clean.
+The first V4 economic acquisition does **not** evaluate the hypothesis because entry assembly coverage was 0/57 due the unfunded taker fixture. Do not reinterpret it as a signal failure.
 
-Exactly one candidate advanced:
+A separate future `NO-CAPITAL / SHADOW / QUOTE-PAPER BURST-0` surface is allowed only as a fresh protocol. It must never be presented as validation of the frozen V4 assembled-transaction contract.
 
-- feature `flow60_buy_share_pct`
-- LOW <=57.1429
-- MID <=65.7143
-- HIGH >65.7143
-- favorable LOW / opposite HIGH
+### Robinhood / Pons
 
-The v55 sample is burned for validation.
+Scientific state: **NOT YET EVALUATED**.
 
-## v68 prospective Flow60 Buy-Share — FROZEN / NOT_EVALUATED
+No Robinhood selector is frozen. No Solana threshold/window/feature semantics may be imported.
 
-Frozen:
+The active scientific prerequisite is causal observability:
 
-- `flow60_buy_share_pct`
-- LOW<=57.1429
-- MID=(57.1429,65.7143]
-- HIGH>65.7143
-- favorable LOW / opposite HIGH
-- primary horizon 900s
-- support LOW>=5 and HIGH>=5 independently in A and B
-- same detector / pacing / notional / slippage / horizons
+`Sequencer intent -> canonical tx identity -> RPC confirmation -> Pons Launch/CurveBuy/CurveSell -> intent-to-execution timing`
 
-PASS requires all:
-1. LOW median > HIGH median A
-2. LOW median > HIGH median B
-3. LOW median > HIGH median ALL
-4. LOW median >0 A and B
-5. LOW PF >1 A and B
-6. aggregate LOW PF >1
-7. aggregate LOW mean_without_best >0
+Semantics are frozen:
 
-MID and 300/3600s are diagnostic only. No same-sample rescue if a valid v68 FAILS/INCONCLUSIVE.
+- Sequencer Feed = **INTENT EVIDENCE ONLY**;
+- RPC logs / canonical chain data = **EXECUTION EVIDENCE**;
+- Feed observation without RPC confirmation = **UNKNOWN**, never inferred failed execution;
+- initial Sequencer sequence `0` = **BOOTSTRAP ONLY**, never a latency boundary.
 
-## Other research tracks — isolated
+Only after acquisition + reconciliation are healthy may Robinhood Burst-0 begin.
 
-- v56 Exceptional Trade Pre-Entry: causal scaffold ready
-- v57 Market-First Social Evidence: causal scaffold ready / no approved live provider
-- v58 Market-First Exit Geometry: measurement ready / no policy tuning
-- v59 Multichain Market Contract: chain-aware adapter scaffold ready
-- v60 Opportunity Wallet Convergence: pre-frozen-cohort evidence ready
-- v61 Direct Funding Link: causal relationship primitive ready
-- v62 Pons adapter/lifecycle: read-only scaffold ready
-- v63 Exceptional Trade Outcome-Blind Controls: case-control matcher ready
-- v64 Pons Exact Curve Progress: state-snapshot progress ready
-- v65 Smart-Wallet Cohort Manifest: deterministic hashed cohort freeze ready
-- v66 Protocol Deployment Capability Attestation: authority scaffold ready
-- v67 Pons Raw Launch Quality Evidence: implemented / no score
+## CURRENT ECONOMIC STATUS
 
-These remain isolated from active Solana systems/V68 validation.
+### Solana
 
-## Execution state
+`ECONOMIC = INCONCLUSIVE`
 
-- funded executable BUY: **BLOCKED_BY_FUNDING**
-- landing/fill validation: **NOT RELEASED**
-- market-first exit policy: **NOT VALIDATED**
-- shadow execution: **NOT RELEASED**
-- live money: **NOT AUTHORIZED**
+Reason: the frozen V4 Route-Paper contract requires an assembled candidate BUY transaction, while the controlled taker is unfunded.
 
-## Scientific invariants
+This is an **execution-fixture blocker**, not evidence of positive or negative expectancy.
 
-1. discovery != validation
-2. systems PASS != economic edge
-3. route-only return != realized P&L
-4. route availability != transaction assembly != landing != fill
-5. first persisted trigger remains canonical
-6. no lookahead / retroactive enrollment / causal backfill
-7. missingness stays explicit
-8. wallet is post-episode evidence only
-9. distinct wallet addresses != independent traders
-10. concentration/repetition != manipulation proof
-11. failed prospective hypotheses are closed, not retuned
-12. v48 sample is burned
-13. v55 sample is discovery-only and burned for v68 validation
-14. only v55 rank #1 may advance from that discovery sequence
-15. v68 cutpoints/direction/horizon/gate remain frozen
-16. v68 cannot be rescued with MID/another horizon/feature/new bins on the same sample
-17. Solana detector thresholds remain frozen through v68
-18. non-Solana research cannot contaminate v68 acquisition
-19. historical chain data cannot receive fake historical `observed_at`
-20. social `created_at` != causal availability
-21. old Wave exit results do not validate market-first exits
-22. no live money without robust forward + execution + shadow evidence
-23. systems abort before forward collector = no economic verdict
-24. never reuse partial/failed acquisition identities blindly
-25. do not increase worker counts without proving causal independence and respecting ceilings
-26. systems/headroom engineering cannot relax the frozen 5s gate
-27. one physical SQLite writer remains authoritative unless a future architecture proves equivalent semantics
-28. pool identity must be durable before publication
-29. current-run delayed identity reuse must clamp event `observed_at` forward to mapping availability
-30. prior-run historical identity remains subject to the original event causal cutoff
-31. do not tune SQLite fairness by trial-and-error while duplicate identity demand remains possible
-32. execution automation is not required to prove opportunity intelligence or signal validity
-33. execution realism remains mandatory before any execution claim
-34. every signal is prospective and bounded by its `decision_as_of`
-35. confidence stays unavailable until methodology and prospective calibration exist
-36. ALL SIGNALS, HUMAN SELECTED and SHADOW AUTO remain independently attributable
-37. human selection is recorded before outcome and does not rewrite the signal
-38. funded BUY, landing/fill, shadow and live money remain explicitly blocked/not released
+### Robinhood
 
-## Immediate next action
+`ECONOMIC = NOT OPENED`
 
-1. Keep the accepted V9 systems profile frozen; do not reopen PumpSwap latency without new evidence.
-2. Land the Signal-First / Human-Executed documentation update and keep detector, systems and V68 frozen.
-3. Keep V68 as the next existing economic experiment, still `NOT_EVALUATED`; do not start it automatically.
-4. Define the future signal contract and human TAKE/SKIP workflow before implementing UI or execution.
-5. Require execution realism and shadow evidence before considering assisted or selective automation.
+No selector, economic hypothesis, trade return or realized PnL claim is currently authorized.
+
+## ACTIVE EXPERIMENT
+
+### Robinhood coordinated shadow — current gate
+
+Question:
+
+> Can RPC execution evidence and Nitro Sequencer intent evidence be acquired together with causal artifacts reliable enough for later reconciliation?
+
+Current authoritative run failed before that question was answered.
+
+Immediate task:
+
+1. read the RPC child `report.json` and both child stdout/stderr from the existing 180s run;
+2. recover the exact RPC and feed preflight causes;
+3. repair only the minimum operational blocker;
+4. repeat the **same coordinated gate**, preferably short (e.g. 60s) once the blocker is known;
+5. do not open Burst-0 until coordinated acquisition and causal reconciliation are valid.
+
+Artifacts from the authoritative failed run:
+
+`C:\robinhood-shadow-v0\robinhood_sequencer_coordinated_shadow_v0-1789442344-67f7e01d8a`
+
+## FROZEN CONTRACTS
+
+### Solana Route-Paper V4
+
+Do not change:
+
+- `pump_launch`;
+- 5s primary window;
+- `signed_flow_over_event_reserve >= 0.08`;
+- no confirmation window;
+- +2s entry latency;
+- US$25 notional;
+- frozen fees/slippage;
+- +60s exit;
+- BUY requires assembled candidate transaction;
+- SELL is route-only exact bought quantity;
+- failed exit = -100%;
+- no adaptive post-signal funding/top-up;
+- no outcome-driven rescue or retuning.
+
+Route contract hash:
+
+`3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d`
+
+Funded-taker fixture hash:
+
+`e7bde615886a9674a9f67cccca6be12aefa833e730a4076447ce60530d2e4ba8`
+
+Solana resume condition before acquisition:
+
+- same frozen controlled taker;
+- >=25 USDC;
+- >=0.01 SOL operational balance;
+- no adaptive top-up;
+- `PASS_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT`;
+- assembled read-only probes for liquid control and representative Burst token.
+
+### Robinhood
+
+No economic selector or primary feature is frozen yet.
+
+Do not import from Solana:
+
+- `.08`;
+- primary 5s choice;
+- Solana selector;
+- Solana economic contract;
+- cross-chain threshold sharing.
+
+## CLOSED HYPOTHESES / HISTORICAL DECISIONS THAT STILL MATTER
+
+- Solana V48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**.
+- Solana V68 Flow60 buy-share economic verdict: **NOT EVALUATED** because systems aborted before valid forward economic collection.
+- Historical V9 Solana systems: **PASS 11/11**, PumpSwap p95 ~3.151s, Pump p95 ~1.478s. This motivated preserving useful systems work but no longer defines the active scientific gate.
+- Market-First and Social/Event-First remain independent research tracks; convergence is a future hypothesis only after both are independently supported.
+
+## KNOWN BLOCKERS
+
+### Solana
+
+Only active blocker for frozen V4 economic continuation:
+
+`CONTROLLED TAKER FUNDING`
+
+Do not spend capital merely to discover whether Burst has first-move residual. Funding is classified separately as execution-fixture funding.
+
+### Robinhood
+
+Current blocker:
+
+`EXACT RPC + FEED PREFLIGHT CAUSES FROM FAILED COORDINATED RUN`
+
+Known secondary systems fact:
+
+- Robinhood public RPC is rate-limited and is explicitly not recommended for production/latency-sensitive use.
+- Do not treat public-provider throttling as a scientific failure.
+- Provider upgrade is allowed only when evidence shows the public endpoint is the blocker; do not redesign parser/strategy preemptively.
+
+Current Pons protocol verification:
+
+- current official V2 factory matches `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`;
+- current `TokenLaunched`, `CurveBuy` and `CurveSell` event shapes match the repository decoder signatures.
+
+Therefore do not change factory/event semantics without new evidence.
+
+## NEXT GATE
+
+### Robinhood
+
+Current route:
+
+`recover exact preflight causes -> minimum systems repair -> repeat same coordinated gate -> causal reconciliation`
+
+Outcome routing:
+
+- **PASS_COORDINATED_SHADOW_ACQUISITION_V0** -> open causal Feed->RPC reconciliation.
+- **PASS_COORDINATED_SHADOW_ACQUISITION_V0_NO_LIVE_CANDIDATES** -> increase acquisition duration only.
+- **SYSTEMS FAIL** -> repair only the observed operational blocker, then repeat the same gate.
+- **INCONCLUSIVE coverage** -> extend acquisition only; no feature/selector changes.
+
+After healthy reconciliation:
+
+### Robinhood Burst-0 — NO CAPITAL
+
+Question:
+
+> After the causal moment at which an opportunity can actually be observed, does meaningful residual movement remain in the bonding curve?
+
+Start with base rate only, no selector.
+
+Desired forward horizons when viable:
+
+`15s / 30s / 60s / 120s / 300s`
+
+Measure:
+
+- forward return;
+- MFE;
+- MAE;
+- time-to-MFE;
+- time-to-failure;
+- missingness;
+- right-tail / top-1 / top-3 dependence.
+
+Do not call quote-paper evidence a fill or realized PnL.
+
+## ROADMAP
+
+1. Robinhood acquisition health.
+2. Robinhood causal Sequencer->RPC reconciliation.
+3. Robinhood Burst-0 base-rate residual move, no capital and no selector.
+4. Only if Burst-0 justifies: Burst-1 with a small number of grounded momentum/acceleration and capital-quality families.
+5. Only if Burst-1 produces a prospectively supported candidate: Burst-2 structural risk/veto layer.
+6. Fresh validation.
+7. Quote/route paper.
+8. Execution realism.
+9. Continuous shadow.
+10. Small capital only after prior gates survive.
+
+Potential future layers, explicitly **not active now**:
+
+- Social / Attention Lead;
+- Narrative Revival;
+- cross-track convergence;
+- wallet independence / common funding / deployer history as structural risk;
+- TP/SL or exit optimization.
+
+## CAPITAL RULE
+
+Preferred sequence:
+
+`NO-CAPITAL OBSERVABILITY -> PROSPECTIVE SCIENTIFIC EVIDENCE -> FROZEN SELECTOR -> FRESH VALIDATION -> QUOTE/ROUTE PAPER -> EXECUTION REALISM -> SHADOW -> SMALL CAPITAL`
+
+Never use trading capital simply to discover whether the basic phenomenon exists.
+
+## INTERPRETATION DISCIPLINE
+
+Always separate:
+
+### SYSTEMS
+Did acquisition / pipeline / reconciliation work?
+
+### SCIENTIFIC EVIDENCE
+Was the phenomenon measured causally without lookahead, survivorship or contamination?
+
+### ECONOMIC EDGE
+Is there future movement that may be capturable after costs and execution constraints?
+
+Never infer:
+
+- Systems PASS = edge;
+- MFE = realized profit;
+- Sequencer intent = execution;
+- route/quote paper = landed fill;
+- many trades = real capital commitment;
+- distinct wallets = independent traders.
