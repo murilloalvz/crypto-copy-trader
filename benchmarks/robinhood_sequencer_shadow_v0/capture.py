@@ -29,6 +29,7 @@ from src.robinhood_nitro_ws_v0 import (
     DEFAULT_FEED_URL,
     NitroSequencerFeedClientV0,
     ROBINHOOD_CHAIN_ID,
+    USER_AGENT,
     WebSocketProtocolError,
 )
 
@@ -54,7 +55,10 @@ class JsonRpcClientV0:
         request = Request(
             self.url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
             method="POST",
         )
         try:
@@ -251,7 +255,11 @@ def run_capture_v0(
                         "requested_sequence_number": requested_sequence,
                         "feed_client_version": handshake.feed_client_version,
                         "feed_server_version": handshake.feed_server_version,
+                        "feed_server_version_header_present": (
+                            handshake.feed_server_version_header_present
+                        ),
                         "chain_id": handshake.chain_id,
+                        "chain_id_header_present": handshake.chain_id_header_present,
                     }
                 )
                 while time.time_ns() < deadline_ns:
@@ -326,6 +334,12 @@ def run_capture_v0(
         "execution_confirmed": False,
         "economic_outcomes_opened": False,
         "latency_claim_opened": False,
+        "notes": [
+            "rpc_chain_identity_is_verified_before_feed_acquisition",
+            "feed_response_chain_id_and_server_version_headers_are_optional_metadata",
+            "present_feed_metadata_is_validated_fail_closed",
+            "rpc_and_feed_transports_use_explicit_user_agent",
+        ],
     }
     _write_json(report_path, report)
     return report
