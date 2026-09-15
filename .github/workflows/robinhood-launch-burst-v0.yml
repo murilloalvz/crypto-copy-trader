@@ -10,6 +10,7 @@ on:
       - 'benchmarks/robinhood_launch_burst_v0/**'
       - 'tests/test_robinhood_pons_launch_burst_v0.py'
       - 'tests/test_robinhood_launch_burst_integrity_v0.py'
+      - 'tests/test_robinhood_live_rpc_v0.py'
       - 'tests/test_robinhood_fee_dynamics_v0.py'
       - 'tests/test_robinhood_acquisition_parity_v0.py'
       - 'tests/test_robinhood_protocol_capabilities_v0.py'
@@ -58,6 +59,7 @@ jobs:
           python -m py_compile benchmarks/robinhood_launch_burst_v0/direct_quote_transport_bench.py
           python -m py_compile tests/test_robinhood_pons_launch_burst_v0.py
           python -m py_compile tests/test_robinhood_launch_burst_integrity_v0.py
+          python -m py_compile tests/test_robinhood_live_rpc_v0.py
           python -m py_compile tests/test_robinhood_fee_dynamics_v0.py
           python -m py_compile tests/test_robinhood_acquisition_parity_v0.py
           python -m py_compile tests/test_robinhood_protocol_capabilities_v0.py
@@ -69,6 +71,7 @@ jobs:
         run: |
           python -m unittest tests.test_robinhood_pons_launch_burst_v0 -v
           python -m unittest tests.test_robinhood_launch_burst_integrity_v0 -v
+          python -m unittest tests.test_robinhood_live_rpc_v0 -v
           python -m unittest tests.test_robinhood_fee_dynamics_v0 -v
           python -m unittest tests.test_robinhood_acquisition_parity_v0 -v
           python -m unittest tests.test_robinhood_protocol_capabilities_v0 -v
