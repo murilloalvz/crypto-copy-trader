@@ -9,6 +9,7 @@ from src.robinhood_nitro_bootstrap_v0 import (
     BACKLOG_CONFIRMED,
     LIVE_CANDIDATE,
     UNKNOWN_BLOCK_UNRESOLVED,
+    UNKNOWN_NO_BLOCK_HASH,
 )
 
 
@@ -87,34 +88,31 @@ class RobinhoodSequencerBootstrapClassifierV0Tests(unittest.TestCase):
                 "captured_at_ns": 1_000,
             },
         }
-        (run_dir / "report.json").write_text(
-            json.dumps(report), encoding="utf-8"
-        )
+        (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         with (run_dir / "raw-frames.jsonl").open("w", encoding="utf-8") as handle:
             for frame in frames:
                 handle.write(json.dumps(frame) + "\n")
         return run_dir
 
-    def test_backlog_live_and_unresolved_are_separated_without_opening_claims(self):
+    def test_backlog_and_live_are_causally_classified_without_opening_claims(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self._make_run(
                 Path(directory),
                 [
                     _frame(1, BACKLOG_HASH, 2_000),
                     _frame(2, LIVE_HASH, 3_000),
-                    _frame(3, "0x" + "ee" * 32, 4_000),
                 ],
             )
             report = classify_capture_v0(run_dir=run_dir, rpc_client=FakeRpc())
             self.assertEqual(report["classification"], "PASS_BOOTSTRAP_CLASSIFICATION")
             self.assertTrue(report["anchor_reorg_guard_passed"])
-            self.assertEqual(report["messages_seen"], 3)
+            self.assertEqual(report["messages_seen"], 2)
             self.assertEqual(report["latency_eligible_messages"], 1)
             self.assertEqual(report["classification_counts"][BACKLOG_CONFIRMED], 1)
             self.assertEqual(report["classification_counts"][LIVE_CANDIDATE], 1)
-            self.assertEqual(
-                report["classification_counts"][UNKNOWN_BLOCK_UNRESOLVED], 1
-            )
+            self.assertEqual(report["causally_classified_messages"], 2)
+            self.assertEqual(report["unknown_messages"], 0)
+            self.assertEqual(report["causal_classification_coverage_pct"], 100.0)
             self.assertFalse(report["execution_confirmed"])
             self.assertFalse(report["economic_outcomes_opened"])
             self.assertFalse(report["latency_claim_opened"])
@@ -129,7 +127,24 @@ class RobinhoodSequencerBootstrapClassifierV0Tests(unittest.TestCase):
             self.assertEqual(live["feed_observed_at_ns"], 3_000)
             self.assertTrue(live["eligible_for_feed_latency"])
 
-    def test_individual_block_resolution_error_becomes_unknown_not_run_failure(self):
+    def test_null_block_resolution_fails_closed_not_no_live_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unknown_hash = "0x" + "ee" * 32
+            run_dir = self._make_run(
+                Path(directory), [_frame(1, unknown_hash, 2_000)]
+            )
+            report = classify_capture_v0(run_dir=run_dir, rpc_client=FakeRpc())
+            self.assertEqual(
+                report["classification"],
+                "FAIL_BOOTSTRAP_BLOCK_RESOLUTION_ERRORS",
+            )
+            self.assertEqual(report["block_resolution_errors"], 0)
+            self.assertEqual(report["latency_eligible_messages"], 0)
+            self.assertEqual(
+                report["classification_counts"][UNKNOWN_BLOCK_UNRESOLVED], 1
+            )
+
+    def test_block_resolution_exception_fails_closed_not_run_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self._make_run(
                 Path(directory), [_frame(1, ERROR_HASH, 2_000)]
@@ -138,7 +153,10 @@ class RobinhoodSequencerBootstrapClassifierV0Tests(unittest.TestCase):
                 run_dir=run_dir,
                 rpc_client=FakeRpc(fail_hash=ERROR_HASH),
             )
-            self.assertEqual(report["classification"], "PASS_BOOTSTRAP_CLASSIFICATION")
+            self.assertEqual(
+                report["classification"],
+                "FAIL_BOOTSTRAP_BLOCK_RESOLUTION_ERRORS",
+            )
             self.assertEqual(report["block_resolution_errors"], 1)
             self.assertEqual(report["latency_eligible_messages"], 0)
             self.assertEqual(
@@ -167,7 +185,7 @@ class RobinhoodSequencerBootstrapClassifierV0Tests(unittest.TestCase):
             self.assertFalse(row["eligible_for_feed_latency"])
             self.assertFalse(row["anchor_reorg_guard_passed"])
 
-    def test_malformed_frame_is_counted_without_destroying_valid_rows(self):
+    def test_malformed_frame_fails_closed_even_when_another_row_is_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self._make_run(
                 Path(directory), [_frame(1, LIVE_HASH, 2_000)]
@@ -178,6 +196,24 @@ class RobinhoodSequencerBootstrapClassifierV0Tests(unittest.TestCase):
             self.assertEqual(report["messages_seen"], 1)
             self.assertEqual(report["parse_errors"], 1)
             self.assertEqual(report["latency_eligible_messages"], 1)
+            self.assertEqual(report["classification"], "FAIL_BOOTSTRAP_PARSE_ERRORS")
+
+    def test_all_hashless_messages_hold_for_causal_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = self._make_run(
+                Path(directory), [_frame(1, None, 2_000)]
+            )
+            report = classify_capture_v0(run_dir=run_dir, rpc_client=FakeRpc())
+            self.assertEqual(
+                report["classification"],
+                "HOLD_BOOTSTRAP_NO_CAUSAL_BLOCK_HASH_COVERAGE",
+            )
+            self.assertEqual(report["messages_seen"], 1)
+            self.assertEqual(report["classification_counts"][UNKNOWN_NO_BLOCK_HASH], 1)
+            self.assertEqual(report["causally_classified_messages"], 0)
+            self.assertEqual(report["unknown_messages"], 1)
+            self.assertEqual(report["causal_classification_coverage_pct"], 0.0)
+            self.assertEqual(report["latency_eligible_messages"], 0)
 
 
 if __name__ == "__main__":
