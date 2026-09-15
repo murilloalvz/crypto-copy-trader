@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from benchmarks.robinhood_sequencer_shadow_v0.coordinated import (
+    RPC_READY_VERSION,
     build_child_commands_v0,
     run_coordinated_shadow_v0,
 )
@@ -34,6 +36,7 @@ class ArtifactPopenFactory:
         feed_classification=None,
         rpc_error=None,
         feed_error=None,
+        rpc_ready=True,
     ):
         self.rpc_classification = (
             rpc_classification
@@ -42,6 +45,7 @@ class ArtifactPopenFactory:
         self.feed_classification = feed_classification or "PASS_RAW_CAPTURE"
         self.rpc_error = rpc_error
         self.feed_error = feed_error
+        self.rpc_ready = rpc_ready
         self.commands = []
 
     def __call__(self, command, **kwargs):
@@ -59,6 +63,28 @@ class ArtifactPopenFactory:
         if is_rpc:
             report["factory_discovery"] = {"classification": "SYNTHETIC_FACTORY_STATE"}
             report["transport_errors"] = []
+            report["preflight_completed"] = self.rpc_ready
+            if not self.rpc_ready:
+                report["failure_stage"] = "preflight_factory_discovery"
+            if self.rpc_ready:
+                ready_path = Path(command[command.index("--ready-file") + 1])
+                ready_path.write_text(
+                    json.dumps(
+                        {
+                            "type": RPC_READY_VERSION,
+                            "run_id": "rpc-fixture",
+                            "run_dir": str(child),
+                            "preflight_completed": True,
+                            "capture_started_at_ns": time.time_ns(),
+                            "initial_block": 100,
+                            "factory": "0x" + "11" * 20,
+                            "chain_id": 4663,
+                            "economic_outcomes_opened": False,
+                            "selector_frozen": False,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
         else:
             report["frame_count"] = 1 if classification == "PASS_RAW_CAPTURE" else None
             report["transport_errors"] = []
@@ -101,6 +127,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             feed_url="wss://feed.example",
             rpc_artifacts_root=Path("rpc-root"),
             feed_artifacts_root=Path("feed-root"),
+            rpc_ready_file=Path("rpc-ready.json"),
             factory_address="0x" + "11" * 20,
         )
         self.assertIn("benchmarks.robinhood_launch_burst_v0.live", rpc)
@@ -108,10 +135,11 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
         self.assertEqual(rpc[rpc.index("--duration-seconds") + 1], "180")
         self.assertEqual(feed[feed.index("--duration-seconds") + 1], "180")
         self.assertEqual(feed[feed.index("--initial-requested-sequence") + 1], "0")
+        self.assertEqual(rpc[rpc.index("--ready-file") + 1], "rpc-ready.json")
         self.assertIn("--factory-address", rpc)
         self.assertNotIn("--factory-address", feed)
 
-    def test_coordinated_pass_requires_both_child_reports_and_live_candidate(self):
+    def test_coordinated_pass_requires_rpc_ready_and_both_child_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             factory = ArtifactPopenFactory()
             report = run_coordinated_shadow_v0(
@@ -121,11 +149,17 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=factory,
                 bootstrap_classifier=_bootstrap(eligible=3),
             )
             self.assertEqual(report["classification"], "PASS_COORDINATED_SHADOW_ACQUISITION_V0")
+            self.assertTrue(report["rpc_ready"])
+            self.assertIsNone(report["rpc_ready_error"])
+            self.assertIsNotNone(report["rpc_capture_started_at_ns"])
+            self.assertIsNotNone(report["rpc_ready_to_feed_start_ms"])
+            self.assertGreaterEqual(report["rpc_ready_to_feed_start_ms"], 0.0)
             self.assertEqual(report["bootstrap_latency_eligible_messages"], 3)
             self.assertEqual(report["bootstrap_messages_seen"], 1)
             self.assertEqual(report["bootstrap_parse_errors"], 0)
@@ -138,6 +172,36 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             self.assertTrue(report["feed_report_present"])
             self.assertEqual(len(factory.commands), 2)
 
+    def test_rpc_not_ready_blocks_feed_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            factory = ArtifactPopenFactory(
+                rpc_classification="FAIL_ROBINHOOD_LAUNCH_BURST_PREFLIGHT_V0",
+                rpc_error="JsonRpcError:synthetic preflight failure",
+                rpc_ready=False,
+            )
+            report = run_coordinated_shadow_v0(
+                duration_seconds=1,
+                poll_ms=350,
+                rpc_url="https://rpc.example",
+                feed_url="wss://feed.example",
+                artifacts_root=Path(directory),
+                python_executable="python",
+                rpc_ready_timeout_seconds=1,
+                child_timeout_slack_seconds=1,
+                popen_factory=factory,
+                bootstrap_classifier=_bootstrap(eligible=1),
+            )
+            self.assertEqual(
+                report["classification"],
+                "FAIL_COORDINATED_SHADOW_RPC_READINESS",
+            )
+            self.assertFalse(report["rpc_ready"])
+            self.assertIn("exited before readiness", report["rpc_ready_error"])
+            self.assertIsNone(report["feed_started_at_ns"])
+            self.assertIsNone(report["feed_return_code"])
+            self.assertEqual(report["rpc_failure_stage"], "preflight_factory_discovery")
+            self.assertEqual(len(factory.commands), 1)
+
     def test_zero_live_candidates_is_pass_only_after_clean_bootstrap(self):
         with tempfile.TemporaryDirectory() as directory:
             report = run_coordinated_shadow_v0(
@@ -147,6 +211,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(),
                 bootstrap_classifier=_bootstrap(eligible=0),
@@ -174,6 +239,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(
                     feed_classification="FAIL_CAPTURE_PREFLIGHT",
@@ -186,7 +252,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
             self.assertEqual(bootstrap_calls, [])
             self.assertIsNone(report["bootstrap_error"])
 
-    def test_rpc_report_failure_cannot_be_promoted_by_zero_exit_code(self):
+    def test_rpc_report_failure_after_ready_is_not_promoted(self):
         with tempfile.TemporaryDirectory() as directory:
             report = run_coordinated_shadow_v0(
                 duration_seconds=1,
@@ -195,10 +261,12 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(
-                    rpc_classification="FAIL_ROBINHOOD_LAUNCH_BURST_PREFLIGHT_V0",
+                    rpc_classification="FAIL_ROBINHOOD_LAUNCH_BURST_TRANSPORT_V0",
                     rpc_error="JsonRpcError:synthetic",
+                    rpc_ready=True,
                 ),
                 bootstrap_classifier=_bootstrap(eligible=1),
             )
@@ -218,6 +286,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(),
                 bootstrap_classifier=_bootstrap(
@@ -240,6 +309,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(),
                 bootstrap_classifier=_bootstrap(
@@ -263,6 +333,7 @@ class RobinhoodSequencerCoordinatedV0Tests(unittest.TestCase):
                 feed_url="wss://feed.example",
                 artifacts_root=Path(directory),
                 python_executable="python",
+                rpc_ready_timeout_seconds=1,
                 child_timeout_slack_seconds=1,
                 popen_factory=ArtifactPopenFactory(),
                 bootstrap_classifier=_bootstrap(
