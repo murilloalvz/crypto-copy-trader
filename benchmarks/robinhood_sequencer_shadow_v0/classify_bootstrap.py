@@ -9,6 +9,10 @@ from typing import Any
 
 from benchmarks.robinhood_sequencer_shadow_v0.capture import JsonRpcClientV0
 from src.robinhood_nitro_bootstrap_v0 import (
+    BACKLOG_CONFIRMED,
+    LIVE_CANDIDATE,
+    UNKNOWN_BLOCK_UNRESOLVED,
+    UNKNOWN_NO_BLOCK_HASH,
     RpcHeadAnchorV0,
     anchor_is_still_canonical_v0,
     classify_feed_message_against_anchor_v0,
@@ -39,6 +43,30 @@ def _anchor_from_report(report: dict[str, Any]) -> RpcHeadAnchorV0:
     )
 
 
+def _bootstrap_health_classification_v0(
+    *,
+    anchor_canonical: bool,
+    parse_errors: int,
+    block_resolution_errors: int,
+    messages_seen: int,
+    counts: Counter[str],
+) -> str:
+    if not anchor_canonical:
+        return "FAIL_ANCHOR_REORG_GUARD"
+    if parse_errors > 0:
+        return "FAIL_BOOTSTRAP_PARSE_ERRORS"
+    if block_resolution_errors > 0 or counts[UNKNOWN_BLOCK_UNRESOLVED] > 0:
+        return "FAIL_BOOTSTRAP_BLOCK_RESOLUTION_ERRORS"
+    if (
+        messages_seen > 0
+        and counts[LIVE_CANDIDATE] == 0
+        and counts[BACKLOG_CONFIRMED] == 0
+        and counts[UNKNOWN_NO_BLOCK_HASH] == messages_seen
+    ):
+        return "HOLD_BOOTSTRAP_NO_CAUSAL_BLOCK_HASH_COVERAGE"
+    return "PASS_BOOTSTRAP_CLASSIFICATION"
+
+
 def classify_capture_v0(
     *,
     run_dir: Path,
@@ -50,8 +78,9 @@ def classify_capture_v0(
 
     ``rpc_client`` exists for deterministic offline tests and alternate providers.
     It must expose ``call(method, params)``. Per-feed-block lookup failures are
-    isolated as unresolved evidence; failure to re-read the frozen anchor remains
-    fatal because latency eligibility requires a valid reorg guard.
+    retained as unresolved evidence. Any parse or block-resolution error fails
+    the bootstrap systems gate closed because otherwise zero eligible messages
+    could be misreported as genuine no-live-candidate coverage.
     """
     capture_report = _load_json(run_dir / "report.json")
     frames_path = run_dir / "raw-frames.jsonl"
@@ -157,6 +186,15 @@ def classify_capture_v0(
                     json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n"
                 )
 
+    classification = _bootstrap_health_classification_v0(
+        anchor_canonical=anchor_canonical,
+        parse_errors=parse_errors,
+        block_resolution_errors=block_resolution_errors,
+        messages_seen=messages_seen,
+        counts=counts,
+    )
+    causally_classified = counts[LIVE_CANDIDATE] + counts[BACKLOG_CONFIRMED]
+    unknown = counts[UNKNOWN_NO_BLOCK_HASH] + counts[UNKNOWN_BLOCK_UNRESOLVED]
     report = {
         "classifier_version": CLASSIFIER_VERSION,
         "capture_version": capture_report.get("capture_version"),
@@ -169,12 +207,13 @@ def classify_capture_v0(
         "block_resolution_error_samples": error_samples,
         "resolved_unique_block_hashes": len(block_cache),
         "classification_counts": dict(sorted(counts.items())),
-        "latency_eligible_messages": eligible if anchor_canonical else 0,
-        "classification": (
-            "PASS_BOOTSTRAP_CLASSIFICATION"
-            if anchor_canonical
-            else "FAIL_ANCHOR_REORG_GUARD"
+        "causally_classified_messages": causally_classified,
+        "unknown_messages": unknown,
+        "causal_classification_coverage_pct": (
+            100.0 * causally_classified / messages_seen if messages_seen else None
         ),
+        "latency_eligible_messages": eligible if anchor_canonical else 0,
+        "classification": classification,
         "execution_confirmed": False,
         "economic_outcomes_opened": False,
         "latency_claim_opened": False,
@@ -182,7 +221,8 @@ def classify_capture_v0(
             "post_capture_resolution_does_not_modify_feed_observed_at_ns",
             "only_blocks_strictly_newer_than_pre_handshake_anchor_are_latency_eligible",
             "unresolved_or_hashless_messages_are_not_latency_eligible",
-            "individual_block_resolution_failures_are_unknown_not_capture_failure",
+            "parse_or_block_resolution_errors_fail_systems_closed_not_no_live_candidates",
+            "all_hashless_message_coverage_is_hold_not_no_live_candidates",
         ],
     }
     (run_dir / "bootstrap-report.json").write_text(
