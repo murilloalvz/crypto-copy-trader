@@ -9,6 +9,7 @@ from src.robinhood_nitro_ws_v0 import (
     OP_PONG,
     OP_TEXT,
     ROBINHOOD_CHAIN_ID,
+    USER_AGENT,
     WS_GUID,
     WebSocketProtocolError,
     build_handshake_request_v0,
@@ -37,12 +38,13 @@ class RobinhoodNitroWsV0Tests(unittest.TestCase):
             requested_sequence_number=123,
             websocket_key=key,
         ).decode("ascii")
+        self.assertIn(f"User-Agent: {USER_AGENT}\r\n", request)
         self.assertIn(f"Arbitrum-Feed-Client-Version: {FEED_CLIENT_VERSION}\r\n", request)
         self.assertIn("Arbitrum-Requested-Sequence-Number: 123\r\n", request)
         self.assertNotIn("Sec-WebSocket-Extensions", request)
         self.assertIn("Host: feed.mainnet.chain.robinhood.com\r\n", request)
 
-    def test_handshake_validates_accept_server_version_and_chain(self):
+    def test_handshake_validates_accept_server_version_and_chain_when_present(self):
         key = make_websocket_key_v0(b"1" * 16)
         accept = base64.b64encode(
             hashlib.sha1((key + WS_GUID).encode("ascii")).digest()
@@ -64,7 +66,32 @@ class RobinhoodNitroWsV0Tests(unittest.TestCase):
         )
         self.assertEqual(handshake.chain_id, ROBINHOOD_CHAIN_ID)
         self.assertEqual(handshake.feed_server_version, FEED_SERVER_VERSION)
+        self.assertTrue(handshake.chain_id_header_present)
+        self.assertTrue(handshake.feed_server_version_header_present)
         self.assertEqual(handshake.requested_sequence_number, 123)
+
+    def test_handshake_accepts_missing_optional_nitro_metadata_without_inference(self):
+        key = make_websocket_key_v0(b"3" * 16)
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()
+        ).decode("ascii")
+        raw = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n"
+            "\r\n"
+        ).encode("ascii")
+        handshake = validate_handshake_response_v0(
+            raw,
+            websocket_key=key,
+            feed_url=DEFAULT_FEED_URL,
+            requested_sequence_number=0,
+        )
+        self.assertIsNone(handshake.chain_id)
+        self.assertIsNone(handshake.feed_server_version)
+        self.assertFalse(handshake.chain_id_header_present)
+        self.assertFalse(handshake.feed_server_version_header_present)
 
     def test_handshake_rejects_wrong_chain_and_compression(self):
         key = make_websocket_key_v0(b"2" * 16)
