@@ -27,6 +27,7 @@ from src.robinhood_pons_launch_burst_v0 import (
 
 DEFAULT_PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 READY_VERSION = "robinhood_launch_burst_rpc_ready_v0"
+USER_AGENT = "crypto-copy-trader-robinhood-shadow-v0/0"
 
 
 class JsonRpcError(RuntimeError):
@@ -54,7 +55,10 @@ class RpcClient:
         request = urllib.request.Request(
             self.url,
             data=payload,
-            headers={"content-type": "application/json"},
+            headers={
+                "content-type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
             method="POST",
         )
         try:
@@ -419,6 +423,7 @@ def run(args):
             "factory": selected_factory,
             "factory_discovery": discovery,
             "rpc_kind": "json_rpc_polling_v0",
+            "rpc_user_agent_explicit": True,
             "public_rpc_default_used": rpc_url == DEFAULT_PUBLIC_RPC,
             "process_started_at_ns": process_start_ns,
             "capture_started_at_ns": capture_start_ns,
@@ -451,6 +456,7 @@ def run(args):
                 "single_rpc_responses_are_matched_to_request_id_fail_closed",
                 "requested_capture_duration_starts_after_preflight",
                 "optional_ready_file_is_written_only_after_initial_block_is_frozen",
+                "public_rpc_requests_use_explicit_identified_user_agent",
             ],
         }
     except Exception as exc:
