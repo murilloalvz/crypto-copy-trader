@@ -1,10 +1,11 @@
 """Coordinate Robinhood sequencer-feed and RPC feature capture on one machine.
 
 This runner is systems/acquisition-only. It launches the existing RPC Launch
-Burst collector and the raw Nitro sequencer capture over the same requested
-window, records process-start skew and child artifacts, then runs the causal
-post-capture backlog classifier. It deliberately does not compute feed latency,
-trade returns, selector evidence, or economic outcomes.
+Burst collector, waits until that collector has completed preflight and frozen
+its initial block, then starts the raw Nitro sequencer capture. It records the
+readiness/launch skew, retains child artifacts, and runs the causal post-capture
+backlog classifier. It deliberately does not compute feed latency, trade returns,
+selector evidence, or economic outcomes.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from src.robinhood_nitro_ws_v0 import DEFAULT_FEED_URL
 RUNNER_VERSION = "robinhood_sequencer_coordinated_shadow_v0"
 DEFAULT_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
 DEFAULT_ARTIFACTS_ROOT = Path("artifacts/robinhood_sequencer_coordinated_shadow_v0")
+RPC_READY_VERSION = "robinhood_launch_burst_rpc_ready_v0"
 
 
 def build_child_commands_v0(
@@ -38,6 +40,7 @@ def build_child_commands_v0(
     feed_url: str,
     rpc_artifacts_root: Path,
     feed_artifacts_root: Path,
+    rpc_ready_file: Path,
     factory_address: str | None = None,
 ) -> tuple[list[str], list[str]]:
     if duration_seconds <= 0:
@@ -54,6 +57,8 @@ def build_child_commands_v0(
         str(poll_ms),
         "--rpc-url",
         rpc_url,
+        "--ready-file",
+        str(rpc_ready_file),
         "--artifacts-root",
         str(rpc_artifacts_root),
     ]
@@ -113,6 +118,50 @@ def _terminate_process(process, *, grace_seconds: float = 3.0) -> None:
         process.wait(timeout=grace_seconds)
 
 
+def _wait_for_rpc_ready_v0(
+    *,
+    process,
+    ready_path: Path,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 0.01,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be positive")
+    deadline = time.monotonic() + timeout_seconds
+    last_parse_error = None
+    while time.monotonic() < deadline:
+        if ready_path.exists():
+            try:
+                row = json.loads(ready_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                last_parse_error = f"{type(exc).__name__}:{exc}"
+            else:
+                if not isinstance(row, dict):
+                    return None, "rpc readiness artifact must be a JSON object"
+                if row.get("type") != RPC_READY_VERSION:
+                    return None, f"unexpected rpc readiness type: {row.get('type')!r}"
+                if row.get("preflight_completed") is not True:
+                    return None, "rpc readiness artifact does not confirm preflight"
+                if row.get("capture_started_at_ns") is None:
+                    return None, "rpc readiness artifact missing capture_started_at_ns"
+                if row.get("initial_block") is None:
+                    return None, "rpc readiness artifact missing initial_block"
+                if not row.get("factory"):
+                    return None, "rpc readiness artifact missing factory"
+                return row, None
+        if process.poll() is not None:
+            suffix = f"; last_parse_error={last_parse_error}" if last_parse_error else ""
+            return None, (
+                f"rpc process exited before readiness: return_code={process.returncode}{suffix}"
+            )
+        remaining = max(0.0, deadline - time.monotonic())
+        time.sleep(min(poll_interval_seconds, remaining))
+    suffix = f"; last_parse_error={last_parse_error}" if last_parse_error else ""
+    return None, f"rpc readiness timeout after {timeout_seconds}s{suffix}"
+
+
 def run_coordinated_shadow_v0(
     *,
     duration_seconds: int,
@@ -122,12 +171,15 @@ def run_coordinated_shadow_v0(
     artifacts_root: Path,
     factory_address: str | None = None,
     python_executable: str = sys.executable,
+    rpc_ready_timeout_seconds: float = 30.0,
     child_timeout_slack_seconds: float = 90.0,
     popen_factory: Any = subprocess.Popen,
     bootstrap_classifier: Any = classify_capture_v0,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
+    if rpc_ready_timeout_seconds <= 0:
+        raise ValueError("rpc_ready_timeout_seconds must be positive")
     if child_timeout_slack_seconds <= 0:
         raise ValueError("child_timeout_slack_seconds must be positive")
 
@@ -136,6 +188,7 @@ def run_coordinated_shadow_v0(
     rpc_root = run_dir / "rpc"
     feed_root = run_dir / "feed"
     logs_root = run_dir / "logs"
+    rpc_ready_path = run_dir / "rpc-ready.json"
     rpc_root.mkdir(parents=True, exist_ok=False)
     feed_root.mkdir(parents=True, exist_ok=False)
     logs_root.mkdir(parents=True, exist_ok=False)
@@ -148,6 +201,7 @@ def run_coordinated_shadow_v0(
         feed_url=feed_url,
         rpc_artifacts_root=rpc_root,
         feed_artifacts_root=feed_root,
+        rpc_ready_file=rpc_ready_path,
         factory_address=factory_address,
     )
 
@@ -156,6 +210,8 @@ def run_coordinated_shadow_v0(
     feed_started_at_ns = None
     rpc_process = None
     feed_process = None
+    rpc_ready_report = None
+    rpc_ready_error = None
     timed_out = False
 
     with (logs_root / "rpc.stdout.log").open("wb") as rpc_stdout, (
@@ -164,8 +220,6 @@ def run_coordinated_shadow_v0(
         "wb"
     ) as feed_stdout, (logs_root / "feed.stderr.log").open("wb") as feed_stderr:
         try:
-            # Start RPC first so executed-event polling is already active when the
-            # feed handshake begins. The exact skew is retained in the parent report.
             rpc_started_at_ns = time.time_ns()
             rpc_process = popen_factory(
                 rpc_command,
@@ -173,22 +227,28 @@ def run_coordinated_shadow_v0(
                 stderr=rpc_stderr,
                 env=os.environ.copy(),
             )
-            feed_started_at_ns = time.time_ns()
-            feed_process = popen_factory(
-                feed_command,
-                stdout=feed_stdout,
-                stderr=feed_stderr,
-                env=os.environ.copy(),
+            rpc_ready_report, rpc_ready_error = _wait_for_rpc_ready_v0(
+                process=rpc_process,
+                ready_path=rpc_ready_path,
+                timeout_seconds=rpc_ready_timeout_seconds,
             )
-            timeout = duration_seconds + child_timeout_slack_seconds
-            deadline = time.monotonic() + timeout
-            for process in (rpc_process, feed_process):
-                remaining = max(0.1, deadline - time.monotonic())
-                try:
-                    process.wait(timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    break
+
+            if rpc_ready_report is not None:
+                feed_started_at_ns = time.time_ns()
+                feed_process = popen_factory(
+                    feed_command,
+                    stdout=feed_stdout,
+                    stderr=feed_stderr,
+                    env=os.environ.copy(),
+                )
+                deadline = time.monotonic() + duration_seconds + child_timeout_slack_seconds
+                for process in (rpc_process, feed_process):
+                    remaining = max(0.1, deadline - time.monotonic())
+                    try:
+                        process.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        break
         finally:
             if rpc_process is not None:
                 _terminate_process(rpc_process)
@@ -218,7 +278,13 @@ def run_coordinated_shadow_v0(
 
     rpc_return_code = rpc_process.returncode if rpc_process is not None else None
     feed_return_code = feed_process.returncode if feed_process is not None else None
-    child_processes_ok = rpc_return_code == 0 and feed_return_code == 0 and not timed_out
+    rpc_ready = rpc_ready_report is not None and rpc_ready_error is None
+    child_processes_ok = (
+        rpc_return_code == 0
+        and feed_return_code == 0
+        and not timed_out
+        and rpc_ready
+    )
     artifacts_present = rpc_report is not None and feed_report is not None
     rpc_capture_ok = _report_passed(rpc_report)
     bootstrap_classification = (
@@ -238,7 +304,9 @@ def run_coordinated_shadow_v0(
         else 0
     )
 
-    if timed_out:
+    if not rpc_ready:
+        classification = "FAIL_COORDINATED_SHADOW_RPC_READINESS"
+    elif timed_out:
         classification = "FAIL_COORDINATED_SHADOW_CHILD_TIMEOUT"
     elif not child_processes_ok:
         classification = "FAIL_COORDINATED_SHADOW_CHILD_PROCESS"
@@ -261,6 +329,11 @@ def run_coordinated_shadow_v0(
     else:
         classification = "PASS_COORDINATED_SHADOW_ACQUISITION_V0"
 
+    rpc_capture_started_at_ns = (
+        int(rpc_ready_report.get("capture_started_at_ns"))
+        if rpc_ready_report and rpc_ready_report.get("capture_started_at_ns") is not None
+        else None
+    )
     report = {
         "runner_version": RUNNER_VERSION,
         "classification": classification,
@@ -272,7 +345,22 @@ def run_coordinated_shadow_v0(
         "rpc_url": rpc_url,
         "feed_url": feed_url,
         "rpc_started_at_ns": rpc_started_at_ns,
+        "rpc_ready": rpc_ready,
+        "rpc_ready_path": str(rpc_ready_path),
+        "rpc_ready_error": rpc_ready_error,
+        "rpc_ready_report": rpc_ready_report,
+        "rpc_capture_started_at_ns": rpc_capture_started_at_ns,
+        "rpc_spawn_to_ready_ms": (
+            (rpc_capture_started_at_ns - rpc_started_at_ns) / 1_000_000.0
+            if rpc_capture_started_at_ns is not None and rpc_started_at_ns is not None
+            else None
+        ),
         "feed_started_at_ns": feed_started_at_ns,
+        "rpc_ready_to_feed_start_ms": (
+            (feed_started_at_ns - rpc_capture_started_at_ns) / 1_000_000.0
+            if feed_started_at_ns is not None and rpc_capture_started_at_ns is not None
+            else None
+        ),
         "child_start_skew_ms": (
             (feed_started_at_ns - rpc_started_at_ns) / 1_000_000.0
             if rpc_started_at_ns is not None and feed_started_at_ns is not None
@@ -294,13 +382,17 @@ def run_coordinated_shadow_v0(
             feed_report.get("classification") if feed_report else None
         ),
         "rpc_capture_error": rpc_report.get("error") if rpc_report else None,
-        "feed_capture_error": feed_report.get("error") if feed_report else None,
+        "rpc_failure_stage": rpc_report.get("failure_stage") if rpc_report else None,
+        "rpc_preflight_completed": (
+            rpc_report.get("preflight_completed") if rpc_report else None
+        ),
         "rpc_factory_discovery": (
             rpc_report.get("factory_discovery") if rpc_report else None
         ),
         "rpc_transport_errors": (
             rpc_report.get("transport_errors") if rpc_report else None
         ),
+        "feed_capture_error": feed_report.get("error") if feed_report else None,
         "feed_frame_count": (
             feed_report.get("frame_count") if feed_report else None
         ),
@@ -336,7 +428,10 @@ def run_coordinated_shadow_v0(
         "selector_frozen": False,
         "notes": [
             "rpc_and_feed_run_on_same_machine_and_wall_clock",
-            "rpc_process_is_started_before_feed_process_and_start_skew_is_recorded",
+            "feed_process_starts_only_after_rpc_preflight_and_initial_block_readiness",
+            "rpc_capture_duration_starts_after_rpc_preflight",
+            "rpc_ready_to_feed_start_skew_is_recorded",
+            "feed_is_not_started_when_rpc_readiness_fails",
             "initial_feed_sequence_zero_is_bootstrap_only",
             "bootstrap_classification_is_required_before_latency_analysis",
             "bootstrap_runs_only_after_PASS_RAW_CAPTURE",
@@ -362,6 +457,7 @@ def main() -> None:
     parser.add_argument("--factory-address")
     parser.add_argument("--artifacts-root", type=Path, default=DEFAULT_ARTIFACTS_ROOT)
     parser.add_argument("--python-executable", default=sys.executable)
+    parser.add_argument("--rpc-ready-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--child-timeout-slack-seconds", type=float, default=90.0)
     args = parser.parse_args()
     rpc_url = args.rpc_url or os.environ.get("ROBINHOOD_RPC_URL") or DEFAULT_RPC_URL
@@ -374,6 +470,7 @@ def main() -> None:
             artifacts_root=args.artifacts_root,
             factory_address=args.factory_address,
             python_executable=args.python_executable,
+            rpc_ready_timeout_seconds=args.rpc_ready_timeout_seconds,
             child_timeout_slack_seconds=args.child_timeout_slack_seconds,
         )
     except Exception as exc:
