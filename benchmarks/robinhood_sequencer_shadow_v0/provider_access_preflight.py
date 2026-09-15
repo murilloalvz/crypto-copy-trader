@@ -1,19 +1,16 @@
 """Fast no-capital access preflight for Robinhood Chain RPC + Nitro feed.
 
-This probe is deliberately narrower than coordinated acquisition:
-- one read-only ``eth_chainId`` JSON-RPC request;
-- one WebSocket/Nitro upgrade handshake, then immediate close;
-- no block/event acquisition;
-- no reconciliation, latency claim, selector, or economic outcomes.
+Runs a same-session A/B access check:
+- baseline request/handshake matching the existing transport headers;
+- identified request/handshake adding an explicit User-Agent.
 
-It exists to separate endpoint/provider access failures (for example HTTP 403)
-from parser/protocol/scientific failures before a longer coordinated run.
+No block/event acquisition, reconciliation, latency claim, selector, or economic
+outcomes are opened. Full provider URLs are never serialized.
 """
 from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import os
 import socket
@@ -27,7 +24,6 @@ from urllib.parse import urlsplit
 from src.robinhood_nitro_ws_v0 import (
     FEED_CLIENT_VERSION,
     ROBINHOOD_CHAIN_ID,
-    WS_GUID,
     validate_handshake_response_v0,
 )
 
@@ -49,19 +45,24 @@ def _endpoint_identity(url: str) -> dict[str, Any]:
     }
 
 
-def _rpc_probe_v0(url: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
+def _rpc_probe_v0(
+    url: str,
+    *,
+    timeout_seconds: float = 10.0,
+    user_agent: str | None = None,
+) -> dict[str, Any]:
     request_id = 1
     payload = json.dumps(
         {"jsonrpc": "2.0", "id": request_id, "method": "eth_chainId", "params": []},
         separators=(",", ":"),
     ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
     request = urllib.request.Request(
         url,
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT,
-        },
+        headers=headers,
         method="POST",
     )
     started_ns = time.time_ns()
@@ -87,47 +88,17 @@ def _rpc_probe_v0(url: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
         }
 
     if not isinstance(row, dict):
-        return {
-            "ok": False,
-            "stage": "json_rpc_shape",
-            "http_status": http_status,
-            "error": "response_not_object",
-            "service_ms": (time.time_ns() - started_ns) / 1_000_000.0,
-        }
+        return {"ok": False, "stage": "json_rpc_shape", "http_status": http_status, "error": "response_not_object"}
     if row.get("id") != request_id:
-        return {
-            "ok": False,
-            "stage": "json_rpc_identity",
-            "http_status": http_status,
-            "error": f"response_id_mismatch:{row.get('id')!r}",
-            "service_ms": (time.time_ns() - started_ns) / 1_000_000.0,
-        }
+        return {"ok": False, "stage": "json_rpc_identity", "http_status": http_status, "error": f"response_id_mismatch:{row.get('id')!r}"}
     if row.get("error") is not None:
-        return {
-            "ok": False,
-            "stage": "json_rpc_error",
-            "http_status": http_status,
-            "error": f"rpc_error:{row['error']}",
-            "service_ms": (time.time_ns() - started_ns) / 1_000_000.0,
-        }
+        return {"ok": False, "stage": "json_rpc_error", "http_status": http_status, "error": f"rpc_error:{row['error']}"}
     if "result" not in row:
-        return {
-            "ok": False,
-            "stage": "json_rpc_result",
-            "http_status": http_status,
-            "error": "missing_result",
-            "service_ms": (time.time_ns() - started_ns) / 1_000_000.0,
-        }
+        return {"ok": False, "stage": "json_rpc_result", "http_status": http_status, "error": "missing_result"}
     try:
         chain_id = int(str(row["result"]), 16)
     except (TypeError, ValueError):
-        return {
-            "ok": False,
-            "stage": "chain_id_decode",
-            "http_status": http_status,
-            "error": f"invalid_chain_id:{row['result']!r}",
-            "service_ms": (time.time_ns() - started_ns) / 1_000_000.0,
-        }
+        return {"ok": False, "stage": "chain_id_decode", "http_status": http_status, "error": f"invalid_chain_id:{row['result']!r}"}
     return {
         "ok": chain_id == ROBINHOOD_CHAIN_ID,
         "stage": "complete",
@@ -143,6 +114,7 @@ def build_feed_handshake_request_v0(
     *,
     requested_sequence_number: int = 0,
     websocket_key: str,
+    user_agent: str | None = None,
 ) -> bytes:
     parsed = urlsplit(feed_url)
     if parsed.scheme != "wss" or not parsed.hostname:
@@ -155,16 +127,21 @@ def build_feed_handshake_request_v0(
     lines = [
         f"GET {path} HTTP/1.1",
         f"Host: {host_header}",
-        f"User-Agent: {USER_AGENT}",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        f"Sec-WebSocket-Key: {websocket_key}",
-        "Sec-WebSocket-Version: 13",
-        f"Arbitrum-Feed-Client-Version: {FEED_CLIENT_VERSION}",
-        f"Arbitrum-Requested-Sequence-Number: {requested_sequence_number}",
-        "",
-        "",
     ]
+    if user_agent:
+        lines.append(f"User-Agent: {user_agent}")
+    lines.extend(
+        [
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {websocket_key}",
+            "Sec-WebSocket-Version: 13",
+            f"Arbitrum-Feed-Client-Version: {FEED_CLIENT_VERSION}",
+            f"Arbitrum-Requested-Sequence-Number: {requested_sequence_number}",
+            "",
+            "",
+        ]
+    )
     return "\r\n".join(lines).encode("ascii")
 
 
@@ -190,7 +167,12 @@ def _http_status_from_headers(raw_headers: bytes) -> int | None:
         return None
 
 
-def _feed_probe_v0(url: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
+def _feed_probe_v0(
+    url: str,
+    *,
+    timeout_seconds: float = 10.0,
+    user_agent: str | None = None,
+) -> dict[str, Any]:
     parsed = urlsplit(url)
     if parsed.scheme != "wss" or not parsed.hostname:
         return {"ok": False, "stage": "url", "http_status": None, "error": "invalid_wss_url"}
@@ -204,12 +186,14 @@ def _feed_probe_v0(url: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
         context = ssl.create_default_context()
         wrapped = context.wrap_socket(raw_sock, server_hostname=host)
         wrapped.settimeout(timeout_seconds)
-        request = build_feed_handshake_request_v0(
-            url,
-            requested_sequence_number=0,
-            websocket_key=websocket_key,
+        wrapped.sendall(
+            build_feed_handshake_request_v0(
+                url,
+                requested_sequence_number=0,
+                websocket_key=websocket_key,
+                user_agent=user_agent,
+            )
         )
-        wrapped.sendall(request)
         raw_headers = _read_http_upgrade_headers(wrapped)
         http_status = _http_status_from_headers(raw_headers)
         if http_status != 101:
@@ -252,22 +236,20 @@ def _feed_probe_v0(url: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
                 pass
 
 
-def classify_provider_access_v0(rpc: dict[str, Any], feed: dict[str, Any]) -> str:
-    if rpc.get("ok") is True and feed.get("ok") is True:
-        return "PASS_ROBINHOOD_PROVIDER_ACCESS_PREFLIGHT_V0"
-    denied = any(
-        row.get("http_status") in {401, 403}
-        for row in (rpc, feed)
-        if isinstance(row, dict)
-    )
-    if denied:
+def classify_provider_access_v0(
+    baseline_rpc: dict[str, Any],
+    baseline_feed: dict[str, Any],
+    identified_rpc: dict[str, Any],
+    identified_feed: dict[str, Any],
+) -> str:
+    if baseline_rpc.get("ok") is True and baseline_feed.get("ok") is True:
+        return "PASS_ROBINHOOD_PROVIDER_ACCESS_BASELINE_V0"
+    if identified_rpc.get("ok") is True and identified_feed.get("ok") is True:
+        return "PASS_ROBINHOOD_PROVIDER_ACCESS_IDENTIFIED_CLIENT_V0"
+    rows = (identified_rpc, identified_feed)
+    if any(row.get("http_status") in {401, 403} for row in rows):
         return "FAIL_ROBINHOOD_PROVIDER_ACCESS_DENIED_V0"
-    rate_limited = any(
-        row.get("http_status") == 429
-        for row in (rpc, feed)
-        if isinstance(row, dict)
-    )
-    if rate_limited:
+    if any(row.get("http_status") == 429 for row in rows):
         return "INCONCLUSIVE_ROBINHOOD_PROVIDER_RATE_LIMITED_V0"
     return "FAIL_ROBINHOOD_PROVIDER_ACCESS_PREFLIGHT_V0"
 
@@ -280,23 +262,36 @@ def run_provider_access_preflight_v0(
     rpc_probe: Callable[..., dict[str, Any]] = _rpc_probe_v0,
     feed_probe: Callable[..., dict[str, Any]] = _feed_probe_v0,
 ) -> dict[str, Any]:
-    rpc = rpc_probe(rpc_url, timeout_seconds=timeout_seconds)
-    feed = feed_probe(feed_url, timeout_seconds=timeout_seconds)
+    baseline_rpc = rpc_probe(rpc_url, timeout_seconds=timeout_seconds, user_agent=None)
+    baseline_feed = feed_probe(feed_url, timeout_seconds=timeout_seconds, user_agent=None)
+    identified_rpc = rpc_probe(rpc_url, timeout_seconds=timeout_seconds, user_agent=USER_AGENT)
+    identified_feed = feed_probe(feed_url, timeout_seconds=timeout_seconds, user_agent=USER_AGENT)
+    classification = classify_provider_access_v0(
+        baseline_rpc,
+        baseline_feed,
+        identified_rpc,
+        identified_feed,
+    )
     return {
         "type": PREFLIGHT_VERSION,
-        "classification": classify_provider_access_v0(rpc, feed),
+        "classification": classification,
         "rpc_endpoint": _endpoint_identity(rpc_url),
         "feed_endpoint": _endpoint_identity(feed_url),
-        "rpc": rpc,
-        "feed": feed,
-        "user_agent": USER_AGENT,
+        "baseline": {"rpc": baseline_rpc, "feed": baseline_feed},
+        "identified_client": {
+            "user_agent": USER_AGENT,
+            "rpc": identified_rpc,
+            "feed": identified_feed,
+        },
         "acquisition_opened": False,
         "execution_reconciliation_opened": False,
         "latency_claim_opened": False,
         "economic_outcomes_opened": False,
         "selector_frozen": False,
         "notes": [
-            "access_probe_only_no_block_or_event_acquisition",
+            "same_session_ab_access_probe_only",
+            "baseline_matches_existing_transport_header_shape",
+            "identified_client_adds_only_an_explicit_user_agent",
             "rpc_probe_is_read_only_eth_chainId",
             "feed_probe_closes_immediately_after_valid_upgrade",
             "full_provider_urls_are_not_serialized_to_avoid_api_key_leakage",
