@@ -16,6 +16,7 @@ on:
       - 'tests/test_robinhood_sequencer_coordinated_v0.py'
       - 'tests/test_robinhood_sequencer_reconcile_v0.py'
       - 'tests/test_robinhood_provider_access_preflight_v0.py'
+      - 'tests/test_robinhood_provider_method_surface_preflight_v0.py'
       - 'docs/robinhood_sequencer_shadow_v0.md'
       - '.github/workflows/robinhood-sequencer-shadow-v0.yml'
   workflow_dispatch:
@@ -44,6 +45,7 @@ jobs:
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/coordinated.py
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/reconcile.py
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/provider_access_preflight.py
+          python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/provider_method_surface_preflight.py
           python -m py_compile tests/test_robinhood_nitro_feed_v0.py
           python -m py_compile tests/test_robinhood_nitro_ws_v0.py
           python -m py_compile tests/test_robinhood_sequencer_capture_v0.py
@@ -51,6 +53,7 @@ jobs:
           python -m py_compile tests/test_robinhood_sequencer_coordinated_v0.py
           python -m py_compile tests/test_robinhood_sequencer_reconcile_v0.py
           python -m py_compile tests/test_robinhood_provider_access_preflight_v0.py
+          python -m py_compile tests/test_robinhood_provider_method_surface_preflight_v0.py
       - name: Test
         run: |
           python -m unittest tests.test_robinhood_nitro_feed_v0 -v
@@ -60,3 +63,4 @@ jobs:
           python -m unittest tests.test_robinhood_sequencer_coordinated_v0 -v
           python -m unittest tests.test_robinhood_sequencer_reconcile_v0 -v
           python -m unittest tests.test_robinhood_provider_access_preflight_v0 -v
+          python -m unittest tests.test_robinhood_provider_method_surface_preflight_v0 -v
