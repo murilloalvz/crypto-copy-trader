@@ -10,6 +10,7 @@ on:
       - 'benchmarks/robinhood_sequencer_shadow_v0/**'
       - 'tests/test_robinhood_nitro_feed_v0.py'
       - 'tests/test_robinhood_sequencer_capture_v0.py'
+      - 'tests/test_robinhood_sequencer_bootstrap_classifier_v0.py'
       - 'tests/test_robinhood_sequencer_coordinated_v0.py'
       - 'tests/test_robinhood_sequencer_reconcile_v0.py'
       - 'docs/robinhood_sequencer_shadow_v0.md'
@@ -35,15 +36,18 @@ jobs:
         run: |
           python -m py_compile src/robinhood_nitro_feed_v0.py
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/capture.py
+          python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/classify_bootstrap.py
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/coordinated.py
           python -m py_compile benchmarks/robinhood_sequencer_shadow_v0/reconcile.py
           python -m py_compile tests/test_robinhood_nitro_feed_v0.py
           python -m py_compile tests/test_robinhood_sequencer_capture_v0.py
+          python -m py_compile tests/test_robinhood_sequencer_bootstrap_classifier_v0.py
           python -m py_compile tests/test_robinhood_sequencer_coordinated_v0.py
           python -m py_compile tests/test_robinhood_sequencer_reconcile_v0.py
       - name: Test
         run: |
           python -m unittest tests.test_robinhood_nitro_feed_v0 -v
           python -m unittest tests.test_robinhood_sequencer_capture_v0 -v
+          python -m unittest tests.test_robinhood_sequencer_bootstrap_classifier_v0 -v
           python -m unittest tests.test_robinhood_sequencer_coordinated_v0 -v
           python -m unittest tests.test_robinhood_sequencer_reconcile_v0 -v
