@@ -203,7 +203,11 @@ def run_coordinated_shadow_v0(
 
     bootstrap_report = None
     bootstrap_error = None
-    if feed_run_dir is not None and feed_report is not None:
+    feed_capture_ok = (
+        feed_report is not None
+        and feed_report.get("classification") == "PASS_RAW_CAPTURE"
+    )
+    if feed_run_dir is not None and feed_capture_ok:
         try:
             bootstrap_report = bootstrap_classifier(
                 run_dir=feed_run_dir,
@@ -217,10 +221,6 @@ def run_coordinated_shadow_v0(
     child_processes_ok = rpc_return_code == 0 and feed_return_code == 0 and not timed_out
     artifacts_present = rpc_report is not None and feed_report is not None
     rpc_capture_ok = _report_passed(rpc_report)
-    feed_capture_ok = (
-        feed_report is not None
-        and feed_report.get("classification") == "PASS_RAW_CAPTURE"
-    )
     bootstrap_ok = bool(
         bootstrap_report
         and bootstrap_report.get("classification") == "PASS_BOOTSTRAP_CLASSIFICATION"
@@ -278,11 +278,27 @@ def run_coordinated_shadow_v0(
         "feed_command": feed_command,
         "rpc_run_dir": str(rpc_run_dir) if rpc_run_dir else None,
         "feed_run_dir": str(feed_run_dir) if feed_run_dir else None,
+        "rpc_report_present": rpc_report is not None,
+        "feed_report_present": feed_report is not None,
         "rpc_capture_classification": (
             rpc_report.get("classification") if rpc_report else None
         ),
         "feed_capture_classification": (
             feed_report.get("classification") if feed_report else None
+        ),
+        "rpc_capture_error": rpc_report.get("error") if rpc_report else None,
+        "feed_capture_error": feed_report.get("error") if feed_report else None,
+        "rpc_factory_discovery": (
+            rpc_report.get("factory_discovery") if rpc_report else None
+        ),
+        "rpc_transport_errors": (
+            rpc_report.get("transport_errors") if rpc_report else None
+        ),
+        "feed_frame_count": (
+            feed_report.get("frame_count") if feed_report else None
+        ),
+        "feed_transport_errors": (
+            feed_report.get("transport_errors") if feed_report else None
         ),
         "bootstrap_classification": (
             bootstrap_report.get("classification") if bootstrap_report else None
@@ -299,6 +315,8 @@ def run_coordinated_shadow_v0(
             "rpc_process_is_started_before_feed_process_and_start_skew_is_recorded",
             "initial_feed_sequence_zero_is_bootstrap_only",
             "bootstrap_classification_is_required_before_latency_analysis",
+            "bootstrap_runs_only_after_PASS_RAW_CAPTURE",
+            "child_preflight_errors_are_surfaced_in_parent_report",
             "zero_post_anchor_messages_is_coverage_not_failure",
             "this_runner_does_not_compute_feed_advantage_or_trade_returns",
         ],
