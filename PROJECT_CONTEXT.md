@@ -1,131 +1,115 @@
 # Crypto Copy Trader / Opportunity Intelligence Engine — Current Context
 
-Este arquivo resume apenas o **estado operacional e científico atual**. Histórico detalhado, protocolos antigos e resultados completos permanecem em `docs/`, artifacts e Git.
-
-Precedência de evidência:
+Precedência:
 
 `código + resultados mais recentes > decisões científicas recentes > PROJECT_CONTEXT.md > handoffs antigos > ideias antigas`
 
 ## CURRENT STATE
 
-Objetivo de longo prazo:
+Objetivo:
 
 `information/narrative -> token -> early activity -> Burst -> capital quality -> structural quality -> executability -> signal -> entry/exit -> positive net EV`
 
-Regra de produto e pesquisa: **cada camada só entra se provar valor incremental**. Não construir mega-score, feature creep ou automação de execução antes de existir evidência prospectiva.
+Regra: cada camada só entra se provar valor incremental. Modo atual: **NO-CAPITAL / PAPER / SHADOW / READ-ONLY RESEARCH**.
 
-Modo atual: **NO-CAPITAL / PAPER / SHADOW / READ-ONLY RESEARCH**.
+Prioridade:
+1. Robinhood/Pons systems + acquisition + causal reconciliation.
+2. Solana Launch Burst V4 congelada por execution-fixture funding.
+3. Social/Event, Narrative Revival, Convergence, wallet/deployer scores e exit optimization congelados.
 
-Prioridade ativa:
+## ACTIVE TRACK
 
-1. **Robinhood/Pons systems + acquisition**, enquanto Solana está bloqueada apenas por execution-fixture funding.
-2. **Solana Launch Burst V4** permanece congelada até funded-taker preflight válido.
-3. Social/Event, Narrative Revival, Convergence, wallet/deployer scores e exit optimization continuam congelados.
+### Robinhood / Pons
+
+Branch:
+
+`research/robinhood-launch-burst-v0`
+
+HEAD após hardening de provider/feed transport:
+
+`bc805f7be0b236ae2f769a59469bdae343d6dfa2`
+
+CI relevante nesse HEAD: Robinhood Sequencer Shadow + Sequencer Transport **PASS**.
+
+Próximo gate: provider-access preflight atualizado -> coordinated shadow curto (60s) somente se provider access passar.
 
 ## CURRENT SYSTEMS STATUS
 
 ### Solana
 
 - Launch Burst V4 systems/timing: **PASS / CLOSED**.
-- V4 systems live: 84/84 selected before entry-ready/deadline, zero missed deadlines, max queue depth 1.
-- Jupiter pricing/route availability: **CONFIRMED**.
-- Jupiter candidate transaction assembly capability: **CONFIRMED** via diagnostic-only public funded control for both liquid control and representative Burst token.
-- Frozen controlled taker: unfunded (`0 USDC`, `0 SOL`).
-- Official funded-taker preflight: **FAIL-CLOSED BY DESIGN** until balances are present.
-- Solana active systems blocker: **execution fixture funding only**.
+- Jupiter pricing/route: **CONFIRMED**.
+- Candidate transaction assembly capability: **CONFIRMED** via diagnostic-only public funded control.
+- Frozen controlled taker: `0 USDC`, `0 SOL`.
+- Official funded-taker preflight: fail-closed até funding.
+- Status: `FROZEN_PENDING_FUNDED_TAKER_PREFLIGHT`.
 
-Freeze status document:
+Freeze status:
 
 `docs/launch-burst-v4-solana-freeze-status.md`
 
 ### Robinhood / Pons
 
-Active branch:
+Authoritative failed coordinated run:
 
-`research/robinhood-launch-burst-v0`
+`C:\robinhood-shadow-v0\robinhood_sequencer_coordinated_shadow_v0-1789442344-67f7e01d8a`
 
-Robinhood V0 already contains:
+Requested: 180s. Actual parent lifetime: ~1.73s.
 
-- Pons V2 factory discovery;
-- RPC executed-event acquisition;
-- direct BUY/SELL quote math;
-- pinned-block state reads;
-- protocol capability / fee / tax detection;
-- Nitro Sequencer raw capture;
-- bootstrap classification;
-- coordinated RPC + Sequencer runner;
-- reconciliation plumbing.
+Recovered exact causes:
 
-Authoritative 180s coordinated-shadow attempt:
+- RPC child: `eth_chainId -> HTTP 403 Forbidden` before factory discovery.
+- Feed child: old capture also failed preflight before raw frames; original CLI masked the cause by not persisting `report.json`.
+- Provider A/B probe later showed:
+  - baseline RPC -> `403`;
+  - identified RPC (`User-Agent` explicit) -> `200`, chain id `4663`;
+  - WebSocket endpoint upgrades successfully, but Robinhood currently omits optional Nitro response metadata headers (`arbitrum-feed-server-version`, `arbitrum-chain-id`).
 
-- requested duration: 180s;
-- parent lifetime: ~1.73s;
-- child start skew: ~11.89ms;
-- `rpc_return_code = 0`;
-- `feed_return_code = 0`;
-- RPC report: `FAIL_ROBINHOOD_LAUNCH_BURST_PREFLIGHT_V0`;
-- parent classification: `FAIL_COORDINATED_SHADOW_ARTIFACTS`;
-- bootstrap not opened;
-- latency claim not opened;
-- execution reconciliation not opened;
-- economic outcomes not opened;
-- selector remains unfrozen.
+Interpretation: the old 180s result was **SYSTEMS FAILURE / PROVIDER-ACCESS + CLIENT-COMPATIBILITY**, not Pons/parser/scientific failure.
 
-Interpretation: **SYSTEMS FAILURE BEFORE SCIENTIFIC ACQUISITION**, not evidence against Robinhood/Pons or Burst.
+Hardening now applied:
 
-Confirmed observability bug: the Sequencer capture CLI printed `FAIL_CAPTURE_PREFLIGHT` on an exception after creating a run directory but did not persist `report.json`; the coordinated parent therefore masked the real feed cause as an artifact failure.
-
-Minimal repair applied:
-
-- persist CLI preflight failure report into the run directory when exactly one new capture run directory belongs to that invocation;
-- fail closed if artifact ownership is ambiguous;
-- add unit coverage;
-- compile/test capture + coordinated paths in Robinhood Sequencer CI.
-
-The repair is **observability-only**. It does not alter feed parsing, RPC acquisition, event semantics, ordering, selector, economics or reconciliation rules.
-
-Current repair HEAD at time of consolidation:
-
-`ffc6228a9353d73e31a043482fbdc8e2a24b35ea`
-
-CI status must be checked from GitHub before treating that HEAD as validated.
+- CLI preflight failures persist their artifact fail-closed.
+- Parent surfaces child errors/factory/transport facts.
+- Bootstrap parse/block-resolution errors cannot become false `NO_LIVE_CANDIDATES`.
+- anchor/reorg failure has specific systems classification.
+- causal-coverage HOLD = INCONCLUSIVE, not PASS.
+- explicit RPC readiness barrier before Feed starts.
+- RPC requested duration starts after preflight.
+- strict single-call JSON-RPC id/result validation.
+- public Robinhood RPC requests use explicit identified `User-Agent`.
+- Feed WebSocket request uses explicit identified `User-Agent`.
+- Nitro response `feed-server-version` / `chain-id` headers are optional metadata: if present they are validated fail-closed; if absent they remain `null` and are never inferred.
+- chain identity remains independently verified through RPC before Feed acquisition.
+- ambiguous `PONS_CURVE_OTHER_INTENT` is not promoted to semantic execution.
+- causal lead candidate requires post-anchor eligibility + semantic RPC match + nonnegative observation delta.
 
 ## CURRENT SCIENTIFIC STATUS
 
 ### Solana Launch Burst
 
 Frozen hypothesis:
-
-- stratum: `pump_launch`;
-- primary window: `5s`;
-- feature: `signed_flow_over_event_reserve`;
-- selector: `>= 0.08`;
-- confirmation: none.
+- stratum `pump_launch`;
+- primary 5s;
+- `signed_flow_over_event_reserve >= 0.08`;
+- no confirmation.
 
 Scientific state: **NOT REJECTED**.
+Economic state: **INCONCLUSIVE** because the frozen execution fixture is unfunded.
 
-The first V4 economic acquisition does **not** evaluate the hypothesis because entry assembly coverage was 0/57 due the unfunded taker fixture. Do not reinterpret it as a signal failure.
-
-A separate future `NO-CAPITAL / SHADOW / QUOTE-PAPER BURST-0` surface is allowed only as a fresh protocol. It must never be presented as validation of the frozen V4 assembled-transaction contract.
+No rescue/retuning.
 
 ### Robinhood / Pons
 
 Scientific state: **NOT YET EVALUATED**.
 
-No Robinhood selector is frozen. No Solana threshold/window/feature semantics may be imported.
-
-The active scientific prerequisite is causal observability:
-
-`Sequencer intent -> canonical tx identity -> RPC confirmation -> Pons Launch/CurveBuy/CurveSell -> intent-to-execution timing`
-
-Semantics are frozen:
-
+Semantics:
 - Sequencer Feed = **INTENT EVIDENCE ONLY**;
-- RPC logs / canonical chain data = **EXECUTION EVIDENCE**;
-- Feed observation without RPC confirmation = **UNKNOWN**, never inferred failed execution;
-- initial Sequencer sequence `0` = **BOOTSTRAP ONLY**, never a latency boundary.
+- RPC logs/canonical chain data = **EXECUTION EVIDENCE**;
+- Feed without RPC confirmation = **UNKNOWN**;
+- initial sequence `0` = **BOOTSTRAP ONLY**, never latency boundary.
 
-Only after acquisition + reconciliation are healthy may Robinhood Burst-0 begin.
+No Robinhood selector is frozen. Do not import Solana `.08`, 5s primary choice or economic contract.
 
 ## CURRENT ECONOMIC STATUS
 
@@ -133,192 +117,135 @@ Only after acquisition + reconciliation are healthy may Robinhood Burst-0 begin.
 
 `ECONOMIC = INCONCLUSIVE`
 
-Reason: the frozen V4 Route-Paper contract requires an assembled candidate BUY transaction, while the controlled taker is unfunded.
-
-This is an **execution-fixture blocker**, not evidence of positive or negative expectancy.
+Reason: frozen Route-Paper V4 requires assembled candidate BUY transaction, controlled taker is unfunded.
 
 ### Robinhood
 
 `ECONOMIC = NOT OPENED`
 
-No selector, economic hypothesis, trade return or realized PnL claim is currently authorized.
+No selector, return claim, realized PnL or execution edge is authorized.
 
 ## ACTIVE EXPERIMENT
 
-### Robinhood coordinated shadow — current gate
+### Robinhood provider/access -> coordinated acquisition
 
-Question:
+Immediate question:
 
-> Can RPC execution evidence and Nitro Sequencer intent evidence be acquired together with causal artifacts reliable enough for later reconciliation?
+> Can the public Robinhood RPC + Nitro Feed be accessed with a causally valid client and then acquired together without provider/client artifacts contaminating the gate?
 
-Current authoritative run failed before that question was answered.
-
-Immediate task:
-
-1. read the RPC child `report.json` and both child stdout/stderr from the existing 180s run;
-2. recover the exact RPC and feed preflight causes;
-3. repair only the minimum operational blocker;
-4. repeat the **same coordinated gate**, preferably short (e.g. 60s) once the blocker is known;
-5. do not open Burst-0 until coordinated acquisition and causal reconciliation are valid.
-
-Artifacts from the authoritative failed run:
-
-`C:\robinhood-shadow-v0\robinhood_sequencer_coordinated_shadow_v0-1789442344-67f7e01d8a`
+Current order:
+1. fast provider-access preflight;
+2. only if PASS, coordinated shadow 60s with RPC readiness barrier;
+3. if coordinated PASS, causal Feed->RPC reconciliation;
+4. only after reconciliation health, Robinhood Burst-0 no-capital.
 
 ## FROZEN CONTRACTS
 
 ### Solana Route-Paper V4
 
 Do not change:
-
 - `pump_launch`;
-- 5s primary window;
+- 5s;
 - `signed_flow_over_event_reserve >= 0.08`;
-- no confirmation window;
+- no confirmation;
 - +2s entry latency;
 - US$25 notional;
-- frozen fees/slippage;
+- frozen costs;
 - +60s exit;
 - BUY requires assembled candidate transaction;
-- SELL is route-only exact bought quantity;
+- SELL route-only exact bought quantity;
 - failed exit = -100%;
-- no adaptive post-signal funding/top-up;
-- no outcome-driven rescue or retuning.
+- no adaptive top-up.
 
 Route contract hash:
-
 `3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d`
 
-Funded-taker fixture hash:
-
+Funded fixture hash:
 `e7bde615886a9674a9f67cccca6be12aefa833e730a4076447ce60530d2e4ba8`
 
-Solana resume condition before acquisition:
-
-- same frozen controlled taker;
-- >=25 USDC;
-- >=0.01 SOL operational balance;
-- no adaptive top-up;
-- `PASS_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT`;
-- assembled read-only probes for liquid control and representative Burst token.
+Resume requires same controlled taker, >=25 USDC, >=0.01 SOL and `PASS_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT`.
 
 ### Robinhood
 
-No economic selector or primary feature is frozen yet.
+No economic selector/primary feature frozen.
 
-Do not import from Solana:
+## CLOSED HYPOTHESES / DECISIONS
 
-- `.08`;
-- primary 5s choice;
-- Solana selector;
-- Solana economic contract;
-- cross-chain threshold sharing.
-
-## CLOSED HYPOTHESES / HISTORICAL DECISIONS THAT STILL MATTER
-
-- Solana V48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**.
-- Solana V68 Flow60 buy-share economic verdict: **NOT EVALUATED** because systems aborted before valid forward economic collection.
-- Historical V9 Solana systems: **PASS 11/11**, PumpSwap p95 ~3.151s, Pump p95 ~1.478s. This motivated preserving useful systems work but no longer defines the active scientific gate.
-- Market-First and Social/Event-First remain independent research tracks; convergence is a future hypothesis only after both are independently supported.
+- Solana V48 `flow60_event_count`: **FAIL / CLOSED**.
+- Solana V68 economic: **NOT EVALUATED** due systems abort.
+- Market-First and Social/Event-First remain independent.
 
 ## KNOWN BLOCKERS
 
 ### Solana
 
-Only active blocker for frozen V4 economic continuation:
-
-`CONTROLLED TAKER FUNDING`
-
-Do not spend capital merely to discover whether Burst has first-move residual. Funding is classified separately as execution-fixture funding.
+`CONTROLLED TAKER FUNDING` only.
 
 ### Robinhood
 
-Current blocker:
+No protocol/parser blocker is currently established.
 
-`EXACT RPC + FEED PREFLIGHT CAUSES FROM FAILED COORDINATED RUN`
+Public endpoint facts:
+- public RPC is rate-limited / non-production;
+- A/B evidence shows explicit client identification is required for reliable public RPC access in current environment;
+- Feed upgrades but may omit optional Nitro metadata response headers.
 
-Known secondary systems fact:
+Do not treat provider throttling/access policy as scientific failure.
 
-- Robinhood public RPC is rate-limited and is explicitly not recommended for production/latency-sensitive use.
-- Do not treat public-provider throttling as a scientific failure.
-- Provider upgrade is allowed only when evidence shows the public endpoint is the blocker; do not redesign parser/strategy preemptively.
-
-Current Pons protocol verification:
-
-- current official V2 factory matches `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`;
-- current `TokenLaunched`, `CurveBuy` and `CurveSell` event shapes match the repository decoder signatures.
-
-Therefore do not change factory/event semantics without new evidence.
+Pons protocol remains verified:
+- V2 factory `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`;
+- current `TokenLaunched`, `CurveBuy`, `CurveSell` shapes match decoder signatures.
 
 ## NEXT GATE
 
 ### Robinhood
 
-Current route:
+`provider-access PASS -> coordinated 60s -> causal reconciliation`
 
-`recover exact preflight causes -> minimum systems repair -> repeat same coordinated gate -> causal reconciliation`
+Routing:
+- provider PASS -> coordinated short gate.
+- provider 401/403 -> provider/access systems blocker only.
+- provider 429 -> INCONCLUSIVE rate-limit; acquisition/provider adjustment only.
+- coordinated PASS -> reconciliation.
+- coordinated NO_LIVE_CANDIDATES -> extend duration only.
+- coordinated SYSTEMS FAIL -> repair exact operational blocker only.
+- bootstrap coverage HOLD -> INCONCLUSIVE; extend acquisition only.
 
-Outcome routing:
-
-- **PASS_COORDINATED_SHADOW_ACQUISITION_V0** -> open causal Feed->RPC reconciliation.
-- **PASS_COORDINATED_SHADOW_ACQUISITION_V0_NO_LIVE_CANDIDATES** -> increase acquisition duration only.
-- **SYSTEMS FAIL** -> repair only the observed operational blocker, then repeat the same gate.
-- **INCONCLUSIVE coverage** -> extend acquisition only; no feature/selector changes.
-
-After healthy reconciliation:
-
-### Robinhood Burst-0 — NO CAPITAL
+### Robinhood Burst-0 — only after healthy reconciliation
 
 Question:
 
-> After the causal moment at which an opportunity can actually be observed, does meaningful residual movement remain in the bonding curve?
+> After causal observation, does meaningful residual movement remain in the bonding curve?
 
-Start with base rate only, no selector.
+Base rate only, no selector.
 
-Desired forward horizons when viable:
-
+Forward horizons when viable:
 `15s / 30s / 60s / 120s / 300s`
 
 Measure:
-
-- forward return;
+- return;
 - MFE;
 - MAE;
 - time-to-MFE;
 - time-to-failure;
 - missingness;
-- right-tail / top-1 / top-3 dependence.
+- top-1/top-3/right-tail dependence.
 
-Do not call quote-paper evidence a fill or realized PnL.
+Quote-paper != fill != realized PnL.
 
 ## ROADMAP
 
-1. Robinhood acquisition health.
-2. Robinhood causal Sequencer->RPC reconciliation.
-3. Robinhood Burst-0 base-rate residual move, no capital and no selector.
-4. Only if Burst-0 justifies: Burst-1 with a small number of grounded momentum/acceleration and capital-quality families.
-5. Only if Burst-1 produces a prospectively supported candidate: Burst-2 structural risk/veto layer.
-6. Fresh validation.
-7. Quote/route paper.
-8. Execution realism.
-9. Continuous shadow.
-10. Small capital only after prior gates survive.
-
-Potential future layers, explicitly **not active now**:
-
-- Social / Attention Lead;
-- Narrative Revival;
-- cross-track convergence;
-- wallet independence / common funding / deployer history as structural risk;
-- TP/SL or exit optimization.
+1. Robinhood provider/access health.
+2. Coordinated RPC + Feed acquisition.
+3. Causal Sequencer->RPC reconciliation.
+4. Robinhood Burst-0 no-capital base rate.
+5. Burst-1 only if residual move exists prospectively.
+6. Burst-2 structural risk/veto only if Burst-1 justifies.
+7. Fresh validation -> quote/route paper -> execution realism -> continuous shadow -> small capital.
 
 ## CAPITAL RULE
 
-Preferred sequence:
-
 `NO-CAPITAL OBSERVABILITY -> PROSPECTIVE SCIENTIFIC EVIDENCE -> FROZEN SELECTOR -> FRESH VALIDATION -> QUOTE/ROUTE PAPER -> EXECUTION REALISM -> SHADOW -> SMALL CAPITAL`
-
-Never use trading capital simply to discover whether the basic phenomenon exists.
 
 ## INTERPRETATION DISCIPLINE
 
@@ -328,16 +255,9 @@ Always separate:
 Did acquisition / pipeline / reconciliation work?
 
 ### SCIENTIFIC EVIDENCE
-Was the phenomenon measured causally without lookahead, survivorship or contamination?
+Was the phenomenon measured causally without lookahead/survivorship/contamination?
 
 ### ECONOMIC EDGE
-Is there future movement that may be capturable after costs and execution constraints?
+Is there future movement potentially capturable after costs/execution constraints?
 
-Never infer:
-
-- Systems PASS = edge;
-- MFE = realized profit;
-- Sequencer intent = execution;
-- route/quote paper = landed fill;
-- many trades = real capital commitment;
-- distinct wallets = independent traders.
+Never infer Systems PASS = edge, MFE = realized profit, Sequencer intent = execution, or quote/route paper = landed fill.
