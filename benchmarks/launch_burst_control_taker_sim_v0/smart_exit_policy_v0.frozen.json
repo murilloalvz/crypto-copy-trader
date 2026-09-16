@@ -1,0 +1,31 @@
+{
+  "adaptive_tuning_allowed": false,
+  "missing_required_exit_policy": "apply_frozen_unexitable_return_to_remaining_fraction",
+  "notes": [
+    "This policy is frozen before collecting outcomes for this simulation.",
+    "It does not alter the Launch Burst selector, 5s window, 0.08 threshold, +2s entry latency, $25 notional, or V4 contract.",
+    "Fixed +60s remains the primary simulation benchmark. This smart exit is exploratory.",
+    "Each path mark uses a route-only SELL quote for the exact full entry quantity; applying it to partial fractions is conservative with respect to size-dependent price impact."
+  ],
+  "observation_semantics": "first_observed_on_preregistered_grid_not_continuous_first_touch",
+  "policy_hash_sha256": "0cbe8559733d4faf989d7b636bc4964bd20a388dc74aab96fb7a1e5e99b9592d",
+  "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+  "runner": {
+    "activation_after_threshold_return_pct": 100.0,
+    "fraction_of_initial_position": 0.25,
+    "max_horizon_seconds_from_entry": 300,
+    "trailing_drawdown_fraction_from_best_net_multiplier": 0.1
+  },
+  "sample_offsets_seconds_from_entry": [5, 10, 20, 30, 45, 60, 90, 120, 180, 240, 300],
+  "scale_out": [
+    {"sell_fraction_of_initial_position": 0.25, "threshold_return_pct": 20.0},
+    {"sell_fraction_of_initial_position": 0.25, "threshold_return_pct": 50.0},
+    {"sell_fraction_of_initial_position": 0.25, "threshold_return_pct": 100.0}
+  ],
+  "schema_version": "launch_burst_smart_exit_policy_v0",
+  "scope": "EXPLORATORY_EXIT_MANAGEMENT_NOT_V4_ECONOMIC_VERDICT",
+  "status": "PREREGISTERED_EXPLORATORY",
+  "stop_loss": null,
+  "threshold_basis": "net_route_return_after_frozen_entry_and_exit_costs",
+  "untriggered_remainder_exit": "close_at_max_horizon"
+}
