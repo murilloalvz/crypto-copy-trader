@@ -60,7 +60,7 @@ class LaunchBurstControlTakerSimV0Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "frozen V0 policy hash changed"):
             _validate_policy(mutated, route_contract_hash=ROUTE_HASH)
 
-    def test_scale_out_and_runner(self):
+    def test_scale_out_and_fixed_60s_runner(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         path = {
             "episode_key": "e1",
@@ -70,22 +70,20 @@ class LaunchBurstControlTakerSimV0Tests(unittest.TestCase):
                 {"offset_seconds": 20, "quote": self.quote(1.60, 20)},
                 {"offset_seconds": 45, "quote": self.quote(2.10, 45)},
                 {"offset_seconds": 60, "quote": self.quote(2.30, 60)},
-                {"offset_seconds": 90, "quote": self.quote(2.00, 90)},
-                {"offset_seconds": 300, "quote": self.quote(1.90, 300)},
             ],
         }
         fixed = {"entry_quote": {"price_usd": 1.0}, "status": "ROUTE_CLOSED", "decision_as_of": 0}
         result = _smart_trade(path_episode=path, fixed_decision=fixed, contract=self.contract(), policy=policy)
         self.assertEqual([x["threshold_return_pct"] for x in result["threshold_hits"]], [20.0, 50.0, 100.0])
-        self.assertEqual(result["runner_exit"]["reason"], "TRAILING_STOP")
+        self.assertEqual(result["runner_exit"]["reason"], "FIXED_60S_CLOSE")
         self.assertAlmostEqual(sum(x["fraction_of_initial_position"] for x in result["realizations"]), 1.0)
 
-    def test_missing_final_route_penalizes_remainder(self):
+    def test_missing_60s_route_penalizes_remaining_fraction(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         path = {"episode_key": "e2", "token_mint": "MINT2", "path": [{"offset_seconds": 5, "quote": self.quote(1.30, 5)}]}
         fixed = {"entry_quote": {"price_usd": 1.0}, "status": "UNROUTABLE_EXIT", "decision_as_of": 0}
         result = _smart_trade(path_episode=path, fixed_decision=fixed, contract=self.contract(), policy=policy)
-        self.assertEqual(result["runner_exit"]["reason"], "MAX_HORIZON_UNROUTABLE")
+        self.assertEqual(result["runner_exit"]["reason"], "FIXED_60S_UNROUTABLE")
         self.assertEqual(result["smart_status"], "CLOSED")
 
 
