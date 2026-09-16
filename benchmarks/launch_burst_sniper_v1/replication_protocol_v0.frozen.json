@@ -1,0 +1,63 @@
+{
+  "causal_contract": {
+    "capture_identity": "sha256(route-input-v2.json bytes)",
+    "decision_window_seconds": 5,
+    "feature_snapshot_frozen_before_provider_quotes": true,
+    "fresh_independent_causal_capture_required": true,
+    "published_at_defines_causal_availability": false,
+    "screening_artifact_reuse_as_replication": false
+  },
+  "chain_profile": "solana:mainnet:pumpfun",
+  "comparison": {
+    "automatic_edge_promotion_from_single_replication": false,
+    "primary_direction": "greater_than_zero",
+    "primary_endpoint": "mean_fixed_60s_return_pct_selected_minus_baseline",
+    "same_sample_threshold_search_permitted": false,
+    "supporting_endpoints": [
+      "total_fixed_60s_pnl_usd",
+      "positive_rate_pct",
+      "profit_factor",
+      "max_drawdown_usd",
+      "selected_count"
+    ],
+    "treatment": "SNIPER-HIGH-PRECISION-V1 selected subset",
+    "universe": "all frozen Launch Burst baseline episodes in the fresh independent capture"
+  },
+  "economic_contract": {
+    "entry_latency_seconds": 2,
+    "evidence_label": "route-shadow economics",
+    "notional_usd": 25,
+    "primary_benchmark": "fixed_plus_60s_route_shadow",
+    "primary_exit_seconds_after_observed_entry": 60,
+    "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+    "smart_ladder_role": "exploratory_only_not_primary",
+    "unroutable_exit_return_pct": -100.0
+  },
+  "experiment_id": "SNIPER-V1-INDEPENDENT-REPLICATION-V0",
+  "guardrails": {
+    "no_convergence_features": true,
+    "no_landed_fill_claim": true,
+    "no_ml_or_auto_tuning": true,
+    "no_new_exit_optimization": true,
+    "no_realized_pnl_claim": true,
+    "no_social_event_features": true,
+    "official_v4_economic_verdict_unchanged": true,
+    "systems_scientific_economic_verdicts_separate": true
+  },
+  "protocol_hash_sha256": "97b3d9f1f38771af46de75f750437c45aa5bd4aec544eb97810a076352c3bfee",
+  "sample_contract": {
+    "below_minimum_classification": "INSUFFICIENT_REPLICATION_SAMPLE",
+    "capture_duration_seconds": 900,
+    "minimum_met_classification": "REPLICATION_EVIDENCE_AVAILABLE",
+    "minimum_primary_usable_route_results": 30
+  },
+  "schema_version": "launch_burst_sniper_replication_protocol_v0",
+  "selector": {
+    "policy_hash_sha256": "60a480a90365eae8abfcb55787345b41573fc1d2632d17c344741e93e36f490a",
+    "policy_name": "SNIPER-HIGH-PRECISION-V1",
+    "policy_path": "benchmarks/launch_burst_sniper_v1/sniper_policy_v1.frozen.json",
+    "threshold_retuning_permitted": false
+  },
+  "status": "PREREGISTERED_PROSPECTIVE_REPLICATION",
+  "track": "market_first"
+}
