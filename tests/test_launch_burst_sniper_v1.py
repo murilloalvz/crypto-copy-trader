@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 from pathlib import Path
 import unittest
 
 from src.launch_burst_sniper_v1 import (
+    EXPECTED_POLICY_HASH,
     evaluate_launch_burst_sniper_v1,
     load_sniper_policy_v1,
+    validate_sniper_policy_v1,
 )
 
 
@@ -33,16 +38,31 @@ def _snapshot(**overrides):
     }
 
 
+def _rehash(policy: dict) -> None:
+    shadow = {key: value for key, value in policy.items() if key != "policy_hash_sha256"}
+    canonical = json.dumps(shadow, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    policy["policy_hash_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class LaunchBurstSniperV1Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.policy = load_sniper_policy_v1(POLICY)
 
     def test_frozen_policy_hash_validates(self):
+        self.assertEqual(self.policy["policy_hash_sha256"], EXPECTED_POLICY_HASH)
         self.assertEqual(
-            self.policy["policy_hash_sha256"],
+            EXPECTED_POLICY_HASH,
             "60a480a90365eae8abfcb55787345b41573fc1d2632d17c344741e93e36f490a",
         )
+
+    def test_rehashed_threshold_mutation_cannot_silently_replace_frozen_v1(self):
+        mutated = copy.deepcopy(self.policy)
+        mutated["primary_selector"]["predicates"][1]["value"] = 4
+        _rehash(mutated)
+        self.assertNotEqual(mutated["policy_hash_sha256"], EXPECTED_POLICY_HASH)
+        with self.assertRaisesRegex(ValueError, "frozen V1 policy hash changed"):
+            validate_sniper_policy_v1(mutated)
 
     def test_primary_selects_distributed_directional_burst(self):
         decision = evaluate_launch_burst_sniper_v1(
