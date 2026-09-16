@@ -24,6 +24,7 @@ from benchmarks.launch_burst_prospective_route_live_v3 import live as v3
 from benchmarks.launch_burst_prospective_route_live_v4 import live as v4
 
 VERSION = "launch_burst_control_taker_sim_v4_smart_ladder_25_price_impact_fix_v0"
+PASS = "PASS_LAUNCH_BURST_CONTROL_TAKER_SIM_V4_SMART_LADDER_25_PRICE_IMPACT_FIX_V0"
 DEFAULT_ARTIFACTS_ROOT = Path("artifacts") / VERSION
 
 
@@ -92,7 +93,11 @@ def main() -> int:
         )
         return 2
 
+    upstream_classification = str(report.get("classification") or "")
     report["version"] = VERSION
+    report["upstream_v4_classification"] = upstream_classification
+    if upstream_classification.startswith("PASS_"):
+        report["classification"] = PASS
     report["price_impact_semantics_fix"] = {
         "version": FIX_VERSION,
         "jupiter_swap_v2_documentation": JUPITER_SWAP_V2_DOC,
@@ -101,6 +106,8 @@ def main() -> int:
         "frozen_contract_changed": False,
     }
     report.setdefault("guardrails", {})["price_impact_semantics_fix_applied"] = True
+    report["guardrails"]["historical_v4_runner_unchanged"] = True
+    report["guardrails"]["upstream_failure_never_promoted_to_pass"] = True
 
     report_path = Path(str(report["artifacts"]["simulation_report"]))
     sim._write_json(report_path, report)
