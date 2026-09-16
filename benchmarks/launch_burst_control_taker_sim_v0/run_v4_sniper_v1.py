@@ -65,6 +65,7 @@ def _compact(report: dict) -> dict:
     sniper = report.get("sniper_comparison") or {}
     fixed = sniper.get("fixed_60s_primary_benchmark") or {}
     smart = sniper.get("smart_ladder_25_exploratory") or {}
+    support = report.get("sniper_support_preflight") or {}
     return {
         "classification": report.get("classification"),
         "economic_interpretation": report.get("economic_interpretation"),
@@ -87,6 +88,11 @@ def _compact(report: dict) -> dict:
         "source_integrity": sniper.get("source_integrity"),
         "primary_rejection_reasons": ((sniper.get("primary_selector_diagnostics") or {}).get("reason_counts")),
         "preflight": report.get("sniper_screening_preflight"),
+        "support_preflight": {
+            "classification": support.get("classification"),
+            "gates": support.get("gates"),
+            "public_control": support.get("public_control"),
+        } if support else None,
         "artifacts": report.get("artifacts"),
     }
 
@@ -133,6 +139,32 @@ def main() -> int:
         jupiter_key = os.environ.get("JUPITER_API_KEY", "").strip()
         rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip()
 
+        # Lazy import avoids a module cycle: the standalone preflight imports this module only
+        # for the frozen screening contract helper, while the live runner reuses its lower-level
+        # in-process control preparation after this module has fully initialized.
+        from benchmarks.launch_burst_sniper_v1.preflight import (
+            PASS as SUPPORT_PREFLIGHT_PASS,
+            prepare_preflight_control,
+        )
+
+        support_preflight, control_taker = prepare_preflight_control(
+            contract_path=args.contract,
+            fixture_path=args.fixture,
+            smart_policy_path=args.smart_policy,
+            sniper_policy_path=args.sniper_policy,
+            duration_seconds=args.duration_seconds,
+            helius_api_key=helius_key,
+            jupiter_api_key=jupiter_key,
+            rpc_url=rpc_url,
+        )
+        if support_preflight.get("classification") != SUPPORT_PREFLIGHT_PASS or not control_taker:
+            raise RuntimeError(
+                "Sniper V1 read-only support preflight did not PASS; acquisition was not started"
+            )
+        control_meta = support_preflight.get("public_control")
+        if not isinstance(control_meta, dict):
+            raise RuntimeError("Sniper support preflight did not return public control metadata")
+
         with patched_price_impact_semantics(), patched_sniper_feature_enrichment_v1():
             base = asyncio.run(
                 run_sim_v4(
@@ -149,8 +181,17 @@ def main() -> int:
                     jupiter_api_key=jupiter_key,
                     rpc_url=rpc_url,
                     rpc_fallback_urls=fallback_urls,
+                    control_taker_override=control_taker,
+                    control_meta_override=control_meta,
                 )
             )
+
+        live_control = base.get("simulation_control_taker") or {}
+        if (
+            live_control.get("control_resolution_mode") != "EXACT_PREFLIGHT_REUSE"
+            or live_control.get("owner_public_key_sha256") != control_meta.get("owner_public_key_sha256")
+        ):
+            raise RuntimeError("live simulation did not reuse the exact preflight public control")
 
         base_v4 = base.get("base_v4_report") or {}
         route_input_path = Path(str((base_v4.get("artifacts") or {}).get("input") or ""))
@@ -188,6 +229,7 @@ def main() -> int:
                 ),
                 "sniper_policy_hash_sha256": preflight["policy_hash_sha256"],
                 "sniper_screening_preflight": preflight,
+                "sniper_support_preflight": support_preflight,
                 "sniper_comparison": comparison,
                 "price_impact_semantics_fix": {
                     "version": FIX_VERSION,
@@ -219,6 +261,8 @@ def main() -> int:
                 "sniper_policy_preregistered_before_this_run": True,
                 "sniper_policy_validated_before_acquisition": True,
                 "sniper_screening_duration_frozen_before_acquisition": True,
+                "sniper_support_preflight_pass_required_before_acquisition": True,
+                "sniper_exact_preflight_control_reused_in_live": True,
                 "sniper_source_artifact_exact_parity_required": True,
                 "sniper_changes_frozen_baseline_provider_dispatch": False,
                 "wallet_field_enrichment_only": True,
