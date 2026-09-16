@@ -1,0 +1,3 @@
+Validation marker for the final SNIPER-HIGH-PRECISION-V1 hardening head.
+Base research head: 4a45a1f1e8c89b20cda6aa7976084f2c730f1aa9
+No production semantics changed by this file.
