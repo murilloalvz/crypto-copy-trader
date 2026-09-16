@@ -7,6 +7,11 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.opportunity_feature_matrix_v0 import (
+    TRACK_MARKET_FIRST,
+    assert_selector_features_eligible_v0,
+)
+
 
 SNIPER_VERSION = "launch_burst_sniper_v1"
 EXPECTED_POLICY_SCHEMA = "launch_burst_sniper_policy_v1"
@@ -100,6 +105,10 @@ def validate_sniper_policy_v1(policy: Mapping[str, Any]) -> None:
                 raise ValueError(f"{selector_name}.{feature} threshold must be finite")
 
     primary = policy["primary_selector"]["predicates"]
+    assert_selector_features_eligible_v0(
+        (str(item["feature"]) for item in primary),
+        selector_track=TRACK_MARKET_FIRST,
+    )
     baseline_predicate = next(
         (
             item
