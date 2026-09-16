@@ -1,0 +1,87 @@
+{
+  "schema_version": "launch_burst_momentum_convergence_policy_v0",
+  "status": "PREREGISTERED_PROSPECTIVE_TRANSFER",
+  "policy_name": "BURST-MOMENTUM-CONVERGENCE-V0",
+  "active_chain_profile": "solana:mainnet:pumpfun",
+  "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+  "decision_window_seconds": 5,
+  "inherited_entry_latency_seconds": 2,
+  "primary_selector": {
+    "mode": "all_of",
+    "predicates": [
+      {"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08},
+      {"feature": "gross_flow_acceleration_second_half_over_first_half", "op": ">=", "value": 2.0}
+    ]
+  },
+  "diagnostic_selectors": {
+    "event_acceleration_2x": {
+      "mode": "all_of",
+      "predicates": [
+        {"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08},
+        {"feature": "event_rate_acceleration_second_half_over_first_half", "op": ">=", "value": 2.0}
+      ]
+    },
+    "buy_flow_acceleration_2x": {
+      "mode": "all_of",
+      "predicates": [
+        {"feature": "signed_flow_over_event_reserve", "op": ">=", "value": 0.08},
+        {"feature": "buy_flow_acceleration_second_half_over_first_half", "op": ">=", "value": 2.0}
+      ]
+    }
+  },
+  "evaluation_gates": {
+    "screening_run_duration_seconds": 900,
+    "minimum_primary_usable_route_results_for_directional_read": 10,
+    "minimum_primary_usable_route_results_before_replication": 30,
+    "independent_replication_required": true,
+    "no_threshold_retuning_on_screening_or_replication_outcomes": true
+  },
+  "momentum_horizon": {
+    "fixed_60s_remains_primary_benchmark": true,
+    "historical_alignment_horizon_seconds": 300,
+    "historical_alignment_inference_role": "EXPLORATORY_TRANSFER_VALIDATION_ONLY",
+    "missing_300s_route_return_pct": -100.0
+  },
+  "feature_semantics": {
+    "gross_flow_acceleration_second_half_over_first_half": "Within the frozen 5s evidence window, gross abs(flow/reserve) observed in [2.5s,5.0s] divided by gross abs(flow/reserve) observed in [0,2.5s). Same-stream causal replacement for the historical Wave 5m-vs-1h volume acceleration concept; metric parity is explicitly NOT claimed.",
+    "event_rate_acceleration_second_half_over_first_half": "Event count in [2.5s,5.0s] divided by event count in [0,2.5s); equal-duration halves make the count ratio an event-rate ratio.",
+    "buy_flow_acceleration_second_half_over_first_half": "Positive buy flow/reserve in [2.5s,5.0s] divided by positive buy flow/reserve in [0,2.5s).",
+    "late_half_directional_flow_efficiency": "signed flow/reserve divided by gross flow/reserve using only [2.5s,5.0s]."
+  },
+  "historical_evidence_provenance": {
+    "source_strategy": "wave_v2_momentum",
+    "historical_primary_horizon_seconds": 300,
+    "historical_sample_completed_5m": 64,
+    "historical_5m_mean_return_pct": 5.18,
+    "historical_5m_median_return_pct": 5.11,
+    "historical_5m_win_rate_pct": 82.8,
+    "historical_5m_profit_factor": 6.61,
+    "historical_5m_drawdown_usd": 4.41,
+    "historical_volume_acceleration_ge_2x_n": 58,
+    "historical_volume_acceleration_ge_2x_mean_return_pct_5m": 5.63,
+    "historical_volume_acceleration_ge_2x_win_rate_pct_5m": 84.5,
+    "historical_volume_acceleration_ge_2x_profit_factor_5m": 7.75,
+    "historical_data_quality_warning": "35/65 historical snapshots had inconsistent 5m/1h/24h cumulative volume windows. Therefore only the acceleration concept and pre-existing 2x threshold are transferred; the old provider metric is not reused.",
+    "threshold_transfer_note": "2.0x is preregistered from the historical Wave cohort before this fresh screening, but the local 2.5s-vs-2.5s metric is a new causal analogue and must earn its own prospective evidence."
+  },
+  "scientific_guardrails": {
+    "frozen_launch_burst_baseline_unchanged": true,
+    "primary_selector_is_strict_subset_of_frozen_baseline": true,
+    "all_routes_collected_for_frozen_baseline_before_momentum_postprocessing": true,
+    "feature_snapshot_frozen_before_provider_quotes": true,
+    "sniper_v1_not_promoted_into_primary_after_negative_screening": true,
+    "wallet_and_concentration_features_remain_diagnostic": true,
+    "no_same_sample_threshold_selection": true,
+    "fixed_60s_primary_for_current_route_contract": true,
+    "300s_horizon_exploratory_for_historical_alignment": true,
+    "route_shadow_is_not_landed_fill_or_realized_pnl": true,
+    "official_v4_economic_verdict_unchanged": true
+  },
+  "portability_contract": {
+    "selector_consumes_normalized_feature_snapshot": true,
+    "robinhood_chain_profile_planned": "eip155:4663",
+    "same_thresholds_must_not_be_assumed_transferable_across_chains": true,
+    "robinhood_activation_requires_equivalent_flow_reserve_and_acceleration_semantics_plus_fresh_preregistration": true
+  },
+  "policy_hash_sha256": "78eb1fdf44ec74821a4c7c61af3a9f4b429e46c7c44c18c2ffa71368d3cb0047"
+}
