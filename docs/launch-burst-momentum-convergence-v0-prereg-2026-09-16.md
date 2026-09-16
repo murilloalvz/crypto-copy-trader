@@ -2,13 +2,15 @@
 
 ## Purpose
 
-Transfer only the strongest historical Wave V2 momentum evidence into the current causal Launch Burst route-shadow pipeline, without reusing the old provider volume windows and without promoting the negatively screened Sniper V1 wallet/concentration gates into the new primary selector.
+Transfer the most promising historical Wave V2 momentum idea into the current causal Launch Burst route-shadow pipeline, while preserving contradictory evidence instead of treating momentum as already proven. The old provider volume windows are not reused, and the negatively screened Sniper V1 wallet/concentration gates are not promoted into the new primary selector.
 
-## Historical evidence used
+## Historical evidence state: MIXED_REPLICATION
 
-The historical `wave_v2_momentum` study produced 64 completed 5-minute outcomes with mean return +5.18%, median +5.11%, win rate 82.8%, profit factor 6.61 and max drawdown US$4.41. The preregistered volume-acceleration cohort `>=2.00x` had 58 completed 5-minute outcomes with mean +5.63%, win rate 84.5% and profit factor 7.75. At 15 minutes the same cohort had n=53, mean +13.30%, win rate 86.8% and profit factor 15.97.
+The initial `wave_v2_momentum` study produced 64 completed 5-minute outcomes with mean return +5.18%, median +5.11%, win rate 82.8%, profit factor 6.61 and max drawdown US$4.41. Its preregistered volume-acceleration cohort `>=2.00x` had 58 completed 5-minute outcomes with mean +5.63%, win rate 84.5% and profit factor 7.75. At 15 minutes the same initial cohort had n=53, mean +13.30%, win rate 86.8% and profit factor 15.97.
 
-The historical data also carried an important integrity warning: 35/65 snapshots had inconsistent cumulative 5m/1h/24h volume windows. Therefore this protocol does **not** reuse the old provider acceleration metric or claim metric parity. It transfers only the pre-existing acceleration concept and its `2.0x` threshold into a fresh causal analogue computed from the local stream.
+However, a later monitor did not reproduce that effect at the same magnitude. For `>=2.00x`, the later 5-minute cohort had n=45, mean +0.10%, win rate 35.6% and PF 1.04; at 15 minutes it had n=41, mean +2.35%, win rate 46.3% and PF 1.48.
+
+The initial historical data also carried an integrity warning: 35/65 snapshots had inconsistent cumulative 5m/1h/24h volume windows. Therefore this protocol does **not** reuse the old provider acceleration metric, does **not** claim momentum is proven, and does **not** claim metric parity. It transfers only the pre-existing acceleration concept and its `2.0x` threshold into a fresh causal analogue computed from the local stream, where it must earn new evidence.
 
 ## Frozen baseline
 
@@ -56,7 +58,7 @@ Sniper V1 is not promoted because its first 900-second screening produced a wors
 ## Horizons
 
 - **Primary:** Fixed +60s, unchanged, for direct comparability with the current route-paper contract.
-- **Exploratory historical alignment:** independent route-only exact-quantity SELL mark at +300s, because the strongest historical momentum evidence was measured at five minutes.
+- **Exploratory historical alignment:** independent route-only exact-quantity SELL mark at +300s, because the strongest initial momentum evidence was measured at five minutes.
 
 The +300s mark does not change the +60s benchmark or SMART-LADDER-25. Missing collector evidence at +300s is an integrity error, not an automatic economic loss. An explicit provider/unroutable observation at +300s uses the frozen unexitable return policy.
 
