@@ -127,6 +127,71 @@ def _metric_delta(primary: Mapping[str, Any], baseline: Mapping[str, Any], name:
     return pf - bf
 
 
+def _predicate_for_feature(row: Mapping[str, Any], feature: str) -> Mapping[str, Any] | None:
+    for item in row.get("predicates") or []:
+        if isinstance(item, Mapping) and item.get("feature") == feature:
+            return item
+    return None
+
+
+def _gate_waterfall(
+    *,
+    primary_rows: list[dict[str, Any]],
+    baseline_selected_keys: set[str],
+    fixed_baseline: list[dict[str, Any]],
+    policy: Mapping[str, Any],
+    notional: float,
+) -> list[dict[str, Any]]:
+    """Sequentially attribute primary rejections using the frozen predicate order.
+
+    Economic rows are descriptive diagnostics only. They are intentionally computed after the
+    complete frozen policy has already been preregistered and cannot be used to retune this sample.
+    Each baseline episode is attributed to at most one first failing/missing gate.
+    """
+
+    by_episode = {str(item.get("episode_key") or ""): item for item in primary_rows}
+    fixed_by_episode = {str(item.get("episode_key") or ""): item for item in fixed_baseline}
+    active = set(baseline_selected_keys)
+    steps: list[dict[str, Any]] = []
+
+    selector = policy.get("primary_selector") or {}
+    for predicate in selector.get("predicates") or []:
+        feature = str(predicate.get("feature") or "")
+        entering = set(active)
+        missing: set[str] = set()
+        failed: set[str] = set()
+        for episode_key in entering:
+            row = by_episode.get(episode_key)
+            observed = _predicate_for_feature(row or {}, feature)
+            if observed is None or observed.get("available") is not True:
+                missing.add(episode_key)
+            elif observed.get("passed") is not True:
+                failed.add(episode_key)
+
+        rejected = missing | failed
+        active -= rejected
+        rejected_fixed = [fixed_by_episode[key] for key in rejected if key in fixed_by_episode]
+        steps.append(
+            {
+                "feature": feature,
+                "op": str(predicate.get("op") or ""),
+                "threshold": predicate.get("value"),
+                "entering_count": len(entering),
+                "passed_count": len(active),
+                "rejected_count": len(rejected),
+                "missing_count": len(missing),
+                "failed_count": len(failed),
+                "route_usable_rejected_count": len(rejected_fixed),
+                "rejected_fixed_60s": _aggregate(rejected_fixed, "fixed_pnl_usd", notional),
+                "counterfactual_skip": _counterfactual_skip_value(
+                    rejected_fixed,
+                    pnl_key="fixed_pnl_usd",
+                ),
+            }
+        )
+    return steps
+
+
 def run_sniper_comparison_v1(
     *,
     contract_path: Path,
@@ -183,6 +248,13 @@ def run_sniper_comparison_v1(
     primary_fixed_summary = _aggregate(fixed_primary, "fixed_pnl_usd", notional)
     skipped_fixed_summary = _aggregate(fixed_skipped, "fixed_pnl_usd", notional)
     diagnostic_fixed_summary = _aggregate(fixed_diagnostic, "fixed_pnl_usd", notional)
+    gate_waterfall = _gate_waterfall(
+        primary_rows=primary_rows,
+        baseline_selected_keys=baseline_selected_keys,
+        fixed_baseline=fixed_baseline,
+        policy=policy,
+        notional=notional,
+    )
 
     smart_section = None
     if smart_result_path is not None:
@@ -253,6 +325,11 @@ def run_sniper_comparison_v1(
             },
         },
         "smart_ladder_25_exploratory": smart_section,
+        "primary_gate_waterfall_exploratory": {
+            "inference_role": "DISCOVERY_DIAGNOSTIC_ONLY_NO_RETUNING_ON_THIS_SAMPLE",
+            "ordered_steps": gate_waterfall,
+            "final_selected_count": len(primary_keys),
+        },
         "primary_selector_diagnostics": {
             "status_counts": dict(sorted(Counter(str(row.get("status") or "") for row in primary_rows).items())),
             "reason_counts": _reason_counts(primary_rows),
@@ -276,6 +353,7 @@ def run_sniper_comparison_v1(
             "missing_features_not_imputed": True,
             "fixed_60s_remains_primary": True,
             "smart_ladder_remains_exploratory": True,
+            "gate_waterfall_is_exploratory_no_retuning": True,
             "official_v4_economic_verdict_changed": False,
             "landed_fill_claim": False,
             "realized_pnl_claim": False,
@@ -283,8 +361,8 @@ def run_sniper_comparison_v1(
         "interpretation": (
             "Prospective route-shadow comparison of the frozen Launch Burst baseline against a preregistered "
             "high-precision subset using only the feature snapshot frozen before provider quotes. Fixed +60s "
-            "remains the primary benchmark. SMART-LADDER-25 remains exploratory. PASS means accounting and "
-            "comparison completed; it does not mean profitable edge was established."
+            "remains the primary benchmark. SMART-LADDER-25 and per-gate rejection economics remain exploratory. "
+            "PASS means accounting and comparison completed; it does not mean profitable edge was established."
         ),
     }
     _write_json(output_path, result)
