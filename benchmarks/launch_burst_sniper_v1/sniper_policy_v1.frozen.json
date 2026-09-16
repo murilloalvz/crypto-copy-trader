@@ -30,6 +30,11 @@
         "value": 80.0
       },
       {
+        "feature": "wallet_gross_flow_coverage_pct",
+        "op": ">=",
+        "value": 80.0
+      },
+      {
         "feature": "unique_wallet_count",
         "op": ">=",
         "value": 3
@@ -83,6 +88,7 @@
     "directional_flow_efficiency": "signed_flow_over_event_reserve / gross_turnover_over_event_reserve; bounded [-1,1] when gross turnover is positive",
     "top_wallet_gross_flow_share_pct": "largest observed wallet gross abs(flow/reserve) share among wallet-identified events inside the frozen 5s window",
     "wallet_identity_coverage_pct": "percent of frozen-window trade events carrying an observed wallet identity",
+    "wallet_gross_flow_coverage_pct": "percent of frozen-window gross abs(flow/reserve) attributable to wallet-identified events",
     "transaction_identity_coverage_pct": "percent of frozen-window trade events carrying an observed transaction identity"
   },
   "portability_contract": {
@@ -103,5 +109,5 @@
     "route_shadow_is_not_landed_fill_or_realized_pnl": true,
     "official_v4_economic_verdict_unchanged": true
   },
-  "policy_hash_sha256": "e4b49a7b9cab1720e2f3c302dfdeebed570fed7f44e8e3da4751c77dcd4b5200"
+  "policy_hash_sha256": "017873aad04d6d1bede1ef4e0df86c82ccd3dc4634079c8ea2c4543bc46ba8cd"
 }
