@@ -30,6 +30,7 @@ from benchmarks.launch_burst_sniper_v1.runtime_enrichment import (
     ENRICHMENT_VERSION,
     patched_sniper_feature_enrichment_v1,
 )
+from src.launch_burst_sniper_v1 import load_sniper_policy_v1
 
 
 VERSION = "launch_burst_control_taker_sim_v4_sniper_v1"
@@ -37,6 +38,29 @@ PASS_CLASSIFICATION = "PASS_LAUNCH_BURST_CONTROL_TAKER_SIM_V4_SNIPER_V1"
 FAIL_CLASSIFICATION = "FAIL_LAUNCH_BURST_CONTROL_TAKER_SIM_V4_SNIPER_V1"
 DEFAULT_ARTIFACTS_ROOT = Path("artifacts") / VERSION
 DEFAULT_SNIPER_POLICY = Path("benchmarks") / "launch_burst_sniper_v1" / "sniper_policy_v1.frozen.json"
+
+
+def _screening_preflight(*, sniper_policy_path: Path, duration_seconds: int) -> dict:
+    """Validate the frozen Sniper V1 policy before any live/provider work starts."""
+
+    policy = load_sniper_policy_v1(sniper_policy_path)
+    gates = policy.get("evaluation_gates") or {}
+    frozen_duration = int(gates.get("screening_run_duration_seconds") or 0)
+    if frozen_duration <= 0:
+        raise ValueError("Sniper V1 screening duration is missing from frozen policy")
+    if int(duration_seconds) != frozen_duration:
+        raise ValueError(
+            "Sniper V1 screening duration is frozen at "
+            f"{frozen_duration}s; got {int(duration_seconds)}s. "
+            "A different duration requires a separately preregistered run, not an in-place override."
+        )
+    return {
+        "policy_hash_sha256": str(policy["policy_hash_sha256"]),
+        "policy_name": str(policy["policy_name"]),
+        "active_chain_profile": str(policy["active_chain_profile"]),
+        "screening_run_duration_seconds": frozen_duration,
+        "validated_before_acquisition": True,
+    }
 
 
 def _compact(report: dict) -> dict:
@@ -63,6 +87,7 @@ def _compact(report: dict) -> dict:
         } if smart else None,
         "screening": sniper.get("screening"),
         "primary_rejection_reasons": ((sniper.get("primary_selector_diagnostics") or {}).get("reason_counts")),
+        "preflight": report.get("sniper_screening_preflight"),
         "artifacts": report.get("artifacts"),
     }
 
@@ -87,20 +112,28 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=None)
     args = parser.parse_args()
 
-    env_file = args.env_file or (Path.cwd() / ".env")
-    if env_file.exists():
-        load_dotenv(dotenv_path=env_file, override=False)
-    fallback_urls = tuple(
-        item.strip()
-        for item in os.environ.get("SOLANA_RPC_FALLBACK_URLS", "").split(",")
-        if item.strip()
-    )
-
-    helius_key = os.environ.get("HELIUS_API_KEY", "").strip()
-    jupiter_key = os.environ.get("JUPITER_API_KEY", "").strip()
-    rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip()
-
+    helius_key = ""
+    jupiter_key = ""
+    rpc_url = ""
     try:
+        preflight = _screening_preflight(
+            sniper_policy_path=args.sniper_policy,
+            duration_seconds=args.duration_seconds,
+        )
+
+        env_file = args.env_file or (Path.cwd() / ".env")
+        if env_file.exists():
+            load_dotenv(dotenv_path=env_file, override=False)
+        fallback_urls = tuple(
+            item.strip()
+            for item in os.environ.get("SOLANA_RPC_FALLBACK_URLS", "").split(",")
+            if item.strip()
+        )
+
+        helius_key = os.environ.get("HELIUS_API_KEY", "").strip()
+        jupiter_key = os.environ.get("JUPITER_API_KEY", "").strip()
+        rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip()
+
         with patched_price_impact_semantics(), patched_sniper_feature_enrichment_v1():
             base = asyncio.run(
                 run_sim_v4(
@@ -138,6 +171,8 @@ def main() -> int:
             smart_result_path=smart_result_path,
             output_path=sniper_result_path,
         )
+        if comparison.get("sniper_policy_hash_sha256") != preflight["policy_hash_sha256"]:
+            raise RuntimeError("Sniper policy hash changed between preflight and post-run comparison")
 
         base_pass = str(base.get("classification") or "").startswith("PASS_")
         compare_pass = comparison.get("classification") == PASS_COMPARISON
@@ -152,7 +187,8 @@ def main() -> int:
                     if int(comparison.get("baseline_selected_count") or 0) > 0
                     else "INCONCLUSIVE_NO_BASELINE_SELECTED_EPISODES"
                 ),
-                "sniper_policy_hash_sha256": comparison.get("sniper_policy_hash_sha256"),
+                "sniper_policy_hash_sha256": preflight["policy_hash_sha256"],
+                "sniper_screening_preflight": preflight,
                 "sniper_comparison": comparison,
                 "price_impact_semantics_fix": {
                     "version": FIX_VERSION,
@@ -182,6 +218,8 @@ def main() -> int:
             {
                 "price_impact_semantics_fix_applied": True,
                 "sniper_policy_preregistered_before_this_run": True,
+                "sniper_policy_validated_before_acquisition": True,
+                "sniper_screening_duration_frozen_before_acquisition": True,
                 "sniper_changes_frozen_baseline_provider_dispatch": False,
                 "wallet_field_enrichment_only": True,
                 "official_v4_economic_verdict_changed": False,
