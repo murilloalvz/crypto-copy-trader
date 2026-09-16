@@ -1,0 +1,107 @@
+{
+  "schema_version": "launch_burst_sniper_policy_v1",
+  "status": "PREREGISTERED_PROSPECTIVE",
+  "policy_name": "SNIPER-HIGH-PRECISION-V1",
+  "active_chain_profile": "solana:mainnet:pumpfun",
+  "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+  "decision_window_seconds": 5,
+  "inherited_entry_latency_seconds": 2,
+  "primary_selector": {
+    "mode": "all_of",
+    "predicates": [
+      {
+        "feature": "signed_flow_over_event_reserve",
+        "op": ">=",
+        "value": 0.08
+      },
+      {
+        "feature": "event_count",
+        "op": ">=",
+        "value": 5
+      },
+      {
+        "feature": "directional_flow_efficiency",
+        "op": ">=",
+        "value": 0.5
+      },
+      {
+        "feature": "wallet_identity_coverage_pct",
+        "op": ">=",
+        "value": 80.0
+      },
+      {
+        "feature": "unique_wallet_count",
+        "op": ">=",
+        "value": 3
+      },
+      {
+        "feature": "top_wallet_gross_flow_share_pct",
+        "op": "<=",
+        "value": 60.0
+      },
+      {
+        "feature": "transaction_identity_coverage_pct",
+        "op": ">=",
+        "value": 80.0
+      },
+      {
+        "feature": "unique_transaction_count",
+        "op": ">=",
+        "value": 3
+      }
+    ]
+  },
+  "diagnostic_selector": {
+    "mode": "all_of",
+    "inference_role": "DIAGNOSTIC_ONLY_NO_PROMOTION",
+    "predicates": [
+      {
+        "feature": "signed_flow_over_event_reserve",
+        "op": ">=",
+        "value": 0.08
+      },
+      {
+        "feature": "event_count",
+        "op": ">=",
+        "value": 5
+      },
+      {
+        "feature": "directional_flow_efficiency",
+        "op": ">=",
+        "value": 0.5
+      }
+    ]
+  },
+  "evaluation_gates": {
+    "screening_run_duration_seconds": 900,
+    "minimum_primary_usable_route_results_for_directional_read": 10,
+    "minimum_primary_usable_route_results_before_replication": 30,
+    "independent_replication_required": true,
+    "no_threshold_retuning_on_screening_or_replication_outcomes": true
+  },
+  "feature_semantics": {
+    "directional_flow_efficiency": "signed_flow_over_event_reserve / gross_turnover_over_event_reserve; bounded [-1,1] when gross turnover is positive",
+    "top_wallet_gross_flow_share_pct": "largest observed wallet gross abs(flow/reserve) share among wallet-identified events inside the frozen 5s window",
+    "wallet_identity_coverage_pct": "percent of frozen-window trade events carrying an observed wallet identity",
+    "transaction_identity_coverage_pct": "percent of frozen-window trade events carrying an observed transaction identity"
+  },
+  "portability_contract": {
+    "selector_consumes_normalized_feature_snapshot": true,
+    "solana_profile_active": true,
+    "robinhood_chain_profile_planned": "eip155:4663",
+    "robinhood_activation_requires_independent_adapter_parity_and_fresh_preregistration": true,
+    "same_thresholds_must_not_be_assumed_transferable_across_chains": true
+  },
+  "scientific_guardrails": {
+    "baseline_launch_burst_selector_unchanged": true,
+    "primary_selector_is_strict_subset_of_frozen_baseline": true,
+    "all_provider_routes_collected_by_frozen_baseline_before_sniper_postprocessing": true,
+    "feature_snapshot_frozen_before_provider_quotes": true,
+    "wallet_feature_repair_changes_enrichment_only_not_baseline_selection": true,
+    "missing_required_feature_is_not_imputed": true,
+    "smart_ladder_remains_exploratory": true,
+    "route_shadow_is_not_landed_fill_or_realized_pnl": true,
+    "official_v4_economic_verdict_unchanged": true
+  },
+  "policy_hash_sha256": "e4b49a7b9cab1720e2f3c302dfdeebed570fed7f44e8e3da4751c77dcd4b5200"
+}
