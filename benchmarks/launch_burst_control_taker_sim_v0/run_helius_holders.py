@@ -11,11 +11,11 @@ from benchmarks.launch_burst_prospective_route_live_v4 import funded_taker_prefl
 MAX_SOL_BALANCE_BATCH = 100
 
 
-def _helius_url() -> str:
-    api_key = os.environ.get("HELIUS_API_KEY", "").strip()
-    if not api_key:
+def _helius_url(api_key: str | None = None) -> str:
+    resolved = (api_key or os.environ.get("HELIUS_API_KEY", "")).strip()
+    if not resolved:
         raise RuntimeError("HELIUS_API_KEY is required for Helius holder discovery")
-    return f"https://mainnet.helius-rpc.com/?api-key={api_key}"
+    return f"https://mainnet.helius-rpc.com/?api-key={resolved}"
 
 
 def _int_amount(value: Any) -> int | None:
@@ -55,9 +55,12 @@ def _batched_sol_balances(
 
 
 def _discover_control_via_helius_holders(
-    *, fixture: dict[str, Any], rpc_url: str
+    *,
+    fixture: dict[str, Any],
+    rpc_url: str,
+    helius_api_key: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    helius_url = _helius_url()
+    helius_url = _helius_url(helius_api_key)
     balance_rpc_url = rpc_url.strip() or helius_url
     mint = str(fixture["input_mint"])
     minimum_usdc = int(fixture["minimum_input_amount_raw"])
