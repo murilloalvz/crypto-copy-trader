@@ -144,7 +144,7 @@ def validate_market_feature_snapshot_v0(snapshot: Mapping[str, Any], *, path: st
     if snapshot.get("stratum") != "pump_launch":
         raise ValueError(f"{path}.stratum must be pump_launch")
     if int(snapshot.get("evidence_window_seconds") or 0) != 5:
-        raise ValueError(f"{path}.evidence_window_seconds must be 5")
+        raise ValueError(f"{path}.evidence_window_seconds must use the frozen 5-second window (value 5)")
     features = snapshot.get("features")
     if not isinstance(features, Mapping):
         raise ValueError(f"{path}.features must be an object")
