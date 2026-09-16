@@ -35,7 +35,7 @@
         "value": 80.0
       },
       {
-        "feature": "unique_wallet_count",
+        "feature": "unique_buy_wallet_count",
         "op": ">=",
         "value": 3
       },
@@ -110,5 +110,5 @@
     "route_shadow_is_not_landed_fill_or_realized_pnl": true,
     "official_v4_economic_verdict_unchanged": true
   },
-  "policy_hash_sha256": "2ca3af2086400453a30386d71e6b8c73f81e05da0d4d65b4fb1b83d37827d72f"
+  "policy_hash_sha256": "60a480a90365eae8abfcb55787345b41573fc1d2632d17c344741e93e36f490a"
 }
