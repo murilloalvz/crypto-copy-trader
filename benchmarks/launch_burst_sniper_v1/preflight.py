@@ -41,7 +41,7 @@ def _probe_ok(probe: dict[str, Any]) -> bool:
     return probe.get("transaction_present") is True and probe.get("error_code") in {None, 0}
 
 
-def run_preflight(
+def prepare_preflight_control(
     *,
     contract_path: Path,
     fixture_path: Path,
@@ -53,7 +53,9 @@ def run_preflight(
     rpc_url: str,
     discover_control: Callable[..., tuple[str, dict[str, Any]]] = _discover_control_via_helius_holders,
     assembly_probe: Callable[..., dict[str, Any]] = ft._probe_assembly,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str | None]:
+    """Return a redacted report plus the exact passing public control for immediate in-process reuse."""
+
     sniper = _screening_preflight(
         sniper_policy_path=sniper_policy_path,
         duration_seconds=duration_seconds,
@@ -101,9 +103,13 @@ def run_preflight(
     config_ok = all(fixture_gates.values()) and all(env_gates.values())
     report["gates"]["frozen_configuration_valid"] = config_ok
     if not config_ok:
-        return report
+        return report, None
 
-    control_taker, control_meta = discover_control(fixture=fixture, rpc_url=rpc_url.strip())
+    control_taker, control_meta = discover_control(
+        fixture=fixture,
+        rpc_url=rpc_url.strip(),
+        helius_api_key=helius_api_key.strip(),
+    )
     report["public_control"] = {**control_meta, "address_redacted": True}
     report["gates"]["public_control_discovered"] = True
 
@@ -131,6 +137,35 @@ def run_preflight(
     report["gates"]["all_read_only_support_checks_pass"] = all(report["gates"].values())
     if report["gates"]["all_read_only_support_checks_pass"]:
         report["classification"] = PASS
+        return report, control_taker
+    return report, None
+
+
+def run_preflight(
+    *,
+    contract_path: Path,
+    fixture_path: Path,
+    smart_policy_path: Path,
+    sniper_policy_path: Path,
+    duration_seconds: int,
+    helius_api_key: str,
+    jupiter_api_key: str,
+    rpc_url: str,
+    discover_control: Callable[..., tuple[str, dict[str, Any]]] = _discover_control_via_helius_holders,
+    assembly_probe: Callable[..., dict[str, Any]] = ft._probe_assembly,
+) -> dict[str, Any]:
+    report, _ = prepare_preflight_control(
+        contract_path=contract_path,
+        fixture_path=fixture_path,
+        smart_policy_path=smart_policy_path,
+        sniper_policy_path=sniper_policy_path,
+        duration_seconds=duration_seconds,
+        helius_api_key=helius_api_key,
+        jupiter_api_key=jupiter_api_key,
+        rpc_url=rpc_url,
+        discover_control=discover_control,
+        assembly_probe=assembly_probe,
+    )
     return report
 
 
