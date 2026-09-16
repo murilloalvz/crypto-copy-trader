@@ -6,9 +6,11 @@ on:
       - main
       - feat/exit-engine-v1
       - 'fix/**'
+      - 'research/**'
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   tests:
