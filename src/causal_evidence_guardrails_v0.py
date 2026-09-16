@@ -116,7 +116,7 @@ def scan_for_forbidden_evidence_fields_v0(
 ) -> None:
     extra = _normalized_extra(extra_forbidden)
     exact = _FORBIDDEN_NORMALIZED_KEYS | set(extra)
-    fragments = list(_FORBIDDEN_NORMALIZED_FRAGMENTS)
+    fragments = list(_FORBIDDEN_NORMALIZED_FRAGMENTS) + list(extra)
     if reject_market_provider_fields:
         exact |= _MARKET_PROVIDER_NORMALIZED_KEYS
         fragments.extend(_MARKET_PROVIDER_NORMALIZED_FRAGMENTS)
