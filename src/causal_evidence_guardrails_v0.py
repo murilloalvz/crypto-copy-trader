@@ -6,9 +6,7 @@ from typing import Any, Iterable, Mapping
 
 VERSION = "causal_evidence_guardrails_v0"
 
-# Keys carrying economic outcomes, execution results, or post-decision information
-# are not admissible as causal selection evidence. Matching is done on normalized
-# key/path components, not values, so legitimate source labels are not censored.
+# Exact normalized field names that are not admissible as causal evidence.
 _FORBIDDEN_NORMALIZED_KEYS = {
     "pnl",
     "pnlusd",
@@ -48,8 +46,26 @@ _FORBIDDEN_NORMALIZED_KEYS = {
     "economicresults",
 }
 
-# These fields are provider/execution-side rather than frozen market-state
-# quantities and are additionally forbidden inside Market-First feature snapshots.
+# Compound names such as post_event_return_60s must also fail. These fragments
+# are intentionally limited to concepts that are unambiguously post-decision or
+# economic-result-bearing in this research schema.
+_FORBIDDEN_NORMALIZED_FRAGMENTS = (
+    "pnl",
+    "return",
+    "outcome",
+    "hindsight",
+    "postevent",
+    "priceimpact",
+    "slippage",
+    "landedfill",
+    "executionresult",
+    "economicresult",
+    "realizedprofit",
+    "realizedloss",
+)
+
+# Provider/execution-side fields are additionally forbidden inside Market-First
+# feature snapshots. Values are not inspected; only field names/paths are gated.
 _MARKET_PROVIDER_NORMALIZED_KEYS = {
     "provider",
     "providerid",
@@ -58,19 +74,27 @@ _MARKET_PROVIDER_NORMALIZED_KEYS = {
     "quotes",
     "route",
     "routes",
-    "priceimpact",
-    "priceimpactpct",
-    "priceimpactpctpoints",
-    "providerpriceimpactpctpoints",
-    "slippage",
-    "slippagebps",
     "entry",
     "entryprice",
     "entryquote",
     "exit",
     "exitprice",
     "exitquote",
+    "fill",
+    "fills",
+    "fillstatus",
 }
+
+_MARKET_PROVIDER_NORMALIZED_FRAGMENTS = (
+    "provider",
+    "quote",
+    "route",
+    "priceimpact",
+    "slippage",
+    "entryprice",
+    "exitprice",
+    "fillstatus",
+)
 
 _SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+")
 
@@ -79,8 +103,8 @@ def normalize_field_name_v0(name: Any) -> str:
     return "".join(part.lower() for part in _SPLIT_RE.split(str(name)) if part)
 
 
-def _forbidden_names(extra_forbidden: Iterable[str] = ()) -> set[str]:
-    return _FORBIDDEN_NORMALIZED_KEYS | {normalize_field_name_v0(name) for name in extra_forbidden}
+def _normalized_extra(extra_forbidden: Iterable[str]) -> tuple[str, ...]:
+    return tuple(normalize_field_name_v0(name) for name in extra_forbidden if str(name).strip())
 
 
 def scan_for_forbidden_evidence_fields_v0(
@@ -88,15 +112,21 @@ def scan_for_forbidden_evidence_fields_v0(
     *,
     path: str = "root",
     extra_forbidden: Iterable[str] = (),
+    reject_market_provider_fields: bool = False,
 ) -> None:
-    forbidden = _forbidden_names(extra_forbidden)
+    extra = _normalized_extra(extra_forbidden)
+    exact = _FORBIDDEN_NORMALIZED_KEYS | set(extra)
+    fragments = list(_FORBIDDEN_NORMALIZED_FRAGMENTS)
+    if reject_market_provider_fields:
+        exact |= _MARKET_PROVIDER_NORMALIZED_KEYS
+        fragments.extend(_MARKET_PROVIDER_NORMALIZED_FRAGMENTS)
 
     def visit(node: Any, node_path: str) -> None:
         if isinstance(node, Mapping):
             for raw_key, child in node.items():
                 key = str(raw_key)
                 normalized = normalize_field_name_v0(key)
-                if normalized in forbidden:
+                if normalized in exact or any(fragment in normalized for fragment in fragments):
                     raise ValueError(f"future/outcome-bearing field is forbidden in causal evidence: {node_path}.{key}")
                 visit(child, f"{node_path}.{key}")
         elif isinstance(node, (list, tuple)):
@@ -121,5 +151,5 @@ def validate_market_feature_snapshot_v0(snapshot: Mapping[str, Any], *, path: st
     scan_for_forbidden_evidence_fields_v0(
         features,
         path=f"{path}.features",
-        extra_forbidden=_MARKET_PROVIDER_NORMALIZED_KEYS,
+        reject_market_provider_fields=True,
     )
