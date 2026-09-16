@@ -80,6 +80,12 @@ This is no-capital route-shadow research. It does not claim landed fills, realiz
 
 The selector consumes normalized feature snapshots so the architecture can later be reused on Robinhood Chain/Pons. Solana thresholds are not automatically portable. Robinhood activation requires equivalent causal flow/reserve and acceleration semantics plus a fresh chain-specific preregistration.
 
+## Frozen identity
+
+- policy hash: `72f55dde194ae890f0724314d3ba361180a8fa24bc887a18379920ad5ab39c3e`
+- frozen screening duration: 900 seconds
+- primary acceleration threshold: `>= 2.0x`
+
 ## Frozen run command
 
 ```powershell
