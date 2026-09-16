@@ -101,6 +101,9 @@ def social_event_evidence_from_mapping_v0(row: Mapping[str, Any]) -> SocialEvent
     token_mint = _optional_text(row.get("token_mint"), "token_mint")
     entity_keys = _entity_keys(row.get("entity_keys"))
 
+    if published_at_ns is not None and published_at_ns > observed_wall_ns:
+        raise ValueError("published_at_ns cannot be later than observed_wall_ns")
+
     content_hash = row.get("content_fingerprint_sha256")
     if content_hash is not None:
         content_hash = _required_text(content_hash, "content_fingerprint_sha256").lower()
@@ -117,11 +120,11 @@ def social_event_evidence_from_mapping_v0(row: Mapping[str, Any]) -> SocialEvent
         raise ValueError("evidence_key does not match deterministic social/event identity")
 
     if token_mint is not None and token_mapping_observed_wall_ns is None:
-        # Direct token-specific sources may know the token at ingestion time. In that case
-        # the source observation itself is the causal token-mapping clock.
+        # Direct token-specific sources know the token no later than ingress.
+        # This fallback never backdates availability before source observation.
         token_mapping_observed_wall_ns = observed_wall_ns
 
-    return SocialEventEvidenceV0(
+    item = SocialEventEvidenceV0(
         evidence_key=expected_key,
         source_kind=source_kind,
         source_key=source_key,
@@ -135,6 +138,14 @@ def social_event_evidence_from_mapping_v0(row: Mapping[str, Any]) -> SocialEvent
         content_fingerprint_sha256=content_hash,
         entity_keys=entity_keys,
     )
+
+    supplied_causal = row.get("causal_available_wall_ns")
+    if supplied_causal is not None:
+        supplied_causal = _positive_int(supplied_causal, "causal_available_wall_ns")
+        if supplied_causal != item.causal_available_wall_ns:
+            raise ValueError("causal_available_wall_ns does not match derived observation/mapping clocks")
+
+    return item
 
 
 def social_event_evidence_to_dict_v0(item: SocialEventEvidenceV0) -> dict[str, Any]:
