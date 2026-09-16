@@ -22,14 +22,12 @@ from benchmarks.launch_burst_control_taker_sim_v0.run_v4_smart_ladder_25 import 
 )
 from benchmarks.launch_burst_prospective_route_live_v3 import live as v3
 from benchmarks.launch_burst_prospective_route_live_v4 import live as v4
-from benchmarks.launch_burst_sniper_v1.compare import (
-    PASS_CLASSIFICATION as PASS_COMPARISON,
-    run_sniper_comparison_v1,
-)
+from benchmarks.launch_burst_sniper_v1.compare import PASS_CLASSIFICATION as PASS_COMPARISON
 from benchmarks.launch_burst_sniper_v1.runtime_enrichment import (
     ENRICHMENT_VERSION,
     patched_sniper_feature_enrichment_v1,
 )
+from benchmarks.launch_burst_sniper_v1.strict_compare import run_strict_sniper_comparison_v1
 from src.launch_burst_sniper_v1 import load_sniper_policy_v1
 
 
@@ -86,6 +84,7 @@ def _compact(report: dict) -> dict:
             "counterfactual_skip": smart.get("counterfactual_skip"),
         } if smart else None,
         "screening": sniper.get("screening"),
+        "source_integrity": sniper.get("source_integrity"),
         "primary_rejection_reasons": ((sniper.get("primary_selector_diagnostics") or {}).get("reason_counts")),
         "preflight": report.get("sniper_screening_preflight"),
         "artifacts": report.get("artifacts"),
@@ -163,7 +162,7 @@ def main() -> int:
         run_dir = Path(str((base.get("artifacts") or {}).get("simulation_report") or "")).resolve().parent
         sniper_result_path = run_dir / "sniper-comparison-v1.json"
         wrapper_report_path = run_dir / "simulation-report-v4-sniper-v1.json"
-        comparison = run_sniper_comparison_v1(
+        comparison = run_strict_sniper_comparison_v1(
             contract_path=args.contract,
             policy_path=args.sniper_policy,
             route_input_path=route_input_path,
@@ -220,6 +219,7 @@ def main() -> int:
                 "sniper_policy_preregistered_before_this_run": True,
                 "sniper_policy_validated_before_acquisition": True,
                 "sniper_screening_duration_frozen_before_acquisition": True,
+                "sniper_source_artifact_exact_parity_required": True,
                 "sniper_changes_frozen_baseline_provider_dispatch": False,
                 "wallet_field_enrichment_only": True,
                 "official_v4_economic_verdict_changed": False,
