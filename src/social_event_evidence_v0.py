@@ -101,8 +101,10 @@ def social_event_evidence_from_mapping_v0(row: Mapping[str, Any]) -> SocialEvent
     token_mint = _optional_text(row.get("token_mint"), "token_mint")
     entity_keys = _entity_keys(row.get("entity_keys"))
 
-    if published_at_ns is not None and published_at_ns > observed_wall_ns:
-        raise ValueError("published_at_ns cannot be later than observed_wall_ns")
+    # published_at_ns is source-supplied metadata only. It may disagree with the
+    # collector wall clock because of source clock skew, delayed edits, or bad
+    # upstream metadata. Causal inclusion is governed exclusively by actual
+    # observation/mapping clocks, never by published_at_ns.
 
     content_hash = row.get("content_fingerprint_sha256")
     if content_hash is not None:
