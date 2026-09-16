@@ -57,18 +57,22 @@ class OpportunityIntelligenceIntegrationV0Tests(unittest.TestCase):
         }
         validate_market_feature_snapshot_v0(snapshot)
 
-    def test_social_published_clock_cannot_be_after_observation(self):
+    def test_social_published_clock_is_metadata_not_causal_availability(self):
         row = {
             "source_kind": "social_post",
             "source_key": "source:alice",
             "source_event_id": "post-1",
             "event_kind": "mention",
             "observed_wall_ns": 1_000,
-            "published_at_ns": 1_001,
+            "published_at_ns": 9_999,
             "token_mint": "TOKEN",
+            "token_mapping_observed_wall_ns": 1_200,
         }
-        with self.assertRaisesRegex(ValueError, "published_at_ns"):
-            social_event_evidence_from_mapping_v0(row)
+        item = social_event_evidence_from_mapping_v0(row)
+        self.assertEqual(item.published_at_ns, 9_999)
+        self.assertEqual(item.observed_wall_ns, 1_000)
+        self.assertEqual(item.token_mapping_observed_wall_ns, 1_200)
+        self.assertEqual(item.causal_available_wall_ns, 1_200)
 
     def test_social_supplied_causal_clock_must_match_derived_clock(self):
         row = {
