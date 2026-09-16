@@ -5,9 +5,14 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.causal_evidence_guardrails_v0 import scan_for_forbidden_evidence_fields_v0
+
 
 VERSION = "convergence_evidence_join_v0"
 PASS = "PASS_CONVERGENCE_EVIDENCE_JOIN_V0"
+
+# Kept for compatibility/documentation; enforcement is recursive and broader via
+# causal_evidence_guardrails_v0 below.
 DISALLOWED_OUTCOME_KEYS = {
     "pnl",
     "pnl_usd",
@@ -21,6 +26,23 @@ DISALLOWED_OUTCOME_KEYS = {
     "target",
 }
 
+_CONVERGENCE_EXTRA_FORBIDDEN = (
+    "provider",
+    "provider_id",
+    "quote",
+    "quotes",
+    "route",
+    "routes",
+    "price_impact",
+    "price_impact_pct",
+    "slippage",
+    "entry",
+    "entry_quote",
+    "exit",
+    "exit_quote",
+    "execution",
+)
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -30,15 +52,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _scan_for_outcome_keys(value: Any, *, path: str = "root") -> None:
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            name = str(key).strip().lower()
-            if name in DISALLOWED_OUTCOME_KEYS:
-                raise ValueError(f"outcome-bearing key is forbidden in convergence evidence: {path}.{key}")
-            _scan_for_outcome_keys(child, path=f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _scan_for_outcome_keys(child, path=f"{path}[{index}]")
+    scan_for_forbidden_evidence_fields_v0(
+        value,
+        path=path,
+        extra_forbidden=_CONVERGENCE_EXTRA_FORBIDDEN,
+    )
 
 
 def _required_text(value: Any, name: str) -> str:
@@ -81,11 +99,16 @@ def validate_social_event_snapshot_v0(payload: Mapping[str, Any]) -> dict[str, A
     token_mint = _required_text(payload.get("token_mint"), "social.token_mint")
     anchor = _required_positive_int(payload.get("market_anchor_wall_ns"), "social.market_anchor_wall_ns")
     cutoff = _required_positive_int(payload.get("decision_cutoff_wall_ns"), "social.decision_cutoff_wall_ns")
+    if cutoff < anchor:
+        raise ValueError("social decision cutoff must be >= market anchor")
     if payload.get("causal_time_field") != "causal_available_wall_ns":
         raise ValueError("Social/Event snapshot does not declare the expected causal clock")
     features = payload.get("features")
     if not isinstance(features, Mapping):
         raise ValueError("social.features must be an object")
+    evidence_keys = payload.get("evidence_keys") or []
+    if not isinstance(evidence_keys, list) or any(not isinstance(item, str) or not item for item in evidence_keys):
+        raise ValueError("social.evidence_keys must be a list of non-empty strings")
     return {
         "type": "social_event_snapshot",
         "version": "social_event_snapshot_v0",
@@ -93,7 +116,7 @@ def validate_social_event_snapshot_v0(payload: Mapping[str, Any]) -> dict[str, A
         "market_anchor_wall_ns": anchor,
         "decision_cutoff_wall_ns": cutoff,
         "features": dict(features),
-        "evidence_keys": list(payload.get("evidence_keys") or []),
+        "evidence_keys": list(evidence_keys),
     }
 
 
@@ -123,6 +146,7 @@ def join_market_social_evidence_v0(
         "social_event_first": social,
         "guardrails": {
             "outcome_blind": True,
+            "recursive_future_outcome_and_execution_field_scan": True,
             "market_and_social_tracks_remain_independently_testable": True,
             "convergence_edge_not_inferred": True,
             "no_selector": True,
