@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,15 @@ from typing import Any
 from benchmarks.launch_burst_opportunity_lab_v0.analyze import (
     DEFAULT_CONTRACT,
     DEFAULT_SNIPER_POLICY,
-    analyze_run,
-    run_lab,
 )
+from benchmarks.launch_burst_opportunity_lab_v0.guarded import analyze_run, run_lab
+
+
+def _capture_sha256(run_dir: Path) -> str:
+    route_input = Path(run_dir) / "route-input-v2.json"
+    if not route_input.is_file():
+        raise ValueError(f"missing route input: {route_input}")
+    return hashlib.sha256(route_input.read_bytes()).hexdigest()
 
 
 def discover_compatible_runs(
@@ -22,9 +29,18 @@ def discover_compatible_runs(
     root = Path(artifacts_root)
     if not root.is_dir():
         raise ValueError(f"artifacts root not found: {root}")
-    candidates = sorted({path.parent for path in root.rglob("route-input-v2.json")})
+
+    candidates = sorted(
+        {path.parent for path in root.rglob("route-input-v2.json")},
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     compatible: list[Path] = []
     rejected: list[dict[str, str]] = []
+    duplicates: list[dict[str, str]] = []
+    capture_owner: dict[str, Path] = {}
+    compatible_artifact_count = 0
+
     for run_dir in candidates:
         try:
             analyze_run(
@@ -32,21 +48,46 @@ def discover_compatible_runs(
                 contract_path=contract_path,
                 sniper_policy_path=sniper_policy_path,
             )
+            compatible_artifact_count += 1
+            capture_sha = _capture_sha256(run_dir)
+            canonical = capture_owner.get(capture_sha)
+            if canonical is not None:
+                duplicates.append(
+                    {
+                        "run_dir": str(run_dir.resolve()),
+                        "canonical_run_dir": str(canonical.resolve()),
+                        "causal_capture_sha256": capture_sha,
+                        "reason": "DUPLICATE_CAUSAL_CAPTURE_NOT_INDEPENDENT_REPLICATION",
+                    }
+                )
+                continue
+            capture_owner[capture_sha] = run_dir
             compatible.append(run_dir)
         except Exception as exc:
             rejected.append({"run_dir": str(run_dir.resolve()), "reason": f"{type(exc).__name__}:{exc}"})
-    compatible.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+
     return {
         "artifacts_root": str(root.resolve()),
         "candidate_count": len(candidates),
+        "compatible_artifact_count_before_capture_dedupe": compatible_artifact_count,
         "compatible_count": len(compatible),
+        "independent_causal_capture_count": len(compatible),
         "compatible_run_dirs": [str(path.resolve()) for path in compatible],
+        "causal_capture_sha256_by_run": {
+            str(path.resolve()): capture_sha for capture_sha, path in capture_owner.items()
+        },
+        "duplicate_causal_captures": duplicates,
         "rejected": rejected,
+        "guardrails": {
+            "dedupe_identity": "sha256(route-input-v2.json bytes)",
+            "derived_replay_or_copied_artifact_not_counted_as_independent_replication": True,
+            "market_feature_leakage_guard_required": True,
+        },
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Discover compatible local Launch Burst runs and analyze them offline")
+    parser = argparse.ArgumentParser(description="Discover independent compatible Launch Burst captures and analyze them offline")
     parser.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--sniper-policy", type=Path, default=DEFAULT_SNIPER_POLICY)
@@ -66,7 +107,7 @@ def main() -> int:
         limit = max(1, int(args.limit))
         selected = [Path(path) for path in discovery["compatible_run_dirs"][:limit]]
         if not selected:
-            raise ValueError("no compatible run directories discovered")
+            raise ValueError("no compatible independent run directories discovered")
         report = run_lab(
             run_dirs=selected,
             contract_path=args.contract,
