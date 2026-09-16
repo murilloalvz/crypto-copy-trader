@@ -45,11 +45,12 @@
   "feature_semantics": {
     "gross_flow_acceleration_second_half_over_first_half": "Within the frozen 5s evidence window, gross abs(flow/reserve) observed in [2.5s,5.0s] divided by gross abs(flow/reserve) observed in [0,2.5s). Same-stream causal replacement for the historical Wave 5m-vs-1h volume acceleration concept; metric parity is explicitly NOT claimed.",
     "event_rate_acceleration_second_half_over_first_half": "Event count in [2.5s,5.0s] divided by event count in [0,2.5s); equal-duration halves make the count ratio an event-rate ratio.",
-    "buy_flow_acceleration_second_half_over_first_half": "Positive buy flow/reserve in [2.5s,5.0s] divided by positive buy flow/reserve in [0,2.5s).",
+    "buy_flow_acceleration_second_half_over_first_half": "Positive buy flow/reserve in [2.5s,5.0s] divided by positive buy flow/reserve observed in [0,2.5s).",
     "late_half_directional_flow_efficiency": "signed flow/reserve divided by gross flow/reserve using only [2.5s,5.0s]."
   },
   "historical_evidence_provenance": {
     "source_strategy": "wave_v2_momentum",
+    "historical_evidence_state": "MIXED_REPLICATION",
     "historical_primary_horizon_seconds": 300,
     "historical_sample_completed_5m": 64,
     "historical_5m_mean_return_pct": 5.18,
@@ -61,8 +62,16 @@
     "historical_volume_acceleration_ge_2x_mean_return_pct_5m": 5.63,
     "historical_volume_acceleration_ge_2x_win_rate_pct_5m": 84.5,
     "historical_volume_acceleration_ge_2x_profit_factor_5m": 7.75,
-    "historical_data_quality_warning": "35/65 historical snapshots had inconsistent 5m/1h/24h cumulative volume windows. Therefore only the acceleration concept and pre-existing 2x threshold are transferred; the old provider metric is not reused.",
-    "threshold_transfer_note": "2.0x is preregistered from the historical Wave cohort before this fresh screening, but the local 2.5s-vs-2.5s metric is a new causal analogue and must earn its own prospective evidence."
+    "later_monitor_volume_acceleration_ge_2x_n_5m": 45,
+    "later_monitor_volume_acceleration_ge_2x_mean_return_pct_5m": 0.10,
+    "later_monitor_volume_acceleration_ge_2x_win_rate_pct_5m": 35.6,
+    "later_monitor_volume_acceleration_ge_2x_profit_factor_5m": 1.04,
+    "later_monitor_volume_acceleration_ge_2x_n_15m": 41,
+    "later_monitor_volume_acceleration_ge_2x_mean_return_pct_15m": 2.35,
+    "later_monitor_volume_acceleration_ge_2x_win_rate_pct_15m": 46.3,
+    "later_monitor_volume_acceleration_ge_2x_profit_factor_15m": 1.48,
+    "historical_data_quality_warning": "35/65 initial historical snapshots had inconsistent 5m/1h/24h cumulative volume windows, and a later monitor did not reproduce the initial 2x acceleration effect at the same magnitude. Therefore momentum is treated as mixed historical evidence: only the acceleration concept and pre-existing 2x threshold are transferred for fresh causal validation; the old provider metric is not reused.",
+    "threshold_transfer_note": "2.0x is preregistered from the historical Wave cohorts before this fresh screening, but the local 2.5s-vs-2.5s metric is a new causal analogue and must earn its own prospective evidence."
   },
   "scientific_guardrails": {
     "frozen_launch_burst_baseline_unchanged": true,
@@ -71,6 +80,7 @@
     "feature_snapshot_frozen_before_provider_quotes": true,
     "sniper_v1_not_promoted_into_primary_after_negative_screening": true,
     "wallet_and_concentration_features_remain_diagnostic": true,
+    "historical_momentum_evidence_is_mixed_not_proven": true,
     "no_same_sample_threshold_selection": true,
     "fixed_60s_primary_for_current_route_contract": true,
     "300s_horizon_exploratory_for_historical_alignment": true,
@@ -83,5 +93,5 @@
     "same_thresholds_must_not_be_assumed_transferable_across_chains": true,
     "robinhood_activation_requires_equivalent_flow_reserve_and_acceleration_semantics_plus_fresh_preregistration": true
   },
-  "policy_hash_sha256": "78eb1fdf44ec74821a4c7c61af3a9f4b429e46c7c44c18c2ffa71368d3cb0047"
+  "policy_hash_sha256": "01b0a9db78cfc747a28c5a70fe2791992582913792ad8ae7a5c3c167964a81c8"
 }
