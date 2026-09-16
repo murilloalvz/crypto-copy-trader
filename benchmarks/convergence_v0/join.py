@@ -43,6 +43,16 @@ _CONVERGENCE_EXTRA_FORBIDDEN = (
     "execution",
 )
 
+# Audit/provenance metadata may contain words such as "outcome" in assertions
+# like no_market_outcome_used. Those keys are not model features and are never
+# copied into either evidence track by this join.
+_NON_EVIDENCE_TOP_LEVEL_KEYS = {
+    "classification",
+    "guardrails",
+    "type",
+    "version",
+}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -52,11 +62,23 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _scan_for_outcome_keys(value: Any, *, path: str = "root") -> None:
-    scan_for_forbidden_evidence_fields_v0(
-        value,
-        path=path,
-        extra_forbidden=_CONVERGENCE_EXTRA_FORBIDDEN,
-    )
+    candidate = value
+    if isinstance(value, Mapping):
+        candidate = {
+            key: child
+            for key, child in value.items()
+            if str(key) not in _NON_EVIDENCE_TOP_LEVEL_KEYS
+        }
+    try:
+        scan_for_forbidden_evidence_fields_v0(
+            candidate,
+            path=path,
+            extra_forbidden=_CONVERGENCE_EXTRA_FORBIDDEN,
+        )
+    except ValueError as exc:
+        # Preserve the convergence-v0 public error contract while retaining the
+        # precise recursive guardrail detail for debugging/auditability.
+        raise ValueError(f"outcome-bearing key forbidden in convergence evidence: {exc}") from exc
 
 
 def _required_text(value: Any, name: str) -> str:
@@ -166,8 +188,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = join_market_social_evidence_v0(
-            market_snapshot=_read_json(args.market),
-            social_snapshot=_read_json(args.social),
+            market_snapshot=_read_json(args.market), social_snapshot=_read_json(args.social)
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
