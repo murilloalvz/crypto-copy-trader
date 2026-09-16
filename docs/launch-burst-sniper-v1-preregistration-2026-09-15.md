@@ -4,16 +4,16 @@ Date: 2026-09-15
 Status: PREREGISTERED / NO OUTCOME-BEARING RUN YET
 Active profile: Solana mainnet / Pump.fun
 Policy: `SNIPER-HIGH-PRECISION-V1`
-Policy hash: `017873aad04d6d1bede1ef4e0df86c82ccd3dc4634079c8ea2c4543bc46ba8cd`
+Policy hash: `60a480a90365eae8abfcb55787345b41573fc1d2632d17c344741e93e36f490a`
 Frozen route contract hash: `3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d`
 
 ## Objective
 
 Test whether a stricter, causal, high-precision subset of the already-frozen Launch Burst selector improves route-shadow economics by rejecting bursts that look too sparse, two-way/churn-heavy, concentrated in one wallet, or insufficiently identified.
 
-This is a selector experiment, not a change to the Launch Burst detector or V4 route-paper contract.
+This is a separate selector experiment, not a mutation of the frozen Launch Burst V4 economic hypothesis or route-paper contract. Official V4 remains frozen/inconclusive pending its funded controlled taker.
 
-The frozen baseline remains:
+The inherited baseline remains:
 
 - `pump_launch`;
 - 5 second evidence window;
@@ -21,7 +21,7 @@ The frozen baseline remains:
 - +2 second inherited entry latency;
 - US$25 notional;
 - frozen route costs/price-impact contract;
-- fixed +60 second exit as the primary economic benchmark.
+- fixed +60 second exit as the primary benchmark.
 
 SMART-LADDER-25 remains exploratory exit evidence only.
 
@@ -31,7 +31,7 @@ The frozen baseline intentionally used one feature. That makes it scientifically
 
 The Sniper V1 hypothesis is narrower:
 
-> among launches that already satisfy the frozen `>=0.08` flow rule, bursts with enough early event density, strongly directional flow, broad wallet participation, low single-wallet flow concentration, and adequate identity coverage may form a higher-quality subset.
+> among launches that already satisfy the frozen `>=0.08` flow rule, bursts with enough early event density, strongly directional flow, broad buy-side participation, low worst-case single-wallet flow concentration, and adequate identity coverage may form a higher-quality subset.
 
 The experiment prioritizes precision over recall. Fewer selections are acceptable. A zero/small sample is inconclusive; it is not permission to relax thresholds after seeing outcomes.
 
@@ -49,7 +49,7 @@ Guardrails:
 - no historical wallet identity is backfilled;
 - no future event is used;
 - the frozen baseline selector is unchanged;
-- enrichment is only used by the preregistered Sniper post-processing layer;
+- enrichment is used only by this separately preregistered Sniper experiment;
 - the snapshot remains frozen before provider quotes.
 
 ## Primary selector
@@ -61,16 +61,17 @@ Every predicate below must pass inside the frozen 5 second snapshot:
 3. `directional_flow_efficiency >= 0.50`
 4. `wallet_identity_coverage_pct >= 80%`
 5. `wallet_gross_flow_coverage_pct >= 80%`
-6. `unique_wallet_count >= 3`
-7. `top_wallet_gross_flow_share_pct <= 60%`
+6. `unique_buy_wallet_count >= 3`
+7. `top_wallet_gross_flow_share_worst_case_pct <= 60%`
 8. `transaction_identity_coverage_pct >= 80%`
 9. `unique_transaction_count >= 3`
 
 Definitions:
 
-- `directional_flow_efficiency = signed_flow_over_event_reserve / gross_turnover_over_event_reserve`; when defined it is bounded to the natural signed/gross range.
+- `directional_flow_efficiency = signed_flow_over_event_reserve / gross_turnover_over_event_reserve`; when defined it is bounded by the natural signed/gross range. High positive values prefer one-way demand over large two-way churn.
 - `wallet_gross_flow_coverage_pct` measures how much frozen-window gross `abs(flow/reserve)` belongs to wallet-identified events. Event-count coverage alone is insufficient because unidentified events could contain most of the flow.
-- `top_wallet_gross_flow_share_pct` measures the largest wallet's share of identified gross `abs(flow/reserve)` in the frozen window.
+- `unique_buy_wallet_count` measures buy-side breadth directly; generic participant count is not used as a substitute because sellers must not make demand look broader.
+- `top_wallet_gross_flow_share_worst_case_pct` is conservative under partial identity. All unidentified gross flow is pessimistically assigned to the current largest identified wallet before applying the 60% ceiling. Missing identity therefore cannot make participation look more distributed.
 
 Missing required data is `INSUFFICIENT_EVIDENCE`, never zero/imputed evidence.
 
@@ -91,7 +92,7 @@ No economic promotion may be based on the diagnostic selector.
 
 ## Prospective comparison design
 
-One live acquisition collects provider evidence exactly as the frozen baseline does.
+One live acquisition collects provider evidence exactly as the inherited frozen baseline does.
 
 Sniper V1 does **not** suppress provider calls during the run. Instead:
 
@@ -153,7 +154,7 @@ Must retain the existing V4 acquisition/decoder/watermark/provider accounting ga
 PASS means:
 
 - policy hash validates;
-- frozen baseline universe is preserved;
+- inherited baseline universe is preserved;
 - Sniper is a strict subset of the baseline;
 - snapshots were frozen before provider quotes;
 - missing features stay missing;
