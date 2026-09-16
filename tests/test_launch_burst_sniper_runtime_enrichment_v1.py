@@ -12,7 +12,7 @@ from benchmarks.launch_burst_shadow_v0.run import AdaptedEnvelope
 from src.carbon_matched_unit_adapter import ADAPTED
 
 
-def _row(*, event_key: str, side: str, amount: int, wallet: str, tx: str, wall_ns: int):
+def _row(*, event_key: str, side: str, amount: int, wallet: str | None, tx: str, wall_ns: int):
     return AdaptedEnvelope(
         token_mint="Mint111",
         venue="pump",
@@ -71,10 +71,24 @@ class LaunchBurstSniperRuntimeEnrichmentV1Tests(unittest.TestCase):
         self.assertAlmostEqual(features["repeat_wallet_event_share_pct"], 40.0)
         self.assertAlmostEqual(features["top_wallet_event_share_pct"], 40.0)
         self.assertAlmostEqual(features["top_wallet_gross_flow_share_pct"], 40.0)
+        self.assertAlmostEqual(features["top_wallet_gross_flow_share_worst_case_pct"], 40.0)
         self.assertAlmostEqual(features["wallet_gross_flow_coverage_pct"], 100.0)
         self.assertAlmostEqual(features["directional_flow_efficiency"], 1.0)
         self.assertEqual(features["unique_transaction_count"], 5)
         self.assertAlmostEqual(features["transaction_identity_coverage_pct"], 100.0)
+
+    def test_worst_case_concentration_assigns_unidentified_flow_to_top_wallet(self):
+        rows = [
+            _row(event_key="e1", side="buy", amount=40, wallet="A", tx="t1", wall_ns=1_100_000_000),
+            _row(event_key="e2", side="buy", amount=20, wallet="B", tx="t2", wall_ns=1_200_000_000),
+            _row(event_key="e3", side="buy", amount=20, wallet="C", tx="t3", wall_ns=1_300_000_000),
+            _row(event_key="e4", side="buy", amount=20, wallet=None, tx="t4", wall_ns=1_400_000_000),
+        ]
+        features = feature_snapshot_with_sniper_v1(rows, anchor_wall_ns=1_000_000_000)
+        self.assertAlmostEqual(features["wallet_identity_coverage_pct"], 75.0)
+        self.assertAlmostEqual(features["wallet_gross_flow_coverage_pct"], 80.0)
+        self.assertAlmostEqual(features["top_wallet_gross_flow_share_pct"], 50.0)
+        self.assertAlmostEqual(features["top_wallet_gross_flow_share_worst_case_pct"], 60.0)
 
     def test_directional_efficiency_penalizes_two_way_churn(self):
         rows = [
