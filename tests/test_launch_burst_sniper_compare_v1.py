@@ -26,6 +26,7 @@ def _snapshot(*, flow: float, top_wallet: float = 40.0) -> dict:
             "event_count": 7,
             "directional_flow_efficiency": 0.70,
             "wallet_identity_coverage_pct": 100.0,
+            "wallet_gross_flow_coverage_pct": 100.0,
             "unique_wallet_count": 4,
             "top_wallet_gross_flow_share_pct": top_wallet,
             "transaction_identity_coverage_pct": 100.0,
