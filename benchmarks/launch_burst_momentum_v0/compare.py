@@ -38,6 +38,22 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     temp.replace(path)
 
 
+def _indexed_rows(rows: object, *, label: str) -> dict[str, dict[str, Any]]:
+    if not isinstance(rows, list):
+        raise ValueError(f"{label} must be a list")
+    indexed: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"{label}[{index}] must be an object")
+        key = str(row.get("episode_key") or "").strip()
+        if not key:
+            raise ValueError(f"{label}[{index}] has no episode_key")
+        if key in indexed:
+            raise ValueError(f"duplicate episode_key in {label}: {key}")
+        indexed[key] = row
+    return indexed
+
+
 def _selector_rows(episodes: list[dict[str, Any]], policy: Mapping[str, Any], selector_name: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for episode in episodes:
@@ -78,12 +94,46 @@ def _reason_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _validate_market_paths_integrity(
+    *,
+    market_paths: dict[str, Any],
+    baseline_keys: set[str],
+    input_by_key: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    path_by_key = _indexed_rows(market_paths.get("episodes"), label="market_paths.episodes")
+    path_keys = set(path_by_key)
+    if path_keys != baseline_keys:
+        missing = sorted(baseline_keys - path_keys)
+        extra = sorted(path_keys - baseline_keys)
+        raise ValueError(
+            "market paths do not exactly match frozen admitted baseline: "
+            f"missing={missing[:5]} extra={extra[:5]}"
+        )
+    token_mismatches: list[str] = []
+    for key in sorted(path_keys):
+        expected = str((input_by_key.get(key) or {}).get("token_mint") or "").strip()
+        observed = str(path_by_key[key].get("token_mint") or "").strip()
+        if not expected or observed != expected:
+            token_mismatches.append(key)
+    if token_mismatches:
+        raise ValueError(
+            "market path token mint mismatch for episode keys: "
+            + ",".join(token_mismatches[:5])
+        )
+    return {
+        "market_path_episode_count": len(path_by_key),
+        "market_path_exact_baseline_key_parity": True,
+        "market_path_exact_token_mint_parity": True,
+        "market_path_unique_episode_keys": True,
+    }
+
+
 def _horizon_300_rows(
     *, route_result: dict[str, Any], market_paths: dict[str, Any], contract: dict[str, Any]
 ) -> list[dict[str, Any]]:
     notional = float(contract["position"]["notional_usd"])
-    failure_return = -100.0
-    path_by_key = {str(row.get("episode_key") or ""): row for row in market_paths.get("episodes") or []}
+    failure_return = float(contract["failure_policy"]["unexitable_return_pct"])
+    path_by_key = _indexed_rows(market_paths.get("episodes"), label="market_paths.episodes")
     rows: list[dict[str, Any]] = []
     for decision in route_result.get("decisions") or []:
         key = str(decision.get("episode_key") or "")
@@ -91,19 +141,27 @@ def _horizon_300_rows(
         entry = decision.get("entry_quote")
         if not isinstance(entry, dict) or (status != "ROUTE_CLOSED" and not status.startswith("UNROUTABLE_EXIT")):
             continue
-        episode = path_by_key.get(key) or {}
+        episode = path_by_key.get(key)
+        if episode is None:
+            raise ValueError(f"economically usable episode missing market path: {key}")
         marks = [m for m in episode.get("path") or [] if int(m.get("offset_seconds") or 0) == 300]
+        if len(marks) != 1:
+            raise ValueError(
+                f"economically usable episode must contain exactly one explicit 300s observation: {key} count={len(marks)}"
+            )
+        mark = marks[0]
+        quote = mark.get("quote")
         ret = failure_return
-        route_status = "MISSING_300S_ROUTE"
-        if marks:
-            quote = marks[-1].get("quote")
-            if isinstance(quote, dict) and quote.get("executable") is False and _route_quality_ok(quote, contract):
-                try:
-                    ret = 100.0 * (_net_multiplier(entry, quote, contract) - 1.0)
-                    route_status = "ROUTE_300S_AVAILABLE"
-                except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                    ret = failure_return
-                    route_status = "INVALID_300S_ROUTE"
+        route_status = str(mark.get("status") or "UNKNOWN_300S_STATUS")
+        if isinstance(quote, dict) and quote.get("executable") is False and _route_quality_ok(quote, contract):
+            try:
+                ret = 100.0 * (_net_multiplier(entry, quote, contract) - 1.0)
+                route_status = "ROUTE_300S_AVAILABLE"
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                ret = failure_return
+                route_status = "INVALID_300S_ROUTE"
+        elif route_status == "AVAILABLE_ROUTE_ONLY":
+            route_status = "INVALID_300S_ROUTE"
         rows.append({
             "episode_key": key,
             "token_mint": str(decision.get("token_mint") or ""),
@@ -114,11 +172,6 @@ def _horizon_300_rows(
         })
     rows.sort(key=lambda x: (int(x.get("decision_as_of") or 0), x["token_mint"]))
     return rows
-
-
-def _summary_for_keys(rows: list[dict[str, Any]], keys: set[str], pnl_key: str, notional: float) -> dict[str, Any]:
-    selected = [row for row in rows if str(row.get("episode_key") or "") in keys]
-    return _aggregate(selected, pnl_key, notional)
 
 
 def run_momentum_comparison_v0(
@@ -145,7 +198,14 @@ def run_momentum_comparison_v0(
 
     episodes = list(route_input.get("episodes") or [])
     decisions = list(route_result.get("decisions") or [])
+    input_by_key = _indexed_rows(episodes, label="route_input.episodes")
     baseline_keys = {str(row.get("episode_key") or "") for row in decisions if row.get("admitted") is True}
+    market_integrity = _validate_market_paths_integrity(
+        market_paths=market_paths,
+        baseline_keys=baseline_keys,
+        input_by_key=input_by_key,
+    )
+    integrity = {**integrity, **market_integrity}
 
     primary_rows = _selector_rows(episodes, policy, "primary_selector")
     event_rows = _selector_rows(episodes, policy, "event_acceleration_2x")
@@ -246,6 +306,7 @@ def run_momentum_comparison_v0(
             "sniper_v1_is_diagnostic_not_primary": True,
             "fixed_60s_remains_primary": True,
             "300s_is_exploratory_historical_alignment": True,
+            "300s_missing_collector_evidence_is_integrity_error_not_economic_loss": True,
             "landed_fill_claim": False,
             "realized_pnl_claim": False,
             "official_v4_economic_verdict_changed": False,
