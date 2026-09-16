@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.causal_evidence_guardrails_v0 import validate_market_feature_snapshot_v0
+
 
 VERSION = "market_signal_snapshot_v0"
 PASS = "PASS_MARKET_SIGNAL_SNAPSHOT_V0"
@@ -23,12 +25,9 @@ def market_signal_snapshot_from_route_episode_v0(episode: Mapping[str, Any]) -> 
     snapshot = episode.get("feature_snapshot")
     if not episode_key or not token_mint or not isinstance(snapshot, Mapping):
         raise ValueError("route episode must include episode_key, token_mint and feature_snapshot")
-    if snapshot.get("stratum") != "pump_launch":
-        raise ValueError("convergence market export v0 supports pump_launch only")
-    if snapshot.get("complete") is not True:
-        raise ValueError("convergence market export requires a complete feature snapshot")
-    if int(snapshot.get("evidence_window_seconds") or 0) != 5:
-        raise ValueError("convergence market export v0 requires the frozen 5-second window")
+
+    validate_market_feature_snapshot_v0(snapshot, path=f"episode[{episode_key}].feature_snapshot")
+
     anchor = snapshot.get("observed_t0_wall_ns")
     cutoff = snapshot.get("decision_cutoff_wall_ns")
     if not isinstance(anchor, int) or isinstance(anchor, bool) or anchor <= 0:
@@ -36,8 +35,7 @@ def market_signal_snapshot_from_route_episode_v0(episode: Mapping[str, Any]) -> 
     if not isinstance(cutoff, int) or isinstance(cutoff, bool) or cutoff < anchor:
         raise ValueError("feature snapshot has no valid decision_cutoff_wall_ns")
     features = snapshot.get("features")
-    if not isinstance(features, Mapping):
-        raise ValueError("feature snapshot has no features object")
+    assert isinstance(features, Mapping)
 
     return {
         "type": VERSION,
@@ -57,6 +55,7 @@ def market_signal_snapshot_from_route_episode_v0(episode: Mapping[str, Any]) -> 
             "source_is_frozen_pre_provider_feature_snapshot": True,
             "provider_route_outcomes_not_read": True,
             "market_outcomes_not_read": True,
+            "recursive_feature_leakage_scan_passed": True,
             "no_selector_added": True,
             "no_trade_recommendation": True,
         },
