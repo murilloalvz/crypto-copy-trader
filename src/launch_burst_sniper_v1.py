@@ -10,7 +10,10 @@ from typing import Any, Mapping
 
 SNIPER_VERSION = "launch_burst_sniper_v1"
 EXPECTED_POLICY_SCHEMA = "launch_burst_sniper_policy_v1"
+EXPECTED_POLICY_NAME = "SNIPER-HIGH-PRECISION-V1"
+EXPECTED_ACTIVE_CHAIN_PROFILE = "solana:mainnet:pumpfun"
 EXPECTED_ROUTE_CONTRACT_HASH = "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d"
+EXPECTED_POLICY_HASH = "60a480a90365eae8abfcb55787345b41573fc1d2632d17c344741e93e36f490a"
 SUPPORTED_OPS = {">=", "<=", ">", "<", "=="}
 
 
@@ -51,6 +54,10 @@ def validate_sniper_policy_v1(policy: Mapping[str, Any]) -> None:
         raise ValueError("unsupported Launch Burst sniper policy schema")
     if policy.get("status") != "PREREGISTERED_PROSPECTIVE":
         raise ValueError("Launch Burst sniper policy is not preregistered prospective")
+    if policy.get("policy_name") != EXPECTED_POLICY_NAME:
+        raise ValueError("Launch Burst sniper policy name changed")
+    if policy.get("active_chain_profile") != EXPECTED_ACTIVE_CHAIN_PROFILE:
+        raise ValueError("Launch Burst sniper active chain profile changed")
     if policy.get("route_contract_hash_sha256") != EXPECTED_ROUTE_CONTRACT_HASH:
         raise ValueError("Launch Burst sniper route contract hash mismatch")
     if int(policy.get("decision_window_seconds") or 0) != 5:
@@ -65,6 +72,8 @@ def validate_sniper_policy_v1(policy: Mapping[str, Any]) -> None:
     actual_hash = hashlib.sha256(_canonical_json(shadow).encode("utf-8")).hexdigest()
     if actual_hash != expected_hash:
         raise ValueError("Launch Burst sniper policy hash mismatch")
+    if expected_hash != EXPECTED_POLICY_HASH:
+        raise ValueError("Launch Burst sniper frozen V1 policy hash changed")
 
     for selector_name in ("primary_selector", "diagnostic_selector"):
         selector = policy.get(selector_name)
