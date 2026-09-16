@@ -66,8 +66,18 @@ def feature_snapshot_with_sniper_v1(rows, *, anchor_wall_ns: int) -> dict[str, A
     unique_wallet_count = len(wallet_counts)
     repeat_wallet_share = _pct(max(0, covered_wallet_events - unique_wallet_count), covered_wallet_events)
     top_wallet_event_share = _pct(max(wallet_counts.values(), default=0), covered_wallet_events)
-    top_wallet_gross_share = _pct(max(wallet_gross.values(), default=0.0), wallet_gross_total)
+    top_wallet_gross = max(wallet_gross.values(), default=0.0)
+    top_wallet_gross_share = _pct(top_wallet_gross, wallet_gross_total)
     wallet_gross_coverage = _pct(wallet_gross_total, all_gross)
+
+    # Conservative upper bound for concentration under incomplete wallet identity.
+    # All unidentified gross flow is pessimistically assigned to the current top wallet.
+    # This never makes the token look more distributed because of missing wallet data.
+    unidentified_gross = max(0.0, all_gross - wallet_gross_total)
+    top_wallet_gross_worst_case_share = _pct(
+        top_wallet_gross + unidentified_gross,
+        all_gross,
+    )
 
     tx_rows = [item for item in rows if item.transaction_key is not None]
     tx_counts = Counter(str(item.transaction_key) for item in tx_rows)
@@ -86,6 +96,7 @@ def feature_snapshot_with_sniper_v1(rows, *, anchor_wall_ns: int) -> dict[str, A
             "repeat_wallet_event_share_pct": repeat_wallet_share,
             "top_wallet_event_share_pct": top_wallet_event_share,
             "top_wallet_gross_flow_share_pct": top_wallet_gross_share,
+            "top_wallet_gross_flow_share_worst_case_pct": top_wallet_gross_worst_case_share,
             "wallet_gross_flow_coverage_pct": wallet_gross_coverage,
             "top_transaction_event_share_pct": _pct(max(tx_counts.values(), default=0), len(tx_rows)),
             "top_transaction_gross_flow_share_pct": _pct(max(tx_gross.values(), default=0.0), tx_gross_total),
