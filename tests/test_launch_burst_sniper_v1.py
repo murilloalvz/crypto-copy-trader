@@ -18,6 +18,7 @@ def _snapshot(**overrides):
         "event_count": 7,
         "directional_flow_efficiency": 0.70,
         "wallet_identity_coverage_pct": 100.0,
+        "wallet_gross_flow_coverage_pct": 100.0,
         "unique_wallet_count": 4,
         "top_wallet_gross_flow_share_pct": 45.0,
         "transaction_identity_coverage_pct": 100.0,
@@ -40,7 +41,7 @@ class LaunchBurstSniperV1Tests(unittest.TestCase):
     def test_frozen_policy_hash_validates(self):
         self.assertEqual(
             self.policy["policy_hash_sha256"],
-            "e4b49a7b9cab1720e2f3c302dfdeebed570fed7f44e8e3da4751c77dcd4b5200",
+            "017873aad04d6d1bede1ef4e0df86c82ccd3dc4634079c8ea2c4543bc46ba8cd",
         )
 
     def test_primary_selects_distributed_directional_burst(self):
@@ -61,6 +62,16 @@ class LaunchBurstSniperV1Tests(unittest.TestCase):
         self.assertEqual(decision.status, "REJECTED")
         self.assertIn("FAILED:top_wallet_gross_flow_share_pct", decision.reasons)
 
+    def test_primary_rejects_low_wallet_flow_coverage(self):
+        decision = evaluate_launch_burst_sniper_v1(
+            snapshot=_snapshot(wallet_gross_flow_coverage_pct=60.0),
+            policy=self.policy,
+            selector_name="primary_selector",
+        )
+        self.assertFalse(decision.selected)
+        self.assertEqual(decision.status, "REJECTED")
+        self.assertIn("FAILED:wallet_gross_flow_coverage_pct", decision.reasons)
+
     def test_primary_missing_wallet_evidence_is_not_imputed(self):
         snapshot = _snapshot()
         del snapshot["features"]["top_wallet_gross_flow_share_pct"]
@@ -75,6 +86,7 @@ class LaunchBurstSniperV1Tests(unittest.TestCase):
         snapshot = _snapshot()
         for name in (
             "wallet_identity_coverage_pct",
+            "wallet_gross_flow_coverage_pct",
             "unique_wallet_count",
             "top_wallet_gross_flow_share_pct",
             "transaction_identity_coverage_pct",
