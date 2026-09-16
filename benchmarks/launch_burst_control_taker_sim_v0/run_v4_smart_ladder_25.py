@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,41 @@ DEFAULT_CONTRACT = sim.DEFAULT_CONTRACT
 DEFAULT_FIXTURE = sim.DEFAULT_FIXTURE
 
 
+def _resolve_sim_control(
+    *,
+    fixture: dict[str, Any],
+    rpc_url: str,
+    helius_api_key: str,
+    control_taker_override: str | None,
+    control_meta_override: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    taker = str(control_taker_override or "").strip()
+    if taker:
+        if not isinstance(control_meta_override, dict):
+            raise ValueError("control_taker_override requires control_meta_override")
+        expected_sha = hashlib.sha256(taker.encode("utf-8")).hexdigest()
+        if str(control_meta_override.get("owner_public_key_sha256") or "") != expected_sha:
+            raise ValueError("preflight control metadata does not match control taker public key")
+        if int(control_meta_override.get("token_account_amount_raw") or 0) < int(fixture["minimum_input_amount_raw"]):
+            raise ValueError("preflight control metadata is below frozen USDC floor")
+        if int(control_meta_override.get("sol_lamports") or 0) < int(fixture["minimum_sol_lamports"]):
+            raise ValueError("preflight control metadata is below frozen SOL floor")
+        return taker, {
+            **control_meta_override,
+            "control_resolution_mode": "EXACT_PREFLIGHT_REUSE",
+        }
+
+    discovered, metadata = _discover_control_via_helius_holders(
+        fixture=fixture,
+        rpc_url=rpc_url,
+        helius_api_key=helius_api_key,
+    )
+    return discovered, {
+        **metadata,
+        "control_resolution_mode": "DISCOVERED_AT_RUN_START",
+    }
+
+
 async def run_sim_v4(
     *,
     contract_path: Path,
@@ -41,6 +77,8 @@ async def run_sim_v4(
     jupiter_api_key: str,
     rpc_url: str,
     rpc_fallback_urls: tuple[str, ...],
+    control_taker_override: str | None = None,
+    control_meta_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     contract = sim._read_json(contract_path)
     fixture = sim._read_json(fixture_path)
@@ -58,9 +96,12 @@ async def run_sim_v4(
         raise ValueError("HELIUS_API_KEY, JUPITER_API_KEY and SOLANA_RPC_URL are required")
 
     control_taker, control_meta = await asyncio.to_thread(
-        _discover_control_via_helius_holders,
+        _resolve_sim_control,
         fixture=fixture,
         rpc_url=rpc_url,
+        helius_api_key=helius_api_key,
+        control_taker_override=control_taker_override,
+        control_meta_override=control_meta_override,
     )
     sim._SIM_CONTEXT.clear()
     sim._SIM_CONTEXT.update({"policy": policy, "paths": []})
@@ -159,6 +200,11 @@ async def run_sim_v4(
         "smart_exit_policy_hash_sha256": policy["policy_hash_sha256"],
         "paired_trade_count": paired,
         "base_v4_report": base_report,
+        "simulation_control_taker": {
+            **control_meta,
+            "address_redacted": True,
+            "signing_or_submission_performed": False,
+        },
         "artifacts": {
             "fixed_60s_route_result": str(route_result_path),
             "market_paths": str(paths_path),
