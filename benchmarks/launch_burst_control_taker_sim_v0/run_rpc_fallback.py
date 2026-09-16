@@ -17,6 +17,14 @@ def _rpc_candidates(primary: str) -> tuple[str, ...]:
         for item in os.environ.get("SOLANA_RPC_FALLBACK_URLS", "").split(",")
         if item.strip()
     )
+
+    # The simulation already requires HELIUS_API_KEY for live acquisition. Reuse that
+    # credential as an RPC fallback so control-taker discovery does not depend on the
+    # public Solana RPC or on a second manually configured secret.
+    helius_api_key = os.environ.get("HELIUS_API_KEY", "").strip()
+    if helius_api_key:
+        values.append(f"https://mainnet.helius-rpc.com/?api-key={helius_api_key}")
+
     output: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -51,6 +59,7 @@ def _discover_control_with_rpc_fallback(
                 "candidates_checked": int(control.get("candidates_checked") or 0),
                 "rpc_candidate_index": index,
                 "rpc_fallback_used": index > 0,
+                "rpc_candidate_count": len(candidates),
             }
         except Exception as exc:
             errors.append(f"rpc_candidate_{index}:{type(exc).__name__}:{str(exc)[:200]}")
