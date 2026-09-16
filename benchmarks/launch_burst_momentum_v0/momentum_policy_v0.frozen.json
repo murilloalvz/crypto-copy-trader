@@ -93,5 +93,5 @@
     "same_thresholds_must_not_be_assumed_transferable_across_chains": true,
     "robinhood_activation_requires_equivalent_flow_reserve_and_acceleration_semantics_plus_fresh_preregistration": true
   },
-  "policy_hash_sha256": "01b0a9db78cfc747a28c5a70fe2791992582913792ad8ae7a5c3c167964a81c8"
+  "policy_hash_sha256": "72f55dde194ae890f0724314d3ba361180a8fa24bc887a18379920ad5ab39c3e"
 }
