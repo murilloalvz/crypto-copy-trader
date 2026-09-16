@@ -19,6 +19,7 @@ from benchmarks.launch_burst_control_taker_sim_v0.smart_exit import (
 
 SMART_RESULT_TYPE = "launch_burst_control_taker_smart_ladder_25_result_v0"
 EXPECTED_POLICY_SCHEMA = "launch_burst_smart_ladder_25_policy_v0"
+EXPECTED_POLICY_HASH = "638d6440868c8b0dcbb91fe317be9a5181a11eee2be38ead65adff3ba9bdb818"
 
 
 def _validate_policy(policy: Mapping[str, Any], *, route_contract_hash: str) -> None:
@@ -33,6 +34,8 @@ def _validate_policy(policy: Mapping[str, Any], *, route_contract_hash: str) -> 
     actual = hashlib.sha256(_canonical_json(shadow).encode("utf-8")).hexdigest()
     if expected != actual:
         raise ValueError("SMART-LADDER-25 policy hash mismatch")
+    if expected != EXPECTED_POLICY_HASH:
+        raise ValueError("SMART-LADDER-25 frozen V0 policy hash changed")
 
     offsets = policy.get("sample_offsets_seconds_from_entry")
     if not isinstance(offsets, list) or offsets != [5, 10, 20, 30, 45, 60]:
