@@ -1,9 +1,13 @@
 from pathlib import Path
 import unittest
 
+from benchmarks.launch_burst_control_taker_sim_v0.run_v4_momentum_v0 import _screening_preflight
+from benchmarks.launch_burst_momentum_v0.compare import (
+    _horizon_300_rows,
+    _validate_market_paths_integrity,
+)
 from benchmarks.launch_burst_momentum_v0.runtime_enrichment import feature_snapshot_with_momentum_v0
 from benchmarks.launch_burst_shadow_v0.run import AdaptedEnvelope
-from benchmarks.launch_burst_control_taker_sim_v0.run_v4_momentum_v0 import _screening_preflight
 from src.launch_burst_momentum_v0 import (
     EXPECTED_POLICY_HASH,
     evaluate_momentum_v0,
@@ -31,6 +35,20 @@ def env(*, wall_ns: int, amount: int, reserve: int = 1000, side: str = "buy", ke
         wallet_key="wallet-" + key,
         transaction_key="tx-" + key,
     )
+
+
+def route_contract() -> dict:
+    return {
+        "position": {"notional_usd": 25.0},
+        "costs": {
+            "entry_fee_bps": 20,
+            "exit_fee_bps": 20,
+            "entry_adverse_slippage_bps": 100,
+            "exit_adverse_slippage_bps": 100,
+        },
+        "route_quality": {"max_provider_price_impact_pct_points": 2.0},
+        "failure_policy": {"unexitable_return_pct": -100.0},
+    }
 
 
 class LaunchBurstMomentumV0Tests(unittest.TestCase):
@@ -107,6 +125,69 @@ class LaunchBurstMomentumV0Tests(unittest.TestCase):
         self.assertEqual(report["screening_run_duration_seconds"], 900)
         with self.assertRaises(ValueError):
             _screening_preflight(POLICY, 600)
+
+    def test_market_paths_require_exact_baseline_and_token_parity(self):
+        integrity = _validate_market_paths_integrity(
+            market_paths={"episodes": [{"episode_key": "e1", "token_mint": "M1"}]},
+            baseline_keys={"e1"},
+            input_by_key={"e1": {"episode_key": "e1", "token_mint": "M1"}},
+        )
+        self.assertTrue(integrity["market_path_exact_baseline_key_parity"])
+        with self.assertRaises(ValueError):
+            _validate_market_paths_integrity(
+                market_paths={"episodes": []},
+                baseline_keys={"e1"},
+                input_by_key={"e1": {"episode_key": "e1", "token_mint": "M1"}},
+            )
+        with self.assertRaises(ValueError):
+            _validate_market_paths_integrity(
+                market_paths={"episodes": [{"episode_key": "e1", "token_mint": "WRONG"}]},
+                baseline_keys={"e1"},
+                input_by_key={"e1": {"episode_key": "e1", "token_mint": "M1"}},
+            )
+
+    def test_missing_300s_mark_is_integrity_error_not_loss(self):
+        route_result = {
+            "decisions": [{
+                "episode_key": "e1",
+                "token_mint": "M1",
+                "status": "ROUTE_CLOSED",
+                "entry_quote": {"price_usd": 1.0},
+            }]
+        }
+        market_paths = {"episodes": [{"episode_key": "e1", "token_mint": "M1", "path": []}]}
+        with self.assertRaises(ValueError):
+            _horizon_300_rows(
+                route_result=route_result,
+                market_paths=market_paths,
+                contract=route_contract(),
+            )
+
+    def test_explicit_300s_provider_error_uses_frozen_failure_return(self):
+        route_result = {
+            "decisions": [{
+                "episode_key": "e1",
+                "token_mint": "M1",
+                "status": "ROUTE_CLOSED",
+                "entry_quote": {"price_usd": 1.0},
+            }]
+        }
+        market_paths = {
+            "episodes": [{
+                "episode_key": "e1",
+                "token_mint": "M1",
+                "path": [{"offset_seconds": 300, "status": "ERROR:no route", "quote": None}],
+            }]
+        }
+        rows = _horizon_300_rows(
+            route_result=route_result,
+            market_paths=market_paths,
+            contract=route_contract(),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["return_300_pct"], -100.0)
+        self.assertEqual(rows[0]["pnl_300_usd"], -25.0)
+        self.assertEqual(rows[0]["status_300"], "ERROR:no route")
 
 
 if __name__ == "__main__":
