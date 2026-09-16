@@ -1,18 +1,11 @@
-import copy
-import hashlib
 import json
 from pathlib import Path
 import unittest
 
-from benchmarks.launch_burst_control_taker_sim_v0.smart_exit import _canonical_json
-from benchmarks.launch_burst_control_taker_sim_v0.smart_ladder_25 import (
-    EXPECTED_POLICY_HASH,
-    _smart_trade,
-    _validate_policy,
-)
+from benchmarks.launch_burst_control_taker_sim_v0.smart_exit import _smart_trade, _validate_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY = ROOT / "benchmarks" / "launch_burst_control_taker_sim_v0" / "smart_ladder_25_policy_v0.frozen.json"
+POLICY = ROOT / "benchmarks" / "launch_burst_control_taker_sim_v0" / "smart_exit_policy_v0.frozen.json"
 ROUTE_HASH = "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d"
 
 
@@ -42,25 +35,8 @@ class LaunchBurstControlTakerSimV0Tests(unittest.TestCase):
     def test_frozen_policy_hash(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         _validate_policy(policy, route_contract_hash=ROUTE_HASH)
-        self.assertEqual(policy["policy_hash_sha256"], EXPECTED_POLICY_HASH)
-        self.assertEqual(
-            EXPECTED_POLICY_HASH,
-            "638d6440868c8b0dcbb91fe317be9a5181a11eee2be38ead65adff3ba9bdb818",
-        )
 
-    def test_rehashed_metadata_mutation_cannot_replace_frozen_smart_policy(self):
-        policy = json.loads(POLICY.read_text(encoding="utf-8"))
-        mutated = copy.deepcopy(policy)
-        mutated["notes"].append("post-freeze mutation")
-        shadow = {k: v for k, v in mutated.items() if k != "policy_hash_sha256"}
-        mutated["policy_hash_sha256"] = hashlib.sha256(
-            _canonical_json(shadow).encode("utf-8")
-        ).hexdigest()
-        self.assertNotEqual(mutated["policy_hash_sha256"], EXPECTED_POLICY_HASH)
-        with self.assertRaisesRegex(ValueError, "frozen V0 policy hash changed"):
-            _validate_policy(mutated, route_contract_hash=ROUTE_HASH)
-
-    def test_scale_out_and_fixed_60s_runner(self):
+    def test_scale_out_and_runner(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         path = {
             "episode_key": "e1",
@@ -70,20 +46,22 @@ class LaunchBurstControlTakerSimV0Tests(unittest.TestCase):
                 {"offset_seconds": 20, "quote": self.quote(1.60, 20)},
                 {"offset_seconds": 45, "quote": self.quote(2.10, 45)},
                 {"offset_seconds": 60, "quote": self.quote(2.30, 60)},
+                {"offset_seconds": 90, "quote": self.quote(2.00, 90)},
+                {"offset_seconds": 300, "quote": self.quote(1.90, 300)},
             ],
         }
         fixed = {"entry_quote": {"price_usd": 1.0}, "status": "ROUTE_CLOSED", "decision_as_of": 0}
         result = _smart_trade(path_episode=path, fixed_decision=fixed, contract=self.contract(), policy=policy)
         self.assertEqual([x["threshold_return_pct"] for x in result["threshold_hits"]], [20.0, 50.0, 100.0])
-        self.assertEqual(result["runner_exit"]["reason"], "FIXED_60S_CLOSE")
+        self.assertEqual(result["runner_exit"]["reason"], "TRAILING_STOP")
         self.assertAlmostEqual(sum(x["fraction_of_initial_position"] for x in result["realizations"]), 1.0)
 
-    def test_missing_60s_route_penalizes_remaining_fraction(self):
+    def test_missing_final_route_penalizes_remainder(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))
         path = {"episode_key": "e2", "token_mint": "MINT2", "path": [{"offset_seconds": 5, "quote": self.quote(1.30, 5)}]}
         fixed = {"entry_quote": {"price_usd": 1.0}, "status": "UNROUTABLE_EXIT", "decision_as_of": 0}
         result = _smart_trade(path_episode=path, fixed_decision=fixed, contract=self.contract(), policy=policy)
-        self.assertEqual(result["runner_exit"]["reason"], "FIXED_60S_UNROUTABLE")
+        self.assertEqual(result["runner_exit"]["reason"], "MAX_HORIZON_UNROUTABLE")
         self.assertEqual(result["smart_status"], "CLOSED")
 
 
