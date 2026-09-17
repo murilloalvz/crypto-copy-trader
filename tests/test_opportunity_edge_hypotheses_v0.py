@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import unittest
 
+from src.coordination_entity_intelligence_v0 import ALL_FEATURE_IDS as COORDINATION_FEATURE_IDS
 from src.launch_burst_sniper_v1 import EXPECTED_POLICY_HASH, load_sniper_policy_v1
 from src.market_first_feature_discovery_v1 import FEATURE_IDS
 from src.market_first_liquidity_discovery_v0 import FEATURE_IDS as LIQUIDITY_FEATURE_IDS
@@ -53,6 +54,22 @@ class OpportunityEdgeHypothesesV0Tests(unittest.TestCase):
                 self.assertFalse(spec.future_dependent)
                 self.assertFalse(spec.execution_only)
                 self.assertFalse(spec.diagnostic_only)
+
+    def test_coordination_hypothesis_registers_entity_diagnostics_without_selector_promotion(self):
+        item = EDGE_HYPOTHESES_V0["H_ORGANIC_VS_COORDINATED_V0"]
+        self.assertFalse(item.selector_ready)
+        self.assertEqual(item.threshold_contract, "NO_NEW_COMPOSITE_THRESHOLD_DEFINED")
+        self.assertEqual(set(item.diagnostic_feature_ids), set(COORDINATION_FEATURE_IDS))
+        self.assertEqual(
+            item.blocker,
+            "causal_entity_evidence_source_and_prospective_selector_rule_not_preregistered",
+        )
+        for feature_id in item.diagnostic_feature_ids:
+            spec = feature_spec_v0(feature_id)
+            self.assertEqual(spec.track, TRACK_MARKET_FIRST)
+            self.assertTrue(spec.diagnostic_only)
+            self.assertFalse(spec.selector_eligible)
+            self.assertFalse(spec.execution_only)
 
     def test_acceleration_is_diagnostic_only_without_threshold_or_selector_promotion(self):
         item = EDGE_HYPOTHESES_V0["H_ACCELERATION_V0"]
