@@ -126,16 +126,27 @@ _HYPOTHESES = (
             "mf_pump_real_quote_reserve_raw_at_cutoff",
             "mf_pump_real_to_virtual_quote_reserve_ratio_at_cutoff",
             "mf_pump_real_quote_reserve_change_over_virtual_start",
+            "mf_curve_progress_pct",
+            "mf_curve_real_token_fraction_of_initial_pct",
+            "mf_curve_spot_price_multiplier_vs_initial",
+            "mf_curve_real_token_to_virtual_token_ratio_at_cutoff",
+            "mf_curve_virtual_sol_reserves_sol_at_cutoff",
+            "mf_curve_real_sol_reserves_sol_at_cutoff",
+            "mf_curve_buy_impact_0_01_sol_pct_curve_only",
+            "mf_curve_buy_impact_0_10_sol_pct_curve_only",
+            "mf_curve_buy_impact_0_50_sol_pct_curve_only",
+            "mf_curve_real_token_capacity_ratio_0_10_sol",
             "provider_price_impact_pct_points",
         ),
-        scientific_status="CAUSAL_MARKET_RESERVE_DIAGNOSTICS_REGISTERED_NOT_SELECTOR_READY",
+        scientific_status="CAUSAL_RESERVE_AND_GEOMETRY_DIAGNOSTICS_REGISTERED_NOT_SELECTOR_READY",
         selector_ready=False,
         threshold_contract="NO_CAUSAL_MARKET_LIQUIDITY_THRESHOLD_DEFINED",
         preregistration_rule=(
-            "Use event-native Pump reserve state only as causal diagnostic features and provider route results only as "
-            "post-decision evaluation labels. Any selector rule or threshold requires separate preregistration before a fresh capture."
+            "Use event-native Pump reserve/curve state only as causal diagnostics and provider route results only as "
+            "post-decision evaluation labels. Fixed SOL geometry probes are discovery diagnostics, not route-notional estimates. "
+            "Any selector rule or threshold requires separate preregistration before a fresh capture."
         ),
-        next_experiment_role="retrospective_route_feasibility_association_only",
+        next_experiment_role="retrospective_curve_geometry_and_route_feasibility_association_only",
         blocker="prospective_liquidity_selector_rule_not_preregistered",
     ),
 )
