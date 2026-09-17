@@ -48,6 +48,20 @@ _SNIPER_COMMON = {
     "scientific_status": "FROZEN_SNIPER_V1_PREREGISTERED_SELECTOR",
 }
 
+_DISCOVERY_COMMON = {
+    "track": TRACK_MARKET_FIRST,
+    "causal_source": "preserved_frozen_5s_trade_event_sequence_before_provider_quotes",
+    "earliest_causal_availability": "at_frozen_5s_decision_cutoff",
+    "selector_eligible": False,
+    "diagnostic_only": True,
+    "execution_only": False,
+    "future_dependent": False,
+    "missing_data_policy": "fail_closed_when_required_subwindow_or_identity_evidence_missing",
+    "normalization_scope": "pump_launch_frozen_5s_subwindow_diagnostic_v1",
+    "chain_scope": ("solana:mainnet:pumpfun",),
+    "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
+}
+
 
 def _sniper(
     feature_id: str,
@@ -62,6 +76,22 @@ def _sniper(
         description=description,
         hypothesis_role=hypothesis_role,
         **_SNIPER_COMMON,
+    )
+
+
+def _discovery(
+    feature_id: str,
+    *,
+    category: str,
+    description: str,
+    hypothesis_role: str,
+) -> OpportunityFeatureSpecV0:
+    return OpportunityFeatureSpecV0(
+        feature_id=feature_id,
+        category=category,
+        description=description,
+        hypothesis_role=hypothesis_role,
+        **_DISCOVERY_COMMON,
     )
 
 
@@ -119,6 +149,42 @@ _FEATURES = (
         category="participation_breadth",
         description="Unique observed transaction count inside the frozen evidence window.",
         hypothesis_role="independent_transaction_breadth",
+    ),
+    _discovery(
+        "mf_event_rate_acceleration_per_s2",
+        category="acceleration",
+        description="Change in observed trade-event rate between the late and early 2.5s halves of the frozen 5s causal window, divided by half-center distance.",
+        hypothesis_role="market_activity_acceleration_candidate",
+    ),
+    _discovery(
+        "mf_buy_event_rate_acceleration_per_s2",
+        category="acceleration",
+        description="Change in BUY-event rate between the late and early 2.5s halves of the frozen 5s causal window, divided by half-center distance.",
+        hypothesis_role="buy_demand_acceleration_candidate",
+    ),
+    _discovery(
+        "mf_unique_buy_wallet_arrival_acceleration_per_s2",
+        category="acceleration",
+        description="Change in first-seen BUY-wallet arrival rate across the two causal half-windows; unavailable when wallet identity is incomplete.",
+        hypothesis_role="independent_buyer_arrival_acceleration_candidate",
+    ),
+    _discovery(
+        "mf_signed_flow_acceleration_per_s2",
+        category="acceleration",
+        description="Change in signed reserve-normalized flow rate across the two causal half-windows, divided by half-center distance.",
+        hypothesis_role="directional_flow_acceleration_candidate",
+    ),
+    _discovery(
+        "mf_directional_efficiency_delta_late_minus_early",
+        category="flow_quality_dynamics",
+        description="Late-half minus early-half signed-to-gross flow efficiency within the frozen causal window.",
+        hypothesis_role="directional_quality_improvement_candidate",
+    ),
+    _discovery(
+        "mf_top_wallet_gross_share_delta_pct_points_late_minus_early",
+        category="concentration_dynamics",
+        description="Late-half minus early-half top-wallet gross-flow share in percentage points; unavailable when wallet identity is incomplete.",
+        hypothesis_role="concentration_dynamics_candidate",
     ),
     OpportunityFeatureSpecV0(
         feature_id="causal_capture_sha256",
