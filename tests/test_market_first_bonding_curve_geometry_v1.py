@@ -10,6 +10,11 @@ from src.market_first_bonding_curve_geometry_v1 import (
     decode_trade_geometry_payload_v1,
     geometry_features_v1,
 )
+from src.opportunity_feature_matrix_v0 import (
+    TRACK_MARKET_FIRST,
+    assert_selector_feature_eligible_v0,
+    feature_spec_v0,
+)
 from src.pump_bonding_stream import (
     PUMP_CREATE_EVENT_DISCRIMINATOR,
     PUMP_TRADE_EVENT_DISCRIMINATOR,
@@ -28,10 +33,10 @@ def _create_payload(*, vt: int, vs: int, rt: int, supply: int, timestamp: int = 
             _borsh_string("name"),
             _borsh_string("SYM"),
             _borsh_string("uri"),
-            bytes([1]) * 32,  # mint
-            bytes([2]) * 32,  # bonding curve
-            bytes([3]) * 32,  # user
-            bytes([4]) * 32,  # creator
+            bytes([1]) * 32,
+            bytes([2]) * 32,
+            bytes([3]) * 32,
+            bytes([4]) * 32,
             struct.pack("<q", timestamp),
             struct.pack("<Q", vt),
             struct.pack("<Q", vs),
@@ -53,7 +58,7 @@ def _trade_payload(
     return b"".join(
         [
             PUMP_TRADE_EVENT_DISCRIMINATOR,
-            bytes([1]) * 32,  # same mint
+            bytes([1]) * 32,
             struct.pack("<Q", 100_000_000),
             struct.pack("<Q", 1_000_000),
             bytes([1 if is_buy else 0]),
@@ -124,11 +129,7 @@ class MarketFirstBondingCurveGeometryV1Tests(unittest.TestCase):
         self.assertFalse(result["probe_capacity_bound"]["0_10_sol"])
 
     def test_non_sol_quote_fails_closed_for_geometry_v1(self):
-        result = geometry_features_v1(
-            initial_state={},
-            cutoff_state={},
-            quote_mint="USDC",
-        )
+        result = geometry_features_v1(initial_state={}, cutoff_state={}, quote_mint="USDC")
         self.assertEqual(result["status"], "OUT_OF_SCOPE_NON_SOL_QUOTE")
         self.assertTrue(all(value is None for value in result["features"].values()))
 
@@ -168,6 +169,17 @@ class MarketFirstBondingCurveGeometryV1Tests(unittest.TestCase):
         self.assertTrue(result["probe_capacity_bound"]["0_10_sol"])
         self.assertIsNone(result["features"]["mf_curve_buy_impact_0_10_sol_pct_curve_only"])
         self.assertLess(result["features"]["mf_curve_real_token_capacity_ratio_0_10_sol"], 1.0)
+
+    def test_geometry_features_are_registered_but_forbidden_in_selectors(self):
+        for feature_id in FEATURE_IDS:
+            spec = feature_spec_v0(feature_id)
+            self.assertEqual(spec.track, TRACK_MARKET_FIRST)
+            self.assertTrue(spec.diagnostic_only)
+            self.assertFalse(spec.selector_eligible)
+            self.assertFalse(spec.execution_only)
+            self.assertFalse(spec.future_dependent)
+            with self.assertRaisesRegex(ValueError, "diagnostic-only"):
+                assert_selector_feature_eligible_v0(feature_id, selector_track=TRACK_MARKET_FIRST)
 
 
 if __name__ == "__main__":
