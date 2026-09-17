@@ -1,0 +1,94 @@
+{
+  "causal_contract": {
+    "decision_window_seconds": 5,
+    "feature_future_dependent": false,
+    "feature_snapshot_before_provider_quotes_required": true,
+    "fresh_independent_causal_capture_required": true,
+    "fresh_route_input_sha256_must_differ_from_discovery_capture": true,
+    "provider_execution_metadata_used_as_feature": false,
+    "published_at_defines_causal_availability": false
+  },
+  "chain_profile": "solana:mainnet:pumpfun",
+  "comparison": {
+    "fresh_sample_median_split_is_preregistered_supporting_analysis": true,
+    "lower_half_definition": "feature <= fresh_sample_median",
+    "no_fixed_feature_threshold": true,
+    "primary_endpoint": "spearman_feature_vs_fixed_60s_return",
+    "same_sample_threshold_search_permitted": false,
+    "supporting_endpoints": [
+      "spearman_without_best_trade",
+      "leave_one_out_sign_consistency",
+      "lower_half_mean_return_pct",
+      "lower_half_median_return_pct",
+      "lower_half_mean_without_best_trade_pct",
+      "lower_half_profit_factor",
+      "lower_half_p10_return_pct",
+      "upper_half_corresponding_metrics"
+    ],
+    "upper_half_definition": "feature > fresh_sample_median"
+  },
+  "decision_rule": {
+    "iterate_if_all": [
+      "minimum_sample_met",
+      "spearman_negative",
+      "spearman_without_best_negative",
+      "leave_one_out_sign_consistency_gte_0_90",
+      "lower_half_mean_gt_upper_half",
+      "lower_half_median_gt_upper_half",
+      "lower_half_mean_without_best_gt_upper_half",
+      "lower_half_profit_factor_gt_upper_half",
+      "lower_half_p10_gte_upper_half"
+    ],
+    "keep_if_all": [
+      "minimum_sample_met",
+      "spearman_negative",
+      "spearman_without_best_negative",
+      "leave_one_out_sign_consistency_gte_0_90",
+      "lower_half_mean_return_gt_0",
+      "lower_half_mean_without_best_gt_0",
+      "lower_half_profit_factor_gt_1",
+      "lower_half_median_gt_upper_half",
+      "lower_half_p10_gte_upper_half"
+    ],
+    "kill_otherwise": true
+  },
+  "economic_contract": {
+    "entry_adverse_slippage_bps": 100,
+    "entry_fee_bps": 20,
+    "entry_latency_seconds_after_cutoff": 2,
+    "exit_adverse_slippage_bps": 100,
+    "exit_fee_bps": 20,
+    "exit_horizon_seconds_after_observed_entry": 60,
+    "max_provider_price_impact_pct_points": 2.0,
+    "notional_usd": 25.0,
+    "primary_outcome": "fixed_plus_60s_route_shadow_net_return_pct",
+    "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+    "unroutable_exit_return_pct": -100.0
+  },
+  "experiment_id": "MF-CURVE-CAPACITY-RATIO-REPLICATION-V0",
+  "guardrails": {
+    "coordination_entity_acquisition_not_required": true,
+    "no_landed_fill_claim": true,
+    "no_new_exit_optimization": true,
+    "no_realized_pnl_claim": true,
+    "no_selector_promotion_on_discovery_sample": true,
+    "no_social_event_features": true,
+    "no_threshold_retuning": true
+  },
+  "hypothesis": {
+    "direction": "lower_feature_predicts_higher_fixed_60s_net_return",
+    "feature_id": "mf_curve_real_token_capacity_ratio_0_10_sol",
+    "mechanistic_rationale": "lower real-token capacity ratio means less real-token slack relative to a fixed 0.10 SOL curve-only probe at the 5s cutoff",
+    "primary_test": "negative_spearman_on_fresh_route_usable_sol_quote_sample"
+  },
+  "population": {
+    "baseline_selector": "FROZEN_SIGNED_FLOW_GE_0_08",
+    "economic_population": "route_usable_default_sol_quote_with_capacity_feature_available",
+    "minimum_primary_usable_route_results": 30,
+    "stratum": "pump_launch"
+  },
+  "protocol_hash_sha256": "3697a9acc73753151f49d3d64354c11c355a8eed31cfefbc784209c1957599c1",
+  "schema_version": "curve_capacity_replication_protocol_v0",
+  "status": "PREREGISTERED_FRESH_CONFIRMATION",
+  "track": "market_first"
+}
