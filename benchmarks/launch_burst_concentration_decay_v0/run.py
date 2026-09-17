@@ -187,13 +187,21 @@ def _status_summary(keys: set[str], decisions_by_key: Mapping[str, Mapping[str, 
     }
 
 
+def _ordered_number(value: Any) -> float | None:
+    """Numeric value usable in ordering checks; infinities are valid PF sentinels, NaN is not."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return None if math.isnan(result) else result
+
+
 def _gt(left: Any, right: Any) -> bool:
-    lvalue, rvalue = _finite(left), _finite(right)
+    lvalue, rvalue = _ordered_number(left), _ordered_number(right)
     return lvalue is not None and rvalue is not None and lvalue > rvalue
 
 
 def _gte(left: Any, right: Any) -> bool:
-    lvalue, rvalue = _finite(left), _finite(right)
+    lvalue, rvalue = _ordered_number(left), _ordered_number(right)
     return lvalue is not None and rvalue is not None and lvalue >= rvalue
 
 
