@@ -76,6 +76,20 @@ _LIQUIDITY_DISCOVERY_COMMON = {
     "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
 }
 
+_GEOMETRY_DISCOVERY_COMMON = {
+    "track": TRACK_MARKET_FIRST,
+    "causal_source": "preserved_pump_create_and_trade_event_payload_bytes_before_provider_quotes",
+    "earliest_causal_availability": "at_frozen_5s_decision_cutoff",
+    "selector_eligible": False,
+    "diagnostic_only": True,
+    "execution_only": False,
+    "future_dependent": False,
+    "missing_data_policy": "fail_closed_when_curve_state_quote_identity_or_payload_parity_is_missing_or_conflicting",
+    "normalization_scope": "pump_launch_default_sol_quote_bonding_curve_geometry_v1",
+    "chain_scope": ("solana:mainnet:pumpfun",),
+    "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
+}
+
 
 def _sniper(
     feature_id: str,
@@ -121,6 +135,21 @@ def _liquidity_discovery(
         description=description,
         hypothesis_role=hypothesis_role,
         **_LIQUIDITY_DISCOVERY_COMMON,
+    )
+
+
+def _geometry_discovery(
+    feature_id: str,
+    *,
+    description: str,
+    hypothesis_role: str,
+) -> OpportunityFeatureSpecV0:
+    return OpportunityFeatureSpecV0(
+        feature_id=feature_id,
+        category="bonding_curve_geometry",
+        description=description,
+        hypothesis_role=hypothesis_role,
+        **_GEOMETRY_DISCOVERY_COMMON,
     )
 
 
@@ -229,6 +258,56 @@ _FEATURES = (
         "mf_pump_real_quote_reserve_change_over_virtual_start",
         description="Change in real quote reserve over the frozen 5s window normalized by the first virtual quote reserve.",
         hypothesis_role="market_side_depth_change_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_progress_pct",
+        description="Percent of initial real token reserves consumed by the latest causal TradeEvent at the 5s cutoff.",
+        hypothesis_role="curve_progress_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_real_token_fraction_of_initial_pct",
+        description="Percent of CreateEvent initial real token reserves remaining at the 5s cutoff.",
+        hypothesis_role="remaining_real_inventory_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_spot_price_multiplier_vs_initial",
+        description="Virtual-reserve spot-price ratio at cutoff divided by its CreateEvent initial value.",
+        hypothesis_role="price_displacement_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_real_token_to_virtual_token_ratio_at_cutoff",
+        description="Real token reserves divided by virtual token reserves at the frozen cutoff.",
+        hypothesis_role="real_inventory_vs_virtual_depth_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_virtual_sol_reserves_sol_at_cutoff",
+        description="Virtual SOL reserves at the cutoff, expressed in SOL; Geometry V1 is scoped to the default SOL quote only.",
+        hypothesis_role="virtual_quote_depth_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_real_sol_reserves_sol_at_cutoff",
+        description="Real SOL reserves at the cutoff, expressed in SOL; Geometry V1 is scoped to the default SOL quote only.",
+        hypothesis_role="real_quote_inventory_candidate",
+    ),
+    _geometry_discovery(
+        "mf_curve_buy_impact_0_01_sol_pct_curve_only",
+        description="Fee-free constant-product average-fill impact for a fixed 0.01 SOL mechanical probe; unavailable if real-token capacity binds.",
+        hypothesis_role="curve_shape_sensitivity_probe",
+    ),
+    _geometry_discovery(
+        "mf_curve_buy_impact_0_10_sol_pct_curve_only",
+        description="Fee-free constant-product average-fill impact for the primary fixed 0.10 SOL mechanical probe; unavailable if real-token capacity binds.",
+        hypothesis_role="curve_shape_primary_mechanical_probe",
+    ),
+    _geometry_discovery(
+        "mf_curve_buy_impact_0_50_sol_pct_curve_only",
+        description="Fee-free constant-product average-fill impact for a fixed 0.50 SOL mechanical sensitivity probe; unavailable if real-token capacity binds.",
+        hypothesis_role="curve_shape_sensitivity_probe",
+    ),
+    _geometry_discovery(
+        "mf_curve_real_token_capacity_ratio_0_10_sol",
+        description="Real tokens remaining divided by unconstrained tokens-out for the fixed 0.10 SOL mechanical curve probe.",
+        hypothesis_role="remaining_inventory_capacity_candidate",
     ),
     OpportunityFeatureSpecV0(
         feature_id="causal_capture_sha256",
