@@ -1,0 +1,74 @@
+{
+  "comparison": {
+    "baseline": "same_feature_available_baseline_admitted_population",
+    "fresh_confirmation_required": true,
+    "same_sample_promotion_permitted": false,
+    "threshold_search_permitted": false
+  },
+  "decision_rule": {
+    "iterate_if_all": [
+      "minimum_sample_and_frequency_met",
+      "candidate_mean_net_return_pct_gt_baseline",
+      "candidate_median_net_return_pct_gt_baseline",
+      "candidate_profit_factor_gt_baseline",
+      "candidate_mean_without_best_trade_pct_gt_baseline",
+      "candidate_p10_net_return_pct_gte_baseline"
+    ],
+    "keep_if_all": [
+      "candidate_mean_net_return_pct_gt_0",
+      "candidate_profit_factor_gt_1",
+      "candidate_mean_without_best_trade_pct_gt_0",
+      "candidate_median_net_return_pct_gt_baseline",
+      "candidate_p10_net_return_pct_gte_baseline"
+    ],
+    "kill_otherwise": true,
+    "minimum_route_usable_candidate_n": 10,
+    "minimum_signal_frequency_pct": 20.0
+  },
+  "economic_contract": {
+    "entry_adverse_slippage_bps": 100,
+    "entry_fee_bps": 20,
+    "entry_latency_seconds_after_cutoff": 2,
+    "exit_adverse_slippage_bps": 100,
+    "exit_fee_bps": 20,
+    "exit_horizon_seconds_after_observed_entry": 60,
+    "max_provider_price_impact_pct_points": 2.0,
+    "notional_usd": 25.0,
+    "primary_outcome": "fixed_plus_60s_route_shadow_net_return_pct",
+    "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+    "unroutable_exit_return_pct": -100.0
+  },
+  "feature_rule": {
+    "feature_id": "mf_top_wallet_gross_share_delta_pct_points_late_minus_early",
+    "op": "<=",
+    "semantic_rationale": "non_increasing_top_wallet_gross_flow_concentration_from_early_to_late_half",
+    "value": 0.0
+  },
+  "guardrails": {
+    "coordination_entity_acquisition_not_required_for_this_test": true,
+    "diagnostic_feature_not_promoted_to_selector": true,
+    "frozen_route_contract_unchanged": true,
+    "no_execution_only_features_as_alpha": true,
+    "no_future_dependent_features": true,
+    "no_social_event_features": true,
+    "sniper_v1_unchanged": true
+  },
+  "hypothesis_id": "H_ORGANICITY_CONCENTRATION_DECAY_V0",
+  "policy_hash_sha256": "401109ad1ede8b175fd3db2b0ed6e564bc3f71040246acb04d591c33acfb188c",
+  "population": {
+    "baseline_selector": "FROZEN_SIGNED_FLOW_GE_0_08",
+    "economic_population": "route_usable_baseline_admitted_episodes_with_feature_available",
+    "feature_availability_required": true,
+    "stratum": "pump_launch"
+  },
+  "schema_version": "launch_burst_concentration_decay_hypothesis_v0",
+  "status": "PREREGISTERED_DISCOVERY_ONLY_FRESH_CONFIRMATION_REQUIRED",
+  "temporal_contract": {
+    "decision_window_seconds": 5,
+    "early_half": "[t0,t0+2.5s)",
+    "feature_must_be_observed_by_decision_cutoff": true,
+    "late_half": "[t0+2.5s,t0+5s]",
+    "published_at_not_causal_clock": true
+  },
+  "track": "market_first"
+}
