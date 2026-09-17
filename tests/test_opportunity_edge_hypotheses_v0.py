@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 
 from src.launch_burst_sniper_v1 import EXPECTED_POLICY_HASH, load_sniper_policy_v1
+from src.market_first_feature_discovery_v1 import FEATURE_IDS
 from src.opportunity_edge_hypotheses_v0 import (
     EDGE_HYPOTHESES_V0,
     edge_hypothesis_rows_v0,
@@ -52,12 +53,20 @@ class OpportunityEdgeHypothesesV0Tests(unittest.TestCase):
                 self.assertFalse(spec.execution_only)
                 self.assertFalse(spec.diagnostic_only)
 
-    def test_acceleration_remains_blocked_without_causal_feature_or_threshold(self):
+    def test_acceleration_is_diagnostic_only_without_threshold_or_selector_promotion(self):
         item = EDGE_HYPOTHESES_V0["H_ACCELERATION_V0"]
         self.assertFalse(item.selector_ready)
         self.assertEqual(item.selector_feature_ids, ())
+        self.assertEqual(set(item.diagnostic_feature_ids), set(FEATURE_IDS))
         self.assertEqual(item.threshold_contract, "NO_THRESHOLD_DEFINED_DO_NOT_SWEEP")
-        self.assertEqual(item.blocker, "causal_acceleration_feature_not_registered")
+        self.assertEqual(item.blocker, "prospective_selector_rule_not_preregistered")
+        for feature_id in item.diagnostic_feature_ids:
+            spec = feature_spec_v0(feature_id)
+            self.assertEqual(spec.track, TRACK_MARKET_FIRST)
+            self.assertTrue(spec.diagnostic_only)
+            self.assertFalse(spec.selector_eligible)
+            self.assertFalse(spec.execution_only)
+            self.assertFalse(spec.future_dependent)
 
     def test_liquidity_hypothesis_does_not_promote_provider_execution_evidence(self):
         item = EDGE_HYPOTHESES_V0["H_LIQUIDITY_EXITABILITY_V0"]
