@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 
 from src.launch_burst_sniper_v1 import EXPECTED_POLICY_HASH, load_sniper_policy_v1
+from src.market_first_bonding_curve_geometry_v1 import FEATURE_IDS as GEOMETRY_FEATURE_IDS
 from src.market_first_feature_discovery_v1 import FEATURE_IDS
 from src.market_first_liquidity_discovery_v0 import FEATURE_IDS as LIQUIDITY_FEATURE_IDS
 from src.opportunity_edge_hypotheses_v0 import (
@@ -73,10 +74,12 @@ class OpportunityEdgeHypothesesV0Tests(unittest.TestCase):
         item = EDGE_HYPOTHESES_V0["H_LIQUIDITY_EXITABILITY_V0"]
         self.assertFalse(item.selector_ready)
         self.assertEqual(item.selector_feature_ids, ())
-        self.assertTrue(set(LIQUIDITY_FEATURE_IDS).issubset(set(item.diagnostic_feature_ids)))
-        self.assertIn("provider_price_impact_pct_points", item.diagnostic_feature_ids)
+        diagnostic_ids = set(item.diagnostic_feature_ids)
+        self.assertTrue(set(LIQUIDITY_FEATURE_IDS).issubset(diagnostic_ids))
+        self.assertTrue(set(GEOMETRY_FEATURE_IDS).issubset(diagnostic_ids))
+        self.assertIn("provider_price_impact_pct_points", diagnostic_ids)
         self.assertEqual(item.blocker, "prospective_liquidity_selector_rule_not_preregistered")
-        for feature_id in LIQUIDITY_FEATURE_IDS:
+        for feature_id in (*LIQUIDITY_FEATURE_IDS, *GEOMETRY_FEATURE_IDS):
             spec = feature_spec_v0(feature_id)
             self.assertEqual(spec.track, TRACK_MARKET_FIRST)
             self.assertTrue(spec.diagnostic_only)
