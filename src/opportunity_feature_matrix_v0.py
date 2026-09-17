@@ -62,6 +62,20 @@ _DISCOVERY_COMMON = {
     "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
 }
 
+_LIQUIDITY_DISCOVERY_COMMON = {
+    "track": TRACK_MARKET_FIRST,
+    "causal_source": "pump_trade_event_reserve_state_observed_before_provider_quotes",
+    "earliest_causal_availability": "at_frozen_5s_decision_cutoff",
+    "selector_eligible": False,
+    "diagnostic_only": True,
+    "execution_only": False,
+    "future_dependent": False,
+    "missing_data_policy": "fail_closed_when_quote_identity_or_reserve_state_missing_or_conflicting",
+    "normalization_scope": "pump_launch_frozen_5s_market_reserve_diagnostic_v0",
+    "chain_scope": ("solana:mainnet:pumpfun",),
+    "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
+}
+
 
 def _sniper(
     feature_id: str,
@@ -92,6 +106,21 @@ def _discovery(
         description=description,
         hypothesis_role=hypothesis_role,
         **_DISCOVERY_COMMON,
+    )
+
+
+def _liquidity_discovery(
+    feature_id: str,
+    *,
+    description: str,
+    hypothesis_role: str,
+) -> OpportunityFeatureSpecV0:
+    return OpportunityFeatureSpecV0(
+        feature_id=feature_id,
+        category="liquidity_exitability",
+        description=description,
+        hypothesis_role=hypothesis_role,
+        **_LIQUIDITY_DISCOVERY_COMMON,
     )
 
 
@@ -185,6 +214,21 @@ _FEATURES = (
         category="concentration_dynamics",
         description="Late-half minus early-half top-wallet gross-flow share in percentage points; unavailable when wallet identity is incomplete.",
         hypothesis_role="concentration_dynamics_candidate",
+    ),
+    _liquidity_discovery(
+        "mf_pump_real_quote_reserve_raw_at_cutoff",
+        description="Latest causally observed Pump real quote reserve at the frozen 5s cutoff, in raw quote-asset units; absolute comparisons require an identical quote mint.",
+        hypothesis_role="market_side_quote_reserve_depth_candidate",
+    ),
+    _liquidity_discovery(
+        "mf_pump_real_to_virtual_quote_reserve_ratio_at_cutoff",
+        description="Real quote reserve divided by virtual quote reserve at the latest causal Pump TradeEvent by the frozen cutoff.",
+        hypothesis_role="market_side_real_vs_virtual_depth_candidate",
+    ),
+    _liquidity_discovery(
+        "mf_pump_real_quote_reserve_change_over_virtual_start",
+        description="Change in real quote reserve over the frozen 5s window normalized by the first virtual quote reserve.",
+        hypothesis_role="market_side_depth_change_candidate",
     ),
     OpportunityFeatureSpecV0(
         feature_id="causal_capture_sha256",

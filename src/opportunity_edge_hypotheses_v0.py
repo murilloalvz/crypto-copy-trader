@@ -122,13 +122,21 @@ _HYPOTHESES = (
         family="liquidity_exitability",
         question="Is there market-observable liquidity early enough to inform selection without leaking provider execution results?",
         selector_feature_ids=(),
-        diagnostic_feature_ids=("provider_price_impact_pct_points",),
-        scientific_status="BLOCKED_SELECTOR_FEATURE_EXECUTION_EVIDENCE_ONLY",
+        diagnostic_feature_ids=(
+            "mf_pump_real_quote_reserve_raw_at_cutoff",
+            "mf_pump_real_to_virtual_quote_reserve_ratio_at_cutoff",
+            "mf_pump_real_quote_reserve_change_over_virtual_start",
+            "provider_price_impact_pct_points",
+        ),
+        scientific_status="CAUSAL_MARKET_RESERVE_DIAGNOSTICS_REGISTERED_NOT_SELECTOR_READY",
         selector_ready=False,
         threshold_contract="NO_CAUSAL_MARKET_LIQUIDITY_THRESHOLD_DEFINED",
-        preregistration_rule="Implement a market-observable causal liquidity feature separately from provider route results before selector use.",
-        next_experiment_role="execution_diagnostic_only_until_market_feature_exists",
-        blocker="market_observable_liquidity_feature_not_registered",
+        preregistration_rule=(
+            "Use event-native Pump reserve state only as causal diagnostic features and provider route results only as "
+            "post-decision evaluation labels. Any selector rule or threshold requires separate preregistration before a fresh capture."
+        ),
+        next_experiment_role="retrospective_route_feasibility_association_only",
+        blocker="prospective_liquidity_selector_rule_not_preregistered",
     ),
 )
 

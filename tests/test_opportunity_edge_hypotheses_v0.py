@@ -7,6 +7,7 @@ import unittest
 
 from src.launch_burst_sniper_v1 import EXPECTED_POLICY_HASH, load_sniper_policy_v1
 from src.market_first_feature_discovery_v1 import FEATURE_IDS
+from src.market_first_liquidity_discovery_v0 import FEATURE_IDS as LIQUIDITY_FEATURE_IDS
 from src.opportunity_edge_hypotheses_v0 import (
     EDGE_HYPOTHESES_V0,
     edge_hypothesis_rows_v0,
@@ -68,11 +69,20 @@ class OpportunityEdgeHypothesesV0Tests(unittest.TestCase):
             self.assertFalse(spec.execution_only)
             self.assertFalse(spec.future_dependent)
 
-    def test_liquidity_hypothesis_does_not_promote_provider_execution_evidence(self):
+    def test_liquidity_hypothesis_uses_market_diagnostics_and_keeps_provider_execution_only(self):
         item = EDGE_HYPOTHESES_V0["H_LIQUIDITY_EXITABILITY_V0"]
         self.assertFalse(item.selector_ready)
         self.assertEqual(item.selector_feature_ids, ())
-        self.assertEqual(item.diagnostic_feature_ids, ("provider_price_impact_pct_points",))
+        self.assertTrue(set(LIQUIDITY_FEATURE_IDS).issubset(set(item.diagnostic_feature_ids)))
+        self.assertIn("provider_price_impact_pct_points", item.diagnostic_feature_ids)
+        self.assertEqual(item.blocker, "prospective_liquidity_selector_rule_not_preregistered")
+        for feature_id in LIQUIDITY_FEATURE_IDS:
+            spec = feature_spec_v0(feature_id)
+            self.assertEqual(spec.track, TRACK_MARKET_FIRST)
+            self.assertTrue(spec.diagnostic_only)
+            self.assertFalse(spec.selector_eligible)
+            self.assertFalse(spec.execution_only)
+            self.assertFalse(spec.future_dependent)
         provider_feature = feature_spec_v0("provider_price_impact_pct_points")
         self.assertTrue(provider_feature.execution_only)
         self.assertFalse(provider_feature.selector_eligible)
