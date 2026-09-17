@@ -16,7 +16,7 @@ from benchmarks.curve_capacity_replication_v0.run import (
 from src.market_first_bonding_curve_geometry_v1 import SOL_QUOTE_MINT
 
 
-EXPECTED_PROTOCOL_HASH = "3697a9acc73753151f49d3d64354c11c355a8eed31cfefbc784209c1957599c1"
+EXPECTED_PROTOCOL_HASH = "b144d544abf5e16ed5ef151a097f18b9f3101964580386b4bbda97c693863cfe"
 
 
 class CurveCapacityReplicationV0Tests(unittest.TestCase):
@@ -27,6 +27,8 @@ class CurveCapacityReplicationV0Tests(unittest.TestCase):
         self.assertEqual(protocol["hypothesis"]["feature_id"], FEATURE_ID)
         self.assertFalse(protocol["comparison"]["same_sample_threshold_search_permitted"])
         self.assertTrue(protocol["causal_contract"]["fresh_independent_causal_capture_required"])
+        self.assertEqual(protocol["sample_contract"]["capture_duration_seconds"], 900)
+        self.assertTrue(protocol["sample_contract"]["one_fresh_capture_only"])
         _validate_protocol(protocol, contract)
 
     def test_fresh_capture_with_strong_negative_monotonic_relation_can_keep(self):
