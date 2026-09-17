@@ -43,7 +43,8 @@ def _open_read_only_database(path: Path) -> sqlite3.Connection:
 
 
 def _load_outcomes_read_only(*, database_path: Path, acquisition_run_key: str) -> list[dict[str, Any]]:
-    with _open_read_only_database(database_path) as conn:
+    conn = _open_read_only_database(database_path)
+    try:
         table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_forward_outcomes'"
         ).fetchone()
@@ -59,6 +60,8 @@ def _load_outcomes_read_only(*, database_path: Path, acquisition_run_key: str) -
             ORDER BY episode_key, horizon_seconds""",
             (acquisition_run_key,),
         ).fetchall()
+    finally:
+        conn.close()
     return [dict(row) for row in rows]
 
 
