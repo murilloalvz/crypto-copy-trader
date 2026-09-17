@@ -87,7 +87,13 @@
     "minimum_primary_usable_route_results": 30,
     "stratum": "pump_launch"
   },
-  "protocol_hash_sha256": "3697a9acc73753151f49d3d64354c11c355a8eed31cfefbc784209c1957599c1",
+  "protocol_hash_sha256": "b144d544abf5e16ed5ef151a097f18b9f3101964580386b4bbda97c693863cfe",
+  "sample_contract": {
+    "below_minimum_classification": "INSUFFICIENT_FRESH_SAMPLE",
+    "capture_duration_seconds": 900,
+    "do_not_extend_or_repeat_based_on_interim_economic_result": true,
+    "one_fresh_capture_only": true
+  },
   "schema_version": "curve_capacity_replication_protocol_v0",
   "status": "PREREGISTERED_FRESH_CONFIRMATION",
   "track": "market_first"
