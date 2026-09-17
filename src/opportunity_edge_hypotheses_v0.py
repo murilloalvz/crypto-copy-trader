@@ -78,19 +78,32 @@ _HYPOTHESES = (
         hypothesis_id="H_ORGANIC_VS_COORDINATED_V0",
         track=TRACK_MARKET_FIRST,
         family="organic_vs_coordinated_flow",
-        question="Does combining breadth and conservative concentration better describe distributed organic participation?",
+        question="Does entity-adjusted breadth, concentration, funding context and post-decision behavior distinguish organic from coordinated activity better than raw wallet counts?",
         selector_feature_ids=(
             "unique_buy_wallet_count",
             "unique_transaction_count",
             "top_wallet_gross_flow_share_worst_case_pct",
         ),
-        diagnostic_feature_ids=(),
-        scientific_status="COMPOSITE_HYPOTHESIS_ONLY_NOT_NEW_POLICY",
+        diagnostic_feature_ids=(
+            "mf_unique_buy_entity_count",
+            "mf_top_entity_gross_flow_share_pct",
+            "mf_coordination_compression_ratio",
+            "mf_entity_repeat_event_share_pct",
+            "mf_entity_churn_proxy",
+            "mf_funding_linked_buy_wallet_share_pct",
+            "mf_deployer_prior_launch_count",
+            "mf_early_buyer_retention_ratio_followup",
+            "mf_sell_pressure_followup_ratio",
+        ),
+        scientific_status="ENTITY_ADJUSTED_CAUSAL_DIAGNOSTICS_REGISTERED_NOT_SELECTOR_READY",
         selector_ready=False,
         threshold_contract="NO_NEW_COMPOSITE_THRESHOLD_DEFINED",
-        preregistration_rule="A new composite selector must be frozen prospectively; current Sniper V1 gates remain unchanged.",
-        next_experiment_role="hypothesis_generation_only",
-        blocker="new_composite_rule_not_preregistered",
+        preregistration_rule=(
+            "Entity/funding/deployer evidence used at decision time must have causal observation clocks no later than the decision cutoff. "
+            "Followup retention and sell pressure are future-dependent diagnostics only. Any selector rule or threshold must be frozen before a fresh capture; Sniper V1 remains unchanged."
+        ),
+        next_experiment_role="entity_coordination_diagnostic_discovery_only",
+        blocker="causal_entity_evidence_source_and_prospective_selector_rule_not_preregistered",
     ),
     EdgeHypothesisV0(
         hypothesis_id="H_ACCELERATION_V0",
