@@ -76,6 +76,34 @@ _LIQUIDITY_DISCOVERY_COMMON = {
     "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
 }
 
+_COORDINATION_DISCOVERY_COMMON = {
+    "track": TRACK_MARKET_FIRST,
+    "causal_source": "causal_trade_sequence_plus_timestamped_entity_funding_or_deployer_evidence",
+    "earliest_causal_availability": "at_or_before_decision_cutoff_only",
+    "selector_eligible": False,
+    "diagnostic_only": True,
+    "execution_only": False,
+    "future_dependent": False,
+    "missing_data_policy": "fail_closed_when_required_identity_relation_or_prior_history_evidence_is_missing",
+    "normalization_scope": "pump_launch_entity_coordination_diagnostic_v0",
+    "chain_scope": ("solana:mainnet:pumpfun",),
+    "scientific_status": "DISCOVERY_DIAGNOSTIC_ONLY_NOT_PREREGISTERED_SELECTOR",
+}
+
+_POSTDECISION_COORDINATION_COMMON = {
+    "track": TRACK_MARKET_FIRST,
+    "causal_source": "postdecision_followup_market_sequence",
+    "earliest_causal_availability": "after_declared_followup_cutoff",
+    "selector_eligible": False,
+    "diagnostic_only": True,
+    "execution_only": False,
+    "future_dependent": True,
+    "missing_data_policy": "outcome_diagnostic_only_no_imputation_into_selector",
+    "normalization_scope": "postdecision_coordination_followup_v0",
+    "chain_scope": ("solana:mainnet:pumpfun",),
+    "scientific_status": "POSTDECISION_DIAGNOSTIC_ONLY_FORBIDDEN_IN_SELECTOR",
+}
+
 
 def _sniper(
     feature_id: str,
@@ -121,6 +149,37 @@ def _liquidity_discovery(
         description=description,
         hypothesis_role=hypothesis_role,
         **_LIQUIDITY_DISCOVERY_COMMON,
+    )
+
+
+def _coordination_discovery(
+    feature_id: str,
+    *,
+    category: str,
+    description: str,
+    hypothesis_role: str,
+) -> OpportunityFeatureSpecV0:
+    return OpportunityFeatureSpecV0(
+        feature_id=feature_id,
+        category=category,
+        description=description,
+        hypothesis_role=hypothesis_role,
+        **_COORDINATION_DISCOVERY_COMMON,
+    )
+
+
+def _postdecision_coordination(
+    feature_id: str,
+    *,
+    description: str,
+    hypothesis_role: str,
+) -> OpportunityFeatureSpecV0:
+    return OpportunityFeatureSpecV0(
+        feature_id=feature_id,
+        category="postdecision_coordination_outcome",
+        description=description,
+        hypothesis_role=hypothesis_role,
+        **_POSTDECISION_COORDINATION_COMMON,
     )
 
 
@@ -229,6 +288,58 @@ _FEATURES = (
         "mf_pump_real_quote_reserve_change_over_virtual_start",
         description="Change in real quote reserve over the frozen 5s window normalized by the first virtual quote reserve.",
         hypothesis_role="market_side_depth_change_candidate",
+    ),
+    _coordination_discovery(
+        "mf_unique_buy_entity_count",
+        category="entity_adjusted_breadth",
+        description="Estimated BUY-entity connected-component count from causally observed entity-link evidence; compare with frozen unique_buy_wallet_count.",
+        hypothesis_role="entity_adjusted_buyer_breadth_candidate",
+    ),
+    _coordination_discovery(
+        "mf_top_entity_gross_flow_share_pct",
+        category="entity_concentration",
+        description="Largest estimated entity share of reserve-normalized gross flow using only causal entity links.",
+        hypothesis_role="entity_adjusted_concentration_candidate",
+    ),
+    _coordination_discovery(
+        "mf_coordination_compression_ratio",
+        category="entity_coordination",
+        description="Raw unique BUY-wallet count divided by estimated BUY-entity count; 1 means no observed entity compression.",
+        hypothesis_role="wallet_to_entity_compression_candidate",
+    ),
+    _coordination_discovery(
+        "mf_entity_repeat_event_share_pct",
+        category="entity_coordination",
+        description="Share of identified causal events beyond the first event attributed to each estimated entity.",
+        hypothesis_role="repeated_entity_activity_candidate",
+    ),
+    _coordination_discovery(
+        "mf_entity_churn_proxy",
+        category="entity_coordination",
+        description="Entity-level matched BUY/SELL gross turnover divided by total gross turnover; a churn proxy, not a wash-trading claim.",
+        hypothesis_role="entity_churn_or_wash_proxy_candidate",
+    ),
+    _coordination_discovery(
+        "mf_funding_linked_buy_wallet_share_pct",
+        category="funding_relationships",
+        description="Share of BUY wallets with a causally observed inbound funding relationship; funding does not itself merge wallets into one entity.",
+        hypothesis_role="funding_relationship_breadth_candidate",
+    ),
+    _coordination_discovery(
+        "mf_deployer_prior_launch_count",
+        category="deployer_history",
+        description="Prior launch count from deployer history whose observation and summarized-history cutoffs are both no later than the decision cutoff.",
+        hypothesis_role="prior_only_deployer_history_candidate",
+    ),
+    _postdecision_coordination(
+        "mf_early_buyer_retention_ratio_followup",
+        description="Fraction of early BUY entities that BUY again in the declared post-decision followup window.",
+        hypothesis_role="early_buyer_retention_outcome_diagnostic",
+    ),
+    _postdecision_coordination(
+        "mf_sell_pressure_followup_ratio",
+        description="SELL gross flow divided by total gross flow in the declared post-decision followup window.",
+        hypothesis_role="postdecision_sell_pressure_outcome_diagnostic",
     ),
     OpportunityFeatureSpecV0(
         feature_id="causal_capture_sha256",
