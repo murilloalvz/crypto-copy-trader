@@ -98,13 +98,23 @@ _HYPOTHESES = (
         family="acceleration",
         question="Is unique-buyer or buy-flow demand accelerating inside the causal evidence window?",
         selector_feature_ids=(),
-        diagnostic_feature_ids=(),
-        scientific_status="PLANNED_FEATURE_DEFINITION_REQUIRED",
+        diagnostic_feature_ids=(
+            "mf_event_rate_acceleration_per_s2",
+            "mf_buy_event_rate_acceleration_per_s2",
+            "mf_unique_buy_wallet_arrival_acceleration_per_s2",
+            "mf_signed_flow_acceleration_per_s2",
+            "mf_directional_efficiency_delta_late_minus_early",
+            "mf_top_wallet_gross_share_delta_pct_points_late_minus_early",
+        ),
+        scientific_status="CAUSAL_DIAGNOSTIC_FEATURES_REGISTERED_NOT_SELECTOR_READY",
         selector_ready=False,
         threshold_contract="NO_THRESHOLD_DEFINED_DO_NOT_SWEEP",
-        preregistration_rule="Define causal acceleration semantics and availability first, then preregister any threshold before outcomes.",
-        next_experiment_role="blocked_until_causal_feature_exists",
-        blocker="causal_acceleration_feature_not_registered",
+        preregistration_rule=(
+            "Use preserved causal 5s event sequences for diagnostic discovery only. Any selector rule or threshold "
+            "must be separately frozen before a fresh prospective capture."
+        ),
+        next_experiment_role="retrospective_discovery_then_preregister_fresh_hypothesis",
+        blocker="prospective_selector_rule_not_preregistered",
     ),
     EdgeHypothesisV0(
         hypothesis_id="H_LIQUIDITY_EXITABILITY_V0",
