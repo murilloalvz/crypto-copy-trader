@@ -20,7 +20,7 @@ class EarlyBuyerPriorQualityV0Tests(unittest.TestCase):
         _validate_protocol(protocol)
         self.assertEqual(
             protocol["protocol_hash_sha256"],
-            "d503f57e2d114d98ecd48f3e491d78410c2f3722a7b0bfe03b15dc1329e0a4e2",
+            "c22e2f9ca327e95616ac8093bd2c8fffc6063d9c9b53744f554e3dea7d1946ff",
         )
         self.assertEqual(
             protocol["feature_contract"]["primary_feature_id"],
@@ -155,7 +155,7 @@ class EarlyBuyerPriorQualityV0Tests(unittest.TestCase):
             incremental={"partial_spearman": 0.15},
         )
         self.assertEqual(decision, "KEEP")
-        self.assertTrue(checks["positive_direction_run_fraction_gte_0_67"])
+        self.assertTrue(checks["positive_direction_run_fraction_gte_two_thirds"])
 
         kill_primary = {
             "usable_pair_count": 30,
