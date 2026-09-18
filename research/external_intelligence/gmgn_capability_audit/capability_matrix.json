@@ -1,6 +1,6 @@
 {
   "schema_version": "gmgn_capability_audit_v0",
-  "status": "DOCUMENTATION_AND_READ_ONLY_SAMPLING_PREPARED_NO_SELECTOR_CHANGE",
+  "status": "REAL_READ_ONLY_SAMPLE_COMPLETE_DEPLOYER_NEXT_PROSPECTIVE_HYPOTHESIS",
   "source_checked_at_utc": "2026-09-18",
   "principles": {
     "raw_chain_primary_reference": true,
@@ -149,7 +149,7 @@
       "observed_at": "NOT PROVIDED; local wrapper required",
       "provenance": "GMGN creator/deployer history endpoint",
       "update_frequency": "dynamic; not documented",
-      "measured_expected_latency": "must be measured",
+      "measured_expected_latency": "2052 ms final request in real Solana sample; 2072 ms wall duration",
       "historical_availability": "up to 100 token rows plus aggregate counts",
       "rate_limit": "documented route weight 2",
       "missingness": "tokens list may be truncated; total created is inner_count + open_count, not len(tokens)",
@@ -159,7 +159,9 @@
       "opaque_score": false,
       "raw_components_available": true,
       "our_equivalent_raw_data": "not yet complete; deployer-history acquisition is currently missing",
-      "potential_incremental_value": "HIGH"
+      "potential_incremental_value": "HIGH",
+      "live_sample_finding": "creator snapshot returned inner_count=1247, open_count=0, open_ratio=0. The returned 101 rows contained 93 launches with create_timestamp before the audited token T0, 1 at T0, and 7 after T0. Because rows are ATH-sorted/capped and the query was ~72m after T0, these counts are discovery evidence only; prospective snapshots are required for causal feature use.",
+      "next_decision": "Use as isolated prospective acquisition for Deployer Prior Quality. Prefer signal-time snapshot features (created total, graduation/open count/rate, prior-best ATH excluding current token when identifiable) and separately reconstruct immutable launch cadence from raw-chain creation events. Do not backfill current ATH/open_ratio to old T0."
     },
     {
       "name": "track_smartmoney",
@@ -196,7 +198,7 @@
       "observed_at": "NOT PROVIDED; local wrapper required",
       "provenance": "GMGN platform-tagged Smart Money feed",
       "update_frequency": "real-time feed semantics claimed; exact refresh cadence must be measured",
-      "measured_expected_latency": "timing sample required",
+      "measured_expected_latency": "1141 ms request duration in real Solana sample",
       "historical_availability": "latest feed; exact retained horizon not established",
       "rate_limit": "documented route weight 1; rough sustained budget ~20 req/s under full bucket model",
       "missingness": "platform tags and records can be absent",
@@ -206,7 +208,9 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "raw trade events yes; Smart Money classification no",
-      "potential_incremental_value": "HIGH if early and stable"
+      "potential_incremental_value": "HIGH if early and stable",
+      "live_sample_finding": "100 rows represented 61 unique transactions, 35 makers and 22 tokens. Latest event was ~1.2s before request, median event age ~18.2s, oldest ~38.2s. 36 transaction hashes produced multiple rows/legs (max 3), so future features must deduplicate transaction legs.",
+      "next_decision": "TEST_AS_HYPOTHESIS later with prospective event_at + local observed_at; do not count raw rows as independent Smart Money events."
     },
     {
       "name": "track_kol",
@@ -243,7 +247,7 @@
       "observed_at": "NOT PROVIDED; local wrapper required",
       "provenance": "GMGN platform-tagged KOL feed",
       "update_frequency": "real-time feed semantics claimed; measure",
-      "measured_expected_latency": "timing sample required",
+      "measured_expected_latency": "952 ms request duration in real Solana sample",
       "historical_availability": "latest feed; exact retained horizon not established",
       "rate_limit": "documented route weight 1",
       "missingness": "identity/social mapping may be absent",
@@ -253,7 +257,9 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "raw trade yes; KOL mapping no",
-      "potential_incremental_value": "MEDIUM-HIGH"
+      "potential_incremental_value": "MEDIUM-HIGH",
+      "live_sample_finding": "100 rows represented 52 unique transactions, 22 makers and 22 tokens. Latest event was ~1.4s before request, median event age ~186s, oldest ~336s. 34 transaction hashes produced multiple rows/legs (max 4).",
+      "next_decision": "TEST_AS_HYPOTHESIS after higher-EIG deployer work; deduplicate transaction legs and preserve mutable external label provenance."
     },
     {
       "name": "market_trenches_new_creation",
@@ -297,7 +303,7 @@
       "observed_at": "NOT PROVIDED; local wrapper required",
       "provenance": "GMGN Trenches launch list + platform-computed current metrics",
       "update_frequency": "dynamic; benchmark empirically",
-      "measured_expected_latency": "timing sample required versus chain T0 / our observed_at",
+      "measured_expected_latency": "1244 ms request duration in real Solana sample",
       "historical_availability": "new_creation / near_completion / completed list views, not a guaranteed event archive",
       "rate_limit": "inspect headers/CLI behavior; not fixed in audited excerpt",
       "missingness": "platform/filter defaults can silently change coverage; explicit Pump.fun filter required",
@@ -307,7 +313,9 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "our chain T0/observed_at is primary; many structural fields only partial",
-      "potential_incremental_value": "MEDIUM for alpha, HIGH for timing/coverage benchmark"
+      "potential_incremental_value": "MEDIUM for alpha, HIGH for timing/coverage benchmark",
+      "live_sample_finding": "60 new_creation rows covered creation events from ~1.8s to ~158.8s before request, median ~77.3s. The audited token was queried ~63m after T0 and therefore its absence is not a coverage failure.",
+      "next_decision": "BENCHMARK prospectively against chain T0 / our observed_at using synchronized sampling."
     },
     {
       "name": "market_completed",
@@ -370,7 +378,10 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "market data yes; ranking/attention no",
-      "potential_incremental_value": "LOW as causal alpha, HIGH as competitive timing benchmark"
+      "potential_incremental_value": "LOW as causal alpha, HIGH as competitive timing benchmark",
+      "measured_expected_latency": "1010 ms request duration in real Solana sample",
+      "live_sample_finding": "Audited token absent from the 5m ranking queried ~63m after T0; absence is not causal evidence because ranking snapshot has no historical rank timestamp.",
+      "next_decision": "BENCHMARK only."
     },
     {
       "name": "token_info",
@@ -400,7 +411,10 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "creator/identity often derivable from chain",
-      "potential_incremental_value": "LOW-MEDIUM; mainly engineering savings"
+      "potential_incremental_value": "LOW-MEDIUM; mainly engineering savings",
+      "measured_expected_latency": "947 ms request duration in real Solana sample",
+      "live_sample_finding": "Creator mapping was available and internally consistent with created-tokens totals: stat.creator_created_count=1247 and created-tokens inner_count+open_count=1247. Dynamic token fields were observed ~63m after T0 and are not backfillable.",
+      "next_decision": "APPLY_NOW_SAFE for identity/creator mapping; dynamic fields only as prospective snapshots."
     },
     {
       "name": "token_security",
@@ -428,7 +442,10 @@
       "opaque_score": true,
       "raw_components_available": true,
       "our_equivalent_raw_data": "some raw-chain holder/creator information possible but not all currently implemented",
-      "potential_incremental_value": "MEDIUM-HIGH as risk dimension"
+      "potential_incremental_value": "MEDIUM-HIGH as risk dimension",
+      "measured_expected_latency": "992 ms request duration in real Solana sample",
+      "live_sample_finding": "Snapshot exposed renounced mint/freeze, burn/tax and other structural fields, but it was observed ~63m after T0. Late top-holder/security state is not launch-time evidence.",
+      "next_decision": "TEST_AS_HYPOTHESIS prospectively as Structural Quality / Risk, not a direct veto yet."
     },
     {
       "name": "wallet_score",
@@ -542,7 +559,10 @@
         "concentration persistence/decay across prospectively stored snapshots"
       ],
       "our_equivalent_raw_data": "partial; concentration/funding/entity structure is derivable from raw chain but not all is currently implemented",
-      "potential_incremental_value": "MEDIUM-HIGH if snapshots can be captured causally; otherwise benchmark/hypothesis mining only"
+      "potential_incremental_value": "MEDIUM-HIGH if snapshots can be captured causally; otherwise benchmark/hypothesis mining only",
+      "measured_expected_latency": "984 ms request duration in real Solana sample",
+      "live_sample_finding": "Only 4 rows were returned ~63m after T0. The Pump pool itself was addr_type=2/exchange=pump and held amount_percentage=1, while the three non-pool wallets had already exited. Raw top-N concentration would therefore be misleading without pool/curve exclusion and a prospective snapshot.",
+      "next_decision": "Remain AUDIT_ONLY; future structural experiment must exclude addr_type=2/pool rows and snapshot before decision cutoff."
     },
     {
       "name": "token_holders_smart_degen",
@@ -603,7 +623,10 @@
       "hypothesis_candidate": "current early participant set + prospectively observed smart_degen overlap vs participant set alone",
       "forbidden_inference": "smart_degen holder -> BUY",
       "our_equivalent_raw_data": "wallet addresses/trades yes; GMGN smart_degen label no",
-      "potential_incremental_value": "HIGH only if label timing/stability and observed_at make it genuinely early; otherwise characterization/benchmark"
+      "potential_incremental_value": "HIGH only if label timing/stability and observed_at make it genuinely early; otherwise characterization/benchmark",
+      "measured_expected_latency": "2037 ms final request duration in real Solana sample",
+      "live_sample_finding": "Returned an empty list for the audited token ~69m after T0. This cannot establish absence of early Smart Money and does not resolve label temporal stability.",
+      "next_decision": "Remain AUDIT_ONLY pending prospective point-in-time label snapshots."
     },
     {
       "name": "token_traders_top100_profit",
@@ -661,7 +684,10 @@
       ],
       "forbidden_flow": "top profitable traders -> derive pattern -> direct selector",
       "our_equivalent_raw_data": "transaction histories can partly be derived from raw chain; GMGN ranking saves research effort but is outcome-selected",
-      "potential_incremental_value": "HYPOTHESIS MINING ONLY"
+      "potential_incremental_value": "HYPOTHESIS MINING ONLY",
+      "measured_expected_latency": "1035 ms request duration in real Solana sample",
+      "live_sample_finding": "Returned 4 rows for the audited token; profit ordering is outcome-selected by construction and was observed ~69m after T0.",
+      "next_decision": "AUDIT_ONLY / retrospective hypothesis mining."
     }
   ],
   "delta_2026_09_18_new_skills": {
@@ -675,5 +701,15 @@
     "selector_changed": false,
     "thresholds_retuned": false,
     "note": "Capability audit only. None of these fields are admitted into the currently frozen Participant Quality replication."
+  },
+  "real_sample_checkpoint": {
+    "token": "5JGyhGrdY7hERN4Wkvnqu6wAv6EjW2QUFfkr4CU8pump",
+    "token_t0_unix": 1789764125,
+    "sample_directory": "timing_samples/20260918-214527",
+    "no_private_key": true,
+    "no_capital": true,
+    "selector_changed": false,
+    "decision": "DEPLOYER_PRIOR_QUALITY_NEXT",
+    "causal_note": "All dynamic GMGN observations in this sample occurred after the audited token T0 and are schema/timing/hypothesis evidence only. Future predictive use requires prospective acquisition."
   }
 }
