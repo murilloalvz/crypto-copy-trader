@@ -1,5 +1,6 @@
 param(
     [string]$OutputRoot = "research\external_intelligence\gmgn_capability_audit\timing_samples",
+    [string]$ResumeDirectory = "",
     [int]$InterRequestDelaySeconds = 6
 )
 
@@ -49,6 +50,20 @@ function Invoke-GmgnReadOnlySample {
         [Parameter(Mandatory=$true)][string]$Directory,
         [Parameter(Mandatory=$true)][string]$GmgnCli
     )
+
+    $existingMetaPath = Join-Path $Directory "$Name.meta.json"
+    if (Test-Path $existingMetaPath) {
+        try {
+            $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
+            if ([int]$existingMeta.exit_code -eq 0) {
+                Write-Host "$Name SKIP - existing successful sample"
+                return
+            }
+        }
+        catch {
+            Write-Warning "$Name existing metadata could not be parsed; resampling."
+        }
+    }
 
     $beforeUtc = [DateTimeOffset]::UtcNow
     $beforeMs = $beforeUtc.ToUnixTimeMilliseconds()
@@ -113,9 +128,17 @@ function Invoke-GmgnReadOnlySample {
     }
 }
 
-$stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMdd-HHmmss")
-$out = Join-Path $OutputRoot $stamp
-New-Item -ItemType Directory -Force -Path $out | Out-Null
+if ($ResumeDirectory) {
+    $out = $ResumeDirectory
+    if (-not (Test-Path $out -PathType Container)) {
+        throw "ResumeDirectory does not exist: $out"
+    }
+}
+else {
+    $stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMdd-HHmmss")
+    $out = Join-Path $OutputRoot $stamp
+    New-Item -ItemType Directory -Force -Path $out | Out-Null
+}
 
 $gmgnCli = Resolve-GmgnCli
 
