@@ -13,7 +13,7 @@ PASS = "PASS_BUY_EVENT_ACCELERATION_REPLICATION_V0"
 FEATURE_ID = "mf_buy_event_rate_acceleration_per_s2"
 DEFAULT_PROTOCOL = Path("benchmarks") / "buy_event_acceleration_replication_v0" / "protocol.frozen.json"
 DEFAULT_CONTRACT = Path("benchmarks") / "launch_burst_prospective_economic_v1" / "pump_route_paper_contract_v2.frozen.json"
-ROUTEABLE_ARTIFACT = "market-first-routeable-edge-discovery-v2.json"
+FEATURE_DISCOVERY_ARTIFACT = "market-first-feature-discovery-v1.json"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -229,8 +229,8 @@ def run_replication(
     contract_hash = str(contract.get("contract_hash_sha256") or "")
     fresh_route_input_path = fresh_run_dir / "route-input-v2.json"
     fresh_route_result_path = fresh_run_dir / "route-result-v2.json"
-    routeable_path = fresh_run_dir / ROUTEABLE_ARTIFACT
-    for path in (fresh_route_input_path, fresh_route_result_path, routeable_path):
+    feature_discovery_path = fresh_run_dir / FEATURE_DISCOVERY_ARTIFACT
+    for path in (fresh_route_input_path, fresh_route_result_path, feature_discovery_path):
         if not path.is_file():
             raise ValueError(f"required replication source missing: {path}")
 
@@ -249,27 +249,28 @@ def run_replication(
 
     route_input = _read_json(fresh_route_input_path)
     route_result = _read_json(fresh_route_result_path)
-    routeable = _read_json(routeable_path)
+    feature_discovery = _read_json(feature_discovery_path)
     if route_input.get("contract_hash_sha256") != contract_hash or route_result.get("contract_hash_sha256") != contract_hash:
         raise ValueError("fresh route source/contract mismatch")
     if route_input.get("feature_snapshot_frozen_before_provider_quotes") is not True:
         raise ValueError("fresh feature snapshots were not frozen before provider quotes")
-    if routeable.get("classification") != "PASS_MARKET_FIRST_ROUTEABLE_EDGE_DISCOVERY_V2":
-        raise ValueError("fresh routeable artifact is not PASS")
+    if feature_discovery.get("classification") != "PASS_MARKET_FIRST_FEATURE_DISCOVERY_V1":
+        raise ValueError("fresh feature-discovery artifact is not PASS")
 
-    integrity = routeable.get("source_integrity") or {}
+    integrity = feature_discovery.get("source_integrity") or {}
+    temporal = feature_discovery.get("temporal_contract") or {}
     if integrity.get("route_contract_hash_sha256") != contract_hash:
-        raise ValueError("fresh routeable contract mismatch")
+        raise ValueError("fresh feature-discovery contract mismatch")
     if integrity.get("feature_snapshot_frozen_before_provider_quotes") is not True:
-        raise ValueError("fresh routeable snapshot timing integrity failed")
-    if integrity.get("dynamics_exact_reconstruction_parity") is not True:
+        raise ValueError("fresh feature-discovery snapshot timing integrity failed")
+    if integrity.get("exact_reconstruction_parity") is not True:
         raise ValueError("fresh dynamics reconstruction parity failed")
-    if integrity.get("geometry_stored_event_count_parity") is not True:
-        raise ValueError("fresh geometry event-count parity failed")
-    if integrity.get("geometry_payload_decode_failures") != 0:
-        raise ValueError("fresh geometry payload decode failures present")
-    if integrity.get("exact_routeable_join") is not True:
-        raise ValueError("fresh routeable join is not exact")
+    if integrity.get("causal_quote_asset_identity_emitted") is not True:
+        raise ValueError("fresh causal quote-asset identity was not emitted")
+    if temporal.get("provider_quote_used_for_features") is not False:
+        raise ValueError("fresh feature-discovery consumed provider quote data")
+    if temporal.get("future_outcome_used_for_features") is not False:
+        raise ValueError("fresh feature-discovery consumed future outcome data")
 
     decisions = {
         str(row.get("episode_key") or ""): row
@@ -278,8 +279,16 @@ def run_replication(
     }
 
     rows: list[dict[str, Any]] = []
-    for row in routeable.get("rows") or []:
-        if not isinstance(row, dict) or row.get("is_default_sol_quote") is not True:
+    for row in feature_discovery.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("route_status") or "")
+        route_usable = status == "ROUTE_CLOSED" or status.startswith("UNROUTABLE_EXIT")
+        if (
+            row.get("baseline_admitted") is not True
+            or row.get("is_default_sol_quote") is not True
+            or not route_usable
+        ):
             continue
         feature = _finite((row.get("features") or {}).get(FEATURE_ID))
         outcome = _finite(row.get("fixed_return_pct"))
@@ -407,9 +416,9 @@ def run_replication(
             "route_contract_hash_sha256": contract_hash,
             "fresh_feature_snapshot_frozen_before_provider_quotes": True,
             "fresh_dynamics_exact_reconstruction_parity": True,
-            "fresh_geometry_stored_event_count_parity": True,
-            "fresh_geometry_payload_decode_failures": 0,
-            "fresh_exact_routeable_join": True,
+            "fresh_causal_quote_asset_identity_emitted": True,
+            "fresh_geometry_artifact_required": False,
+            "fresh_population_source": FEATURE_DISCOVERY_ARTIFACT,
         },
         "guardrails": {
             "fresh_capture_required": True,
@@ -420,6 +429,7 @@ def run_replication(
             "economic_contract_changed": False,
             "landed_fill_claim": False,
             "realized_pnl_claim": False,
+            "geometry_dependency_removed_for_current_feature": True,
         },
     }
 
