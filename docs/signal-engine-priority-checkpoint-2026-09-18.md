@@ -188,3 +188,83 @@ Question:
 > Is the mixed cross-run direction plausibly explained by historical-memory maturity/coverage rather than by a non-stationary or spurious participant-quality signal?
 
 This diagnostic is posthoc only. It does not change the ITERATE decision or define a minimum-history threshold.
+
+
+## Early-Buyer Prior Quality — fresh replication result
+
+Experiment:
+
+`MF-EARLY-BUYER-PRIOR-QUALITY-REPLICATION-V0`
+
+Protocol hash:
+
+`655f6cd2c0ba1bad14bc6caa21e7f45fb644edc803f099dc4ce00c210088f796`
+
+Fresh run:
+
+`launch_burst_prospective_route_live_v4-1789764120-3007bac012`
+
+Classification:
+
+`PASS_EARLY_BUYER_PRIOR_QUALITY_REPLICATION_V0`
+
+Decision:
+
+`KEEP`
+
+Fresh population:
+
+- baseline default-SOL episodes: 120;
+- feature available episodes: 100 (83.33%);
+- primary ROUTE_CLOSED feature/outcome pairs: 42;
+- preregistered minimum: 30.
+
+Primary Signal Quality endpoint (ROUTE_CLOSED gross +60s):
+
+- Spearman: +0.5715;
+- Spearman without best trade: +0.5411;
+- leave-one-out sign consistency: 1.0;
+- higher Participant Quality half mean: +9.26%;
+- higher Participant Quality half median: -4.09%;
+- lower/equal half mean: -30.81%;
+- lower/equal half median: -36.36%.
+
+Incremental evidence versus existing flow:
+
+- partial Spearman controlling BUY event-rate acceleration and signed flow: +0.5339;
+- feature vs BUY acceleration Spearman: +0.0771;
+- feature vs signed flow Spearman: -0.2405.
+
+Copyability-sensitive reference:
+
+- route-usable Fixed+60 Spearman: +0.3999;
+- without best trade: +0.3673;
+- higher-half mean: -11.45%;
+- lower/equal-half mean: -49.76%.
+
+All preregistered KEEP checks passed.
+
+Source integrity:
+
+- fresh route-input identity differed from all four frozen history runs;
+- fresh capture was strictly after the frozen history;
+- requested duration 900s, duration-elapsed completion;
+- exact causal reconstruction parity passed;
+- feature snapshots were frozen before provider quotes;
+- strict pre-T0 history only;
+- same-second and same-token history excluded;
+- no numeric support threshold;
+- no threshold search;
+- no wallet realized-PnL claim.
+
+Scientific interpretation:
+
+**Participant Quality is now retained as an evidence-backed Signal Engine dimension.**
+
+This is not an autonomous trading-alpha claim. No production entry threshold, single score, landed-fill claim, manual-exit prescription or automatic selector has been established.
+
+The fresh confirmation materially strengthened the original retrospective signal and retained a large positive partial association after controlling existing flow evidence. The next highest-information research step is a genuinely new information family rather than further tuning of this feature.
+
+Next candidate family:
+
+**Deployer Prior Quality / external participant intelligence**, with GMGN audited only as a prospective read-only evidence source. Any GMGN-derived feature must preserve local observed-at provenance and pass its own discovery -> freeze -> fresh confirmation flow.
