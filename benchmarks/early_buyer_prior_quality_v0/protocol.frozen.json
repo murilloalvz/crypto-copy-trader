@@ -1,0 +1,82 @@
+{
+  "schema_version": "early_buyer_prior_quality_discovery_v0",
+  "status": "PREREGISTERED_RETROSPECTIVE_CAUSAL_DISCOVERY",
+  "track": "market_first",
+  "experiment_id": "MF-EARLY-BUYER-PRIOR-QUALITY-V0",
+  "question": "Does strictly pre-T0 prior opportunity quality of wallets buying in the first 5s add predictive information about current standardized +60s signal outcomes beyond existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "direction": "higher_is_better",
+    "current_participants": "unique BUY wallets observed causally inside the frozen 5s launch window",
+    "wallet_history_value": "median gross +60s route-closed return across strictly pre-T0 prior opportunities for that wallet",
+    "episode_aggregation": "median across current BUY wallets with valid prior history",
+    "missing_history": "missing_not_zero_or_loss",
+    "same_token_prior_history_allowed": false
+  },
+  "history_contract": {
+    "prior_episode_must_be_baseline_admitted": true,
+    "prior_episode_must_be_default_sol_quote": true,
+    "prior_episode_status": "ROUTE_CLOSED",
+    "prior_label": "gross_route_return_pct",
+    "prior_outcome_is_wallet_realized_pnl": false,
+    "prior_exit_quote_observed_at_must_be_strictly_before_current_t0_second": true,
+    "same_second_evidence_allowed": false,
+    "earlier_resolved_episode_in_same_capture_allowed": true,
+    "external_wallet_score_allowed": false,
+    "future_or_backfilled_history_allowed": false
+  },
+  "current_outcomes": {
+    "primary_signal_endpoint": "current_route_closed_gross_return_pct",
+    "secondary_signal_endpoint": "current_route_closed_net_return_pct",
+    "copyability_sensitive_endpoint": "current_route_usable_fixed_return_pct_including_unroutable_exit_minus_100"
+  },
+  "incremental_information_check": {
+    "controls": [
+      "mf_buy_event_rate_acceleration_per_s2",
+      "signed_flow_over_event_reserve"
+    ],
+    "method": "partial_spearman_via_rank_residualization",
+    "role": "supporting_required_for_KEEP_when_estimable"
+  },
+  "analysis": {
+    "threshold_search_performed": false,
+    "selector_changed": false,
+    "median_split_supporting_only": true,
+    "no_single_score": true,
+    "per_run_association_required": true,
+    "pooled_association_required": true,
+    "without_best_trade_required": true,
+    "leave_one_out_required": true
+  },
+  "decision_rule": {
+    "minimum_pooled_primary_pairs": 20,
+    "minimum_informative_runs": 2,
+    "minimum_pairs_per_informative_run": 8,
+    "keep_if_all": [
+      "minimum_sample_met",
+      "minimum_informative_runs_met",
+      "pooled_spearman_positive",
+      "pooled_spearman_without_best_positive",
+      "pooled_leave_one_out_sign_consistency_gte_0_90",
+      "positive_direction_run_fraction_gte_0_67",
+      "partial_spearman_positive_if_estimable"
+    ],
+    "kill_if_all": [
+      "minimum_sample_met",
+      "minimum_informative_runs_met",
+      "pooled_spearman_nonpositive",
+      "pooled_spearman_without_best_nonpositive",
+      "positive_direction_run_fraction_lt_0_50"
+    ],
+    "otherwise": "ITERATE"
+  },
+  "interpretation_guardrails": {
+    "KEEP_means": "retain as signal-quality hypothesis worthy of fresh confirmation; not an economic alpha claim",
+    "KILL_means": "do not invest in this exact prior-opportunity-quality feature without new evidence",
+    "ITERATE_means": "evidence or history coverage is insufficient/mixed; do not threshold-mine",
+    "no_landed_fill_claim": true,
+    "no_realized_wallet_pnl_claim": true,
+    "fixed60_is_standardized_research_benchmark_not_manual_exit_instruction": true
+  },
+  "protocol_hash_sha256": "d503f57e2d114d98ecd48f3e491d78410c2f3722a7b0bfe03b15dc1329e0a4e2"
+}
