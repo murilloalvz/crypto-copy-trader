@@ -115,6 +115,18 @@ if ($env:GMGN_SAMPLE_TOKEN) {
     Invoke-GmgnReadOnlySample -Name "token_security" -Directory $out -Args @(
         "token","security","--chain","sol","--address",$env:GMGN_SAMPLE_TOKEN,"--raw"
     )
+    Invoke-GmgnReadOnlySample -Name "token_holders_top100" -Directory $out -Args @(
+        "token","holders","--chain","sol","--address",$env:GMGN_SAMPLE_TOKEN,
+        "--limit","100","--order-by","amount_percentage","--direction","desc","--raw"
+    )
+    Invoke-GmgnReadOnlySample -Name "token_holders_smart_degen" -Directory $out -Args @(
+        "token","holders","--chain","sol","--address",$env:GMGN_SAMPLE_TOKEN,
+        "--limit","100","--tag","smart_degen","--order-by","amount_percentage","--direction","desc","--raw"
+    )
+    Invoke-GmgnReadOnlySample -Name "token_traders_top100_profit" -Directory $out -Args @(
+        "token","traders","--chain","sol","--address",$env:GMGN_SAMPLE_TOKEN,
+        "--limit","100","--order-by","profit","--direction","desc","--raw"
+    )
 }
 
 Write-Host ""
