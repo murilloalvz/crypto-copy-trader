@@ -1,0 +1,90 @@
+{
+  "schema_version": "early_buyer_prior_quality_replication_protocol_v0",
+  "status": "PREREGISTERED_FRESH_CONFIRMATION",
+  "track": "market_first",
+  "experiment_id": "MF-EARLY-BUYER-PRIOR-QUALITY-REPLICATION-V0",
+  "hypothesis": {
+    "feature_id": "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "direction": "higher_feature_predicts_better_current_route_closed_gross_plus_60s_return",
+    "primary_test": "positive_spearman_on_one_new_independent_capture_with_mature_pre_t0_history"
+  },
+  "mature_history_contract": {
+    "frozen_history_run_ids": [
+      "launch_burst_prospective_route_live_v4-1789605670-3592832863",
+      "launch_burst_prospective_route_live_v4-1789687945-0315e2560c",
+      "launch_burst_prospective_route_live_v4-1789692405-6daeedeb29",
+      "launch_burst_prospective_route_live_v4-1789698815-b277ffea77"
+    ],
+    "all_four_history_runs_must_be_supplied": true,
+    "numeric_history_support_threshold": null,
+    "support_threshold_search_permitted": false,
+    "history_source_semantics": "all eligible strictly pre-T0 route-closed gross +60s associations from the four frozen history captures plus earlier resolved episodes inside the fresh capture",
+    "same_second_history_allowed": false,
+    "same_token_prior_history_allowed": false,
+    "missing_history_semantics": "missing_not_zero_or_loss",
+    "wallet_realized_pnl_claim": false
+  },
+  "fresh_capture_contract": {
+    "duration_seconds": 900,
+    "one_capture_only": true,
+    "do_not_extend_or_repeat_based_on_interim_result": true,
+    "fresh_route_input_sha256_must_differ_from_all_history_runs": true,
+    "fresh_run_id_must_differ_from_all_history_runs": true,
+    "feature_snapshot_before_provider_quotes_required": true,
+    "minimum_primary_route_closed_feature_pairs": 30
+  },
+  "signal_quality_endpoints": {
+    "primary": "current_route_closed_gross_return_pct",
+    "secondary": "current_route_closed_net_return_pct",
+    "copyability_sensitive_reference": "current_route_usable_fixed_return_pct_including_unroutable_exit_minus_100",
+    "fixed_plus_60_is_standardized_research_benchmark_not_manual_exit_instruction": true
+  },
+  "incremental_information_check": {
+    "controls": [
+      "mf_buy_event_rate_acceleration_per_s2",
+      "signed_flow_over_event_reserve"
+    ],
+    "method": "partial_spearman_via_rank_residualization",
+    "required_for_keep_when_estimable": true
+  },
+  "supporting_analysis": {
+    "fresh_sample_median_split_supporting_only": true,
+    "higher_feature_half_definition": "feature > fresh_sample_median",
+    "lower_or_equal_feature_half_definition": "feature <= fresh_sample_median",
+    "production_threshold_created": false,
+    "same_sample_threshold_search_permitted": false
+  },
+  "decision_rule": {
+    "keep_if_all": [
+      "minimum_sample_met",
+      "spearman_positive",
+      "spearman_without_best_positive",
+      "leave_one_out_sign_consistency_gte_0_90",
+      "partial_spearman_positive_if_estimable",
+      "higher_half_median_gross_gt_lower_half"
+    ],
+    "kill_if_all": [
+      "minimum_sample_met",
+      "spearman_nonpositive",
+      "spearman_without_best_nonpositive",
+      "partial_spearman_nonpositive_if_estimable",
+      "higher_half_median_gross_lte_lower_half"
+    ],
+    "otherwise": "ITERATE"
+  },
+  "guardrails": {
+    "selector_changed": false,
+    "automatic_entry_decision_created": false,
+    "single_score_created": false,
+    "threshold_search_performed": false,
+    "external_wallet_score_used": false,
+    "future_history_used": false,
+    "landed_fill_claim": false,
+    "realized_wallet_pnl_claim": false,
+    "manual_exit_instruction": false,
+    "keep_means": "participant-quality signal evidence replicated and may be retained as a Signal Engine dimension; not autonomous economic alpha",
+    "kill_means": "this exact early-buyer prior-opportunity-quality signal failed fresh confirmation",
+    "iterate_means": "fresh evidence is incomplete or mixed; do not retune on the same sample"
+  },
+  "protocol_hash_sha256": "655f6cd2c0ba1bad14bc6caa21e7f45fb644edc803f099dc4ce00c210088f796"
+}
