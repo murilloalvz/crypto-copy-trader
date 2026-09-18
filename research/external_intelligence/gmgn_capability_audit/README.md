@@ -255,3 +255,48 @@ top profitable traders
 Any derived signal must restart at discovery -> freeze -> fresh confirmation.
 
 None of these four additions changes the currently frozen Participant Quality replication.
+
+
+## Real read-only acquisition checkpoint — 2026-09-18
+
+Sample directory observed locally:
+
+`timing_samples/20260918-214527`
+
+Initial token:
+
+`5JGyhGrdY7hERN4Wkvnqu6wAv6EjW2QUFfkr4CU8pump`
+
+Successful read-only capabilities and measured request durations from the first pass:
+
+- Trenches new_creation: ~1244 ms
+- Smart Money feed: ~1142 ms
+- KOL feed: ~952 ms
+- trending 5m: ~1010 ms
+- token info: ~947 ms
+- token security: ~992 ms
+- Top100 holders: ~984 ms
+
+The initial burst then hit an IP `RATE_LIMIT_EXCEEDED` on smart-degen holders.
+This is operational evidence, not a scientific failure.
+
+GMGN's current token-skill documentation assigns route weight 5 to both
+`token holders` and `token traders`, versus weight 1 for token info/security.
+The audit sampler was therefore changed to use pacing, one bounded cooldown-aware retry,
+and resume/skip semantics rather than repeated requests.
+
+After cooldown/resume:
+
+- Top100 smart-degen holders: ~2037 ms
+- Top100 traders by profit: ~1035 ms
+
+The initial token-level capability sample is therefore complete.
+
+Important:
+
+- these are availability/request-duration measurements at local observation time;
+- they do not prove predictive value;
+- current holder/security/PnL snapshots cannot be backfilled to an old T0;
+- the profit-ranked traders sample remains retrospective hypothesis-mining only;
+- the next highest-information external capability is deployer prior history, using the creator
+  address returned by the already-captured token-info snapshot.
