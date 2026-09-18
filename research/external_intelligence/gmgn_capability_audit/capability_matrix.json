@@ -63,6 +63,34 @@
       "potential_incremental_value": "HIGH if prospectively snapshotted before/at signal T0"
     },
     {
+      "name": "portfolio_holdings",
+      "purpose": "Wallet holdings / current position enrichment",
+      "classification": "DEFER",
+      "chain_support": [
+        "sol",
+        "bsc",
+        "base",
+        "eth",
+        "arbitrum",
+        "hyperevm",
+        "robinhood",
+        "arc",
+        "stable"
+      ],
+      "command": "gmgn-cli portfolio holdings --chain sol --wallet <wallet> --raw",
+      "private_key_required": true,
+      "capital_used": false,
+      "provenance": "GMGN wallet holdings endpoint",
+      "point_in_time_safety": "dynamic snapshot only",
+      "lookahead_risk": "HIGH retrospectively",
+      "survivorship_risk": "MEDIUM",
+      "opaque_score": false,
+      "raw_components_available": true,
+      "our_equivalent_raw_data": "current balances can be read from chain if needed",
+      "potential_incremental_value": "LOW-MEDIUM relative to auth cost",
+      "decision": "Do not configure or use GMGN_PRIVATE_KEY in this audit; skip holdings."
+    },
+    {
       "name": "portfolio_created_tokens",
       "purpose": "Deployer prior-launch quality",
       "classification": "APPLY_NOW_SAFE",
