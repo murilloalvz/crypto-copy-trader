@@ -268,3 +268,66 @@ The fresh confirmation materially strengthened the original retrospective signal
 Next candidate family:
 
 **Deployer Prior Quality / external participant intelligence**, with GMGN audited only as a prospective read-only evidence source. Any GMGN-derived feature must preserve local observed-at provenance and pass its own discovery -> freeze -> fresh confirmation flow.
+
+
+## Deployer Prior Quality V0 — implementation checkpoint
+
+Branch:
+
+`research/deployer-prior-quality-v0`
+
+Status:
+
+**PREREGISTERED PROSPECTIVE DISCOVERY / IMPLEMENTED / LIVE NOT YET EXECUTED**
+
+Primary feature:
+
+`mf_deployer_created_count_snapshot_ex_current`
+
+Definition:
+
+`max((inner_count + open_count) - 1, 0)`
+
+The feature is eligible only when one read-only GMGN `token info` creator lookup followed by one
+`portfolio created-tokens` response both complete no later than the existing T0+5s decision cutoff.
+
+Causal behavior:
+
+- acquisition starts asynchronously when the Research Plane observes the Pump create anchor;
+- provider/selector dispatch does not await GMGN;
+- a queued request that cannot start before cutoff is skipped;
+- a token-info response after cutoff stops the chain and remains missing;
+- a created-tokens response after cutoff remains missing;
+- errors and 429 rate limits remain missing;
+- there is no retry to rescue one episode;
+- late evidence is retained only in the raw audit artifact and is never backfilled into the frozen snapshot.
+
+Security / product guardrails:
+
+- `GMGN_API_KEY` only;
+- `GMGN_PRIVATE_KEY` is removed from subprocess environment;
+- no holdings, signing, swap or order execution;
+- no capital;
+- no selector change;
+- no Sniper change;
+- no Participant Quality change;
+- no Route-Paper contract change.
+
+Discovery endpoint:
+
+- primary: ROUTE_CLOSED gross Fixed+60;
+- secondary: ROUTE_CLOSED net Fixed+60;
+- reference: route-usable Fixed+60 including unroutable=-100.
+
+Incremental controls:
+
+- retained Participant Quality;
+- BUY event-rate acceleration;
+- signed flow over event reserve.
+
+Minimum primary route-closed feature/outcome pairs for a directional read: **30**.
+
+This discovery sample cannot promote a selector. Even with a strong association it can only advance to
+mechanism/robustness review and a separately frozen fresh-confirmation hypothesis.
+
+Targeted Deployer V0 tests and the implementation/evaluator commits passed CI before live execution.
