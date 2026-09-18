@@ -9,6 +9,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from benchmarks.launch_burst_control_taker_sim_v0 import run as sim
+from benchmarks.deployer_prior_quality_v0.runtime_enrichment import (
+    FEATURE_ID as DEPLOYER_FEATURE_ID,
+    VERSION as DEPLOYER_RUNTIME_VERSION,
+    patched_deployer_prior_quality_v0,
+)
 from benchmarks.launch_burst_control_taker_sim_v0.price_impact_semantics_fix_v0 import (
     FIX_VERSION,
     JUPITER_SWAP_V2_DOC,
@@ -93,6 +98,7 @@ def _compact(report: dict) -> dict:
             "gates": support.get("gates"),
             "public_control": support.get("public_control"),
         } if support else None,
+        "deployer_prior_quality_v0": report.get("deployer_prior_quality_v0"),
         "artifacts": report.get("artifacts"),
     }
 
@@ -120,6 +126,7 @@ def main() -> int:
     helius_key = ""
     jupiter_key = ""
     rpc_url = ""
+    gmgn_key = ""
     try:
         preflight = _screening_preflight(
             sniper_policy_path=args.sniper_policy,
@@ -138,6 +145,11 @@ def main() -> int:
         helius_key = os.environ.get("HELIUS_API_KEY", "").strip()
         jupiter_key = os.environ.get("JUPITER_API_KEY", "").strip()
         rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip()
+        gmgn_key = os.environ.get("GMGN_API_KEY", "").strip()
+        if not gmgn_key:
+            raise ValueError(
+                "GMGN_API_KEY is required on the deployer-prior-quality research branch"
+            )
 
         # Lazy import avoids a module cycle: the standalone preflight imports this module only
         # for the frozen screening contract helper, while the live runner reuses its lower-level
@@ -165,7 +177,11 @@ def main() -> int:
         if not isinstance(control_meta, dict):
             raise RuntimeError("Sniper support preflight did not return public control metadata")
 
-        with patched_price_impact_semantics(), patched_sniper_feature_enrichment_v1():
+        with (
+            patched_price_impact_semantics(),
+            patched_sniper_feature_enrichment_v1(),
+            patched_deployer_prior_quality_v0(api_key=gmgn_key) as deployer_runtime,
+        ):
             base = asyncio.run(
                 run_sim_v4(
                     contract_path=args.contract,
@@ -201,6 +217,9 @@ def main() -> int:
             raise RuntimeError("base V4 simulation did not produce the required route/smart artifacts")
 
         run_dir = Path(str((base.get("artifacts") or {}).get("simulation_report") or "")).resolve().parent
+        deployer_evidence_path = run_dir / "deployer-prior-quality-v0-evidence.json"
+        deployer_runtime.write_artifact(deployer_evidence_path)
+        deployer_payload = deployer_runtime.artifact_payload()
         sniper_result_path = run_dir / "sniper-comparison-v1.json"
         wrapper_report_path = run_dir / "simulation-report-v4-sniper-v1.json"
         comparison = run_strict_sniper_comparison_v1(
@@ -243,6 +262,13 @@ def main() -> int:
                     "canonical_pump_wallet_field_reused": "wallet",
                     "baseline_selector_changed": False,
                 },
+                "deployer_prior_quality_v0": {
+                    "version": DEPLOYER_RUNTIME_VERSION,
+                    "feature_id": DEPLOYER_FEATURE_ID,
+                    "record_count": deployer_payload.get("record_count"),
+                    "status_counts": deployer_payload.get("status_counts"),
+                    "guardrails": deployer_payload.get("guardrails"),
+                },
             }
         )
         artifacts = dict(report.get("artifacts") or {})
@@ -251,6 +277,7 @@ def main() -> int:
                 "route_input": str(route_input_path.resolve()),
                 "sniper_v1_comparison": str(sniper_result_path.resolve()),
                 "simulation_report": str(wrapper_report_path.resolve()),
+                "deployer_prior_quality_v0_evidence": str(deployer_evidence_path.resolve()),
             }
         )
         report["artifacts"] = artifacts
@@ -268,6 +295,11 @@ def main() -> int:
                 "wallet_field_enrichment_only": True,
                 "official_v4_economic_verdict_changed": False,
                 "automatic_profitability_claim": False,
+                "deployer_sidecar_research_plane_only": True,
+                "deployer_sidecar_blocks_provider_dispatch": False,
+                "deployer_late_evidence_backfilled": False,
+                "gmgn_private_key_used": False,
+                "deployer_selector_changed": False,
             }
         )
         report["guardrails"] = guardrails
@@ -277,7 +309,13 @@ def main() -> int:
             json.dumps(
                 {
                     "classification": FAIL_CLASSIFICATION,
-                    "error": sim._redacted_error(exc, helius_key, jupiter_key, rpc_url),
+                    "error": sim._redacted_error(
+                        exc,
+                        helius_key,
+                        jupiter_key,
+                        rpc_url,
+                        gmgn_key,
+                    ),
                 },
                 indent=2,
             )
