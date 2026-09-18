@@ -13,6 +13,7 @@ from benchmarks.launch_burst_sniper_v1.runtime_enrichment import (
     feature_snapshot_with_sniper_v1,
     patched_sniper_feature_enrichment_v1,
 )
+from src.market_first_bonding_curve_geometry_v1 import SOL_QUOTE_MINT
 from src.market_first_feature_discovery_v1 import (
     FEATURE_IDS,
     VERSION as FEATURE_VERSION,
@@ -98,6 +99,23 @@ def _spearman(left: list[float], right: list[float]) -> float | None:
 def _mean(values: Iterable[float]) -> float | None:
     rows = list(values)
     return sum(rows) / len(rows) if rows else None
+
+
+def _causal_quote_asset_summary(rows: Iterable[Any]) -> dict[str, Any]:
+    quote_assets = sorted(
+        {
+            str(value).strip()
+            for row in rows
+            if (value := getattr(row, "quote_asset_key", None)) is not None
+            and str(value).strip()
+        }
+    )
+    quote_asset_key = quote_assets[0] if len(quote_assets) == 1 else None
+    return {
+        "quote_asset_key": quote_asset_key,
+        "quote_asset_identity_count": len(quote_assets),
+        "is_default_sol_quote": quote_asset_key == SOL_QUOTE_MINT,
+    }
 
 
 def _feature_association(rows: list[dict[str, Any]], feature_id: str) -> dict[str, Any]:
@@ -238,6 +256,8 @@ def run_discovery_v1(
             ),
             "unique_buy_wallet_count": replay.get("unique_buy_wallet_count")
             == stored.get("unique_buy_wallet_count"),
+            "quote_asset_identity_count": replay.get("quote_asset_identity_count")
+            == stored.get("quote_asset_identity_count"),
         }
         failed_checks = [name for name, passed in checks.items() if not passed]
         if failed_checks:
@@ -249,6 +269,7 @@ def run_discovery_v1(
             anchor_wall_ns=anchor_wall_ns,
             cutoff_wall_ns=cutoff_wall_ns,
         )
+        quote_asset = _causal_quote_asset_summary(rows)
         fixed = fixed_by_key.get(episode_key)
         decision = decisions_by_key.get(episode_key) or {}
         analysis_rows.append(
@@ -259,6 +280,8 @@ def run_discovery_v1(
                 "sniper_selected": episode_key in selected_keys,
                 "route_status": decision.get("status"),
                 "fixed_return_pct": fixed.get("fixed_return_pct") if fixed else None,
+                **quote_asset,
+                "quote_asset_source": "causal_replayed_market_observations_within_frozen_5s_window",
                 "features": features,
             }
         )
@@ -289,6 +312,7 @@ def run_discovery_v1(
             "exact_reconstruction_parity": True,
             "feature_snapshot_frozen_before_provider_quotes": True,
             "route_contract_hash_sha256": contract.get("contract_hash_sha256"),
+            "causal_quote_asset_identity_emitted": True,
         },
         "temporal_contract": {
             "window_seconds": 5.0,
