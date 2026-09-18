@@ -585,8 +585,8 @@ def _decision(
         "pooled_spearman_without_best_positive": without_best is not None and without_best > 0,
         "pooled_spearman_without_best_nonpositive": without_best is not None and without_best <= 0,
         "pooled_leave_one_out_sign_consistency_gte_0_90": loo is not None and loo >= 0.90,
-        "positive_direction_run_fraction_gte_0_67": (
-            positive_fraction is not None and positive_fraction >= 0.67
+        "positive_direction_run_fraction_gte_two_thirds": (
+            positive_fraction is not None and positive_fraction >= (2.0 / 3.0)
         ),
         "positive_direction_run_fraction_lt_0_50": (
             positive_fraction is not None and positive_fraction < 0.50
