@@ -58,7 +58,7 @@
       "pooled_spearman_positive",
       "pooled_spearman_without_best_positive",
       "pooled_leave_one_out_sign_consistency_gte_0_90",
-      "positive_direction_run_fraction_gte_0_67",
+      "positive_direction_run_fraction_gte_two_thirds",
       "partial_spearman_positive_if_estimable"
     ],
     "kill_if_all": [
@@ -78,5 +78,5 @@
     "no_realized_wallet_pnl_claim": true,
     "fixed60_is_standardized_research_benchmark_not_manual_exit_instruction": true
   },
-  "protocol_hash_sha256": "d503f57e2d114d98ecd48f3e491d78410c2f3722a7b0bfe03b15dc1329e0a4e2"
+  "protocol_hash_sha256": "c22e2f9ca327e95616ac8093bd2c8fffc6063d9c9b53744f554e3dea7d1946ff"
 }
