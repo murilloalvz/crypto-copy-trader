@@ -66,6 +66,8 @@ class BuyEventAccelerationReplicationV0Tests(unittest.TestCase):
                 rows.append(
                     {
                         "episode_key": episode_key,
+                        "baseline_admitted": True,
+                        "route_status": "ROUTE_CLOSED",
                         "is_default_sol_quote": True,
                         "fixed_return_pct": outcome,
                         "features": {FEATURE_ID: feature},
@@ -88,16 +90,18 @@ class BuyEventAccelerationReplicationV0Tests(unittest.TestCase):
                 },
             )
             _write(
-                fresh / "market-first-routeable-edge-discovery-v2.json",
+                fresh / "market-first-feature-discovery-v1.json",
                 {
-                    "classification": "PASS_MARKET_FIRST_ROUTEABLE_EDGE_DISCOVERY_V2",
+                    "classification": "PASS_MARKET_FIRST_FEATURE_DISCOVERY_V1",
                     "source_integrity": {
                         "route_contract_hash_sha256": contract_hash,
                         "feature_snapshot_frozen_before_provider_quotes": True,
-                        "dynamics_exact_reconstruction_parity": True,
-                        "geometry_stored_event_count_parity": True,
-                        "geometry_payload_decode_failures": 0,
-                        "exact_routeable_join": True,
+                        "exact_reconstruction_parity": True,
+                        "causal_quote_asset_identity_emitted": True,
+                    },
+                    "temporal_contract": {
+                        "provider_quote_used_for_features": False,
+                        "future_outcome_used_for_features": False,
                     },
                     "rows": rows,
                 },
@@ -116,6 +120,11 @@ class BuyEventAccelerationReplicationV0Tests(unittest.TestCase):
         self.assertTrue(report["decision_rule_checks"]["lower_half_mean_return_gt_0"])
         self.assertTrue(report["decision_rule_checks"]["lower_half_mean_without_best_gt_0"])
         self.assertTrue(report["decision_rule_checks"]["lower_half_profit_factor_gt_1"])
+        self.assertFalse(report["source_integrity"]["fresh_geometry_artifact_required"])
+        self.assertEqual(
+            report["source_integrity"]["fresh_population_source"],
+            "market-first-feature-discovery-v1.json",
+        )
 
     def test_fresh_capture_matching_any_discovery_capture_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -141,16 +150,18 @@ class BuyEventAccelerationReplicationV0Tests(unittest.TestCase):
             _write(fresh / "route-input-v2.json", shared)
             _write(fresh / "route-result-v2.json", {"contract_hash_sha256": contract_hash, "decisions": []})
             _write(
-                fresh / "market-first-routeable-edge-discovery-v2.json",
+                fresh / "market-first-feature-discovery-v1.json",
                 {
-                    "classification": "PASS_MARKET_FIRST_ROUTEABLE_EDGE_DISCOVERY_V2",
+                    "classification": "PASS_MARKET_FIRST_FEATURE_DISCOVERY_V1",
                     "source_integrity": {
                         "route_contract_hash_sha256": contract_hash,
                         "feature_snapshot_frozen_before_provider_quotes": True,
-                        "dynamics_exact_reconstruction_parity": True,
-                        "geometry_stored_event_count_parity": True,
-                        "geometry_payload_decode_failures": 0,
-                        "exact_routeable_join": True,
+                        "exact_reconstruction_parity": True,
+                        "causal_quote_asset_identity_emitted": True,
+                    },
+                    "temporal_contract": {
+                        "provider_quote_used_for_features": False,
+                        "future_outcome_used_for_features": False,
                     },
                     "rows": [],
                 },
