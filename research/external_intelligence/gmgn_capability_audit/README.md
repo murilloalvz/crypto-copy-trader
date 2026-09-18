@@ -98,6 +98,19 @@ fields where the endpoint provides them. Do not activate vetoes without incremen
 
 Use raw components when possible.
 
+## Safe API-key-only setup
+
+For this audit, do NOT run `gmgn-cli config --apply`: the current CLI configuration flow writes a GMGN request-signing private key. We do not need that for the read-only endpoints selected here.
+
+Use only an API key, for example in the current PowerShell session:
+
+```powershell
+$env:GMGN_API_KEY = "<set locally; do not paste or commit>"
+gmgn-cli config --check
+```
+
+The selected sampler does not call holdings, swap, order submission, or follow-wallet. If any sampled capability asks for `GMGN_PRIVATE_KEY`, stop that capability.
+
 ## Timing sample
 
 After the current fresh scientific capture has finished, run:
@@ -123,6 +136,8 @@ $env:GMGN_SAMPLE_TOKEN = "<public_token>"
 ```
 
 If any command requires GMGN_PRIVATE_KEY, stop that capability and do not configure one.
+
+`portfolio holdings` is explicitly excluded from this phase because current GMGN CLI documentation marks it as critical-auth/private-key gated.
 
 ## Scientific integration rule
 
