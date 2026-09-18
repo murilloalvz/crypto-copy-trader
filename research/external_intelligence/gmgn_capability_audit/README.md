@@ -150,3 +150,108 @@ baseline signal + one new external evidence family
 ```
 
 No mega-score and no combined selector until individual/incremental value is established.
+
+
+## Added capability audit — holder/trader/wallet temporal safety
+
+### Top100 Holders — AUDIT_ONLY / FUTURE STRUCTURAL FEATURE
+
+```powershell
+gmgn-cli token holders --chain sol --address <token_address> --limit 100 --order-by amount_percentage --direction desc --raw
+```
+
+Raw holder rows are useful for:
+
+- top1/top5/top10/top20 concentration;
+- current holder distribution;
+- creator/dev overlap through addresses/tags;
+- repeated-wallet overlap across stored snapshots;
+- funding-source / cluster hypotheses through `native_transfer`;
+- prospective concentration persistence/decay.
+
+Important semantics:
+
+- raw `amount_percentage` is a fraction of **total token supply** (0–1), not tradeable float;
+- the separate GMGN holder-analysis skill rebases percentages to tradeable float for its report, but this audit does not import that rating;
+- the endpoint exposes per-wallet activity timestamps but no documented holder-list `as_of`, block cutoff, or historical snapshot;
+- querying holders after the outcome is therefore retrospective structural evidence, not a T0 feature.
+
+Classification remains `AUDIT_ONLY` until a prospective holder snapshot is actually observed before a decision cutoff.
+
+### Smart Money Holders — AUDIT_ONLY pending label temporal safety
+
+```powershell
+gmgn-cli token holders --chain sol --address <token_address> --limit 100 --tag smart_degen --order-by amount_percentage --direction desc --raw
+```
+
+The CLI describes `smart_degen` as GMGN-tagged smart money / historically high-performing traders.
+The exact classification algorithm, classification timestamp, historical label snapshot and retroactive-update
+policy are not documented in the audited CLI/skill material.
+
+Therefore:
+
+```text
+smart_degen at today's query
+!=
+proof that wallet was classified smart_degen at old T0
+```
+
+A prospectively stored `smart_degen` holder snapshot can later be tested as external participant evidence,
+but the label itself remains external/opaque.
+
+Forbidden shortcut:
+
+```text
+smart_degen holder -> BUY
+```
+
+### Wallet P&L Stats — TEST_AS_HYPOTHESIS with strict temporal reconstruction
+
+```powershell
+gmgn-cli portfolio stats --chain sol --wallet <wallet_address> --period 30d --raw
+```
+
+Current CLI exposes only `--period 7d|30d`. There is no documented `--as-of`, `--before`,
+`--end-time` or historical-snapshot option.
+
+Likewise, `portfolio activity` exposes token/type/cursor pagination but no server-side time cutoff.
+Activity rows do include their own event `timestamp`, so a causal retrospective reconstruction candidate is:
+
+```text
+paginate wallet activity
+-> keep only event.timestamp < target T0
+-> recompute prior metrics ourselves
+-> never use today's aggregate stats as if they existed at old T0
+```
+
+For a future live signal, a stats response can only be considered causal if its local `response_after`
+precedes the decision cutoff.
+
+### Top100 Traders by Profit — RETROSPECTIVE HYPOTHESIS MINING ONLY
+
+```powershell
+gmgn-cli token traders --chain sol --address <token_address> --limit 100 --order-by profit --direction desc --raw
+```
+
+This ranking selects wallets explicitly using realized/current outcome. It is therefore outcome-leaking by design
+for launch-time prediction.
+
+Safe use:
+
+- study who captured large winners;
+- inspect their entry/exit timing;
+- find pre-T0 characteristics that could become new hypotheses;
+- freeze those characteristics independently;
+- validate them prospectively.
+
+Unsafe use:
+
+```text
+top profitable traders
+-> derive pattern
+-> direct selector
+```
+
+Any derived signal must restart at discovery -> freeze -> fresh confirmation.
+
+None of these four additions changes the currently frozen Participant Quality replication.
