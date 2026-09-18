@@ -131,3 +131,60 @@ Future operational signals should keep dimensions separate:
 - IMPORTANT RISKS
 
 No arbitrary combined score is authorized until evidence supports how the dimensions should be combined.
+
+
+## Early-Buyer Prior Quality V0 — first discovery result
+
+Classification:
+
+`PASS_EARLY_BUYER_PRIOR_QUALITY_V0`
+
+Decision:
+
+`ITERATE`
+
+Primary pooled signal-quality association on ROUTE_CLOSED gross +60s:
+
+- usable pairs: 114;
+- Spearman: +0.1995;
+- Spearman without best trade: +0.2273;
+- leave-one-out sign consistency: 1.0.
+
+Incremental association after rank-residualizing BUY acceleration and signed flow:
+
+- usable pairs: 114;
+- partial Spearman: +0.1925.
+
+Copyability-sensitive reference including unroutable exits:
+
+- usable pairs: 131;
+- Spearman: +0.2583;
+- Spearman without best trade: +0.2800;
+- leave-one-out sign consistency: 1.0.
+
+Cross-run primary Spearman:
+
+- discovery: approximately -0.0035;
+- fresh1: approximately -0.0651;
+- fresh2: approximately +0.3695;
+- fresh4: approximately +0.5015.
+
+The preregistered KEEP rule failed only because positive-direction run fraction was 2/4 rather than at least two-thirds. This is not a license to relax the rule.
+
+Interpretation:
+
+- the pooled signal is positive, robust to removal of the best trade and not obviously redundant with BUY acceleration or signed flow;
+- temporal/cross-run stability is not yet established;
+- the two latest captures are materially positive while the two earlier captures are near-zero/slightly negative;
+- current status remains ITERATE;
+- do not threshold-mine participant-history support or promote a selector.
+
+Active diagnostic:
+
+`early-buyer-prior-quality-maturity-v0`
+
+Question:
+
+> Is the mixed cross-run direction plausibly explained by historical-memory maturity/coverage rather than by a non-stationary or spurious participant-quality signal?
+
+This diagnostic is posthoc only. It does not change the ITERATE decision or define a minimum-history threshold.
