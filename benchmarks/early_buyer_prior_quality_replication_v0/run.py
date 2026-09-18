@@ -53,6 +53,36 @@ def _route_input_sha256(run_dir: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _validate_fresh_live_report(
+    *,
+    report: Mapping[str, Any],
+    expected_duration_seconds: int,
+) -> dict[str, Any]:
+    requested = report.get("requested_duration_seconds")
+    capture = report.get("capture") or {}
+    if int(requested or 0) != int(expected_duration_seconds):
+        raise ValueError(
+            f"fresh requested duration mismatch: {requested} != {expected_duration_seconds}"
+        )
+    if str(capture.get("stop_reason") or "") != "duration_elapsed":
+        raise ValueError(
+            f"fresh capture did not complete requested duration: {capture.get('stop_reason')}"
+        )
+    if report.get("economic_outcomes_opened") is not True:
+        raise ValueError("fresh report did not open route-paper economic outcomes")
+    if str(report.get("mode") or "") != "route_paper_economic":
+        raise ValueError("fresh report is not route-paper economic mode")
+    if not str(report.get("classification") or "").startswith("PASS_"):
+        raise ValueError("fresh live report is not PASS")
+    return {
+        "requested_duration_seconds": int(requested),
+        "capture_stop_reason": str(capture.get("stop_reason") or ""),
+        "capture_elapsed_seconds": _finite(capture.get("elapsed_seconds")),
+        "mode": str(report.get("mode") or ""),
+        "classification": str(report.get("classification") or ""),
+    }
+
+
 def _fresh_rows(
     *,
     history_rows: list[dict[str, Any]],
@@ -200,6 +230,17 @@ def run_replication(
     if fresh_run_dir.name in set(expected_history_ids):
         raise ValueError("fresh run id matches a frozen history run")
 
+    fresh_report_path = fresh_run_dir / "report.json"
+    if not fresh_report_path.is_file():
+        raise ValueError(f"fresh live report missing: {fresh_report_path}")
+    expected_duration = int(
+        (protocol.get("fresh_capture_contract") or {}).get("duration_seconds") or 0
+    )
+    fresh_live_attestation = _validate_fresh_live_report(
+        report=_read_json(fresh_report_path),
+        expected_duration_seconds=expected_duration,
+    )
+
     history_shas = [_route_input_sha256(path) for path in resolved_history]
     if len(set(history_shas)) != len(history_shas):
         raise ValueError("frozen history route-input identities are not unique")
@@ -298,6 +339,7 @@ def run_replication(
             "same_second_history_excluded": True,
             "same_token_prior_history_excluded": True,
             "wallet_realized_pnl_claim": False,
+            "fresh_live_attestation": fresh_live_attestation,
         },
         "guardrails": protocol.get("guardrails"),
         "rows": rows,
