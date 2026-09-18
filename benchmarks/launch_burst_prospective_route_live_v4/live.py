@@ -124,6 +124,7 @@ async def run_live(
     report["type"] = "launch_burst_prospective_route_live_report_v4"
     report["version"] = LIVE_VERSION
     report["decoder_target_dir"] = str(decoder_target_dir.resolve())
+    report["requested_duration_seconds"] = int(duration_seconds)
     report["watermark_strategy"] = "header_footer_empty_chunk_same_fifo"
     report["interpretation"] = (
         "V4 preserves the frozen V2 route-paper contract and the V3 direct-decoder hot path. "
