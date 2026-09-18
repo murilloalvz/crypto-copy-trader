@@ -22,27 +22,18 @@ function Invoke-GmgnReadOnlySample {
     $stdout = ""
     $stderr = ""
     $exitCode = $null
+    $stderrTemp = [System.IO.Path]::GetTempFileName()
 
     try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "gmgn-cli"
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        foreach ($arg in $Args) {
-            [void]$psi.ArgumentList.Add($arg)
+        $stdout = (& gmgn-cli @Args 2> $stderrTemp | Out-String)
+        $exitCode = $LASTEXITCODE
+        if (Test-Path $stderrTemp) {
+            $stderr = Get-Content -Raw -ErrorAction SilentlyContinue $stderrTemp
         }
-
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $psi
-        [void]$proc.Start()
-        $stdout = $proc.StandardOutput.ReadToEnd()
-        $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit()
-        $exitCode = $proc.ExitCode
     }
     finally {
         $sw.Stop()
+        Remove-Item -Force -ErrorAction SilentlyContinue $stderrTemp
     }
 
     $afterUtc = [DateTimeOffset]::UtcNow
