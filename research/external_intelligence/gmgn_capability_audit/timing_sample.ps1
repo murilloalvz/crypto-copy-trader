@@ -59,7 +59,7 @@ function Invoke-GmgnReadOnlySample {
     if ($exitCode -ne 0) {
         Write-Warning "$Name failed with exit code $exitCode. Do not retry repeatedly if rate-limited."
     } else {
-        Write-Host "$Name OK — $([math]::Round($sw.Elapsed.TotalMilliseconds, 1)) ms"
+        Write-Host "$Name OK - $([math]::Round($sw.Elapsed.TotalMilliseconds, 1)) ms"
     }
 }
 
