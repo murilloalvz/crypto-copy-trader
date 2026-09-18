@@ -7,6 +7,7 @@ from benchmarks.early_buyer_prior_quality_replication_v0.run import (
     FEATURE_ID,
     _decision,
     _read_json,
+    _validate_fresh_live_report,
     _validate_protocol,
 )
 
@@ -80,6 +81,32 @@ class EarlyBuyerPriorQualityReplicationV0Tests(unittest.TestCase):
         )
         self.assertTrue(checks["spearman_nonpositive"])
         self.assertTrue(checks["higher_half_median_gross_lte_lower_half"])
+
+    def test_fresh_live_report_requires_exact_requested_duration_and_completed_capture(self):
+        attestation = _validate_fresh_live_report(
+            report={
+                "requested_duration_seconds": 900,
+                "capture": {"stop_reason": "duration_elapsed", "elapsed_seconds": 900.2},
+                "economic_outcomes_opened": True,
+                "mode": "route_paper_economic",
+                "classification": "PASS_LAUNCH_BURST_PROSPECTIVE_ROUTE_LIVE_V4",
+            },
+            expected_duration_seconds=900,
+        )
+        self.assertEqual(attestation["requested_duration_seconds"], 900)
+        self.assertEqual(attestation["capture_stop_reason"], "duration_elapsed")
+
+        with self.assertRaisesRegex(ValueError, "requested duration mismatch"):
+            _validate_fresh_live_report(
+                report={
+                    "requested_duration_seconds": 600,
+                    "capture": {"stop_reason": "duration_elapsed", "elapsed_seconds": 600.1},
+                    "economic_outcomes_opened": True,
+                    "mode": "route_paper_economic",
+                    "classification": "PASS_LAUNCH_BURST_PROSPECTIVE_ROUTE_LIVE_V4",
+                },
+                expected_duration_seconds=900,
+            )
 
     def test_below_minimum_sample_is_iterate_without_retuning(self):
         protocol = _read_json(DEFAULT_PROTOCOL)
