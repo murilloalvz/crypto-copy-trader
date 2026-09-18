@@ -147,6 +147,7 @@ def _load_geometry_rows(processed_root: Path) -> tuple[list[dict[str, Any]], dic
     input_events = 0
     pump_payload_events = 0
     duplicate_replays = 0
+    duplicate_replay_clock_divergences = 0
     parity_errors: list[str] = []
     decode_errors: list[str] = []
     chunk_count = 0
@@ -218,10 +219,16 @@ def _load_geometry_rows(processed_root: Path) -> tuple[list[dict[str, Any]], dic
             }
             prior = rows_by_key.get(event_key)
             if prior is not None:
-                if prior != decoded_row:
-                    parity_errors.append(f"conflicting_replay:{event_key}")
-                else:
-                    duplicate_replays += 1
+                prior_payload = {key: value for key, value in prior.items() if key != "observed_wall_ns"}
+                replay_payload = {key: value for key, value in decoded_row.items() if key != "observed_wall_ns"}
+                if prior_payload != replay_payload:
+                    parity_errors.append(f"conflicting_replay_payload:{event_key}")
+                    continue
+                duplicate_replays += 1
+                if int(prior["observed_wall_ns"]) != int(decoded_row["observed_wall_ns"]):
+                    duplicate_replay_clock_divergences += 1
+                    if int(decoded_row["observed_wall_ns"]) < int(prior["observed_wall_ns"]):
+                        rows_by_key[event_key] = decoded_row
                 continue
             rows_by_key[event_key] = decoded_row
 
@@ -235,6 +242,8 @@ def _load_geometry_rows(processed_root: Path) -> tuple[list[dict[str, Any]], dic
         "pump_geometry_payload_event_count": pump_payload_events,
         "unique_pump_geometry_event_count": len(rows_by_key),
         "duplicate_replay_count": duplicate_replays,
+        "duplicate_replay_clock_divergence_count": duplicate_replay_clock_divergences,
+        "duplicate_replay_clock_policy": "identical decoded event replays keep earliest preserved first_received_wall_ns; payload/state conflicts fail closed",
         "existing_carbon_identity_parity": True,
         "geometry_payload_decode_failures": 0,
     }
