@@ -7,7 +7,7 @@ import struct
 import tempfile
 import unittest
 
-from benchmarks.market_first_bonding_curve_geometry_v1.run import run_geometry_v1
+from benchmarks.market_first_bonding_curve_geometry_v1.run import _load_geometry_rows, run_geometry_v1
 from src.market_first_bonding_curve_geometry_v1 import (
     SOL_QUOTE_MINT,
     decode_create_geometry_payload_v1,
@@ -51,7 +51,7 @@ def _create_payload() -> bytes:
     )
 
 
-def _trade_payload() -> bytes:
+def _trade_payload(*, real_token_reserves: int = 695_100_000_000_000) -> bytes:
     return b"".join(
         [
             PUMP_TRADE_EVENT_DISCRIMINATOR,
@@ -64,7 +64,7 @@ def _trade_payload() -> bytes:
             struct.pack("<Q", 33_000_000_000),
             struct.pack("<Q", 975_000_000_000_000),
             struct.pack("<Q", 3_000_000_000),
-            struct.pack("<Q", 695_100_000_000_000),
+            struct.pack("<Q", real_token_reserves),
         ]
     )
 
@@ -130,6 +130,14 @@ class MarketFirstBondingCurveGeometryRunnerV1Tests(unittest.TestCase):
                     "quote_mint": SOL_QUOTE_MINT,
                 },
             ]
+            replay_chunk = run / "processed-chunks" / "chunk-000000"
+            _write_jsonl(replay_chunk / "carbon-input.jsonl", [inputs[1]])
+            _write_jsonl(
+                replay_chunk / "target-manifest.jsonl",
+                [{"event_key": trade_key, "first_received_wall_ns": t0 + 6_000_000_000}],
+            )
+            _write_jsonl(replay_chunk / "carbon-canonical.jsonl", [canonical[1]])
+
             _write_jsonl(chunk / "carbon-input.jsonl", inputs)
             _write_jsonl(chunk / "target-manifest.jsonl", manifests)
             _write_jsonl(chunk / "carbon-canonical.jsonl", canonical)
@@ -182,6 +190,8 @@ class MarketFirstBondingCurveGeometryRunnerV1Tests(unittest.TestCase):
 
         self.assertEqual(report["classification"], "PASS_MARKET_FIRST_BONDING_CURVE_GEOMETRY_V1")
         self.assertEqual(report["source_integrity"]["stored_event_count_parity"], True)
+        self.assertEqual(report["source_integrity"]["duplicate_replay_count"], 1)
+        self.assertEqual(report["source_integrity"]["duplicate_replay_clock_divergence_count"], 1)
         self.assertEqual(report["cohorts"]["baseline_sol_quote"]["count"], 1)
         self.assertEqual(report["cohorts"]["sniper_sol_quote"]["count"], 1)
         self.assertEqual(
@@ -189,6 +199,50 @@ class MarketFirstBondingCurveGeometryRunnerV1Tests(unittest.TestCase):
             "AVAILABLE_CAUSAL_SOL_BONDING_CURVE_GEOMETRY",
         )
         self.assertIsNotNone(report["rows"][0]["features"]["mf_curve_progress_pct"])
+
+
+    def test_conflicting_replay_payload_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "processed-chunks"
+            payload_a = _trade_payload(real_token_reserves=695_100_000_000_000)
+            payload_b = _trade_payload(real_token_reserves=695_099_999_999_999)
+            trade_key = "sig-trade:2:pump_trade"
+            decoded = decode_create_geometry_payload_v1(_create_payload())
+            assert decoded is not None
+            mint = decoded["mint"]
+            canonical = {
+                "type": "carbon_canonical_event",
+                "status": "decoded",
+                "event_key": trade_key,
+                "event_type": "pump_trade",
+                "mint": mint,
+                "timestamp": 1002,
+                "side": "buy",
+                "quote_mint": SOL_QUOTE_MINT,
+            }
+            for index, payload in enumerate((payload_a, payload_b)):
+                chunk = root / f"chunk-{index:06d}"
+                _write_jsonl(
+                    chunk / "carbon-input.jsonl",
+                    [{
+                        "type": "carbon_decoder_input",
+                        "event_key": trade_key,
+                        "signature": "sig-trade",
+                        "slot": 2,
+                        "log_index": 2,
+                        "program_id": "pump",
+                        "event_type": "pump_trade",
+                        "payload_base64": base64.b64encode(payload).decode(),
+                    }],
+                )
+                _write_jsonl(
+                    chunk / "target-manifest.jsonl",
+                    [{"event_key": trade_key, "first_received_wall_ns": 1_000_000_000_000 + index}],
+                )
+                _write_jsonl(chunk / "carbon-canonical.jsonl", [canonical])
+
+            with self.assertRaisesRegex(ValueError, "conflicting_replay_payload"):
+                _load_geometry_rows(root)
 
 
 if __name__ == "__main__":
