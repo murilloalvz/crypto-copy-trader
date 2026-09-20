@@ -331,3 +331,55 @@ This discovery sample cannot promote a selector. Even with a strong association 
 mechanism/robustness review and a separately frozen fresh-confirmation hypothesis.
 
 Targeted Deployer V0 tests and the implementation/evaluator commits passed CI before live execution.
+
+
+## Deployer Prior Quality V0 — systems-invalid acquisition 2026-09-20
+
+Run:
+
+`launch_burst_prospective_route_live_v4-1789920107-6b85a813f6`
+
+The 900s market/route capture itself completed and the legacy wrapper produced a PASS, but the newly
+introduced external-intelligence instrument was systems-invalid and MUST NOT be used for Deployer
+Prior Quality scientific evaluation.
+
+Observed deployer sidecar statuses:
+
+- `CAUSAL_AVAILABLE = 4`
+- `LATE_CREATED_TOKENS = 1`
+- `TASK_CANCELLED_AFTER_CAPTURE = 334`
+
+The process also emitted a Windows subprocess reader `UnicodeDecodeError` under cp1252 and the
+event-loop executor shutdown warned that worker threads did not join within 300 seconds. Core route
+artifacts were written around 13:18 local time while deployer evidence/wrapper artifacts were only
+written around 15:23, proving a post-capture sidecar shutdown stall.
+
+Classification:
+
+`INVALID_EXTERNAL_EVIDENCE_ACQUISITION_SYSTEMS`
+
+This is NOT:
+
+- a Deployer hypothesis FAIL;
+- an insufficient scientific sample;
+- evidence of low GMGN coverage;
+- permission to inspect/tune deployer thresholds from this run.
+
+Economic/Sniper outcomes printed by the wrapper are excluded from Deployer V0 hypothesis decisions.
+
+Root causes fixed before any replacement acquisition:
+
+1. GMGN subprocess output is now captured as bytes and decoded explicitly with UTF-8
+   `errors=replace`, avoiding Windows cp1252 reader-thread failure.
+2. External acquisitions use two bounded concurrent slots instead of a single serialized global slot.
+3. Waiting for a slot is bounded by each token's existing T0+5s cutoff.
+4. Each CLI command timeout is bounded by the remaining causal cutoff.
+5. Pending sidecar tasks are explicitly finalized before the live event loop closes.
+6. Future wrapper PASS requires zero `TASK_CANCELLED_AFTER_CAPTURE`,
+   `TASK_UNRESOLVED_AFTER_CAPTURE`, and `INTERNAL_ERROR`.
+7. The Deployer evaluator independently rejects any run containing those systems-invalid statuses.
+
+A replacement prospective capture is permitted only because this acquisition was declared systems-invalid
+before Deployer feature/outcome evaluation. The replacement must use a new acquisition key and the same
+frozen scientific feature/protocol. No economic outcome from this invalid run may guide the fix or next
+hypothesis.
