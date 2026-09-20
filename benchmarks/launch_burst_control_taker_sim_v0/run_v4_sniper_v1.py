@@ -235,12 +235,28 @@ def main() -> int:
 
         base_pass = str(base.get("classification") or "").startswith("PASS_")
         compare_pass = comparison.get("classification") == PASS_COMPARISON
+        deployer_status_counts = deployer_payload.get("status_counts") or {}
+        deployer_invalid_system_statuses = {
+            "TASK_CANCELLED_AFTER_CAPTURE",
+            "TASK_UNRESOLVED_AFTER_CAPTURE",
+            "INTERNAL_ERROR",
+        }
+        deployer_invalid_system_counts = {
+            status: int(deployer_status_counts.get(status) or 0)
+            for status in deployer_invalid_system_statuses
+            if int(deployer_status_counts.get(status) or 0) > 0
+        }
+        deployer_systems_valid = not deployer_invalid_system_counts
         report = dict(base)
         report.update(
             {
                 "type": "launch_burst_control_taker_sim_report_v4_sniper_v1",
                 "version": VERSION,
-                "classification": PASS_CLASSIFICATION if base_pass and compare_pass else FAIL_CLASSIFICATION,
+                "classification": (
+                    PASS_CLASSIFICATION
+                    if base_pass and compare_pass and deployer_systems_valid
+                    else FAIL_CLASSIFICATION
+                ),
                 "economic_interpretation": (
                     "SNIPER_ROUTE_SHADOW_COMPARISON_AVAILABLE"
                     if int(comparison.get("baseline_selected_count") or 0) > 0
@@ -266,7 +282,9 @@ def main() -> int:
                     "version": DEPLOYER_RUNTIME_VERSION,
                     "feature_id": DEPLOYER_FEATURE_ID,
                     "record_count": deployer_payload.get("record_count"),
-                    "status_counts": deployer_payload.get("status_counts"),
+                    "status_counts": deployer_status_counts,
+                    "systems_valid": deployer_systems_valid,
+                    "invalid_system_status_counts": deployer_invalid_system_counts,
                     "guardrails": deployer_payload.get("guardrails"),
                 },
             }
@@ -300,6 +318,7 @@ def main() -> int:
                 "deployer_late_evidence_backfilled": False,
                 "gmgn_private_key_used": False,
                 "deployer_selector_changed": False,
+                "deployer_external_acquisition_systems_valid": deployer_systems_valid,
             }
         )
         report["guardrails"] = guardrails
