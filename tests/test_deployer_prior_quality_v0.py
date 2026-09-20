@@ -28,8 +28,10 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
         creator = "CREATOR"
         now = time.time_ns()
 
-        def runner(*, args, api_key):
+        def runner(*, args, api_key, timeout_seconds):
             self.assertEqual(api_key, "api-key")
+            self.assertGreater(timeout_seconds, 0)
+            self.assertLessEqual(timeout_seconds, 4.5)
             calls.append(list(args))
             if args[:2] == ["token", "info"]:
                 return {
@@ -121,8 +123,8 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
     def test_late_token_info_fails_closed_without_created_tokens_call(self):
         token, now, calls, runner = self._success_runner()
 
-        def late_runner(*, args, api_key):
-            row = runner(args=args, api_key=api_key)
+        def late_runner(*, args, api_key, timeout_seconds):
+            row = runner(args=args, api_key=api_key, timeout_seconds=timeout_seconds)
             row["response_after_wall_ns"] = now + 6_000_000_000
             return row
 
@@ -140,8 +142,8 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
     def test_late_created_tokens_is_never_backfilled(self):
         token, now, calls, runner = self._success_runner()
 
-        def late_created_runner(*, args, api_key):
-            row = runner(args=args, api_key=api_key)
+        def late_created_runner(*, args, api_key, timeout_seconds):
+            row = runner(args=args, api_key=api_key, timeout_seconds=timeout_seconds)
             if args[:2] == ["portfolio", "created-tokens"]:
                 row["response_after_wall_ns"] = now + 6_000_000_000
             return row
@@ -162,7 +164,8 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
         now = time.time_ns()
         calls = []
 
-        def rate_limited(*, args, api_key):
+        def rate_limited(*, args, api_key, timeout_seconds):
+            self.assertGreater(timeout_seconds, 0)
             calls.append(list(args))
             return {
                 "args": list(args),
@@ -234,11 +237,18 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
         self.assertEqual(enriched["features"][FEATURE_ID], 9)
         self.assertIn("deployer_prior_quality_v0", enriched["external_evidence"])
 
-    def test_patch_restores_online_feature_state_class(self):
-        original = live_v3.OnlinePumpFeatureState
+    def test_patch_restores_online_feature_state_and_run_live(self):
+        original_state = live_v3.OnlinePumpFeatureState
+        original_run_live = live_v3.run_live
         with patched_deployer_prior_quality_v0(api_key="api-key"):
-            self.assertIsNot(live_v3.OnlinePumpFeatureState, original)
-        self.assertIs(live_v3.OnlinePumpFeatureState, original)
+            self.assertIsNot(live_v3.OnlinePumpFeatureState, original_state)
+            self.assertIsNot(live_v3.run_live, original_run_live)
+        self.assertIs(live_v3.OnlinePumpFeatureState, original_state)
+        self.assertIs(live_v3.run_live, original_run_live)
+
+    def test_runtime_uses_bounded_two_slot_concurrency(self):
+        runtime = DeployerEvidenceRuntimeV0(api_key="api-key")
+        self.assertEqual(runtime.max_concurrent_acquisitions, 2)
 
     def test_association_is_descriptive_and_has_no_threshold_promotion(self):
         rows = [
