@@ -250,6 +250,22 @@ def _validate_fresh_capture(run_dir: Path) -> dict[str, Any]:
         raise ValueError("fresh deployer discovery did not complete by duration")
     deployer = report.get("deployer_prior_quality_v0") or {}
     guardrails = deployer.get("guardrails") or {}
+    status_counts = deployer.get("status_counts") or {}
+    invalid_system_statuses = {
+        "TASK_CANCELLED_AFTER_CAPTURE",
+        "TASK_UNRESOLVED_AFTER_CAPTURE",
+        "INTERNAL_ERROR",
+    }
+    invalid_counts = {
+        status: int(status_counts.get(status) or 0)
+        for status in invalid_system_statuses
+        if int(status_counts.get(status) or 0) > 0
+    }
+    if invalid_counts:
+        raise ValueError(
+            "fresh deployer external-evidence acquisition is systems-invalid: "
+            + ",".join(f"{key}={value}" for key, value in sorted(invalid_counts.items()))
+        )
     if guardrails.get("gmgn_private_key_used") is not False:
         raise ValueError("deployer capture private-key guardrail failed")
     if guardrails.get("selector_changed") is not False:
@@ -258,7 +274,8 @@ def _validate_fresh_capture(run_dir: Path) -> dict[str, Any]:
         "classification": report.get("classification"),
         "requested_duration_seconds": int(requested),
         "capture_stop_reason": capture.get("stop_reason"),
-        "deployer_status_counts": deployer.get("status_counts"),
+        "deployer_status_counts": status_counts,
+        "invalid_system_status_counts": invalid_counts,
         "gmgn_private_key_used": False,
         "selector_changed": False,
     }
