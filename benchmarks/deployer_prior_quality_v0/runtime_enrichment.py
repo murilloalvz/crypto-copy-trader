@@ -19,6 +19,7 @@ VERSION = "deployer_prior_quality_runtime_v0"
 FEATURE_ID = "mf_deployer_created_count_snapshot_ex_current"
 EXTERNAL_EVIDENCE_KEY = "deployer_prior_quality_v0"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 4.5
+MAX_CONCURRENT_ACQUISITIONS = 2
 
 
 def _canonical_json(value: Any) -> str:
@@ -90,14 +91,14 @@ def _run_cli_command(
         completed = subprocess.run(
             [cli, *args],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout_seconds,
             check=False,
             env=env,
         )
         exit_code = int(completed.returncode)
-        stdout = _redact(completed.stdout or "", api_key)
-        stderr = _redact(completed.stderr or "", api_key)
+        stdout = _redact((completed.stdout or b"").decode("utf-8", errors="replace"), api_key)
+        stderr = _redact((completed.stderr or b"").decode("utf-8", errors="replace"), api_key)
         error = None
     except subprocess.TimeoutExpired as exc:
         exit_code = -1
@@ -193,9 +194,15 @@ def _collect_deployer_evidence_sync(
         base["status"] = "LATE_BEFORE_TOKEN_INFO"
         return base
 
+    remaining_seconds = (decision_cutoff_wall_ns - time.time_ns()) / 1_000_000_000.0
+    if remaining_seconds <= 0:
+        base["status"] = "LATE_BEFORE_TOKEN_INFO"
+        return base
+
     token_info = command_runner(
         args=["token", "info", "--chain", "sol", "--address", token_mint, "--raw"],
         api_key=api_key,
+        timeout_seconds=min(DEFAULT_COMMAND_TIMEOUT_SECONDS, remaining_seconds),
     )
     base["token_info"] = token_info
     if int(token_info.get("exit_code") or 0) != 0:
@@ -217,6 +224,11 @@ def _collect_deployer_evidence_sync(
         return base
     base["creator_address"] = creator
 
+    remaining_seconds = (decision_cutoff_wall_ns - time.time_ns()) / 1_000_000_000.0
+    if remaining_seconds <= 0:
+        base["status"] = "LATE_BEFORE_CREATED_TOKENS"
+        return base
+
     created = command_runner(
         args=[
             "portfolio",
@@ -232,6 +244,7 @@ def _collect_deployer_evidence_sync(
             "--raw",
         ],
         api_key=api_key,
+        timeout_seconds=min(DEFAULT_COMMAND_TIMEOUT_SECONDS, remaining_seconds),
     )
     base["created_tokens"] = created
     if int(created.get("exit_code") or 0) != 0:
@@ -342,6 +355,28 @@ class DeployerEvidenceRuntimeV0:
         self.records: dict[str, dict[str, Any]] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self._semaphore: asyncio.Semaphore | None = None
+        self.max_concurrent_acquisitions = MAX_CONCURRENT_ACQUISITIONS
+
+    def _terminal_missing_record(
+        self,
+        *,
+        token_mint: str,
+        observed_t0_wall_ns: int,
+        decision_cutoff_wall_ns: int,
+        status: str,
+    ) -> dict[str, Any]:
+        return {
+            "version": VERSION,
+            "token_mint": token_mint,
+            "observed_t0_wall_ns": int(observed_t0_wall_ns),
+            "decision_cutoff_wall_ns": int(decision_cutoff_wall_ns),
+            "status": status,
+            "feature_id": FEATURE_ID,
+            "feature_value": None,
+            "private_key_used": False,
+            "capital_used": False,
+            "selector_changed": False,
+        }
 
     async def _acquire(
         self,
@@ -351,45 +386,86 @@ class DeployerEvidenceRuntimeV0:
         decision_cutoff_wall_ns: int,
     ) -> None:
         if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(1)
+            self._semaphore = asyncio.Semaphore(self.max_concurrent_acquisitions)
+
+        acquired = False
         try:
-            async with self._semaphore:
-                if time.time_ns() > decision_cutoff_wall_ns:
-                    self.records[token_mint] = {
-                        "version": VERSION,
-                        "token_mint": token_mint,
-                        "observed_t0_wall_ns": int(observed_t0_wall_ns),
-                        "decision_cutoff_wall_ns": int(decision_cutoff_wall_ns),
-                        "status": "LATE_BEFORE_TOKEN_INFO",
-                        "feature_id": FEATURE_ID,
-                        "feature_value": None,
-                        "private_key_used": False,
-                        "capital_used": False,
-                        "selector_changed": False,
-                    }
-                    return
-                record = await asyncio.to_thread(
-                    _collect_deployer_evidence_sync,
+            remaining_seconds = (decision_cutoff_wall_ns - time.time_ns()) / 1_000_000_000.0
+            if remaining_seconds <= 0:
+                self.records[token_mint] = self._terminal_missing_record(
                     token_mint=token_mint,
                     observed_t0_wall_ns=observed_t0_wall_ns,
                     decision_cutoff_wall_ns=decision_cutoff_wall_ns,
-                    api_key=self.api_key,
+                    status="LATE_BEFORE_SLOT",
                 )
-                self.records[token_mint] = record
+                return
+
+            try:
+                await asyncio.wait_for(
+                    self._semaphore.acquire(),
+                    timeout=remaining_seconds,
+                )
+                acquired = True
+            except TimeoutError:
+                self.records[token_mint] = self._terminal_missing_record(
+                    token_mint=token_mint,
+                    observed_t0_wall_ns=observed_t0_wall_ns,
+                    decision_cutoff_wall_ns=decision_cutoff_wall_ns,
+                    status="LATE_WAITING_FOR_SLOT",
+                )
+                return
+
+            if time.time_ns() > decision_cutoff_wall_ns:
+                self.records[token_mint] = self._terminal_missing_record(
+                    token_mint=token_mint,
+                    observed_t0_wall_ns=observed_t0_wall_ns,
+                    decision_cutoff_wall_ns=decision_cutoff_wall_ns,
+                    status="LATE_BEFORE_TOKEN_INFO",
+                )
+                return
+
+            record = await asyncio.to_thread(
+                _collect_deployer_evidence_sync,
+                token_mint=token_mint,
+                observed_t0_wall_ns=observed_t0_wall_ns,
+                decision_cutoff_wall_ns=decision_cutoff_wall_ns,
+                api_key=self.api_key,
+            )
+            self.records[token_mint] = record
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self.records[token_mint] = {
-                "version": VERSION,
-                "token_mint": token_mint,
-                "observed_t0_wall_ns": int(observed_t0_wall_ns),
-                "decision_cutoff_wall_ns": int(decision_cutoff_wall_ns),
-                "status": "INTERNAL_ERROR",
+                **self._terminal_missing_record(
+                    token_mint=token_mint,
+                    observed_t0_wall_ns=observed_t0_wall_ns,
+                    decision_cutoff_wall_ns=decision_cutoff_wall_ns,
+                    status="INTERNAL_ERROR",
+                ),
                 "error": f"{type(exc).__name__}:{_redact(str(exc), self.api_key)}"[:700],
-                "feature_id": FEATURE_ID,
-                "feature_value": None,
-                "private_key_used": False,
-                "capital_used": False,
-                "selector_changed": False,
             }
+        finally:
+            if acquired and self._semaphore is not None:
+                self._semaphore.release()
+
+    async def finalize(self) -> None:
+        pending = [task for task in self.tasks.values() if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for token, task in self.tasks.items():
+            if token not in self.records and task.cancelled():
+                self.records[token] = {
+                    "version": VERSION,
+                    "token_mint": token,
+                    "status": "TASK_CANCELLED_AFTER_CAPTURE",
+                    "feature_id": FEATURE_ID,
+                    "feature_value": None,
+                    "private_key_used": False,
+                    "capital_used": False,
+                    "selector_changed": False,
+                }
 
     def start(
         self,
@@ -473,6 +549,10 @@ class DeployerEvidenceRuntimeV0:
                 "selector_changed": False,
                 "hot_path_blocked_for_external_evidence": False,
                 "late_evidence_backfilled": False,
+                "max_concurrent_acquisitions": self.max_concurrent_acquisitions,
+                "slot_wait_bounded_by_decision_cutoff": True,
+                "command_timeout_bounded_by_remaining_cutoff": True,
+                "subprocess_output_decoding": "utf8_replace",
             },
         }
 
@@ -488,6 +568,7 @@ class DeployerEvidenceRuntimeV0:
 def patched_deployer_prior_quality_v0(*, api_key: str) -> Iterator[DeployerEvidenceRuntimeV0]:
     runtime = DeployerEvidenceRuntimeV0(api_key=api_key)
     original_state = live_v3.OnlinePumpFeatureState
+    original_run_live = live_v3.run_live
 
     class OnlinePumpFeatureStateWithDeployerV0(original_state):
         def ingest_processed_chunk(self, chunk_dir: Path) -> None:
@@ -517,8 +598,16 @@ def patched_deployer_prior_quality_v0(*, api_key: str) -> Iterator[DeployerEvide
                 for token_mint, snapshot in rows
             ]
 
+    async def run_live_with_deployer_finalize(*args, **kwargs):
+        try:
+            return await original_run_live(*args, **kwargs)
+        finally:
+            await runtime.finalize()
+
     live_v3.OnlinePumpFeatureState = OnlinePumpFeatureStateWithDeployerV0
+    live_v3.run_live = run_live_with_deployer_finalize
     try:
         yield runtime
     finally:
         live_v3.OnlinePumpFeatureState = original_state
+        live_v3.run_live = original_run_live
