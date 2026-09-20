@@ -354,6 +354,7 @@ class DeployerEvidenceRuntimeV0:
         self.api_key = api_key.strip()
         self.records: dict[str, dict[str, Any]] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.decision_cutoff_wall_ns_by_token: dict[str, int] = {}
         self._semaphore: asyncio.Semaphore | None = None
         self.max_concurrent_acquisitions = MAX_CONCURRENT_ACQUISITIONS
 
@@ -449,11 +450,33 @@ class DeployerEvidenceRuntimeV0:
                 self._semaphore.release()
 
     async def finalize(self) -> None:
-        pending = [task for task in self.tasks.values() if not task.done()]
-        for task in pending:
+        pending_by_token = {
+            token: task
+            for token, task in self.tasks.items()
+            if not task.done()
+        }
+        if pending_by_token:
+            now_wall_ns = time.time_ns()
+            latest_cutoff_wall_ns = max(
+                self.decision_cutoff_wall_ns_by_token.get(token, now_wall_ns)
+                for token in pending_by_token
+            )
+            remaining_causal_seconds = max(
+                0.0,
+                (latest_cutoff_wall_ns - now_wall_ns) / 1_000_000_000.0,
+            )
+            if remaining_causal_seconds > 0:
+                await asyncio.wait(
+                    pending_by_token.values(),
+                    timeout=remaining_causal_seconds,
+                )
+
+        still_pending = [task for task in self.tasks.values() if not task.done()]
+        for task in still_pending:
             task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        if still_pending:
+            await asyncio.gather(*still_pending, return_exceptions=True)
+
         for token, task in self.tasks.items():
             if token not in self.records and task.cancelled():
                 self.records[token] = {
@@ -477,6 +500,7 @@ class DeployerEvidenceRuntimeV0:
         if token_mint in self.tasks or token_mint in self.records:
             return
         loop = asyncio.get_running_loop()
+        self.decision_cutoff_wall_ns_by_token[token_mint] = int(decision_cutoff_wall_ns)
         self.tasks[token_mint] = loop.create_task(
             self._acquire(
                 token_mint=token_mint,
