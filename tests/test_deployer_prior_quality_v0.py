@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from benchmarks.deployer_prior_quality_v0.run import (
     DEFAULT_PROTOCOL,
     _association,
+    _validate_fresh_capture,
     _validate_protocol,
 )
 from benchmarks.deployer_prior_quality_v0.runtime_enrichment import (
@@ -16,6 +19,7 @@ from benchmarks.deployer_prior_quality_v0.runtime_enrichment import (
     DeployerEvidenceRuntimeV0,
     _cli_environment,
     _collect_deployer_evidence_sync,
+    _run_cli_command,
     patched_deployer_prior_quality_v0,
 )
 from benchmarks.launch_burst_prospective_route_live_v3 import live as live_v3
@@ -249,6 +253,58 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
     def test_runtime_uses_bounded_two_slot_concurrency(self):
         runtime = DeployerEvidenceRuntimeV0(api_key="api-key")
         self.assertEqual(runtime.max_concurrent_acquisitions, 2)
+
+    def test_cli_decodes_non_utf8_bytes_without_reader_thread_failure(self):
+        fake = SimpleNamespace(
+            returncode=0,
+            stdout=b'{"ok":true}\x81',
+            stderr=b'warning:\x81',
+        )
+        with patch(
+            "benchmarks.deployer_prior_quality_v0.runtime_enrichment._resolve_gmgn_cli",
+            return_value="gmgn-cli.cmd",
+        ), patch(
+            "benchmarks.deployer_prior_quality_v0.runtime_enrichment.subprocess.run",
+            return_value=fake,
+        ):
+            result = _run_cli_command(
+                args=["token", "info", "--chain", "sol", "--address", "TOKEN", "--raw"],
+                api_key="api-key",
+                timeout_seconds=1.0,
+            )
+        self.assertEqual(result["exit_code"], -2)
+        self.assertEqual(result["error"], "INVALID_JSON")
+        self.assertIn("\ufffd", result["raw_stdout"])
+        self.assertIn("\ufffd", result["raw_stderr"])
+
+    def test_evaluator_rejects_cancelled_sidecar_acquisition(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            payload = {
+                "classification": "PASS_LAUNCH_BURST_CONTROL_TAKER_SIM_V4_SNIPER_V1",
+                "base_v4_report": {
+                    "requested_duration_seconds": 900,
+                    "capture": {"stop_reason": "duration_elapsed"},
+                },
+                "deployer_prior_quality_v0": {
+                    "status_counts": {
+                        "CAUSAL_AVAILABLE": 4,
+                        "TASK_CANCELLED_AFTER_CAPTURE": 334,
+                    },
+                    "guardrails": {
+                        "gmgn_private_key_used": False,
+                        "selector_changed": False,
+                    },
+                },
+            }
+            (run_dir / "simulation-report-v4-sniper-v1.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "systems-invalid"):
+                _validate_fresh_capture(run_dir)
 
     def test_association_is_descriptive_and_has_no_threshold_promotion(self):
         rows = [
