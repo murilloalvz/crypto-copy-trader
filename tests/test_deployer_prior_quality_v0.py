@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -253,6 +254,51 @@ class DeployerPriorQualityV0Tests(unittest.TestCase):
     def test_runtime_uses_bounded_two_slot_concurrency(self):
         runtime = DeployerEvidenceRuntimeV0(api_key="api-key")
         self.assertEqual(runtime.max_concurrent_acquisitions, 2)
+
+    def test_finalize_drains_pending_task_within_causal_cutoff(self):
+        async def scenario():
+            runtime = DeployerEvidenceRuntimeV0(api_key="api-key")
+
+            async def complete():
+                await asyncio.sleep(0.01)
+                runtime.records["TOKEN"] = {
+                    "version": "deployer_prior_quality_runtime_v0",
+                    "token_mint": "TOKEN",
+                    "status": "LATE_BEFORE_TOKEN_INFO",
+                    "feature_id": FEATURE_ID,
+                    "feature_value": None,
+                    "private_key_used": False,
+                    "capital_used": False,
+                    "selector_changed": False,
+                }
+
+            runtime.tasks["TOKEN"] = asyncio.create_task(complete())
+            runtime.decision_cutoff_wall_ns_by_token["TOKEN"] = time.time_ns() + 200_000_000
+            await runtime.finalize()
+
+            self.assertFalse(runtime.tasks["TOKEN"].cancelled())
+            self.assertEqual(runtime.records["TOKEN"]["status"], "LATE_BEFORE_TOKEN_INFO")
+
+        asyncio.run(scenario())
+
+    def test_finalize_cancels_task_still_pending_after_causal_cutoff(self):
+        async def scenario():
+            runtime = DeployerEvidenceRuntimeV0(api_key="api-key")
+
+            async def blocked():
+                await asyncio.sleep(1.0)
+
+            runtime.tasks["TOKEN"] = asyncio.create_task(blocked())
+            runtime.decision_cutoff_wall_ns_by_token["TOKEN"] = time.time_ns() + 1_000_000
+            await runtime.finalize()
+
+            self.assertTrue(runtime.tasks["TOKEN"].cancelled())
+            self.assertEqual(
+                runtime.records["TOKEN"]["status"],
+                "TASK_CANCELLED_AFTER_CAPTURE",
+            )
+
+        asyncio.run(scenario())
 
     def test_cli_decodes_non_utf8_bytes_without_reader_thread_failure(self):
         fake = SimpleNamespace(
