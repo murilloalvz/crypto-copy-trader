@@ -8,6 +8,7 @@ from unittest.mock import patch
 from benchmarks.early_buyer_churn_prospective_v1.provider_preflight import (
     FAIL,
     PASS,
+    PUBLIC_DRPC_SOLANA_RPC,
     PUBLIC_SOLANA_RPC,
     _is_helius,
     _rpc_candidates,
@@ -29,8 +30,9 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
             ),
         )
         self.assertEqual(candidates[0], "https://rpc.example.test")
+        self.assertEqual(candidates[-2], PUBLIC_DRPC_SOLANA_RPC)
         self.assertEqual(candidates[-1], PUBLIC_SOLANA_RPC)
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(len(candidates), 3)
         self.assertTrue(_is_helius("https://mainnet.helius-rpc.com/?api-key=x"))
         self.assertFalse(_is_helius("https://rpc.example.test"))
 
