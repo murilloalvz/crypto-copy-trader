@@ -8,6 +8,10 @@ import time
 import unittest
 from unittest.mock import patch
 
+from benchmarks.holder_ownership_native_v1.market_ingest import (
+    PUBLIC_SOLANA_WSS_URL,
+    patched_public_solana_standard_wss_v1,
+)
 from benchmarks.holder_ownership_native_v1.preflight import run_preflight
 from benchmarks.holder_ownership_native_v1.run import (
     DEFAULT_PROTOCOL,
@@ -22,7 +26,10 @@ from benchmarks.holder_ownership_native_v1.runtime_enrichment import (
     _collect_native_holder_evidence_sync,
     patched_holder_ownership_native_v1,
 )
+from benchmarks.helius_standard_wss_shadow_v0 import collect as helius_collect
 from benchmarks.launch_burst_prospective_route_live_v3 import live as live_v3
+from benchmarks.launch_burst_prospective_route_paper_v2 import live as paper_v2
+from benchmarks.market_first_live_discovery_v0 import rotating_trace
 
 
 class HolderOwnershipNativeV1Tests(unittest.TestCase):
@@ -166,6 +173,11 @@ class HolderOwnershipNativeV1Tests(unittest.TestCase):
                     "requested_duration_seconds": 900,
                     "capture": {"stop_reason": "duration_elapsed"},
                 },
+                "guardrails": {
+                    "market_ingest_provider": "solana_public_standard_wss",
+                    "market_ingest_http_hydration": False,
+                    "helius_wss_used_for_market_ingest": False,
+                },
                 "holder_ownership_native_v1": {
                     "status_counts": {"CAUSAL_AVAILABLE": 10, "HELIUS_RATE_LIMITED": 1},
                     "guardrails": {
@@ -194,6 +206,18 @@ class HolderOwnershipNativeV1Tests(unittest.TestCase):
         with patch(
             "benchmarks.holder_ownership_native_v1.preflight._rpc_once",
             side_effect=[supply, accounts],
+        ), patch(
+            "benchmarks.holder_ownership_native_v1.preflight.run_market_ingest_preflight",
+            return_value={
+                "classification": "PASS_PUBLIC_SOLANA_STANDARD_WSS_PREFLIGHT",
+                "source_provider": "solana_public_standard_wss",
+                "endpoint_host": "api.mainnet.solana.com",
+                "subscription_ack_count": 3,
+                "slot_notification_seen": True,
+                "http_hydration_used": False,
+                "economic_outcomes_opened": False,
+                "elapsed_seconds": 0.5,
+            },
         ):
             report = run_preflight(
                 protocol_path=DEFAULT_PROTOCOL,
@@ -204,6 +228,33 @@ class HolderOwnershipNativeV1Tests(unittest.TestCase):
         self.assertFalse(report["economic_outcomes_opened"])
         self.assertFalse(report["gmgn_used"])
         self.assertEqual(report["schema_probe"]["methods"], ["getTokenSupply", "getTokenAccounts"])
+        self.assertEqual(report["market_ingest"]["source_provider"], "solana_public_standard_wss")
+        self.assertFalse(report["market_ingest"]["http_hydration_used"])
+
+
+    def test_public_market_ingest_patch_is_explicit_and_restored(self):
+        original_url = paper_v2.helius_wss_url
+        original_collect_source = helius_collect.SOURCE_PROVIDER
+        original_rotating_source = rotating_trace.SOURCE_PROVIDER
+        original_rotating_header = rotating_trace.trace_header
+
+        with patched_public_solana_standard_wss_v1():
+            self.assertEqual(paper_v2.helius_wss_url("ignored"), PUBLIC_SOLANA_WSS_URL)
+            self.assertEqual(helius_collect.SOURCE_PROVIDER, "solana_public_standard_wss")
+            self.assertEqual(rotating_trace.SOURCE_PROVIDER, "solana_public_standard_wss")
+            header = rotating_trace.trace_header(
+                duration_seconds=1.0,
+                max_log_notifications=0,
+                started_wall_ns=1,
+            )
+            self.assertEqual(header["source_provider"], "solana_public_standard_wss")
+            self.assertEqual(header["endpoint_host"], "api.mainnet.solana.com")
+
+        self.assertIs(paper_v2.helius_wss_url, original_url)
+        self.assertEqual(helius_collect.SOURCE_PROVIDER, original_collect_source)
+        self.assertEqual(rotating_trace.SOURCE_PROVIDER, original_rotating_source)
+        self.assertIs(rotating_trace.trace_header, original_rotating_header)
+
 
     def test_association_has_no_threshold_promotion(self):
         rows = [
