@@ -30,6 +30,7 @@ from benchmarks.launch_burst_prospective_route_live_v4.no_funds_assembly_diagnos
 
 PASS = "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PROVIDER_PREFLIGHT"
 FAIL = "FAIL_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PROVIDER_PREFLIGHT"
+PUBLIC_MAGICBLOCK_SOLANA_RPC = "https://rpc.magicblock.app/mainnet"
 PUBLIC_DRPC_SOLANA_RPC = "https://solana.drpc.org/"
 PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 DEFAULT_OUTPUT = (
@@ -56,6 +57,7 @@ def _rpc_candidates(
     fallbacks: tuple[str, ...],
 ) -> tuple[str, ...]:
     values = [str(primary or "").strip(), *[str(x).strip() for x in fallbacks]]
+    values.append(PUBLIC_MAGICBLOCK_SOLANA_RPC)
     values.append(PUBLIC_DRPC_SOLANA_RPC)
     values.append(PUBLIC_SOLANA_RPC)
 
