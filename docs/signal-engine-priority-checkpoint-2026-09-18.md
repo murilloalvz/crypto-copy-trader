@@ -1208,3 +1208,40 @@ This endpoint is used only for read-only public-control discovery. It must still
 
 Any failure remains fail-closed and does not consume the fresh confirmation. No route, feature, threshold, selector, Participant Quality or Fixed+60 semantics change.
 
+## Early Buyer Churn Prospective V1 — evaluator parity bug after valid fresh capture
+
+The single preregistered fresh capture completed successfully and is preserved as the only fresh evidence:
+
+`launch_burst_prospective_route_live_v4-1789962523-deacaf3728`
+
+Systems facts:
+
+- 900 seconds completed with `duration_elapsed`;
+- 247 complete episodes;
+- 245 causal churn values;
+- 2 `MISSING_NO_OBSERVED_BUY`;
+- 0 right-censored episodes;
+- exact approved provider-control hash reused;
+- Alchemy RPC fixed for the run;
+- provider recheck PASS;
+- no Helius dependency;
+- no signing or submission.
+
+The first evaluator attempt produced no scientific verdict and no output report. It aborted before association/decision because the shared Participant Quality source reconstructor expected Sniper V1 snapshot enrichment fields (`directional_flow_efficiency`, `unique_buy_wallet_count`) that were present in the five frozen historical Sniper runs but intentionally absent from the prospective churn fresh capture, which ran through the base Smart-Ladder route path.
+
+This is an evaluator compatibility bug, not a failure of the fresh sample and not a reason to acquire another sample.
+
+Fix scope:
+
+- frozen Participant Quality historical reconstruction is unchanged;
+- all five historical runs still require their exact Sniper reconstruction parity;
+- only the fresh churn evaluator uses a base-snapshot-compatible source adapter;
+- the adapter requires exact parity for stored base fields (`event_count`, signed flow, quote-asset identity);
+- if Sniper-only fields are present in a fresh stored snapshot, they remain strictly parity-checked;
+- wallet identities for the Participant Quality control are reconstructed causally from the processed Carbon `pump_trade.wallet` field using the same T0..T0+5 window;
+- no stored snapshot is modified or backfilled;
+- churn values, route outcomes, controls, thresholds and decision gates are unchanged;
+- no new live capture is permitted.
+
+The evaluator rerun on the exact same fresh artifact is an analysis-tooling correction only and adds no sample.
+
