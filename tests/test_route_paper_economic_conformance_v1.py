@@ -62,6 +62,30 @@ class RoutePaperEconomicConformanceV1Tests(unittest.TestCase):
                 "closed one-shot prospective wrapper preserved to reproduce the "
                 "already-closed INSUFFICIENT_SAMPLE_NO_EXTENSION artifact"
             ),
+            (
+                benchmarks_root
+                / "holder_ownership_structure_v0"
+                / "run_live.py"
+            ).resolve(): (
+                "closed historical Holder Ownership Structure V0 wrapper; "
+                "not authorized for new acquisition"
+            ),
+            (
+                benchmarks_root
+                / "holder_ownership_native_v1"
+                / "run_live.py"
+            ).resolve(): (
+                "closed historical Holder Ownership Native V1 wrapper; "
+                "not authorized for new acquisition"
+            ),
+            (
+                benchmarks_root
+                / "holder_ownership_rpc_v2"
+                / "run_live.py"
+            ).resolve(): (
+                "closed historical Holder Ownership RPC V2 wrapper; "
+                "not authorized for new acquisition"
+            ),
         }
 
         violations = []
