@@ -1092,3 +1092,46 @@ Fresh-confirmation tooling added:
 
 No fresh live acquisition is authorized merely by this tooling change. External market-ingest/route-provider health must be re-established before spending the single preregistered 900-second fresh confirmation.
 
+## Early Buyer Churn Prospective V1 — provider-health gate before fresh capture
+
+Local tooling verification on the prior prospective head passed 26/26 targeted tests.
+
+A new outcome-blind provider-health gate is now required before the single preregistered 900-second fresh confirmation.
+
+Provider preflight:
+
+`benchmarks/early_buyer_churn_prospective_v1/provider_preflight.py`
+
+It validates, without opening an economic outcome:
+
+- the exact PASS parity artifact;
+- Solana public Standard WSS subscriptions + slot notification;
+- no per-transaction HTTP hydration on market ingest;
+- a non-Helius RPC candidate for control-balance reads;
+- the frozen public control identity and minimum USDC/SOL floors;
+- Jupiter read-only candidate transaction assembly for the known-liquid control and representative burst fixture;
+- no signing, submission, private key, provider execute, or fresh-confirmation consumption.
+
+RPC candidate policy for this gate:
+
+1. configured `SOLANA_RPC_URL`, only if non-Helius;
+2. configured `SOLANA_RPC_FALLBACK_URLS`, excluding Helius;
+3. public `api.mainnet-beta.solana.com` fallback.
+
+The first candidate that passes the frozen funded-control/Jupiter assembly preflight is selected. Only the safe host and candidate index are persisted; raw credential-bearing RPC URLs are not written to the preflight artifact.
+
+Fresh wrapper changes:
+
+- requires a PASS provider-health artifact before capture;
+- re-runs the same provider-health checks immediately before the fresh acquisition;
+- requires the same selected RPC host as the approved preflight artifact;
+- fixes that RPC endpoint for the full fresh run (no in-run provider switch);
+- uses Solana public Standard WSS for market ingest;
+- reuses the exact frozen public control through `EXACT_PREFLIGHT_REUSE`;
+- disables Helius market-ingest and Helius control-discovery paths for this confirmation;
+- keeps the exact churn feature, route contract and Fixed+60 primary endpoint unchanged.
+
+The fresh evaluator independently re-opens the provider preflight artifact and checks the same non-Helius/public-WSS/control-reuse guardrails before accepting the capture as valid evidence.
+
+A provider-health FAIL does NOT consume the fresh confirmation and must not trigger a 900-second live run.
+
