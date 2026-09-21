@@ -752,3 +752,126 @@ Minimum primary route-closed feature/outcome pairs: 30.
 
 This is explicitly RETROSPECTIVE DISCOVERY. Even a strong result cannot promote a selector from the same sample; it can only justify mechanism/robustness review followed by a separately frozen prospective confirmation.
 
+## Early Balance Concentration V0 — negative discovery result
+
+Evaluator:
+
+`PASS_EARLY_BALANCE_CONCENTRATION_V0`
+
+Decision:
+
+`DISCOVERY_COMPLETE_NO_PROMOTION`
+
+Coverage/integrity:
+
+- five frozen runs;
+- 409 baseline/default-SOL episodes;
+- 409/409 causal feature availability;
+- 196 ROUTE_CLOSED primary feature/outcome pairs;
+- exact reconstruction parity on every run;
+- no external holder provider;
+- no new live acquisition;
+- no new outcome collection.
+
+Preregistered direction was negative: higher concentration should predict worse Fixed+60 outcomes.
+
+Observed primary result:
+
+- Spearman: +0.11879;
+- without best trade: +0.12620;
+- leave-one-out sign consistency: 1.0, consistently in the opposite direction;
+- higher-HHI half median gross: -10.37%;
+- lower/equal-HHI half median gross: -19.91%.
+
+Incremental result controlling retained Participant Quality + BUY acceleration + signed flow:
+
+- usable complete pairs: 142;
+- partial Spearman: +0.06529.
+
+Copyability-sensitive reference:
+
+- usable pairs: 236;
+- Spearman: +0.01446.
+
+Conclusion:
+
+**CLOSE EARLY BALANCE CONCENTRATION V0.**
+
+The preregistered negative direction did not replicate; incremental association was also positive. Do not retune HHI, search thresholds, redefine the denominator, extend the sample, or invert the feature into a selector. This family is closed as a negative discovery result.
+
+## Early Buyer Churn V0 — preregistered next event-native family
+
+Branch:
+
+`research/early-buyer-churn-v0`
+
+Experiment:
+
+`MF-EARLY-BUYER-CHURN-V0`
+
+Protocol hash:
+
+`5c9389bfd1954cddd0528916d933d6d4495906826d45689c424282a402996d3e`
+
+Primary feature:
+
+`mf_early_buyer_roundtrip_sellback_fraction_t0_5s`
+
+Mechanism:
+
+- reconstruct only decoded Pump trades causally observed inside T0..T0+5s;
+- maintain observed acquired token inventory per wallet;
+- BUY adds `token_amount_raw`;
+- SELL matches only up to that wallet's currently observed acquired inventory;
+- sells before an observed buy and oversell beyond observed acquired inventory remain unmatched and do not count as churn;
+- numerator = matched same-wallet sellback raw token amount;
+- denominator = total observed buy raw token amount;
+- feature range = 0..1;
+- no observed BUY -> MISSING.
+
+Interpretation:
+
+fraction of early observed bought inventory that the same buyers already sold back inside the launch window. This measures immediate buyer churn/round-trip behavior, not total sell flow and not true wallet inventory.
+
+Preregistered direction:
+
+higher early buyer churn -> worse future ROUTE_CLOSED gross Fixed+60 outcome.
+
+To reduce sequential retrospective overfitting, the existing data are frozen into a temporal split BEFORE evaluating this feature:
+
+Discovery:
+
+1. `launch_burst_prospective_route_live_v4-1789605670-3592832863`
+2. `launch_burst_prospective_route_live_v4-1789687945-0315e2560c`
+3. `launch_burst_prospective_route_live_v4-1789692405-6daeedeb29`
+4. `launch_burst_prospective_route_live_v4-1789698815-b277ffea77`
+
+Temporal holdout:
+
+`launch_burst_prospective_route_live_v4-1789946453-0367216d26`
+
+Frozen decision rule:
+
+- discovery primary pairs >=80;
+- holdout primary pairs >=20;
+- discovery primary Spearman <0;
+- discovery Spearman without best trade <0;
+- discovery leave-one-out sign consistency >=0.8;
+- discovery partial Spearman controlling Participant Quality + BUY acceleration + signed flow <0;
+- holdout primary Spearman <0;
+- holdout partial Spearman with the same controls <0.
+
+If all pass:
+
+`RETROSPECTIVE_TEMPORAL_REPLICATION_NO_PROMOTION`
+
+If sample is sufficient but any replication condition fails:
+
+`NO_REPLICATION_CLOSE_FAMILY`
+
+If either sample minimum is not met:
+
+`INSUFFICIENT_SAMPLE_NO_EXTENSION`
+
+The temporal holdout is stronger than pooled retrospective discovery but is NOT a prospective confirmation because all five runs already belong to the existing research corpus. No selector can be promoted from this result.
+
