@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -56,6 +57,8 @@ def rpc_once(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
         separators=(",", ":"),
     ).encode("utf-8")
+    request_before_wall_ns = time.time_ns()
+    started = time.perf_counter_ns()
     request = Request(
         rpc_url,
         data=body,
@@ -82,12 +85,18 @@ def rpc_once(
         retry_after = None
         error = f"{type(exc).__name__}:{exc}"[:300]
 
+    response_after_wall_ns = time.time_ns()
+    duration_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+
     rpc_error = payload.get("error") if isinstance(payload, dict) else None
     if error is None and rpc_error is not None:
         error = f"RPC_ERROR:{rpc_error}"[:300]
 
     return {
         "method": method,
+        "request_before_wall_ns": request_before_wall_ns,
+        "response_after_wall_ns": response_after_wall_ns,
+        "duration_ms": duration_ms,
         "status_code": status_code,
         "error": error,
         "rate_limited": status_code == 429,
