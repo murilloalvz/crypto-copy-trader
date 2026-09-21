@@ -17,6 +17,7 @@ from benchmarks.early_buyer_churn_prospective_v1.run import (
 from benchmarks.early_buyer_churn_prospective_v1.run_live import (
     _attest_route_input,
     _validate_parity_report,
+    _validate_provider_preflight_artifact,
 )
 from benchmarks.early_buyer_churn_v0.run import FEATURE_ID
 
@@ -50,6 +51,49 @@ class EarlyBuyerChurnProspectiveConfirmationV1Tests(unittest.TestCase):
                 _validate_parity_report(
                     parity_report_path=path,
                     protocol=protocol,
+                )
+
+
+    def test_provider_preflight_artifact_rejects_helius_even_when_marked_pass(self):
+        protocol = read_json(DEFAULT_PROTOCOL)
+        parity = {
+            "protocol_hash_sha256": protocol["protocol_hash_sha256"],
+            "exact_parity": True,
+            "mismatch_count": 0,
+        }
+        payload = {
+            "classification": "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PROVIDER_PREFLIGHT",
+            "protocol_hash_sha256": protocol["protocol_hash_sha256"],
+            "parity_attestation": parity,
+            "gates": {"all": True},
+            "selected_rpc": {
+                "candidate_index": 0,
+                "safe_host": "mainnet.helius-rpc.com",
+                "fallback_used": False,
+                "helius": False,
+            },
+            "market_ingest": {
+                "classification": "PASS_PUBLIC_SOLANA_STANDARD_WSS_PREFLIGHT",
+                "source_provider": "solana_public_standard_wss",
+                "endpoint_host": "api.mainnet.solana.com",
+                "http_hydration_used": False,
+            },
+            "economic_outcomes_opened": False,
+            "fresh_confirmation_consumed": False,
+            "provider_execute_called": False,
+            "private_key_used": False,
+            "transaction_signed": False,
+            "transaction_submitted": False,
+            "helius_dependency_active": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "selected Helius RPC"):
+                _validate_provider_preflight_artifact(
+                    provider_preflight_path=path,
+                    protocol=protocol,
+                    parity=parity,
                 )
 
     def test_route_input_attestation_accepts_available_missing_and_right_censored(self):
