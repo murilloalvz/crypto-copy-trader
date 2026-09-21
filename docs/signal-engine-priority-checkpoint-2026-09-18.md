@@ -875,3 +875,71 @@ If either sample minimum is not met:
 
 The temporal holdout is stronger than pooled retrospective discovery but is NOT a prospective confirmation because all five runs already belong to the existing research corpus. No selector can be promoted from this result.
 
+## Early Buyer Churn V0 — retrospective temporal replication result
+
+Evaluator:
+
+`PASS_EARLY_BUYER_CHURN_V0`
+
+Decision:
+
+`RETROSPECTIVE_TEMPORAL_REPLICATION_NO_PROMOTION`
+
+All frozen decision checks passed.
+
+Discovery block (first four frozen runs):
+
+- primary ROUTE_CLOSED pairs: 161;
+- primary Spearman: -0.11619;
+- without best trade: -0.13247;
+- leave-one-out sign consistency: 1.0;
+- partial Spearman controlling retained Participant Quality + BUY acceleration + signed flow: -0.06787 on 114 complete pairs.
+
+Temporal holdout (fifth frozen run):
+
+- primary ROUTE_CLOSED pairs: 35;
+- primary Spearman: -0.04635;
+- without best trade: -0.11410;
+- leave-one-out sign consistency: 1.0;
+- partial Spearman with the same controls: -0.02831 on 28 complete pairs.
+
+Structure:
+
+- 409/409 baseline episodes had the event-native feature available;
+- pooled median churn fraction: 0.13967;
+- zero-churn fraction: 31.30%;
+- median flipper-wallet share: 23.08%.
+
+Interpretation:
+
+The exact preregistered churn feature showed the expected negative direction in discovery and repeated both direction and incremental sign in the frozen temporal holdout. Effect size is modest, especially in the holdout. This is stronger than pooled retrospective discovery but remains retrospective evidence and MUST NOT be called prospective confirmation or promoted directly into a selector.
+
+Next step is post-discovery mechanism/robustness audit of the exact feature followed, only if still credible, by prospective instrumentation and a separately frozen fresh confirmation.
+
+## Early Buyer Churn Robustness V0 — post-discovery audit
+
+Branch:
+
+`research/early-buyer-churn-robustness-v0`
+
+Purpose:
+
+Check whether the exact frozen churn association is distributed across acquisition periods or is driven by a single run.
+
+This audit is explicitly designed AFTER seeing the churn result. Therefore it adds robustness context only and carries **no new confirmatory evidence weight**.
+
+Frozen audit operations:
+
+- reuse the exact `mf_early_buyer_roundtrip_sellback_fraction_t0_5s` definition;
+- evaluate primary Spearman per each of the five runs;
+- evaluate partial Spearman per run when complete controls permit;
+- recompute pooled association after dropping each whole run one at a time;
+- recompute pooled partial association after dropping each whole run one at a time;
+- report the structural zero-churn versus positive-churn split only as a mechanism diagnostic;
+- no threshold search;
+- no feature redefinition;
+- no selector or score construction;
+- no new live acquisition or outcome collection.
+
+A favorable audit can justify engineering the exact feature for future prospective capture. It cannot promote the feature or replace a fresh confirmation.
+
