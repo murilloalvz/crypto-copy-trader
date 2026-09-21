@@ -295,6 +295,37 @@ def _load_fresh_churn_map(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dic
 
 
 
+def _fresh_snapshot_parity_checks(
+    *,
+    replay: Mapping[str, Any],
+    stored: Mapping[str, Any],
+) -> dict[str, bool]:
+    checks = {
+        "event_count": replay.get("event_count") == stored.get("event_count"),
+        "signed_flow_over_event_reserve": _same_number(
+            replay.get("signed_flow_over_event_reserve"),
+            stored.get("signed_flow_over_event_reserve"),
+        ),
+        "quote_asset_identity_count": replay.get("quote_asset_identity_count")
+        == stored.get("quote_asset_identity_count"),
+    }
+
+    stored_is_sniper = (
+        stored.get("sniper_feature_enrichment_version") is not None
+    )
+    if stored_is_sniper or "directional_flow_efficiency" in stored:
+        checks["directional_flow_efficiency"] = _same_number(
+            replay.get("directional_flow_efficiency"),
+            stored.get("directional_flow_efficiency"),
+        )
+    if stored_is_sniper or "unique_buy_wallet_count" in stored:
+        checks["unique_buy_wallet_count"] = (
+            replay.get("unique_buy_wallet_count")
+            == stored.get("unique_buy_wallet_count")
+        )
+    return checks
+
+
 def _fresh_episode_sources_base_compatible(
     *,
     run_dir: Path,
@@ -380,46 +411,18 @@ def _fresh_episode_sources_base_compatible(
         )
         stored = snapshot.get("features") or {}
 
-        checks = {
-            "event_count": replay.get("event_count") == stored.get("event_count"),
-            "signed_flow_over_event_reserve": _same_number(
-                replay.get("signed_flow_over_event_reserve"),
-                stored.get("signed_flow_over_event_reserve"),
-            ),
-            "quote_asset_identity_count": replay.get("quote_asset_identity_count")
-            == stored.get("quote_asset_identity_count"),
-        }
+        checks = _fresh_snapshot_parity_checks(
+            replay=replay,
+            stored=stored,
+        )
 
         stored_is_sniper = (
             stored.get("sniper_feature_enrichment_version") is not None
         )
         if stored_is_sniper:
             sniper_snapshot_count += 1
-            checks.update(
-                {
-                    "directional_flow_efficiency": _same_number(
-                        replay.get("directional_flow_efficiency"),
-                        stored.get("directional_flow_efficiency"),
-                    ),
-                    "unique_buy_wallet_count": replay.get(
-                        "unique_buy_wallet_count"
-                    )
-                    == stored.get("unique_buy_wallet_count"),
-                }
-            )
         else:
             base_snapshot_count += 1
-            # If an enrichment-only field was persisted, it must still match.
-            if "directional_flow_efficiency" in stored:
-                checks["directional_flow_efficiency"] = _same_number(
-                    replay.get("directional_flow_efficiency"),
-                    stored.get("directional_flow_efficiency"),
-                )
-            if "unique_buy_wallet_count" in stored:
-                checks["unique_buy_wallet_count"] = (
-                    replay.get("unique_buy_wallet_count")
-                    == stored.get("unique_buy_wallet_count")
-                )
 
         failed = [name for name, passed in checks.items() if not passed]
         if failed:
@@ -536,6 +539,8 @@ def _fresh_episode_sources_base_compatible(
         "sniper_enriched_snapshot_count": sniper_snapshot_count,
         "stored_snapshot_contract_respected": True,
         "base_feature_reconstruction_parity": True,
+        "exact_reconstruction_parity": True,
+        "reconstruction_parity_scope": "stored_base_fields_plus_present_enrichment_fields",
         "participant_wallet_identity_reconstructed_causally": True,
         "participant_wallet_identity_window": "T0..T0+5 inclusive",
         "participant_wallet_source": "processed Carbon pump_trade wallet field",
@@ -829,6 +834,21 @@ def run_confirmation(
                 "exact_reconstruction_parity"
             )
             is True,
+            "fresh_reconstruction_parity_scope": fresh_route_integrity.get(
+                "reconstruction_parity_scope"
+            ),
+            "fresh_participant_wallet_identity_reconstructed_causally": (
+                fresh_route_integrity.get(
+                    "participant_wallet_identity_reconstructed_causally"
+                )
+                is True
+            ),
+            "fresh_base_snapshot_count": fresh_route_integrity.get(
+                "base_snapshot_count"
+            ),
+            "fresh_sniper_enriched_snapshot_count": fresh_route_integrity.get(
+                "sniper_enriched_snapshot_count"
+            ),
             "all_feature_snapshots_frozen_before_provider_quotes": all(
                 item.get("feature_snapshot_frozen_before_provider_quotes")
                 is True
