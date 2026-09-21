@@ -96,6 +96,58 @@ class EarlyBuyerChurnProspectiveConfirmationV1Tests(unittest.TestCase):
                     parity=parity,
                 )
 
+
+    def test_provider_preflight_artifact_returns_approved_control_hash(self):
+        protocol = read_json(DEFAULT_PROTOCOL)
+        parity = {
+            "protocol_hash_sha256": protocol["protocol_hash_sha256"],
+            "exact_parity": True,
+            "mismatch_count": 0,
+        }
+        control_hash = "a" * 64
+        payload = {
+            "classification": "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PROVIDER_PREFLIGHT",
+            "protocol_hash_sha256": protocol["protocol_hash_sha256"],
+            "parity_attestation": parity,
+            "gates": {"all": True},
+            "selected_rpc": {
+                "candidate_index": 0,
+                "safe_host": "solana-mainnet.g.alchemy.com",
+                "fallback_used": False,
+                "helius": False,
+            },
+            "control": {
+                "owner_public_key_sha256": control_hash,
+                "known_liquid_control_assembled": True,
+                "representative_burst_assembled": True,
+            },
+            "market_ingest": {
+                "classification": "PASS_PUBLIC_SOLANA_STANDARD_WSS_PREFLIGHT",
+                "source_provider": "solana_public_standard_wss",
+                "endpoint_host": "api.mainnet.solana.com",
+                "http_hydration_used": False,
+            },
+            "economic_outcomes_opened": False,
+            "fresh_confirmation_consumed": False,
+            "provider_execute_called": False,
+            "private_key_used": False,
+            "transaction_signed": False,
+            "transaction_submitted": False,
+            "helius_dependency_active": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            attestation = _validate_provider_preflight_artifact(
+                provider_preflight_path=path,
+                protocol=protocol,
+                parity=parity,
+            )
+        self.assertEqual(
+            attestation["selected_control_hash_sha256"],
+            control_hash,
+        )
+
     def test_route_input_attestation_accepts_available_missing_and_right_censored(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
