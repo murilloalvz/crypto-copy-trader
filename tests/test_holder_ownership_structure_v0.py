@@ -18,6 +18,7 @@ from benchmarks.holder_ownership_structure_v0.run import (
 )
 from benchmarks.holder_ownership_structure_v0.runtime_enrichment import (
     FEATURE_ID,
+    MIN_PROVIDER_START_INTERVAL_SECONDS,
     HolderOwnershipRuntimeV0,
     _cli_environment,
     _collect_holder_evidence_sync,
@@ -190,6 +191,7 @@ class HolderOwnershipStructureV0Tests(unittest.TestCase):
         )
         self.assertEqual(env["GMGN_API_KEY"], "api-key")
         self.assertNotIn("GMGN_PRIVATE_KEY", env)
+        self.assertEqual(env["GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS"], "0")
 
     def test_snapshot_enrichment_preserves_existing_features(self):
         runtime = HolderOwnershipRuntimeV0(api_key="api-key")
@@ -228,6 +230,30 @@ class HolderOwnershipStructureV0Tests(unittest.TestCase):
     def test_runtime_respects_single_provider_slot(self):
         runtime = HolderOwnershipRuntimeV0(api_key="api-key")
         self.assertEqual(runtime.max_concurrent_acquisitions, 1)
+        self.assertEqual(
+            runtime.min_provider_start_interval_seconds,
+            MIN_PROVIDER_START_INTERVAL_SECONDS,
+        )
+
+
+    def test_runtime_paces_provider_starts_and_fails_closed_if_cutoff_too_near(self):
+        async def scenario():
+            runtime = HolderOwnershipRuntimeV0(api_key="api-key")
+            runtime._semaphore = asyncio.Semaphore(1)
+            runtime._last_provider_request_started_monotonic = time.monotonic()
+            now_ns = time.time_ns()
+            await runtime._acquire(
+                token_mint="TOKEN",
+                observed_t0_wall_ns=now_ns,
+                decision_cutoff_wall_ns=now_ns + 100_000_000,
+            )
+            self.assertEqual(
+                runtime.records["TOKEN"]["status"],
+                "LATE_WAITING_FOR_RATE_SLOT",
+            )
+
+        asyncio.run(scenario())
+
 
     def test_finalize_drains_only_until_causal_cutoff(self):
         async def scenario():
@@ -267,6 +293,35 @@ class HolderOwnershipStructureV0Tests(unittest.TestCase):
                     "status_counts": {
                         "CAUSAL_AVAILABLE": 10,
                         "TASK_CANCELLED_AFTER_CAPTURE": 1,
+                    },
+                    "guardrails": {
+                        "gmgn_private_key_used": False,
+                        "selector_changed": False,
+                        "tradeable_float_rebase_used": False,
+                    },
+                },
+            }
+            (run_dir / "simulation-report-v4-holder-ownership-v0.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "systems-invalid"):
+                _validate_fresh_capture(run_dir)
+
+
+    def test_evaluator_rejects_rate_limit_saturated_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            payload = {
+                "classification": "PASS_LAUNCH_BURST_HOLDER_OWNERSHIP_STRUCTURE_V0",
+                "base_v4_report": {
+                    "requested_duration_seconds": 900,
+                    "capture": {"stop_reason": "duration_elapsed"},
+                },
+                "holder_ownership_structure_v0": {
+                    "status_counts": {
+                        "CAUSAL_AVAILABLE": 4,
+                        "RATE_LIMITED_HOLDERS": 419,
                     },
                     "guardrails": {
                         "gmgn_private_key_used": False,
