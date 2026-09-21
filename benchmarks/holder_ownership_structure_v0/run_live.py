@@ -113,6 +113,7 @@ def main() -> int:
             "TASK_CANCELLED_AFTER_CAPTURE",
             "TASK_UNRESOLVED_AFTER_CAPTURE",
             "INTERNAL_ERROR",
+            "RATE_LIMITED_HOLDERS",
         }
         invalid_counts = {
             status: int(status_counts.get(status) or 0)
