@@ -1135,3 +1135,54 @@ The fresh evaluator independently re-opens the provider preflight artifact and c
 
 A provider-health FAIL does NOT consume the fresh confirmation and must not trigger a 900-second live run.
 
+## Early Buyer Churn Prospective V1 — provider preflight follow-up after frozen taker depletion
+
+Outcome-blind provider preflight result:
+
+`FAIL_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PROVIDER_PREFLIGHT`
+
+Valid gates:
+
+- exact parity: PASS, 2056/2056;
+- public Solana Standard WSS: PASS;
+- 3 subscription acknowledgements;
+- slot notification observed;
+- no market-ingest HTTP hydration;
+- economic outcomes remained closed;
+- fresh confirmation not consumed;
+- Helius dependency inactive.
+
+Failure cause:
+
+- the frozen `JUPITER_TAKER_PUBLIC_KEY` had 0 USDC and 0 SOL;
+- minimum input and SOL balance gates failed;
+- Jupiter assembly probes were not run by the funded-taker preflight.
+
+Follow-up read-only diagnostic confirmed:
+
+- the zero-balance frozen taker can still receive Jupiter quote fields but cannot receive assembled transactions;
+- known-liquid control returned `Missing associated token account`;
+- representative burst returned `Insufficient funds`;
+- public funded-control discovery through the Solana public RPC failed with HTTP 429.
+
+Because the frozen route contract explicitly requires an assembled entry transaction, quote-only evidence cannot replace this gate without changing the outcome contract. The route contract therefore remains unchanged.
+
+Provider-health architecture is updated, systems-only:
+
+1. never use the depleted frozen taker as the fresh simulation control;
+2. for each non-Helius RPC candidate, discover a public USDC owner meeting the frozen USDC and SOL floors;
+3. require Jupiter to assemble both the known-liquid control and representative burst candidate transactions for that exact public owner;
+4. persist only the owner SHA-256 + balances + safe RPC host, never the raw public control address;
+5. return the raw public address only in-process for immediate `EXACT_PREFLIGHT_REUSE`;
+6. fresh live re-runs provider health immediately before capture and reuses the exact discovered control;
+7. if the approved RPC host changes or discovery/assembly fails, abort before consuming the 900-second fresh.
+
+RPC candidate order:
+
+- configured non-Helius `SOLANA_RPC_URL`;
+- configured non-Helius `SOLANA_RPC_FALLBACK_URLS`;
+- public dRPC Solana endpoint `https://solana.drpc.org/`;
+- Solana public mainnet RPC.
+
+The dRPC fallback is systems infrastructure only. It does not change churn, Participant Quality, the route contract, Fixed+60 outcomes, thresholds or selector semantics.
+
