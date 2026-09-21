@@ -943,3 +943,100 @@ Frozen audit operations:
 
 A favorable audit can justify engineering the exact feature for future prospective capture. It cannot promote the feature or replace a fresh confirmation.
 
+## Early Buyer Churn Robustness V0 — result
+
+Evaluator:
+
+`PASS_EARLY_BUYER_CHURN_ROBUSTNESS_V0`
+
+Evidence level:
+
+`POST_DISCOVERY_ROBUSTNESS_AUDIT_NO_NEW_CONFIRMATION_WEIGHT`
+
+Pooled exact-feature result across the five frozen runs:
+
+- primary ROUTE_CLOSED pairs: 196;
+- primary Spearman: -0.10292;
+- without best trade: -0.11608;
+- leave-one-out sign consistency: 1.0;
+- partial Spearman controlling Participant Quality + BUY acceleration + signed flow: -0.04422 on 142 complete pairs.
+
+Run-level sign diagnostics:
+
+- primary Spearman negative in 4/5 runs (80%);
+- partial Spearman negative in 3/5 runs (60%);
+- one run had positive primary association (+0.11763);
+- two runs had non-negative partial association (+0.09283 and +0.00333).
+
+Whole-run removal robustness:
+
+- primary Spearman remained negative after dropping each of the five runs: 5/5;
+- partial Spearman remained negative after dropping each of the five runs: 5/5.
+
+Mechanism diagnostics:
+
+- churn feature vs flipper-wallet share Spearman: +0.81295;
+- median unique buy wallets: 8;
+- median flipper wallets: 2.
+
+Interpretation:
+
+The effect is not perfectly regime-invariant at the individual-run level, but no single acquisition period carries the pooled negative primary or incremental association. This supports investing in prospective instrumentation of the exact feature. It does NOT add new confirmatory evidence because the audit was designed after observing the churn result.
+
+## Early Buyer Churn Prospective V1 — frozen confirmation protocol
+
+Branch:
+
+`research/early-buyer-churn-prospective-v1`
+
+Experiment:
+
+`MF-EARLY-BUYER-CHURN-PROSPECTIVE-V1`
+
+Protocol hash:
+
+`0aaf83c2644a6d5eab63034cb09bd403edf87791a0de47a597361a698eba9827`
+
+Exact feature retained without redefinition:
+
+`mf_early_buyer_roundtrip_sellback_fraction_t0_5s`
+
+Prospective instrumentation contract:
+
+- use the same decoded Pump trade semantics and exact T0..T0+5s causal window;
+- compute only after causal coverage through T0+5 is complete;
+- enrich the feature snapshot before provider quote/outcome collection;
+- no external provider is needed to compute churn;
+- no Signal Plane external-I/O blocking is introduced;
+- right-censored windows remain MISSING;
+- no threshold, score or selector is added.
+
+Before any fresh confirmation, an offline parity gate must replay the exact prospective instrumentation over the five prior frozen runs and match the retrospective reconstruction with zero status/value mismatches.
+
+Fresh confirmation is frozen to:
+
+- exactly one new prospective run;
+- requested duration: 900 seconds;
+- the fresh run identity must differ from every prior discovery/parity run;
+- primary: ROUTE_CLOSED gross Fixed+60;
+- controls: retained Participant Quality + BUY acceleration + signed flow;
+- minimum primary feature/outcome pairs: 30.
+
+KEEP requires all of:
+
+- primary Spearman < 0;
+- Spearman without best trade < 0;
+- leave-one-out sign consistency >= 0.8;
+- partial Spearman controlling the frozen controls < 0;
+- higher-churn half median gross return < lower/equal-churn half median gross return.
+
+If fewer than 30 primary pairs:
+
+`INSUFFICIENT_SAMPLE_NO_EXTENSION`
+
+If sample is sufficient but any KEEP criterion fails:
+
+`NO_CONFIRMATION_CLOSE_OR_REVIEW`
+
+No threshold search, feature redefinition, sample extension based on outcomes or selector promotion is allowed.
+
