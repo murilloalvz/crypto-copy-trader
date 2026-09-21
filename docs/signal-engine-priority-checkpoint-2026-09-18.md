@@ -679,3 +679,76 @@ Minimum primary route-closed feature/outcome pairs remains 30.
 
 This discovery sample cannot promote a selector or automatic entry rule.
 
+## Holder Ownership RPC V2 — public RPC preflight invalidation
+
+Branch attempt:
+
+`research/holder-ownership-rpc-v2`
+
+The preregistered no-Helius Holder RPC V2 passed targeted unit tests, but the read-only capability preflight failed before any 900s live acquisition:
+
+`RuntimeError:getTokenLargestAccounts capability probe failed on api.mainnet-beta.solana.com: HTTP_429`
+
+No prospective capture started and no Holder/outcome evaluator ran.
+
+Classification:
+
+`INVALID_STANDARD_RPC_PROVIDER_RATE_LIMIT_BEFORE_SCIENTIFIC_EVALUATION`
+
+This is not scientific evidence for or against holder concentration. RPC V2 is closed without rerolling another provider endpoint solely to rescue the experiment.
+
+## Early Balance Concentration V0 — preregistered retrospective discovery
+
+Branch:
+
+`research/early-balance-concentration-v0`
+
+Experiment:
+
+`MF-EARLY-BALANCE-CONCENTRATION-V0`
+
+Protocol hash:
+
+`fb31f536d816d47a2974271d44d8584022dc5acf57e7ed6bad6b7bf9487ac2ec`
+
+Primary feature:
+
+`mf_early_net_acquired_token_hhi_t0_5s`
+
+Frozen definition:
+
+- use only decoded Pump trades already captured in each episode's causal T0..T0+5s window;
+- require both local arrival time and decoded chain timestamp to fall inside the frozen evidence window;
+- per wallet, add `token_amount_raw` on buys and subtract it on sells;
+- keep only positive ending observed net balances;
+- normalize each positive wallet balance by the sum of positive observed net balances;
+- feature = sum of squared normalized wallet shares (HHI);
+- one positive wallet is a valid maximum-concentration value of 1.0;
+- no positive observed net balance -> MISSING.
+
+This feature measures concentration of **observed early net token acquisition**, not true full-wallet inventory or a full on-chain holder snapshot.
+
+Preregistered direction:
+
+higher early net-acquired token concentration -> worse future ROUTE_CLOSED gross Fixed+60 outcome.
+
+Discovery source set is frozen before evaluation to exactly these already-captured runs:
+
+1. `launch_burst_prospective_route_live_v4-1789605670-3592832863`
+2. `launch_burst_prospective_route_live_v4-1789687945-0315e2560c`
+3. `launch_burst_prospective_route_live_v4-1789692405-6daeedeb29`
+4. `launch_burst_prospective_route_live_v4-1789698815-b277ffea77`
+5. `launch_burst_prospective_route_live_v4-1789946453-0367216d26`
+
+No new live acquisition and no new outcome collection are required.
+
+Incremental controls remain:
+
+- retained Participant Quality;
+- BUY event-rate acceleration;
+- signed flow over event reserve.
+
+Minimum primary route-closed feature/outcome pairs: 30.
+
+This is explicitly RETROSPECTIVE DISCOVERY. Even a strong result cannot promote a selector from the same sample; it can only justify mechanism/robustness review followed by a separately frozen prospective confirmation.
+
