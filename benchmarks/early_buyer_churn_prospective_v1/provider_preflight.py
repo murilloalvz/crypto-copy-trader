@@ -14,8 +14,8 @@ from benchmarks.early_buyer_churn_prospective_v1.protocol import (
     read_json,
     validate_protocol,
 )
-from benchmarks.early_buyer_churn_prospective_v1.run_live import (
-    _validate_parity_report,
+from benchmarks.early_buyer_churn_prospective_v1.parity import (
+    validate_parity_report,
 )
 from benchmarks.holder_ownership_native_v1.market_ingest import (
     run_preflight as run_market_ingest_preflight,
@@ -109,7 +109,7 @@ def run_provider_preflight(
 ) -> tuple[dict[str, Any], str | None, dict[str, Any] | None]:
     protocol = read_json(protocol_path)
     validate_protocol(protocol)
-    parity = _validate_parity_report(
+    parity = validate_parity_report(
         parity_report_path=parity_report_path,
         protocol=protocol,
     )
