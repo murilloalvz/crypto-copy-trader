@@ -1,0 +1,57 @@
+{
+  "schema_version": "holder_ownership_structure_v0_protocol",
+  "experiment_id": "MF-HOLDER-OWNERSHIP-STRUCTURE-V0",
+  "status": "PREREGISTERED_PROSPECTIVE_DISCOVERY",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-20",
+  "question": "Does causally observed early holder concentration among regular wallets add signal-quality information beyond Participant Quality and existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_holder_top100_regular_wallet_supply_hhi",
+    "definition": "sum(amount_percentage^2) across GMGN Top100 holder rows with addr_type=0, using total-supply shares; addr_type=1 burn/dead and addr_type=2 exchange/DEX/pool are excluded",
+    "expected_direction": "negative",
+    "denominator_policy": "amount_percentage remains share of total supply; never rebase to tradeable float",
+    "ambiguous_addr_type_policy": "any returned holder row with missing/unknown addr_type makes the feature MISSING",
+    "missing_percentage_policy": "any included regular-wallet row with missing/non-finite/out-of-range amount_percentage makes the feature MISSING",
+    "empty_list_policy": "MISSING",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false
+  },
+  "acquisition": {
+    "source": "GMGN OpenAPI through gmgn-cli token holders",
+    "auth": "GMGN_API_KEY only",
+    "private_key_allowed": false,
+    "capital_allowed": false,
+    "command": "token holders --chain sol --address <mint> --limit 100 --order-by amount_percentage --direction desc --raw",
+    "maximum_attempts_per_command": 1,
+    "cutoff_seconds_from_t0": 5,
+    "hot_path_blocking_allowed": false,
+    "provider_default_rate_limit_rps_reference": 1
+  },
+  "outcomes": {
+    "primary": "ROUTE_CLOSED gross Fixed+60 standardized outcome",
+    "secondary": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100"
+  },
+  "incremental_controls": [
+    "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "mf_buy_event_rate_acceleration_per_s2",
+    "signed_flow_over_event_reserve"
+  ],
+  "directional_read": {
+    "minimum_primary_route_closed_pairs": 30,
+    "promotion_from_this_sample_allowed": false,
+    "next_step_if_sufficient": "mechanism/robustness review then define/freeze a separate fresh-confirmation hypothesis",
+    "next_step_if_insufficient": "report insufficient sample; do not extend/repeat based on observed outcome"
+  },
+  "guardrails": {
+    "selector_change": false,
+    "sniper_change": false,
+    "route_contract_change": false,
+    "participant_quality_change": false,
+    "deployer_feature_reuse": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false,
+    "outcome_blind_implementation": true
+  },
+  "protocol_hash_sha256": "1b64a88415ec7815cda87c240234daf9ca21b4a413b6585e87377d67b9ef1dff"
+}
