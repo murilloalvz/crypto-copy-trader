@@ -90,7 +90,9 @@ class V68ReleaseReadinessTests(unittest.TestCase):
 
         try:
             v68.main = fake_v68_main
-            with patch.object(release, "print_readiness", return_value=True):
+            with patch.object(release, "print_readiness", return_value=True), patch.object(
+                release, "print_provider_health", return_value=True
+            ):
                 sys.argv = ["route_research_v68_release.py", "--run-key", "unit-release"]
                 result = release.main()
         finally:
@@ -124,7 +126,9 @@ class V68ReleaseReadinessTests(unittest.TestCase):
 
         try:
             v68.main = boom
-            with patch.object(release, "print_readiness", return_value=True):
+            with patch.object(release, "print_readiness", return_value=True), patch.object(
+                release, "print_provider_health", return_value=True
+            ):
                 sys.argv = ["route_research_v68_release.py", "--run-key", "unit-release"]
                 with self.assertRaisesRegex(RuntimeError, "boom"):
                     release.main()
@@ -136,10 +140,29 @@ class V68ReleaseReadinessTests(unittest.TestCase):
         self.assertIs(v68.v54.run_smoke_v54, original_smoke)
         self.assertEqual(v68.V68_VALIDATED_SYSTEMS_PROFILE, original_profile)
 
+    def test_provider_health_failure_prevents_v68_main(self):
+        original_argv = list(sys.argv)
+        try:
+            with patch.object(release, "print_readiness", return_value=True), patch.object(
+                release, "print_provider_health", return_value=False
+            ), patch.object(
+                v68, "main", side_effect=AssertionError("must not run")
+            ):
+                sys.argv = [
+                    "route_research_v68_release.py",
+                    "--run-key",
+                    "unit-release",
+                ]
+                self.assertEqual(release.main(), 2)
+        finally:
+            sys.argv = original_argv
+
     def test_preflight_only_never_calls_v68_main(self):
         original_argv = list(sys.argv)
         try:
             with patch.object(release, "print_readiness", return_value=True), patch.object(
+                release, "print_provider_health", return_value=True
+            ), patch.object(
                 v68, "main", side_effect=AssertionError("must not run")
             ):
                 sys.argv = [
