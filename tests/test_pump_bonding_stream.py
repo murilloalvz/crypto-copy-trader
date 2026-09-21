@@ -58,6 +58,14 @@ class PumpBondingStreamTests(unittest.TestCase):
             "wss://rpc.example/path?x=1",
         )
 
+    def test_rpc_url_conversion_uses_alchemy_streaming_host(self):
+        self.assertEqual(
+            rpc_http_to_ws_url(
+                "https://solana-mainnet.g.alchemy.com/v2/test-key?x=1"
+            ),
+            "wss://solana-mainnet.streaming.alchemy.com/v2/test-key?x=1",
+        )
+
     def test_subscription_is_exact_program_mention(self):
         request = build_logs_subscribe_request(commitment="confirmed")
         self.assertEqual(request["method"], "logsSubscribe")
