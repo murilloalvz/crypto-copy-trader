@@ -12,6 +12,7 @@ from benchmarks.early_buyer_churn_prospective_v1.protocol import (
 )
 from benchmarks.early_buyer_churn_prospective_v1.run import (
     _decision,
+    _fresh_snapshot_parity_checks,
     run_confirmation,
 )
 from benchmarks.early_buyer_churn_prospective_v1.run_live import (
@@ -147,6 +148,59 @@ class EarlyBuyerChurnProspectiveConfirmationV1Tests(unittest.TestCase):
             attestation["selected_control_hash_sha256"],
             control_hash,
         )
+
+    def test_fresh_base_snapshot_does_not_require_sniper_only_fields(self):
+        replay = {
+            "event_count": 4,
+            "signed_flow_over_event_reserve": 0.25,
+            "quote_asset_identity_count": 1,
+            "directional_flow_efficiency": 0.5,
+            "unique_buy_wallet_count": 3,
+        }
+        stored = {
+            "event_count": 4,
+            "signed_flow_over_event_reserve": 0.25,
+            "quote_asset_identity_count": 1,
+        }
+        checks = _fresh_snapshot_parity_checks(
+            replay=replay,
+            stored=stored,
+        )
+        self.assertEqual(
+            set(checks),
+            {
+                "event_count",
+                "signed_flow_over_event_reserve",
+                "quote_asset_identity_count",
+            },
+        )
+        self.assertTrue(all(checks.values()))
+
+    def test_fresh_present_sniper_fields_remain_strictly_checked(self):
+        replay = {
+            "event_count": 4,
+            "signed_flow_over_event_reserve": 0.25,
+            "quote_asset_identity_count": 1,
+            "directional_flow_efficiency": 0.5,
+            "unique_buy_wallet_count": 3,
+        }
+        stored = {
+            "event_count": 4,
+            "signed_flow_over_event_reserve": 0.25,
+            "quote_asset_identity_count": 1,
+            "sniper_feature_enrichment_version": "v1",
+            "directional_flow_efficiency": 0.4,
+            "unique_buy_wallet_count": 2,
+        }
+        checks = _fresh_snapshot_parity_checks(
+            replay=replay,
+            stored=stored,
+        )
+        self.assertFalse(checks["directional_flow_efficiency"])
+        self.assertFalse(checks["unique_buy_wallet_count"])
+        self.assertTrue(checks["event_count"])
+        self.assertTrue(checks["signed_flow_over_event_reserve"])
+        self.assertTrue(checks["quote_asset_identity_count"])
 
     def test_route_input_attestation_accepts_available_missing_and_right_censored(self):
         with tempfile.TemporaryDirectory() as tmp:
