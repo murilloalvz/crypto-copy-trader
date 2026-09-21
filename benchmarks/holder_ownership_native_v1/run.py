@@ -297,6 +297,14 @@ def _validate_fresh_capture(run_dir: Path) -> dict[str, Any]:
     if capture.get("stop_reason") != "duration_elapsed":
         raise ValueError("fresh native holder discovery did not complete by duration")
 
+    wrapper_guardrails = report.get("guardrails") or {}
+    if wrapper_guardrails.get("market_ingest_provider") != "solana_public_standard_wss":
+        raise ValueError("fresh native holder market ingest provider changed")
+    if wrapper_guardrails.get("market_ingest_http_hydration") is not False:
+        raise ValueError("fresh native holder market ingest used HTTP hydration")
+    if wrapper_guardrails.get("helius_wss_used_for_market_ingest") is not False:
+        raise ValueError("fresh native holder unexpectedly used Helius WSS market ingest")
+
     holder = report.get("holder_ownership_native_v1") or {}
     guardrails = holder.get("guardrails") or {}
     status_counts = holder.get("status_counts") or {}
@@ -332,6 +340,8 @@ def _validate_fresh_capture(run_dir: Path) -> dict[str, Any]:
         "private_key_used": False,
         "selector_changed": False,
         "gmgn_dependency": False,
+        "market_ingest_provider": "solana_public_standard_wss",
+        "market_ingest_http_hydration": False,
     }
 
 
