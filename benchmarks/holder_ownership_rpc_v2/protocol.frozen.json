@@ -1,0 +1,66 @@
+{
+  "schema_version": "holder_ownership_rpc_v2_protocol",
+  "experiment_id": "MF-HOLDER-OWNERSHIP-RPC-V2",
+  "status": "PREREGISTERED_PROSPECTIVE_DISCOVERY",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-21",
+  "question": "Does causally observed early concentration among the top 20 non-curve token-account owners add signal-quality information beyond Participant Quality and existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_holder_pump_pregrad_top20_non_curve_owner_supply_hhi_rpc",
+    "definition": "At a read-only snapshot requested no earlier than T0+3s and completed by T0+5s, query standard Solana RPC getTokenSupply, getTokenLargestAccounts, and getMultipleAccounts(jsonParsed) for the returned token accounts; aggregate returned raw balances by parsed token-account owner, exclude the decoded Pump bonding_curve owner, divide each remaining aggregated balance by exact raw total supply, and sum squared shares.",
+    "expected_direction": "negative",
+    "coverage_scope": "top 20 token accounts returned by getTokenLargestAccounts only; this is not full-holder HHI",
+    "denominator_policy": "exact raw total supply from getTokenSupply; never rebase to tradeable float or remaining non-curve supply",
+    "owner_aggregation_policy": "sum balances for duplicate owners among the returned top 20 token accounts before HHI; accounts outside the top 20 are intentionally unobserved",
+    "market_owner_exclusion_policy": "exclude the decoded Pump bonding_curve owner; if a PumpSwap create-pool event for the same mint is causally observed before snapshot request, feature is MISSING",
+    "empty_non_curve_owner_policy": "MISSING",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false
+  },
+  "acquisition": {
+    "source": "standard Solana JSON-RPC only; Helius holder APIs are not used",
+    "market_ingest": "Solana public Standard WSS logsSubscribe + slotSubscribe; no HTTP hydration",
+    "holder_rpc_endpoint_policy": "select one non-Helius standard RPC endpoint before capture from configured SOLANA_RPC_URL/fallbacks, otherwise api.mainnet.solana.com; keep it fixed for the run",
+    "private_key_allowed": false,
+    "capital_allowed": false,
+    "snapshot_request_not_before_seconds_from_t0": 3,
+    "decision_cutoff_seconds_from_t0": 5,
+    "snapshot_start_min_interval_seconds": 0.5,
+    "rpc_methods": [
+      "getTokenSupply(processed)",
+      "getTokenLargestAccounts(processed)",
+      "getMultipleAccounts(jsonParsed, processed)"
+    ],
+    "retry_rescue_allowed": false,
+    "provider_switch_after_capture_start_allowed": false,
+    "late_or_rate_limited_or_incomplete_evidence_policy": "MISSING; any HTTP/RPC 429 invalidates the acquisition at systems level"
+  },
+  "outcomes": {
+    "primary": "ROUTE_CLOSED gross Fixed+60 standardized outcome",
+    "secondary": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100"
+  },
+  "incremental_controls": [
+    "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "mf_buy_event_rate_acceleration_per_s2",
+    "signed_flow_over_event_reserve"
+  ],
+  "directional_read": {
+    "minimum_primary_route_closed_pairs": 30,
+    "promotion_from_this_sample_allowed": false,
+    "next_step_if_sufficient": "mechanism/robustness review then define/freeze a separate fresh-confirmation hypothesis",
+    "next_step_if_insufficient": "report insufficient sample; do not extend/repeat based on observed outcome"
+  },
+  "guardrails": {
+    "selector_change": false,
+    "sniper_change": false,
+    "route_contract_change": false,
+    "participant_quality_change": false,
+    "helius_holder_dependency": false,
+    "gmgn_holder_dependency": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false,
+    "outcome_blind_implementation": true
+  },
+  "protocol_hash_sha256": "61b53d45342c5fed2892f3e97a91f38d36b0b3c796b17d043bafc9d95a77f629"
+}
