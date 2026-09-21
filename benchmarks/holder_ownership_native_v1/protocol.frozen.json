@@ -1,0 +1,68 @@
+{
+  "schema_version": "holder_ownership_structure_native_v1_protocol",
+  "experiment_id": "MF-HOLDER-OWNERSHIP-STRUCTURE-NATIVE-V1",
+  "status": "PREREGISTERED_PROSPECTIVE_DISCOVERY",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-21",
+  "question": "Does causally observed early Pump pre-graduation non-curve holder concentration add signal-quality information beyond Participant Quality and existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_holder_pump_pregrad_non_curve_owner_supply_hhi_native",
+    "definition": "At a read-only snapshot requested no earlier than T0+3s and completed by T0+5s, aggregate Helius getTokenAccounts raw balances by owner for the mint, exclude the decoded Pump bonding_curve owner, divide each remaining owner balance by exact getTokenSupply raw total supply, and sum squared owner supply shares.",
+    "expected_direction": "negative",
+    "denominator_policy": "exact raw total supply from getTokenSupply; never rebase to tradeable float or remaining non-curve supply",
+    "owner_aggregation_policy": "sum all token-account raw amounts for the same owner before HHI",
+    "market_owner_exclusion_policy": "exclude the decoded Pump bonding_curve owner; if a PumpSwap create-pool event for the same mint is causally observed before snapshot request, feature is MISSING rather than guessing pool-vault ownership",
+    "pagination_policy": "getTokenAccounts limit=1000; continue pages until a page returns fewer than 1000 rows; incomplete pagination by cutoff is MISSING",
+    "empty_non_curve_owner_policy": "MISSING",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false
+  },
+  "acquisition": {
+    "source": "Helius mainnet RPC/DAS",
+    "auth": "HELIUS_API_KEY only",
+    "capital_allowed": false,
+    "private_key_allowed": false,
+    "snapshot_request_not_before_seconds_from_t0": 3,
+    "decision_cutoff_seconds_from_t0": 5,
+    "hot_path_blocking_allowed": false,
+    "get_token_accounts": {
+      "method": "getTokenAccounts",
+      "mint_filtered": true,
+      "page_limit": 1000,
+      "max_pages": 10
+    },
+    "get_token_supply": {
+      "method": "getTokenSupply",
+      "commitment": "confirmed"
+    },
+    "late_or_incomplete_evidence_policy": "MISSING",
+    "retry_rescue_allowed": false
+  },
+  "outcomes": {
+    "primary": "ROUTE_CLOSED gross Fixed+60 standardized outcome",
+    "secondary": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100"
+  },
+  "incremental_controls": [
+    "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "mf_buy_event_rate_acceleration_per_s2",
+    "signed_flow_over_event_reserve"
+  ],
+  "directional_read": {
+    "minimum_primary_route_closed_pairs": 30,
+    "promotion_from_this_sample_allowed": false,
+    "next_step_if_sufficient": "mechanism/robustness review then define/freeze a separate fresh-confirmation hypothesis",
+    "next_step_if_insufficient": "report insufficient sample; do not extend/repeat based on observed outcome"
+  },
+  "guardrails": {
+    "selector_change": false,
+    "sniper_change": false,
+    "route_contract_change": false,
+    "participant_quality_change": false,
+    "gmgn_holder_dependency": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false,
+    "outcome_blind_implementation": true
+  },
+  "protocol_hash_sha256": "3ac0089fc1fb933bfead7610940b26c5d8f8fd3fc46bf0b131d55442408f624c"
+}
