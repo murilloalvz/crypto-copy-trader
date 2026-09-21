@@ -1245,3 +1245,40 @@ Fix scope:
 
 The evaluator rerun on the exact same fresh artifact is an analysis-tooling correction only and adds no sample.
 
+## Early Buyer Churn Prospective V1 — final prospective verdict
+
+The single preregistered 900-second fresh capture was evaluated successfully after the evaluator-only compatibility fix.
+
+Final evaluator:
+
+- classification: `PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1`
+- decision: `INSUFFICIENT_SAMPLE_NO_EXTENSION`
+- fresh baseline/default-SOL episodes analyzed: 40
+- fresh churn available: 40/40 in the analyzed cohort
+- primary `ROUTE_CLOSED + churn` pairs: 1
+- preregistered minimum primary pairs: 30
+- copyability-sensitive reference pairs: 3
+- incremental complete cases: 1
+- no threshold search, feature redefinition, selector change, or retrospective rescue.
+
+Source integrity remained valid:
+
+- all five historical Participant Quality source runs retained exact reconstruction parity;
+- fresh base snapshot reconstruction parity passed;
+- fresh participant wallet identity was reconstructed causally from the same T0..T0+5 Carbon observations;
+- fresh run identity was distinct and strictly later than all frozen prior runs;
+- Participant Quality history run set remained unchanged;
+- fresh churn snapshot integrity passed;
+- provider/live attestation remained PASS.
+
+Scientific interpretation:
+
+- Early Buyer Churn V1 is not prospectively confirmed.
+- It is also not prospectively rejected on direction/effect because the primary outcome sample is insufficient.
+- The family is closed as `INSUFFICIENT_SAMPLE_NO_EXTENSION`.
+- The same fresh capture must not be extended, repeated, or replaced to reach the minimum sample after seeing this result.
+- Churn must not be promoted into a TAKE/SKIP selector or combined score from this confirmation.
+- Participant Quality remains the only fully fresh-replicated Market-First signal edge at this checkpoint.
+
+Next engineering/research question is separate from churn confirmation: diagnose why only 1 of 40 analyzed baseline/default-SOL episodes produced a primary `ROUTE_CLOSED` outcome. That diagnosis may inform future route-paper/provider/copyability design, but it cannot retroactively rescue this closed confirmation.
+
