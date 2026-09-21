@@ -121,6 +121,7 @@ def _validate_fresh_wrapper(
         "provider_health_preflight_required_before_capture",
         "provider_health_rechecked_immediately_before_capture",
         "rpc_endpoint_fixed_for_run",
+        "exact_approved_preflight_control_reused",
         "exact_preflight_control_reused",
     )
     for key in required_true:
@@ -155,6 +156,15 @@ def _validate_fresh_wrapper(
     provider_selected = provider_report.get("selected_rpc") or {}
     if str(provider_selected.get("safe_host") or "").lower() != selected_host:
         raise ValueError("fresh churn provider preflight RPC host mismatch")
+    provider_control = provider_report.get("control") or {}
+    approved_control_hash = str(
+        provider_control.get("owner_public_key_sha256") or ""
+    ).strip().lower()
+    wrapper_control_hash = str(
+        guardrails.get("selected_control_hash_sha256") or ""
+    ).strip().lower()
+    if not approved_control_hash or wrapper_control_hash != approved_control_hash:
+        raise ValueError("fresh churn approved control hash mismatch")
     if provider_report.get("economic_outcomes_opened") is not False:
         raise ValueError("provider preflight unexpectedly opened economic outcomes")
     if provider_report.get("fresh_confirmation_consumed") is not False:
@@ -168,6 +178,12 @@ def _validate_fresh_wrapper(
     recheck_selected = recheck.get("selected_rpc") or {}
     if str(recheck_selected.get("safe_host") or "").lower() != selected_host:
         raise ValueError("fresh churn immediate provider recheck RPC host mismatch")
+    recheck_control = recheck.get("control") or {}
+    recheck_control_hash = str(
+        recheck_control.get("owner_public_key_sha256") or ""
+    ).strip().lower()
+    if recheck_control_hash != approved_control_hash:
+        raise ValueError("fresh churn immediate provider recheck control hash mismatch")
 
     parity = validate_parity_report(
         parity_report_path=parity_report_path,
@@ -193,6 +209,7 @@ def _validate_fresh_wrapper(
         "missing_no_buy_count": int(churn.get("missing_no_buy_count") or 0),
         "right_censored_count": int(churn.get("right_censored_count") or 0),
         "selected_rpc_safe_host": selected_host,
+        "selected_control_hash_sha256": approved_control_hash,
         "provider_preflight_artifact": str(provider_preflight_path.resolve()),
         "provider_preflight_classification": provider_report.get("classification"),
         "provider_recheck_classification": recheck.get("classification"),
