@@ -512,3 +512,70 @@ Systems-only fixes:
 
 The frozen Holder feature, expected direction, T0+5s cutoff, outcome definitions, incremental controls and selector guardrails are unchanged. A replacement acquisition is permitted solely because the first Holder acquisition was invalidated on acquisition-capacity grounds before Holder/outcome evaluation.
 
+## Holder Ownership Structure V0 — second systems-invalid acquisition and provider pivot
+
+Second GMGN-backed replacement run:
+
+`launch_burst_prospective_route_live_v4-1789952423-3cd1e18599`
+
+Observed statuses:
+
+- `record_count = 325`;
+- `CAUSAL_AVAILABLE = 1`;
+- `RATE_LIMITED_HOLDERS = 320`;
+- `LATE_WAITING_FOR_RATE_SLOT = 1`;
+- `LATE_WAITING_FOR_SLOT = 3`.
+
+Classification:
+
+`INVALID_EXTERNAL_EVIDENCE_ACQUISITION_SYSTEMS`
+
+No Holder/outcome evaluator was run. The preregistered holder-direction hypothesis was therefore not evaluated.
+
+The second systems failure showed that the Free GMGN `token holders` route is not a reliable prospective acquisition dependency for this experiment. The project will not continue issuing 900s GMGN Holder replacements.
+
+Provider decision:
+
+**ABANDON GMGN HOLDER ACQUISITION; PRESERVE THE HOLDER-CONCENTRATION MECHANISM AS A NEW NATIVE VERSION.**
+
+## Holder Ownership Structure Native V1 — preregistered
+
+Branch:
+
+`research/holder-ownership-native-v1`
+
+Experiment:
+
+`MF-HOLDER-OWNERSHIP-STRUCTURE-NATIVE-V1`
+
+Protocol hash:
+
+`90132a6656738dceb4662b4701091f5290c2f7c85c9c3896c7326c0fec75a565`
+
+Primary feature:
+
+`mf_holder_pump_pregrad_non_curve_owner_supply_hhi_native`
+
+Frozen acquisition/derivation:
+
+1. anchor on decoded Pump create and retain its exact `bonding_curve`;
+2. do not request the external holder snapshot before T0+3s;
+3. all evidence must complete no later than T0+5s;
+4. obtain exact raw total supply with Helius `getTokenSupply`;
+5. obtain mint-filtered token accounts with Helius `getTokenAccounts`, up to 1000 rows/page and bounded pagination;
+6. aggregate multiple token accounts belonging to the same owner;
+7. exclude the exact decoded Pump bonding-curve owner;
+8. divide each remaining owner balance by total raw supply and sum squared shares (HHI);
+9. never rebase the denominator to tradeable/non-curve float;
+10. if PumpSwap graduation is causally observed before the snapshot request, mark the feature MISSING instead of guessing pool-vault ownership;
+11. incomplete pagination, late evidence, schema errors and provider errors remain MISSING;
+12. no retry rescue.
+
+Preregistered direction remains mechanistic and outcome-blind:
+
+higher non-curve owner concentration -> worse future ROUTE_CLOSED gross Fixed+60 outcome.
+
+Incremental controls remain frozen Participant Quality + BUY acceleration + signed flow.
+
+Minimum primary route-closed pairs remains 30. This discovery cannot promote a selector.
+
