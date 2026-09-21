@@ -1040,3 +1040,55 @@ If sample is sufficient but any KEEP criterion fails:
 
 No threshold search, feature redefinition, sample extension based on outcomes or selector promotion is allowed.
 
+## Early Buyer Churn Prospective V1 — parity PASS and fresh-confirmation tooling ready
+
+Offline parity gate result:
+
+`PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PARITY`
+
+Parity summary:
+
+- compared complete episodes: 2056;
+- mismatch count: 0;
+- exact parity: true;
+- exact status parity: true in all five frozen runs;
+- exact feature-value parity: true in all five frozen runs;
+- all parity guardrails valid;
+- no provider quotes used;
+- no external provider used;
+- no outcome-driven feature modification;
+- no threshold search or selector change.
+
+Per-run complete/available/missing counts:
+
+1. 422 complete / 402 causal / 20 missing;
+2. 465 complete / 356 causal / 109 missing;
+3. 357 complete / 306 causal / 51 missing;
+4. 395 complete / 380 causal / 15 missing;
+5. 417 complete / 389 causal / 28 missing.
+
+Interpretation:
+
+The prospective instrumentation is now engineering-equivalent to the exact retrospective feature implementation that produced the churn discovery/temporal-holdout evidence. This parity result validates implementation fidelity only; it adds no economic confirmation weight.
+
+Fresh-confirmation tooling added:
+
+- `benchmarks/early_buyer_churn_prospective_v1/run_live.py`
+  - requires the exact PASS parity report before capture;
+  - refuses a changed 900-second duration;
+  - enriches churn before provider quotes;
+  - emits a dedicated wrapper attestation;
+  - fails closed if complete snapshots lack exact churn evidence or guardrails;
+  - redacts secrets on errors.
+
+- `benchmarks/early_buyer_churn_prospective_v1/run.py`
+  - accepts exactly the five frozen prior runs for identity exclusion;
+  - uses exactly the four preregistered Participant Quality history runs;
+  - rejects a fresh run whose name/path/route-input identity matches any prior run;
+  - requires the fresh run to be strictly later than every frozen prior capture;
+  - evaluates the churn value stored in the prospective snapshot, not a post-hoc recomputation;
+  - revalidates parity, snapshot ordering and route reconstruction;
+  - applies the frozen minimum-sample and KEEP rules exactly once.
+
+No fresh live acquisition is authorized merely by this tooling change. External market-ingest/route-provider health must be re-established before spending the single preregistered 900-second fresh confirmation.
+
