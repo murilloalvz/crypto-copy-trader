@@ -469,3 +469,41 @@ These remain isolated from active Solana systems/V68 validation.
 3. Keep V68 as the next existing economic experiment, still `NOT_EVALUATED`; do not start it automatically.
 4. Define the future signal contract and human TAKE/SKIP workflow before implementing UI or execution.
 5. Require execution realism and shadow evidence before considering assisted or selective automation.
+
+## Route-paper economic conformance — priceImpact bug closed
+
+Post-close replay of the Early Buyer Churn fresh capture proved a route-paper implementation inconsistency:
+
+- admitted episodes: 49
+- original `ROUTE_CLOSED`: 1
+- corrected offline replay `ROUTE_CLOSED`: 37
+- delta: +36 closed routes
+- changed episodes: 41
+- 34 old `ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE` -> `ROUTE_CLOSED`
+- 5 old `ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE` -> `UNROUTABLE_EXIT:PRICE_IMPACT_EXCEEDS_LIMIT`
+- 2 old `UNROUTABLE_EXIT:PRICE_IMPACT_UNAVAILABLE` -> `ROUTE_CLOSED`
+- route input hash unchanged
+- original route result hash unchanged
+- episode identity set unchanged
+
+Root cause: the historical raw V4 route evaluator treated any negative finite Jupiter Swap V2
+`priceImpact` as unavailable. Jupiter documents `priceImpact` in percentage points and explicitly
+permits negative values. The repository's existing `price_impact_semantics_fix_v0` is therefore
+mandatory for all new economic route-paper experiments.
+
+Canonical future rule:
+
+- missing/non-finite `priceImpact` -> unavailable
+- finite `priceImpact <= frozen max` -> route-quality PASS
+- finite `priceImpact > frozen max` -> exceeds-limit
+- negative finite values are available, not missing
+
+New economic experiments must use
+`benchmarks.launch_burst_control_taker_sim_v0.route_paper_economic_conformance_v1.run_sim_v4_conformant`
+or explicitly apply the versioned price-impact fix. CI contains a static guard that rejects new
+economic wrappers calling raw `run_sim_v4` without conformance.
+
+The Early Buyer Churn prospective verdict remains closed as
+`INSUFFICIENT_SAMPLE_NO_EXTENSION`; corrected replay is implementation-conformance evidence only
+and cannot rescue or replace that one-shot confirmation.
+
