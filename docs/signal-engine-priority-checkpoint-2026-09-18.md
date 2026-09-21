@@ -1186,3 +1186,25 @@ RPC candidate order:
 
 The dRPC fallback is systems infrastructure only. It does not change churn, Participant Quality, the route contract, Fixed+60 outcomes, thresholds or selector semantics.
 
+### Provider fallback refinement after dRPC discovery failure
+
+Observed provider-health result after the funded-control discovery change:
+
+- Solana public RPC: `getTokenLargestAccounts` failed with HTTP 429;
+- dRPC public Solana endpoint: discovery failed with HTTP 400;
+- public Standard WSS remained healthy;
+- no economic outcome opened;
+- fresh confirmation remained unconsumed.
+
+The dRPC request payload matched the standard Solana JSON-RPC shape, so this is treated as a provider/method availability problem, not a route-contract or churn issue.
+
+A method-specific public fallback is added before dRPC:
+
+`https://rpc.magicblock.app/mainnet`
+
+This endpoint is used only for read-only public-control discovery. It must still pass the exact same chain:
+
+`getTokenLargestAccounts -> getAccountInfo -> getBalance -> Jupiter known-liquid assembly -> Jupiter representative-burst assembly`
+
+Any failure remains fail-closed and does not consume the fresh confirmation. No route, feature, threshold, selector, Participant Quality or Fixed+60 semantics change.
+
