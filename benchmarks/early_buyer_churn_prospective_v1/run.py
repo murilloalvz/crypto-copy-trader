@@ -34,6 +34,15 @@ from benchmarks.early_buyer_prior_quality_v0.run import (
     _finite,
     _history_feature,
 )
+from benchmarks.market_first_feature_discovery_v1.run import (
+    _causal_quote_asset_summary,
+    _reconstruct_state,
+    _same_number,
+)
+from benchmarks.launch_burst_sniper_v1.runtime_enrichment import (
+    feature_snapshot_with_sniper_v1,
+)
+from src.market_first_feature_discovery_v1 import acceleration_features_v1
 
 
 PASS = "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1"
@@ -285,6 +294,256 @@ def _load_fresh_churn_map(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dic
     }
 
 
+
+def _fresh_episode_sources_base_compatible(
+    *,
+    run_dir: Path,
+    contract_hash: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Reconstruct fresh participant-quality inputs without requiring Sniper snapshot enrichment.
+
+    The frozen historical Participant Quality runs were captured with Sniper V1 runtime
+    enrichment. The prospective churn fresh run intentionally was not. For the fresh run,
+    validate exact parity for the base fields that were actually stored, then reconstruct
+    wallet identity causally from the same processed Carbon rows inside T0..T0+5. This does
+    not alter the stored snapshot, churn feature, route outcome, or frozen PQ history.
+    """
+
+    run_dir = Path(run_dir).resolve()
+    route_input_path = run_dir / "route-input-v2.json"
+    route_result_path = run_dir / "route-result-v2.json"
+    processed_root = run_dir / "processed-chunks"
+    for path in (route_input_path, route_result_path):
+        if not path.is_file():
+            raise ValueError(f"required fresh participant-quality source missing: {path}")
+    if not processed_root.is_dir():
+        raise ValueError(f"fresh processed-chunks directory missing: {processed_root}")
+
+    route_input = read_json(route_input_path)
+    route_result = read_json(route_result_path)
+    if route_input.get("contract_hash_sha256") != contract_hash:
+        raise ValueError(f"fresh route input contract mismatch: {run_dir}")
+    if route_result.get("contract_hash_sha256") != contract_hash:
+        raise ValueError(f"fresh route result contract mismatch: {run_dir}")
+    if route_input.get("feature_snapshot_frozen_before_provider_quotes") is not True:
+        raise ValueError(
+            f"fresh feature snapshots were not frozen before provider quotes: {run_dir}"
+        )
+
+    state, processed_chunk_count = _reconstruct_state(processed_root)
+    decisions = {
+        str(row.get("episode_key") or ""): row
+        for row in route_result.get("decisions") or []
+        if isinstance(row, dict) and str(row.get("episode_key") or "")
+    }
+
+    output: list[dict[str, Any]] = []
+    parity_errors: list[str] = []
+    complete_count = 0
+    base_snapshot_count = 0
+    sniper_snapshot_count = 0
+
+    for episode in route_input.get("episodes") or []:
+        if not isinstance(episode, dict):
+            continue
+        snapshot = episode.get("feature_snapshot") or {}
+        if snapshot.get("complete") is not True:
+            continue
+        complete_count += 1
+        episode_key = str(episode.get("episode_key") or "")
+        token_mint = str(episode.get("token_mint") or "")
+        anchor_wall_ns = int(snapshot.get("observed_t0_wall_ns") or 0)
+        cutoff_wall_ns = int(snapshot.get("decision_cutoff_wall_ns") or 0)
+        observed_t0 = int(snapshot.get("observed_t0") or 0)
+
+        anchor = state.anchors.get((token_mint, "pump"))
+        if not anchor:
+            parity_errors.append(f"missing_anchor:{episode_key}")
+            continue
+        if int(anchor.get("observed_wall_ns") or 0) != anchor_wall_ns:
+            parity_errors.append(f"anchor_clock_mismatch:{episode_key}")
+            continue
+
+        chain_t0 = int(anchor.get("chain_t0") or 0)
+        rows = [
+            item
+            for item in state.adapted
+            if item.token_mint == token_mint
+            and item.venue == "pump"
+            and anchor_wall_ns <= item.observed_wall_ns <= cutoff_wall_ns
+            and chain_t0 <= item.chain_time <= chain_t0 + 5
+        ]
+
+        replay = feature_snapshot_with_sniper_v1(
+            rows,
+            anchor_wall_ns=anchor_wall_ns,
+        )
+        stored = snapshot.get("features") or {}
+
+        checks = {
+            "event_count": replay.get("event_count") == stored.get("event_count"),
+            "signed_flow_over_event_reserve": _same_number(
+                replay.get("signed_flow_over_event_reserve"),
+                stored.get("signed_flow_over_event_reserve"),
+            ),
+            "quote_asset_identity_count": replay.get("quote_asset_identity_count")
+            == stored.get("quote_asset_identity_count"),
+        }
+
+        stored_is_sniper = (
+            stored.get("sniper_feature_enrichment_version") is not None
+        )
+        if stored_is_sniper:
+            sniper_snapshot_count += 1
+            checks.update(
+                {
+                    "directional_flow_efficiency": _same_number(
+                        replay.get("directional_flow_efficiency"),
+                        stored.get("directional_flow_efficiency"),
+                    ),
+                    "unique_buy_wallet_count": replay.get(
+                        "unique_buy_wallet_count"
+                    )
+                    == stored.get("unique_buy_wallet_count"),
+                }
+            )
+        else:
+            base_snapshot_count += 1
+            # If an enrichment-only field was persisted, it must still match.
+            if "directional_flow_efficiency" in stored:
+                checks["directional_flow_efficiency"] = _same_number(
+                    replay.get("directional_flow_efficiency"),
+                    stored.get("directional_flow_efficiency"),
+                )
+            if "unique_buy_wallet_count" in stored:
+                checks["unique_buy_wallet_count"] = (
+                    replay.get("unique_buy_wallet_count")
+                    == stored.get("unique_buy_wallet_count")
+                )
+
+        failed = [name for name, passed in checks.items() if not passed]
+        if failed:
+            parity_errors.append(
+                f"fresh_feature_parity:{episode_key}:{','.join(failed)}"
+            )
+            continue
+
+        quote_asset = _causal_quote_asset_summary(rows)
+        acceleration = acceleration_features_v1(
+            rows,
+            anchor_wall_ns=anchor_wall_ns,
+            cutoff_wall_ns=cutoff_wall_ns,
+        )
+        buy_rows = [item for item in rows if item.side == "buy"]
+        buy_identity_complete = bool(buy_rows) and all(
+            item.wallet_key is not None for item in buy_rows
+        )
+        buy_wallets = (
+            tuple(
+                sorted(
+                    {
+                        str(item.wallet_key)
+                        for item in buy_rows
+                        if item.wallet_key is not None
+                    }
+                )
+            )
+            if buy_identity_complete
+            else tuple()
+        )
+
+        decision = decisions.get(episode_key) or {}
+        status = str(decision.get("status") or "MISSING")
+        route_usable = status == "ROUTE_CLOSED" or status.startswith(
+            "UNROUTABLE_EXIT"
+        )
+        gross = (
+            _finite(decision.get("gross_route_return_pct"))
+            if status == "ROUTE_CLOSED"
+            else None
+        )
+        net = (
+            _finite(decision.get("net_route_return_pct"))
+            if route_usable
+            else None
+        )
+
+        exit_observed_at = None
+        if status == "ROUTE_CLOSED":
+            exit_quote = decision.get("exit_quote")
+            if isinstance(exit_quote, dict):
+                raw = exit_quote.get("observed_at")
+                if (
+                    isinstance(raw, int)
+                    and not isinstance(raw, bool)
+                    and raw >= 0
+                ):
+                    exit_observed_at = int(raw)
+
+        output.append(
+            {
+                "run_id": run_dir.name,
+                "run_dir": str(run_dir),
+                "episode_key": episode_key,
+                "token_mint": token_mint,
+                "observed_t0": observed_t0,
+                "observed_t0_wall_ns": anchor_wall_ns,
+                "baseline_admitted": decision.get("admitted") is True,
+                "route_status": status,
+                "route_usable": route_usable,
+                "current_route_closed_gross_return_pct": gross,
+                "current_route_closed_net_return_pct": (
+                    _finite(decision.get("net_route_return_pct"))
+                    if status == "ROUTE_CLOSED"
+                    else None
+                ),
+                "current_route_usable_fixed_return_pct": net,
+                "exit_observed_at": exit_observed_at,
+                "is_default_sol_quote": quote_asset.get(
+                    "is_default_sol_quote"
+                )
+                is True,
+                "buy_identity_complete": buy_identity_complete,
+                "buy_wallet_count": (
+                    len(buy_wallets) if buy_identity_complete else None
+                ),
+                "buy_wallets": buy_wallets,
+                "mf_buy_event_rate_acceleration_per_s2": _finite(
+                    acceleration.get(
+                        "mf_buy_event_rate_acceleration_per_s2"
+                    )
+                ),
+                "signed_flow_over_event_reserve": _finite(
+                    stored.get("signed_flow_over_event_reserve")
+                ),
+            }
+        )
+
+    if parity_errors:
+        raise ValueError(
+            f"fresh causal participant reconstruction parity failed for {run_dir}: "
+            + ";".join(parity_errors[:10])
+        )
+
+    return output, {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "processed_chunk_count": processed_chunk_count,
+        "route_input_episode_count": len(route_input.get("episodes") or []),
+        "complete_episode_count": complete_count,
+        "reconstructed_complete_episode_count": len(output),
+        "base_snapshot_count": base_snapshot_count,
+        "sniper_enriched_snapshot_count": sniper_snapshot_count,
+        "stored_snapshot_contract_respected": True,
+        "base_feature_reconstruction_parity": True,
+        "participant_wallet_identity_reconstructed_causally": True,
+        "participant_wallet_identity_window": "T0..T0+5 inclusive",
+        "participant_wallet_source": "processed Carbon pump_trade wallet field",
+        "feature_snapshot_frozen_before_provider_quotes": True,
+        "route_contract_hash_sha256": contract_hash,
+    }
+
+
 def _fresh_rows_with_controls(
     *,
     history_rows: list[dict[str, Any]],
@@ -457,7 +716,7 @@ def run_confirmation(
         prior_rows_all.extend(rows)
         prior_integrity.append(integrity)
 
-    fresh_rows, fresh_route_integrity = _episode_sources(
+    fresh_rows, fresh_route_integrity = _fresh_episode_sources_base_compatible(
         run_dir=fresh,
         contract_hash=contract_hash,
     )
