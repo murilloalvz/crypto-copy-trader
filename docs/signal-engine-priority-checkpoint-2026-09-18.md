@@ -474,3 +474,41 @@ Minimum primary route-closed pairs: 30.
 
 This discovery sample cannot promote a selector. Sufficient discovery can only advance to mechanism/robustness review and a separately frozen independent fresh confirmation.
 
+## Holder Ownership Structure V0 — systems-invalid first acquisition 2026-09-20
+
+Run:
+
+`launch_burst_prospective_route_live_v4-1789951070-83905705bc`
+
+The market/route capture completed for the requested 900s and the first Holder wrapper classified itself PASS, but the external Holder acquisition is now declared **SYSTEMS-INVALID BEFORE OUTCOME EVALUATION**.
+
+Observed Holder sidecar statuses:
+
+- `record_count = 455`;
+- `CAUSAL_AVAILABLE = 4`;
+- `RATE_LIMITED_HOLDERS = 419`;
+- `LATE_WAITING_FOR_SLOT = 21`;
+- `LATE_BEFORE_SLOT = 8`;
+- `LATE_BEFORE_HOLDERS = 2`;
+- `NO_REGULAR_WALLETS = 1`.
+
+No Holder/outcome evaluator was run.
+
+Root cause:
+
+- GMGN `token holders` has route weight 5;
+- the Free plan leaky bucket is 5/5, implying approximately one Holder request per second and burst capacity one;
+- a semaphore of one serialized requests but did not pace their start times, so fast completions immediately launched the next call and repeatedly hit 429;
+- current gmgn-cli may also auto-retry once after a short cooldown unless explicitly disabled.
+
+Systems-only fixes:
+
+1. enforce at least 1.05 seconds between Holder request starts;
+2. keep the single provider slot;
+3. if causal cutoff cannot survive the rate-slot wait, fail closed as `LATE_WAITING_FOR_RATE_SLOT`;
+4. set `GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS=0` so the CLI cannot silently perform a second attempt;
+5. treat any `RATE_LIMITED_HOLDERS` in a prospective acquisition as systems-invalid before Holder outcome evaluation;
+6. evaluator independently rejects a rate-limited acquisition.
+
+The frozen Holder feature, expected direction, T0+5s cutoff, outcome definitions, incremental controls and selector guardrails are unchanged. A replacement acquisition is permitted solely because the first Holder acquisition was invalidated on acquisition-capacity grounds before Holder/outcome evaluation.
+
