@@ -405,6 +405,14 @@ MID and 300/3600s are diagnostic only. No same-sample rescue if a valid v68 FAIL
 
 These remain isolated from active Solana systems/V68 validation.
 
+## Future hypothesis — Post-Graduation Pullback / Reacceleration
+
+- Status: **IDEA / NOT OPENED**
+- Rationale: possible intermediate regime between ultra-early launch and late public trending.
+- Core question: after causal graduation and an observable first pullback, is there prospectively distinguishable residual movement versus simple exhaustion/collapse?
+- Potential interaction: Early-Buyer Prior Quality may later provide incremental participant evidence.
+- Do not open implementation, thresholds, selector logic, Trending features or combined scoring until the active scientific/outcome-executability work is closed and this line has its own causal population, T0, baseline and outcomes.
+
 ## Execution state
 
 - funded executable BUY: **BLOCKED_BY_FUNDING**
