@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +19,7 @@ from benchmarks.early_buyer_churn_prospective_v1.protocol import (
 
 
 class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
-    def test_rpc_candidates_exclude_helius_dedupe_and_keep_public_fallback(self):
+    def test_rpc_candidates_exclude_helius_dedupe_and_keep_public_fallbacks(self):
         candidates = _rpc_candidates(
             primary="https://mainnet.helius-rpc.com/?api-key=secret",
             fallbacks=(
@@ -36,7 +35,8 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
         self.assertTrue(_is_helius("https://mainnet.helius-rpc.com/?api-key=x"))
         self.assertFalse(_is_helius("https://rpc.example.test"))
 
-    def test_preflight_selects_first_healthy_non_helius_candidate(self):
+    def _base_patches(self, *, wss):
+        protocol = {"protocol_hash_sha256": EXPECTED_PROTOCOL_HASH}
         parity = {
             "classification": "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PARITY",
             "exact_parity": True,
@@ -46,9 +46,44 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
             "run_ids": ["r0", "r1", "r2", "r3", "r4"],
             "artifact": "parity.json",
         }
-        protocol = {
-            "protocol_hash_sha256": EXPECTED_PROTOCOL_HASH,
+        fixture = {
+            "fixture_hash_sha256": "fixture",
+            "input_mint": "USDC",
+            "minimum_input_amount_raw": 25_000_000,
+            "minimum_sol_lamports": 5_000_000,
+            "slippage_bps": 100,
+            "control_output_mint": "WSOL",
+            "representative_burst_output_mint": "BURST",
         }
+        contract = {"contract_hash_sha256": "contract"}
+        return (
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.read_json",
+                return_value=protocol,
+            ),
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_protocol"
+            ),
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_parity_report",
+                return_value=parity,
+            ),
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.funded._read_json",
+                side_effect=[fixture, contract],
+            ),
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.funded._validate_fixture",
+                return_value={"frozen": True},
+            ),
+            patch(
+                "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.run_market_ingest_preflight",
+                side_effect=wss if isinstance(wss, Exception) else None,
+                return_value=None if isinstance(wss, Exception) else wss,
+            ),
+        )
+
+    def test_preflight_selects_first_healthy_public_control_candidate(self):
         wss = {
             "classification": "PASS_PUBLIC_SOLANA_STANDARD_WSS_PREFLIGHT",
             "source_provider": "solana_public_standard_wss",
@@ -58,22 +93,29 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
             "http_hydration_used": False,
             "economic_outcomes_opened": False,
         }
-        failed = {
-            "classification": "FAIL_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT",
-            "gates": {"balance_read_ok": False},
-            "balances": None,
-            "probes": {},
-            "economic_outcomes_opened": False,
-            "provider_execute_called": False,
-        }
-        passed = {
-            "classification": "PASS_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT",
-            "gates": {"all": True},
-            "balances": {
-                "input_amount_raw": 25_000_000,
-                "sol_lamports": 10_000_000,
+        failed = (
+            {
+                "classification": "FAIL_PUBLIC_CONTROL_DISCOVERY",
+                "safe_host": "rpc-one.example",
+                "public_control": None,
+                "known_liquid_control": {"status": "NOT_RUN"},
+                "representative_burst": {"status": "NOT_RUN"},
+                "economic_outcomes_opened": False,
+                "provider_execute_called": False,
             },
-            "probes": {
+            None,
+            None,
+        )
+        passed = (
+            {
+                "classification": "PASS_PUBLIC_CONTROL_AND_JUPITER_ASSEMBLY",
+                "safe_host": "rpc-two.example",
+                "public_control": {
+                    "owner_public_key_sha256": "abc",
+                    "token_account_amount_raw": 30_000_000,
+                    "sol_lamports": 10_000_000,
+                    "address_redacted": True,
+                },
                 "known_liquid_control": {
                     "status": "COMPLETED",
                     "transaction_present": True,
@@ -84,42 +126,43 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
                     "transaction_present": True,
                     "error_code": None,
                 },
+                "economic_outcomes_opened": False,
+                "provider_execute_called": False,
             },
-            "economic_outcomes_opened": False,
-            "provider_execute_called": False,
-            "taker_public_key_sha256": "abc",
-        }
+            "CONTROL_PUBLIC_KEY",
+            {
+                "owner_public_key_sha256": "abc",
+                "token_account_amount_raw": 30_000_000,
+                "sol_lamports": 10_000_000,
+                "provider_preflight": PASS,
+                "rpc_safe_host": "rpc-two.example",
+                "candidates_checked": 2,
+            },
+        )
 
-        with patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.read_json",
-            return_value=protocol,
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_protocol"
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_parity_report",
-            return_value=parity,
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.run_market_ingest_preflight",
-            return_value=wss,
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.funded.run_preflight",
+        patches = self._base_patches(wss=wss)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patch(
+            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight._candidate_public_control_probe",
             side_effect=[failed, passed],
-        ) as funded_mock:
-            report, selected_url, control = run_provider_preflight(
+        ) as probe:
+            report, selected_url, control_taker, control_meta = run_provider_preflight(
                 parity_report_path=Path("parity.json"),
                 jupiter_api_key="key",
-                taker_public_key="taker",
                 rpc_url="https://rpc-one.example",
                 rpc_fallback_urls=("https://rpc-two.example",),
             )
 
         self.assertEqual(report["classification"], PASS)
         self.assertEqual(selected_url, "https://rpc-two.example")
+        self.assertEqual(control_taker, "CONTROL_PUBLIC_KEY")
+        self.assertEqual(control_meta["owner_public_key_sha256"], "abc")
         self.assertEqual(report["selected_rpc"]["safe_host"], "rpc-two.example")
         self.assertTrue(report["selected_rpc"]["fallback_used"])
         self.assertFalse(report["selected_rpc"]["helius"])
-        self.assertEqual(funded_mock.call_count, 2)
-        self.assertEqual(control["owner_public_key_sha256"], "abc")
+        self.assertTrue(report["gates"]["public_funded_control_discovered"])
+        self.assertTrue(report["control"]["address_redacted"])
+        self.assertNotIn("CONTROL_PUBLIC_KEY", str(report))
+        self.assertEqual(probe.call_count, 2)
         self.assertFalse(report["economic_outcomes_opened"])
         self.assertFalse(report["fresh_confirmation_consumed"])
         self.assertFalse(report["transaction_signed"])
@@ -127,62 +170,56 @@ class EarlyBuyerChurnProviderPreflightV1Tests(unittest.TestCase):
         self.assertFalse(report["helius_dependency_active"])
 
     def test_preflight_fails_closed_when_public_wss_is_unhealthy(self):
-        parity = {
-            "classification": "PASS_EARLY_BUYER_CHURN_PROSPECTIVE_V1_PARITY",
-            "exact_parity": True,
-            "mismatch_count": 0,
-            "protocol_hash_sha256": EXPECTED_PROTOCOL_HASH,
-            "run_ids": ["r0", "r1", "r2", "r3", "r4"],
-        }
-        protocol = {"protocol_hash_sha256": EXPECTED_PROTOCOL_HASH}
-        funded_pass = {
-            "classification": "PASS_LAUNCH_BURST_V4_FUNDED_TAKER_PREFLIGHT",
-            "gates": {"ok": True},
-            "balances": {
-                "input_amount_raw": 25_000_000,
-                "sol_lamports": 10_000_000,
-            },
-            "probes": {
+        selected = (
+            {
+                "classification": "PASS_PUBLIC_CONTROL_AND_JUPITER_ASSEMBLY",
+                "safe_host": "rpc.example",
+                "public_control": {
+                    "owner_public_key_sha256": "abc",
+                    "token_account_amount_raw": 30_000_000,
+                    "sol_lamports": 10_000_000,
+                    "address_redacted": True,
+                },
                 "known_liquid_control": {
                     "status": "COMPLETED",
                     "transaction_present": True,
+                    "error_code": None,
                 },
                 "representative_burst": {
                     "status": "COMPLETED",
                     "transaction_present": True,
+                    "error_code": None,
                 },
+                "economic_outcomes_opened": False,
+                "provider_execute_called": False,
             },
-            "economic_outcomes_opened": False,
-            "provider_execute_called": False,
-            "taker_public_key_sha256": "abc",
-        }
+            "CONTROL_PUBLIC_KEY",
+            {
+                "owner_public_key_sha256": "abc",
+                "token_account_amount_raw": 30_000_000,
+                "sol_lamports": 10_000_000,
+                "provider_preflight": PASS,
+                "rpc_safe_host": "rpc.example",
+                "candidates_checked": 1,
+            },
+        )
 
-        with patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.read_json",
-            return_value=protocol,
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_protocol"
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.validate_parity_report",
-            return_value=parity,
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.run_market_ingest_preflight",
-            side_effect=RuntimeError("wss unavailable"),
-        ), patch(
-            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight.funded.run_preflight",
-            return_value=funded_pass,
+        patches = self._base_patches(wss=RuntimeError("wss unavailable"))
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patch(
+            "benchmarks.early_buyer_churn_prospective_v1.provider_preflight._candidate_public_control_probe",
+            return_value=selected,
         ):
-            report, selected_url, control = run_provider_preflight(
+            report, selected_url, control_taker, control_meta = run_provider_preflight(
                 parity_report_path=Path("parity.json"),
                 jupiter_api_key="key",
-                taker_public_key="taker",
                 rpc_url="https://rpc.example",
                 rpc_fallback_urls=(),
             )
 
         self.assertEqual(report["classification"], FAIL)
         self.assertEqual(selected_url, "https://rpc.example")
-        self.assertIsNotNone(control)
+        self.assertEqual(control_taker, "CONTROL_PUBLIC_KEY")
+        self.assertIsNotNone(control_meta)
         self.assertFalse(report["gates"]["public_standard_wss_usable"])
         self.assertFalse(report["fresh_confirmation_consumed"])
 
