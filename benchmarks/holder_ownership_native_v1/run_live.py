@@ -8,6 +8,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from benchmarks.holder_ownership_native_v1.market_ingest import (
+    SOURCE_PROVIDER as MARKET_INGEST_SOURCE_PROVIDER,
+    patched_public_solana_standard_wss_v1,
+)
 from benchmarks.holder_ownership_native_v1.runtime_enrichment import (
     FEATURE_ID,
     VERSION as HOLDER_RUNTIME_VERSION,
@@ -83,24 +87,25 @@ def main() -> int:
         if not helius_key:
             raise ValueError("HELIUS_API_KEY is required for Holder Ownership Native V1")
 
-        with patched_holder_ownership_native_v1(helius_api_key=helius_key) as holder_runtime:
-            base = asyncio.run(
-                run_sim_v4(
-                    contract_path=args.contract,
-                    fixture_path=args.fixture,
-                    policy_path=args.policy,
-                    artifacts_root=args.artifacts_root,
-                    duration_seconds=args.duration_seconds,
-                    rotation_seconds=args.rotation_seconds,
-                    chunk_max_bytes=args.chunk_max_mib * 1024 * 1024,
-                    cargo=args.cargo,
-                    decoder_target_dir=args.decoder_target_dir or v4._default_decoder_target(),
-                    helius_api_key=helius_key,
-                    jupiter_api_key=jupiter_key,
-                    rpc_url=rpc_url,
-                    rpc_fallback_urls=fallback_urls,
+        with patched_public_solana_standard_wss_v1():
+            with patched_holder_ownership_native_v1(helius_api_key=helius_key) as holder_runtime:
+                base = asyncio.run(
+                    run_sim_v4(
+                        contract_path=args.contract,
+                        fixture_path=args.fixture,
+                        policy_path=args.policy,
+                        artifacts_root=args.artifacts_root,
+                        duration_seconds=args.duration_seconds,
+                        rotation_seconds=args.rotation_seconds,
+                        chunk_max_bytes=args.chunk_max_mib * 1024 * 1024,
+                        cargo=args.cargo,
+                        decoder_target_dir=args.decoder_target_dir or v4._default_decoder_target(),
+                        helius_api_key=helius_key,
+                        jupiter_api_key=jupiter_key,
+                        rpc_url=rpc_url,
+                        rpc_fallback_urls=fallback_urls,
+                    )
                 )
-            )
 
         run_dir = Path(str((base.get("artifacts") or {}).get("simulation_report") or "")).resolve().parent
         evidence_path = run_dir / "holder-ownership-native-v1-evidence.json"
@@ -149,6 +154,9 @@ def main() -> int:
             },
             "guardrails": {
                 "holder_research_plane_only": True,
+                "market_ingest_provider": MARKET_INGEST_SOURCE_PROVIDER,
+                "market_ingest_http_hydration": False,
+                "helius_wss_used_for_market_ingest": False,
                 "holder_sidecar_blocks_signal_plane": False,
                 "helius_api_key_only": True,
                 "gmgn_holder_dependency": False,
