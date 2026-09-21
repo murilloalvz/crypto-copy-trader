@@ -383,3 +383,94 @@ A replacement prospective capture is permitted only because this acquisition was
 before Deployer feature/outcome evaluation. The replacement must use a new acquisition key and the same
 frozen scientific feature/protocol. No economic outcome from this invalid run may guide the fix or next
 hypothesis.
+
+## Deployer Prior Quality V0 — valid replacement discovery result
+
+Valid replacement run:
+
+`launch_burst_prospective_route_live_v4-1789946453-0367216d26`
+
+Systems:
+
+- wrapper: `PASS_LAUNCH_BURST_CONTROL_TAKER_SIM_V4_SNIPER_V1`;
+- duration: 900s / `duration_elapsed`;
+- deployer records: 417;
+- `CAUSAL_AVAILABLE = 337`;
+- invalid systems statuses: zero;
+- external acquisition systems-valid.
+
+Scientific decision:
+
+`INSUFFICIENT_SAMPLE_NO_EXTENSION`
+
+Primary ROUTE_CLOSED feature/outcome pairs:
+
+- observed: 29;
+- preregistered minimum: 30.
+
+Descriptive result only, not a formal KILL decision:
+
+- primary Spearman: +0.0393;
+- without best trade: -0.0701;
+- higher created-count half median: -20.18%;
+- lower/equal half median: -20.17%;
+- partial Spearman controlling retained Participant Quality + BUY acceleration + signed flow: -0.0424 on 24 complete pairs;
+- copyability-sensitive Spearman: -0.1313.
+
+The sample MUST NOT be extended or repeated to obtain the missing 30th pair. The created-count feature is not promoted, retuned or rescued from this sample. Participant Quality remains retained independently.
+
+## Holder Ownership Structure V0 — preregistered next family
+
+Branch:
+
+`research/holder-ownership-structure-v0`
+
+Experiment:
+
+`MF-HOLDER-OWNERSHIP-STRUCTURE-V0`
+
+Protocol hash:
+
+`1b64a88415ec7815cda87c240234daf9ca21b4a413b6585e87377d67b9ef1dff`
+
+Primary feature:
+
+`mf_holder_top100_regular_wallet_supply_hhi`
+
+Frozen definition:
+
+`sum(amount_percentage^2)` over GMGN Top100 holder rows with `addr_type=0`.
+
+Address semantics are explicit:
+
+- `addr_type=0`: regular wallet — included;
+- `addr_type=1`: burn/dead — excluded;
+- `addr_type=2`: exchange / DEX / liquidity pool — excluded;
+- missing or unknown address type: feature is MISSING.
+
+`amount_percentage` remains a share of TOTAL SUPPLY. It is never rebased to tradeable float. This deliberately avoids launchpad float-denominator degeneration and the previously observed pool-as-100%-holder trap.
+
+Preregistered direction:
+
+higher regular-wallet concentration -> worse future ROUTE_CLOSED gross Fixed+60 outcome.
+
+Acquisition:
+
+- one read-only `gmgn-cli token holders` request per observed token;
+- Top100 sorted by `amount_percentage`;
+- response must complete no later than T0+5s;
+- no retry rescue;
+- late/error/429/ambiguous schema stays MISSING;
+- one bounded external slot, consistent with GMGN's current default 1 request/second guidance;
+- Research Plane only; Signal Plane does not wait for GMGN.
+
+Incremental controls remain:
+
+- retained Participant Quality;
+- BUY event-rate acceleration;
+- signed flow over event reserve.
+
+Minimum primary route-closed pairs: 30.
+
+This discovery sample cannot promote a selector. Sufficient discovery can only advance to mechanism/robustness review and a separately frozen independent fresh confirmation.
+
