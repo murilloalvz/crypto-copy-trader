@@ -7,7 +7,9 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+from benchmarks.holder_ownership_structure_v0.preflight import run_preflight
 from benchmarks.holder_ownership_structure_v0.run import (
     DEFAULT_PROTOCOL,
     _association,
@@ -279,6 +281,35 @@ class HolderOwnershipStructureV0Tests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "systems-invalid"):
                 _validate_fresh_capture(run_dir)
+
+
+    def test_preflight_is_read_only_and_redacts_feature_value(self):
+        fake_record = {
+            "status": "CAUSAL_AVAILABLE",
+            "returned_holder_row_count": 4,
+            "regular_wallet_count": 2,
+            "burn_dead_count": 1,
+            "dex_pool_count": 1,
+            "denominator": "total_supply",
+            "excluded_addr_types": [1, 2],
+            "feature_value": 0.0017,
+        }
+        with patch(
+            "benchmarks.holder_ownership_structure_v0.preflight._collect_holder_evidence_sync",
+            return_value=fake_record,
+        ):
+            report = run_preflight(
+                protocol_path=DEFAULT_PROTOCOL,
+                token_mint="TOKEN",
+                api_key="api-key",
+            )
+        self.assertEqual(report["classification"], "PASS_HOLDER_OWNERSHIP_STRUCTURE_V0_PREFLIGHT")
+        self.assertFalse(report["economic_outcomes_opened"])
+        self.assertFalse(report["selector_changed"])
+        self.assertTrue(report["schema_probe"]["feature_value_redacted"])
+        self.assertNotIn("feature_value", report["schema_probe"])
+        self.assertEqual(report["schema_probe"]["excluded_addr_types"], [1, 2])
+
 
     def test_association_has_no_threshold_promotion(self):
         rows = [
