@@ -145,6 +145,53 @@ def _audit_run(run_dir: Path) -> dict[str, Any]:
     }
 
 
+
+def validate_parity_report(
+    *,
+    parity_report_path: Path,
+    protocol: Mapping[str, Any],
+) -> dict[str, Any]:
+    report = read_json(parity_report_path)
+    if report.get("classification") != PASS:
+        raise ValueError("prospective churn parity report did not PASS")
+    if report.get("exact_parity") is not True:
+        raise ValueError("prospective churn parity is not exact")
+    if int(report.get("mismatch_count") or 0) != 0:
+        raise ValueError("prospective churn parity has mismatches")
+    if report.get("protocol_hash_sha256") != protocol.get("protocol_hash_sha256"):
+        raise ValueError("prospective churn parity protocol hash mismatch")
+    if report.get("feature_id") != FEATURE_ID:
+        raise ValueError("prospective churn parity feature changed")
+
+    expected_runs = list(
+        (protocol.get("instrumentation") or {}).get("parity_runs") or []
+    )
+    actual_rows = [
+        row for row in report.get("per_run") or [] if isinstance(row, dict)
+    ]
+    actual_runs = [str(row.get("run_id") or "") for row in actual_rows]
+    if actual_runs != expected_runs:
+        raise ValueError("prospective churn parity run set/order changed")
+    if not actual_runs:
+        raise ValueError("prospective churn parity contains no run attestations")
+    if any(row.get("all_guardrails_valid") is not True for row in actual_rows):
+        raise ValueError("prospective churn parity guardrail failed")
+    if any(int(row.get("mismatch_count") or 0) != 0 for row in actual_rows):
+        raise ValueError("prospective churn parity per-run mismatch detected")
+
+    return {
+        "classification": report.get("classification"),
+        "exact_parity": True,
+        "mismatch_count": 0,
+        "compared_complete_episode_count": int(
+            report.get("compared_complete_episode_count") or 0
+        ),
+        "protocol_hash_sha256": report.get("protocol_hash_sha256"),
+        "run_ids": actual_runs,
+        "artifact": str(Path(parity_report_path).resolve()),
+    }
+
+
 def run_parity(
     *,
     run_dirs: list[Path],
