@@ -196,6 +196,10 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=None)
     args = parser.parse_args()
 
+    helius_key = ""
+    jupiter_key = ""
+    rpc_url = ""
+
     try:
         protocol = read_json(args.protocol)
         validate_protocol(protocol)
@@ -312,7 +316,12 @@ def main() -> int:
             json.dumps(
                 {
                     "classification": FAIL_CLASSIFICATION,
-                    "error": f"{type(exc).__name__}:{exc}",
+                    "error": sim._redacted_error(
+                        exc,
+                        helius_key,
+                        jupiter_key,
+                        rpc_url,
+                    ),
                 },
                 indent=2,
             )
