@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 from os import getenv
 import sys
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +16,13 @@ import unified_market_latency_smoke_v30 as v30
 import unified_market_route_research_smoke_tailfix_v9 as tailfix_v9
 from src.config import settings
 from src.database import connection
+from src.pump_bonding_stream import (
+    build_logs_subscribe_request as build_pump_logs_subscribe_request,
+    rpc_http_to_ws_url,
+)
+from src.pumpswap_stream import (
+    build_logs_subscribe_request as build_pumpswap_logs_subscribe_request,
+)
 import src.sqlite_write_admission as sqlite_admission
 
 
@@ -241,6 +251,85 @@ def print_readiness(*, run_key: str) -> bool:
     return passed
 
 
+async def _probe_logs_subscribe(name: str, request: dict) -> ReadinessCheck:
+    try:
+        import websockets
+    except ImportError:
+        return ReadinessCheck(
+            f"{name}_logs_subscribe",
+            False,
+            "websockets_dependency=missing",
+        )
+
+    try:
+        ws_url = rpc_http_to_ws_url(settings.rpc_url)
+        parsed = urlsplit(ws_url)
+        endpoint = parsed.hostname or "<unknown>"
+        async with websockets.connect(
+            ws_url,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=3,
+            max_queue=32,
+        ) as websocket:
+            await websocket.send(json.dumps(request))
+            ack_raw = await asyncio.wait_for(websocket.recv(), timeout=12)
+            ack = json.loads(ack_raw)
+            if "error" in ack:
+                error = ack.get("error")
+                return ReadinessCheck(
+                    f"{name}_logs_subscribe",
+                    False,
+                    f"endpoint={endpoint} ack_error={error}",
+                )
+            if not isinstance(ack.get("result"), int):
+                return ReadinessCheck(
+                    f"{name}_logs_subscribe",
+                    False,
+                    f"endpoint={endpoint} ack=invalid_subscription_id",
+                )
+            return ReadinessCheck(
+                f"{name}_logs_subscribe",
+                True,
+                f"endpoint={endpoint} ack=subscription_id",
+            )
+    except Exception as exc:
+        return ReadinessCheck(
+            f"{name}_logs_subscribe",
+            False,
+            f"endpoint={locals().get('endpoint', '<unresolved>')} error={type(exc).__name__}:{exc}",
+        )
+
+
+async def _collect_provider_health_checks_async() -> tuple[ReadinessCheck, ...]:
+    pump = await _probe_logs_subscribe(
+        "pump",
+        build_pump_logs_subscribe_request(commitment="confirmed"),
+    )
+    pumpswap = await _probe_logs_subscribe(
+        "pumpswap",
+        build_pumpswap_logs_subscribe_request(commitment="confirmed"),
+    )
+    return (pump, pumpswap)
+
+
+def collect_provider_health_checks() -> tuple[ReadinessCheck, ...]:
+    return asyncio.run(_collect_provider_health_checks_async())
+
+
+def print_provider_health() -> bool:
+    checks = collect_provider_health_checks()
+    print("\nV68 SOLANA PUBSUB PROVIDER HEALTH")
+    for item in checks:
+        print(f"{item.name}={'PASS' if item.passed else 'FAIL'} detail={item.detail}")
+    passed = all(item.passed for item in checks)
+    print(
+        "provider_health_classification="
+        + ("PASS_V68_SOLANA_PUBSUB_HEALTH" if passed else "FAIL_V68_SOLANA_PUBSUB_HEALTH")
+    )
+    return passed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -270,6 +359,8 @@ def main() -> int:
         raise SystemExit("provider pacing intervals cannot be negative")
 
     if not print_readiness(run_key=base):
+        return 2
+    if not print_provider_health():
         return 2
     if args.preflight_only:
         return 0
