@@ -579,3 +579,36 @@ Incremental controls remain frozen Participant Quality + BUY acceleration + sign
 
 Minimum primary route-closed pairs remains 30. This discovery cannot promote a selector.
 
+## Holder Ownership Structure Native V1 — Helius WSS usage-cap invalidation
+
+Run attempt:
+
+`launch_burst_prospective_route_live_v4-1789954092-eb60e7880e`
+
+The Helius Holder HTTP/DAS preflight passed, including `getTokenSupply` and `getTokenAccounts`. The 900s prospective market capture did not begin successfully because the existing Helius Standard WSS ingest closed with:
+
+`ConnectionClosedOK: received 1001 (going away) usage cap exceeded`
+
+No Native V1 wrapper report was produced and no Holder/outcome evaluator was run.
+
+Classification:
+
+`INVALID_MARKET_INGEST_SYSTEMS_BEFORE_SCIENTIFIC_EVALUATION`
+
+This is not a Holder hypothesis failure and does not authorize feature retuning.
+
+Systems-only provider split for the replacement:
+
+- market Pump/PumpSwap logs: Solana public Standard WSS `wss://api.mainnet.solana.com/`;
+- market methods: the same two program-filtered `logsSubscribe` subscriptions plus `slotSubscribe`;
+- no per-transaction HTTP hydration;
+- Holder snapshot evidence: Helius HTTP/RPC `getTokenSupply` + mint-filtered `getTokenAccounts`;
+- Jupiter/RPC route-paper evidence unchanged;
+- feature, direction, T0+3 snapshot-not-before time, T0+5 cutoff, outcomes, controls, route contract and selector remain unchanged.
+
+The public WSS is a research-only fallback with no production SLA. A dedicated preflight must observe all subscription acknowledgements and at least one slot notification before the replacement is allowed to start.
+
+The wrapper records `market_ingest_provider=solana_public_standard_wss`, and the evaluator independently rejects a run with a different market-ingest attestation.
+
+A replacement acquisition is permitted because this run was invalidated by market-ingest quota before any Native V1 scientific outcome evaluation.
+
