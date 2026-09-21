@@ -39,7 +39,7 @@ class HolderOwnershipNativeV1Tests(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(
             expected,
-            "3ac0089fc1fb933bfead7610940b26c5d8f8fd3fc46bf0b131d55442408f624c",
+            "90132a6656738dceb4662b4701091f5290c2f7c85c9c3896c7326c0fec75a565",
         )
         self.assertEqual(expected, actual)
         protocol["protocol_hash_sha256"] = expected
