@@ -22,6 +22,7 @@ from src.pumpswap_stream import (
     decode_pumpswap_sell_event_payload,
     parse_logs_notification,
     persist_pumpswap_notification,
+    rpc_http_to_ws_url,
 )
 
 
@@ -142,6 +143,12 @@ class PumpSwapStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request["method"], "logsSubscribe")
         self.assertEqual(request["params"][0], {"mentions": [PUMPSWAP_PROGRAM_ID]})
         self.assertEqual(request["params"][1]["commitment"], "confirmed")
+
+    def test_rpc_url_conversion_uses_alchemy_streaming_host(self):
+        self.assertEqual(
+            rpc_http_to_ws_url("https://solana-mainnet.g.alchemy.com/v2/test-key"),
+            "wss://solana-mainnet.streaming.alchemy.com/v2/test-key",
+        )
 
     def test_buy_and_sell_stable_prefixes_decode(self):
         buy = decode_pumpswap_buy_event_payload(
