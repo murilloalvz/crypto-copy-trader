@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from benchmarks.holder_ownership_native_v1.run import DEFAULT_PROTOCOL, _read_json, _validate_protocol
+from benchmarks.holder_ownership_native_v1.market_ingest import run_preflight as run_market_ingest_preflight
 from benchmarks.holder_ownership_native_v1.runtime_enrichment import _rpc_once
 
 
@@ -55,6 +56,8 @@ def run_preflight(*, protocol_path: Path, token_mint: str, helius_api_key: str) 
     if valid_rows == 0:
         raise RuntimeError("getTokenAccounts schema probe returned no usable owner/amount rows")
 
+    market_ingest = run_market_ingest_preflight()
+
     return {
         "classification": PASS,
         "economic_outcomes_opened": False,
@@ -63,6 +66,7 @@ def run_preflight(*, protocol_path: Path, token_mint: str, helius_api_key: str) 
         "transaction_signed": False,
         "transaction_submitted": False,
         "gmgn_used": False,
+        "market_ingest": market_ingest,
         "protocol_hash_sha256": protocol["protocol_hash_sha256"],
         "feature_id": (protocol.get("feature_contract") or {}).get("primary_feature_id"),
         "schema_probe": {
@@ -79,6 +83,8 @@ def run_preflight(*, protocol_path: Path, token_mint: str, helius_api_key: str) 
             "owner_field_usable": True,
             "raw_amount_field_usable": True,
             "gmgn_dependency_absent": True,
+            "public_solana_standard_wss_usable": market_ingest.get("classification") == "PASS_PUBLIC_SOLANA_STANDARD_WSS_PREFLIGHT",
+            "market_ingest_http_hydration_absent": market_ingest.get("http_hydration_used") is False,
         },
         "interpretation": (
             "Read-only Helius schema/capability preflight only. It opens no economic outcome and "
