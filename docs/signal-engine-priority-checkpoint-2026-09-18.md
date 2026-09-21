@@ -612,3 +612,70 @@ The wrapper records `market_ingest_provider=solana_public_standard_wss`, and the
 
 A replacement acquisition is permitted because this run was invalidated by market-ingest quota before any Native V1 scientific outcome evaluation.
 
+## Holder Ownership Native V1 — Helius HTTP quota invalidation
+
+After the Helius WSS usage-cap invalidation, the Native V1 replacement preflight was rerun with public Solana Standard WSS for market ingest.
+
+Local tests and environment gates passed, but the Helius holder HTTP preflight failed before live capture:
+
+`RuntimeError:getTokenSupply capability probe failed: HTTP_429`
+
+No 900s capture began, no wrapper report was produced, and no Holder/outcome evaluator was run.
+
+Classification:
+
+`INVALID_EXTERNAL_EVIDENCE_PROVIDER_QUOTA_BEFORE_SCIENTIFIC_EVALUATION`
+
+This establishes that the active Helius quota is currently unsuitable not only for Standard WSS but also for the HTTP/RPC holder snapshot path. Native V1 is therefore closed without scientific evaluation. No feature direction or outcome was inspected.
+
+## Holder Ownership RPC V2 — preregistered no-Helius replacement
+
+Branch:
+
+`research/holder-ownership-rpc-v2`
+
+Experiment:
+
+`MF-HOLDER-OWNERSHIP-RPC-V2`
+
+Protocol hash:
+
+`9e54b4033ef218f958c2c6386efbcb375077b5e78755c1cd40419c73bc7616b4`
+
+Primary feature:
+
+`mf_holder_pump_pregrad_top20_non_curve_owner_supply_hhi_rpc`
+
+This is explicitly a NEW feature/version, not a relabeling of Native V1.
+
+Frozen acquisition:
+
+1. market ingest uses Solana public Standard WSS only, with Pump/PumpSwap `logsSubscribe` plus `slotSubscribe`;
+2. no per-transaction HTTP hydration is used for market ingest;
+3. before capture, select one non-Helius standard JSON-RPC endpoint from configured `SOLANA_RPC_URL` / fallbacks, otherwise `api.mainnet.solana.com`;
+4. the selected holder/route RPC endpoint is fixed for the run;
+5. do not request Holder evidence before T0+3s;
+6. all Holder evidence must complete no later than T0+5s;
+7. call `getTokenSupply(processed)`;
+8. call `getTokenLargestAccounts(processed)`;
+9. resolve the returned token-account owners with one `getMultipleAccounts(jsonParsed, processed)`;
+10. aggregate duplicate owners among the returned Top20 token accounts;
+11. exclude the exact decoded Pump `bonding_curve` owner;
+12. compute HHI from those Top20 non-curve owner balances divided by exact total raw supply;
+13. do NOT claim full-holder HHI: accounts outside the Top20 are intentionally unobserved;
+14. snapshot starts are paced by at least 0.5s;
+15. if a snapshot cannot fit inside T0+5s, it is MISSING;
+16. any HTTP/RPC 429 invalidates the acquisition at systems level;
+17. no retry rescue or provider switch after capture start;
+18. if PumpSwap graduation is observed before snapshot request, feature is MISSING.
+
+The route contract, standardized Fixed+60 outcome, Participant Quality control and existing flow controls remain unchanged.
+
+Preregistered direction:
+
+higher Top20 non-curve owner concentration -> worse future ROUTE_CLOSED gross Fixed+60 outcome.
+
+Minimum primary route-closed feature/outcome pairs remains 30.
+
+This discovery sample cannot promote a selector or automatic entry rule.
+
