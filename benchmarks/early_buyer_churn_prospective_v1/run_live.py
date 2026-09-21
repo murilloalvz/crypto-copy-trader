@@ -113,10 +113,20 @@ def _validate_provider_preflight_artifact(
         if report.get(key) is not False:
             raise ValueError(f"provider health preflight guardrail changed: {key}")
 
+    control = report.get("control") or {}
+    control_hash = str(control.get("owner_public_key_sha256") or "").strip().lower()
+    if not control_hash:
+        raise ValueError("provider health preflight selected no public control hash")
+    if control.get("known_liquid_control_assembled") is not True:
+        raise ValueError("provider health preflight known-liquid assembly missing")
+    if control.get("representative_burst_assembled") is not True:
+        raise ValueError("provider health preflight representative-burst assembly missing")
+
     return {
         "classification": report.get("classification"),
         "protocol_hash_sha256": report.get("protocol_hash_sha256"),
         "selected_rpc_safe_host": safe_host,
+        "selected_control_hash_sha256": control_hash,
         "selected_rpc_candidate_index": selected.get("candidate_index"),
         "selected_rpc_fallback_used": selected.get("fallback_used"),
         "market_ingest_provider": market.get("source_provider"),
@@ -305,6 +315,22 @@ def main() -> int:
         if _safe_host(selected_rpc_url) != live_safe_host or "helius" in live_safe_host:
             raise RuntimeError("fresh selected RPC is invalid or Helius-backed")
 
+        live_control_hash = str(
+            (live_provider_preflight.get("control") or {}).get(
+                "owner_public_key_sha256"
+            )
+            or ""
+        ).strip().lower()
+        if live_control_hash != provider_artifact["selected_control_hash_sha256"]:
+            raise RuntimeError(
+                "provider health public control changed since approved preflight; "
+                "rerun preflight instead of consuming the fresh capture"
+            )
+        if str(control_meta.get("owner_public_key_sha256") or "").strip().lower() != live_control_hash:
+            raise RuntimeError(
+                "provider health in-memory control metadata differs from approved control"
+            )
+
         rpc_url = selected_rpc_url
         helius_key = "UNUSED_PUBLIC_STANDARD_WSS_NO_HELIUS"
 
@@ -401,6 +427,8 @@ def main() -> int:
                 "helius_dependency_active": False,
                 "rpc_endpoint_fixed_for_run": True,
                 "selected_rpc_safe_host": live_safe_host,
+                "selected_control_hash_sha256": live_control_hash,
+                "exact_approved_preflight_control_reused": True,
                 "exact_preflight_control_reused": True,
                 "feature_definition_changed": False,
                 "feature_computed_before_provider_quotes": True,
