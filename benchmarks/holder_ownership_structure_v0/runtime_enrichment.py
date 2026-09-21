@@ -20,6 +20,7 @@ FEATURE_ID = "mf_holder_top100_regular_wallet_supply_hhi"
 EXTERNAL_EVIDENCE_KEY = "holder_ownership_structure_v0"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 4.5
 MAX_CONCURRENT_ACQUISITIONS = 1
+MIN_PROVIDER_START_INTERVAL_SECONDS = 1.05
 
 
 def _sha256_text(value: str) -> str:
@@ -54,6 +55,7 @@ def _cli_environment(api_key: str, base_env: Mapping[str, str] | None = None) ->
         raise ValueError("GMGN_API_KEY is required for Holder Ownership Structure acquisition")
     env = dict(base_env if base_env is not None else os.environ)
     env["GMGN_API_KEY"] = api_key.strip()
+    env["GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS"] = "0"
     env.pop("GMGN_PRIVATE_KEY", None)
     return env
 
@@ -305,7 +307,9 @@ class HolderOwnershipRuntimeV0:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.decision_cutoff_wall_ns_by_token: dict[str, int] = {}
         self._semaphore: asyncio.Semaphore | None = None
+        self._last_provider_request_started_monotonic: float | None = None
         self.max_concurrent_acquisitions = MAX_CONCURRENT_ACQUISITIONS
+        self.min_provider_start_interval_seconds = MIN_PROVIDER_START_INTERVAL_SECONDS
 
     def _terminal_missing_record(
         self,
@@ -361,6 +365,27 @@ class HolderOwnershipRuntimeV0:
                 )
                 return
 
+            now_monotonic = time.monotonic()
+            if self._last_provider_request_started_monotonic is not None:
+                earliest_start = (
+                    self._last_provider_request_started_monotonic
+                    + self.min_provider_start_interval_seconds
+                )
+                pacing_wait = max(0.0, earliest_start - now_monotonic)
+                if pacing_wait > 0:
+                    remaining_seconds = (
+                        decision_cutoff_wall_ns - time.time_ns()
+                    ) / 1_000_000_000.0
+                    if remaining_seconds <= pacing_wait:
+                        self.records[token_mint] = self._terminal_missing_record(
+                            token_mint=token_mint,
+                            observed_t0_wall_ns=observed_t0_wall_ns,
+                            decision_cutoff_wall_ns=decision_cutoff_wall_ns,
+                            status="LATE_WAITING_FOR_RATE_SLOT",
+                        )
+                        return
+                    await asyncio.sleep(pacing_wait)
+
             if time.time_ns() > decision_cutoff_wall_ns:
                 self.records[token_mint] = self._terminal_missing_record(
                     token_mint=token_mint,
@@ -370,6 +395,7 @@ class HolderOwnershipRuntimeV0:
                 )
                 return
 
+            self._last_provider_request_started_monotonic = time.monotonic()
             self.records[token_mint] = await asyncio.to_thread(
                 _collect_holder_evidence_sync,
                 token_mint=token_mint,
@@ -519,6 +545,9 @@ class HolderOwnershipRuntimeV0:
                 "slot_wait_bounded_by_decision_cutoff": True,
                 "command_timeout_bounded_by_remaining_cutoff": True,
                 "subprocess_output_decoding": "utf8_replace",
+                "cli_auto_retry_disabled": True,
+                "provider_start_interval_seconds": self.min_provider_start_interval_seconds,
+                "provider_weight_5_free_bucket_pacing": True,
                 "addr_type_0_regular_only": True,
                 "addr_type_1_burn_dead_excluded": True,
                 "addr_type_2_dex_pool_excluded": True,
