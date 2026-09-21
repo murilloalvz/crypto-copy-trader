@@ -1282,3 +1282,44 @@ Scientific interpretation:
 
 Next engineering/research question is separate from churn confirmation: diagnose why only 1 of 40 analyzed baseline/default-SOL episodes produced a primary `ROUTE_CLOSED` outcome. That diagnosis may inform future route-paper/provider/copyability design, but it cannot retroactively rescue this closed confirmation.
 
+## Route-paper outcome availability — Swap V2 priceImpact semantics bug confirmed
+
+Post-close diagnosis of the Early Buyer Churn fresh showed that the low primary-outcome count was dominated by a route-paper implementation bug rather than missing provider data.
+
+Fresh admitted decisions:
+
+- 49 admitted;
+- 39 `ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE`;
+- 7 `ENTRY_REJECTED:PRICE_IMPACT_EXCEEDS_LIMIT`;
+- 2 `UNROUTABLE_EXIT:PRICE_IMPACT_UNAVAILABLE`;
+- 1 `ROUTE_CLOSED`.
+
+Direct inspection of the stored Jupiter Swap V2 quotes found:
+
+- all 39 entry `PRICE_IMPACT_UNAVAILABLE` cases had finite negative `priceImpact` values;
+- 0/39 were missing or non-finite;
+- negative entry impacts ranged from about -17.4245 to -0.2152 percentage points, median about -1.9336;
+- both exit `PRICE_IMPACT_UNAVAILABLE` cases also had finite negative impacts (-4.4668 and -1.6877);
+- routers among the 39 false-unavailable entries: 36 Metis, 2 DFlow, 1 OKX.
+
+The old route evaluator rejected any negative value as unavailable:
+
+`impact is None or non-finite or impact < 0 -> PRICE_IMPACT_UNAVAILABLE`
+
+That is incompatible with Jupiter Swap V2 semantics. The repository already contains `price_impact_semantics_fix_v0`, where provider price impact is treated as available when finite and the frozen route-quality contract is applied as an upper bound only:
+
+- missing/non-finite -> `PRICE_IMPACT_UNAVAILABLE`;
+- finite value <= frozen maximum -> route-quality PASS;
+- finite value > frozen maximum -> `PRICE_IMPACT_EXCEEDS_LIMIT`.
+
+Historical Sniper V1 runs already applied this versioned patch around `run_sim_v4`; the Early Buyer Churn fresh wrapper did not. This is therefore a pipeline-conformance inconsistency.
+
+Scientific boundary:
+
+- the closed Early Buyer Churn decision remains `INSUFFICIENT_SAMPLE_NO_EXTENSION`;
+- no corrected replay may rescue, replace, or reclassify that confirmation;
+- the same fresh capture must not be repeated or extended;
+- corrected replay is systems/implementation-conformance evidence only.
+
+A read-only offline diagnostic is added to replay the frozen `route-input-v2.json` under the existing versioned semantics fix, write the corrected route result to a separate artifact, compare status transitions, and attest by SHA-256 that both the original route input and original route result remain unchanged.
+
