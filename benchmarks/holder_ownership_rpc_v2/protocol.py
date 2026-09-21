@@ -9,7 +9,7 @@ from benchmarks.holder_ownership_rpc_v2.runtime_enrichment import FEATURE_ID
 
 
 DEFAULT_PROTOCOL = Path("benchmarks") / "holder_ownership_rpc_v2" / "protocol.frozen.json"
-EXPECTED_PROTOCOL_HASH = "61b53d45342c5fed2892f3e97a91f38d36b0b3c796b17d043bafc9d95a77f629"
+EXPECTED_PROTOCOL_HASH = "9e54b4033ef218f958c2c6386efbcb375077b5e78755c1cd40419c73bc7616b4"
 
 
 def read_json(path: Path) -> dict[str, Any]:
