@@ -6,14 +6,19 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from benchmarks.early_buyer_churn_prospective_v1.parity import (
+    validate_parity_report,
+)
 from benchmarks.early_buyer_churn_prospective_v1.protocol import (
     DEFAULT_PROTOCOL,
     read_json,
     validate_protocol,
 )
+from benchmarks.early_buyer_churn_prospective_v1.provider_preflight import (
+    PASS as PROVIDER_PREFLIGHT_PASS,
+)
 from benchmarks.early_buyer_churn_prospective_v1.run_live import (
     _same_value,
-    _validate_parity_report,
 )
 from benchmarks.early_buyer_churn_prospective_v1.runtime_enrichment import (
     EXTERNAL_EVIDENCE_KEY,
@@ -112,7 +117,59 @@ def _validate_fresh_wrapper(
     if guardrails.get("exact_parity_attested") is not True:
         raise ValueError("fresh churn wrapper did not attest exact parity")
 
-    parity = _validate_parity_report(
+    required_true = (
+        "provider_health_preflight_required_before_capture",
+        "provider_health_rechecked_immediately_before_capture",
+        "rpc_endpoint_fixed_for_run",
+        "exact_preflight_control_reused",
+    )
+    for key in required_true:
+        if guardrails.get(key) is not True:
+            raise ValueError(f"fresh churn provider guardrail changed: {key}")
+
+    if guardrails.get("market_ingest_provider") != "solana_public_standard_wss":
+        raise ValueError("fresh churn market ingest provider changed")
+    if guardrails.get("market_ingest_http_hydration") is not False:
+        raise ValueError("fresh churn market ingest HTTP hydration changed")
+    for key in (
+        "helius_market_ingest_used",
+        "helius_control_discovery_used",
+        "helius_dependency_active",
+    ):
+        if guardrails.get(key) is not False:
+            raise ValueError(f"fresh churn Helius guardrail changed: {key}")
+
+    selected_host = str(guardrails.get("selected_rpc_safe_host") or "").lower()
+    if not selected_host or "helius" in selected_host:
+        raise ValueError("fresh churn selected RPC host is missing or Helius-backed")
+
+    artifacts = wrapper.get("artifacts") or {}
+    provider_preflight_path = Path(
+        str(artifacts.get("provider_preflight") or "")
+    )
+    if not provider_preflight_path.is_file():
+        raise ValueError("fresh churn provider preflight artifact missing")
+    provider_report = read_json(provider_preflight_path)
+    if provider_report.get("classification") != PROVIDER_PREFLIGHT_PASS:
+        raise ValueError("fresh churn provider preflight artifact did not PASS")
+    provider_selected = provider_report.get("selected_rpc") or {}
+    if str(provider_selected.get("safe_host") or "").lower() != selected_host:
+        raise ValueError("fresh churn provider preflight RPC host mismatch")
+    if provider_report.get("economic_outcomes_opened") is not False:
+        raise ValueError("provider preflight unexpectedly opened economic outcomes")
+    if provider_report.get("fresh_confirmation_consumed") is not False:
+        raise ValueError("provider preflight unexpectedly consumed fresh confirmation")
+    if provider_report.get("helius_dependency_active") is not False:
+        raise ValueError("provider preflight unexpectedly used Helius")
+
+    recheck = wrapper.get("provider_preflight_recheck") or {}
+    if recheck.get("classification") != PROVIDER_PREFLIGHT_PASS:
+        raise ValueError("fresh churn immediate provider recheck did not PASS")
+    recheck_selected = recheck.get("selected_rpc") or {}
+    if str(recheck_selected.get("safe_host") or "").lower() != selected_host:
+        raise ValueError("fresh churn immediate provider recheck RPC host mismatch")
+
+    parity = validate_parity_report(
         parity_report_path=parity_report_path,
         protocol=protocol,
     )
@@ -135,6 +192,11 @@ def _validate_fresh_wrapper(
         "causal_available_count": int(churn.get("causal_available_count") or 0),
         "missing_no_buy_count": int(churn.get("missing_no_buy_count") or 0),
         "right_censored_count": int(churn.get("right_censored_count") or 0),
+        "selected_rpc_safe_host": selected_host,
+        "provider_preflight_artifact": str(provider_preflight_path.resolve()),
+        "provider_preflight_classification": provider_report.get("classification"),
+        "provider_recheck_classification": recheck.get("classification"),
+        "helius_dependency_active": False,
         "parity": parity,
     }
 
