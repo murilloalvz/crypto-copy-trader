@@ -95,7 +95,13 @@ def rpc_http_to_ws_url(rpc_url: str) -> str:
         "ws": "ws",
         "wss": "wss",
     }[parsed.scheme]
-    return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+    netloc = parsed.netloc
+    # Alchemy serves Solana PubSub on the dedicated streaming host. The normal
+    # JSON-RPC host accepts a WebSocket connection but does not expose logsSubscribe.
+    if parsed.hostname == "solana-mainnet.g.alchemy.com":
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        netloc = f"solana-mainnet.streaming.alchemy.com{port}"
+    return urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def build_logs_subscribe_request(
