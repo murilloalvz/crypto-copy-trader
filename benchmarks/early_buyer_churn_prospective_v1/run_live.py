@@ -266,21 +266,19 @@ def main() -> int:
             load_dotenv(dotenv_path=env_file, override=False)
         jupiter_key = os.environ.get("JUPITER_API_KEY", "").strip()
         configured_rpc_url = os.environ.get("SOLANA_RPC_URL", "").strip()
-        taker_public_key = os.environ.get("JUPITER_TAKER_PUBLIC_KEY", "").strip()
         fallback_urls = tuple(
             item.strip()
             for item in os.environ.get("SOLANA_RPC_FALLBACK_URLS", "").split(",")
             if item.strip()
         )
 
-        live_provider_preflight, selected_rpc_url, control_meta = (
+        live_provider_preflight, selected_rpc_url, selected_control_taker, control_meta = (
             run_provider_preflight(
                 parity_report_path=args.parity_report,
                 protocol_path=args.protocol,
                 contract_path=args.contract,
                 fixture_path=args.fixture,
                 jupiter_api_key=jupiter_key,
-                taker_public_key=taker_public_key,
                 rpc_url=configured_rpc_url,
                 rpc_fallback_urls=fallback_urls,
             )
@@ -289,7 +287,11 @@ def main() -> int:
             raise RuntimeError(
                 "provider health recheck failed immediately before fresh capture"
             )
-        if not selected_rpc_url or not isinstance(control_meta, dict):
+        if (
+            not selected_rpc_url
+            or not selected_control_taker
+            or not isinstance(control_meta, dict)
+        ):
             raise RuntimeError(
                 "provider health recheck returned no fixed RPC/control metadata"
             )
@@ -326,7 +328,7 @@ def main() -> int:
                     jupiter_api_key=jupiter_key,
                     rpc_url=rpc_url,
                     rpc_fallback_urls=(),
-                    control_taker_override=taker_public_key,
+                    control_taker_override=selected_control_taker,
                     control_meta_override=control_meta,
                 )
             )
