@@ -93,6 +93,8 @@ def _run_rust(
         "--release",
         "--manifest-path",
         str(manifest),
+        "--bin",
+        "rust-indexed-signal-plane-v0",
         "--",
         "--trace",
         str(trace),
