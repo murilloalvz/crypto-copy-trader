@@ -314,50 +314,6 @@ def collect_readiness_checks(
             promotion_detail,
         ),
         ReadinessCheck(
-            "v9_runner_available",
-            v68_v9.tailfix_v9.run_smoke_tailfix_v9 is tailfix_v9.run_smoke_tailfix_v9,
-            "canonical V9 systems runner binding",
-        ),
-        ReadinessCheck(
-            "pumpswap_workers_capacity",
-            int(defaults["pumpswap_workers"]) >= v30.MIN_PUMPSWAP_WORKERS,
-            f"workers={defaults['pumpswap_workers']} min={v30.MIN_PUMPSWAP_WORKERS}",
-        ),
-        ReadinessCheck(
-            "pump_prepare_workers_capacity",
-            int(defaults["pump_prepare_workers"]) >= v30.MIN_PUMP_PREPARE_WORKERS,
-            f"workers={defaults['pump_prepare_workers']} min={v30.MIN_PUMP_PREPARE_WORKERS}",
-        ),
-        ReadinessCheck(
-            "pumpswap_prepare_submitters_capacity",
-            int(defaults["pumpswap_prepare_submitters"])
-            >= v30.MIN_PUMPSWAP_PREPARE_SUBMITTERS,
-            f"submitters={defaults['pumpswap_prepare_submitters']} min={v30.MIN_PUMPSWAP_PREPARE_SUBMITTERS}",
-        ),
-        ReadinessCheck(
-            "pumpswap_prepare_executor_capacity",
-            int(defaults["pumpswap_prepare_executor_workers"])
-            >= v30.MIN_PUMPSWAP_PREPARE_EXECUTOR_WORKERS,
-            f"workers={defaults['pumpswap_prepare_executor_workers']} min={v30.MIN_PUMPSWAP_PREPARE_EXECUTOR_WORKERS}",
-        ),
-        ReadinessCheck(
-            "default_io_capacity",
-            int(defaults["default_io_workers"]) >= v30.MIN_DEFAULT_IO_WORKERS,
-            f"workers={defaults['default_io_workers']} min={v30.MIN_DEFAULT_IO_WORKERS}",
-        ),
-        ReadinessCheck(
-            "release_writer_batch_size",
-            int(defaults["pumpswap_writer_batch_size"])
-            == V68_RELEASE_PUMPSWAP_WRITER_BATCH_SIZE,
-            f"batch_size={defaults['pumpswap_writer_batch_size']}",
-        ),
-        ReadinessCheck(
-            "release_writer_batch_wait",
-            int(defaults["pumpswap_writer_batch_max_wait_ms"])
-            == V68_RELEASE_PUMPSWAP_WRITER_BATCH_MAX_WAIT_MS,
-            f"max_wait_ms={defaults['pumpswap_writer_batch_max_wait_ms']}",
-        ),
-        ReadinessCheck(
             "sqlite_admission_idle",
             sqlite_admission._GLOBAL_WRITE_ADMISSION.is_idle(),
             "shared SQLite writer admission has no active or waiting work",
@@ -471,8 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Canonical V68 release entrypoint. Runs a fail-closed readiness check, then the frozen "
-            "V68 A/B prospective route-only hypothesis through the accepted V9 systems path with "
-            "a systems-only PumpSwap writer burst-capacity increase from 32 to 64."
+            "V68 A/B prospective route-only hypothesis through the promoted Signal Plane path. "
+            "A fresh acquisition cannot start without a valid promotion manifest."
         )
     )
     parser.add_argument("--run-key", required=True)
