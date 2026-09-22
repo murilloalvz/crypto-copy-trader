@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from benchmarks.commodity_signal_plane_v0.benchmark import TraceRecord
 from src.market_observation_store import (
     record_market_lifecycle,
     record_market_trade,
+)
+from src.market_opportunity_radar import (
+    MarketLifecycleObservation,
+    MarketTradeObservation,
 )
 from src.signal_plane_episode_admission_v0 import (
     SignalPlaneEpisodeAdmissionResult,
@@ -14,6 +18,15 @@ from src.signal_plane_episode_admission_v0 import (
 
 
 SIGNAL_PLANE_RESEARCH_PERSISTENCE_VERSION = "signal_plane_research_persistence_v0"
+
+
+class SignalPlaneResearchRecord(Protocol):
+    sequence: int
+    kind: str
+    event_key: str
+    source_provider: str
+    trade: MarketTradeObservation | None
+    lifecycle: MarketLifecycleObservation | None
 
 
 @dataclass(frozen=True)
@@ -26,7 +39,7 @@ class SignalPlaneResearchPersistResult:
 def persist_signal_plane_research_record(
     *,
     acquisition_run_key: str,
-    record: TraceRecord,
+    record: SignalPlaneResearchRecord,
     trigger_snapshot: dict | None,
 ) -> SignalPlaneResearchPersistResult:
     """Persist one canonical Signal Plane record before durable episode admission.
