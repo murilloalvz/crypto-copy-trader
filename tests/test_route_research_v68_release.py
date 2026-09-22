@@ -151,6 +151,86 @@ class V68ReleaseReadinessTests(unittest.TestCase):
         self.assertIs(v68.v54.run_smoke_v54, original_smoke)
         self.assertEqual(v68.V68_VALIDATED_SYSTEMS_PROFILE, original_profile)
 
+    def test_authorized_release_uses_signal_plane_v68_runner(self):
+        original_argv = list(sys.argv)
+        observed = {}
+
+        def fake_signal_plane_main() -> int:
+            observed["argv"] = list(sys.argv)
+            return 0
+
+        try:
+            with patch.object(
+                release,
+                "V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED",
+                True,
+            ), patch.object(
+                release,
+                "print_readiness",
+                return_value=True,
+            ), patch.object(
+                release,
+                "print_provider_health",
+                return_value=True,
+            ), patch.object(
+                release.v68_signal_plane,
+                "main",
+                side_effect=fake_signal_plane_main,
+            ), patch.object(
+                v68,
+                "main",
+                side_effect=AssertionError(
+                    "historical V68 path must not run after promotion"
+                ),
+            ):
+                sys.argv = [
+                    "route_research_v68_release.py",
+                    "--run-key",
+                    "unit-release",
+                    "--bootstrap-report",
+                    "bootstrap.json",
+                ]
+                result = release.main()
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(result, 0)
+        self.assertIn("unit-release", observed["argv"])
+        self.assertIn("bootstrap.json", observed["argv"])
+        self.assertIn(
+            "route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py",
+            observed["argv"],
+        )
+
+    def test_authorized_release_requires_explicit_bootstrap(self):
+        original_argv = list(sys.argv)
+        try:
+            with patch.object(
+                release,
+                "V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED",
+                True,
+            ), patch.object(
+                release,
+                "print_readiness",
+                return_value=True,
+            ), patch.object(
+                release,
+                "print_provider_health",
+                return_value=True,
+            ), patch.object(
+                release.v68_signal_plane,
+                "main",
+                side_effect=AssertionError("must not run without bootstrap"),
+            ):
+                sys.argv = [
+                    "route_research_v68_release.py",
+                    "--run-key",
+                    "unit-release",
+                ]
+                self.assertEqual(release.main(), 2)
+        finally:
+            sys.argv = original_argv
+
     def test_provider_health_failure_prevents_v68_main(self):
         original_argv = list(sys.argv)
         try:
