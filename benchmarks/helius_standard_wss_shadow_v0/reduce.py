@@ -131,6 +131,7 @@ def reduce_shadow(
     trace_path: Path,
     carbon_input_path: Path,
     manifest_path: Path,
+    trace_version: str = TRACE_VERSION,
 ) -> dict[str, Any]:
     rows = _jsonl(trace_path)
     headers = [row for row in rows if row.get("type") == "trace_header"]
@@ -139,10 +140,10 @@ def reduce_shadow(
 
     trace_contract_valid = (
         len(headers) == 1
-        and headers[0].get("version") == TRACE_VERSION
+        and headers[0].get("version") == trace_version
         and headers[0].get("chain_complete_coverage_claimed") is False
         and len(footers) == 1
-        and footers[0].get("version") == TRACE_VERSION
+        and footers[0].get("version") == trace_version
         and footers[0].get("chain_complete_coverage_claimed") is False
     )
 

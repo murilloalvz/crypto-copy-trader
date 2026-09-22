@@ -10,10 +10,25 @@ from benchmarks.helius_standard_wss_shadow_v0.collect import (
     redact_secret,
     subscription_payloads,
     trace_header,
+    _trace_header,
 )
 
 
 class HeliusStandardWssShadowV0Tests(unittest.TestCase):
+    def test_configured_provider_trace_can_preserve_real_endpoint_provenance(self):
+        header = _trace_header(
+            duration_seconds=60.0,
+            max_log_notifications=100,
+            started_wall_ns=123,
+            trace_version="solana_standard_wss_shadow_v0",
+            source_provider="configured_solana_standard_wss",
+            endpoint_host="solana-mainnet.streaming.alchemy.com",
+        )
+        self.assertEqual(header["version"], "solana_standard_wss_shadow_v0")
+        self.assertEqual(header["source_provider"], "configured_solana_standard_wss")
+        self.assertEqual(header["endpoint_host"], "solana-mainnet.streaming.alchemy.com")
+        self.assertFalse(header["chain_complete_coverage_claimed"])
+
     def test_wss_url_uses_key_but_header_never_does(self):
         key = "secret/key+value"
         url = helius_wss_url(key)

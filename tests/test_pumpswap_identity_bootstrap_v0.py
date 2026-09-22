@@ -3,18 +3,40 @@ from __future__ import annotations
 import unittest
 
 from benchmarks.pumpswap_identity_bootstrap_v0.bootstrap import (
+    CONFIGURED_RPC_SOURCE_PROVIDER,
+    CONFIGURED_RPC_TRACE_VERSION,
     FAIL_CLASSIFICATION,
     PASS_CLASSIFICATION,
     RPC_BATCH_SIZE,
     WARMUP_SECONDS,
     _account_inputs_from_rpc_result,
     _chunks,
+    configured_rpc_http_url,
     classify_bootstrap,
 )
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 
 
 class PumpSwapIdentityBootstrapV0Tests(unittest.TestCase):
+    def test_configured_rpc_transport_accepts_http_or_websocket_url(self) -> None:
+        self.assertEqual(
+            configured_rpc_http_url("https://solana-mainnet.g.alchemy.com/v2/key"),
+            "https://solana-mainnet.g.alchemy.com/v2/key",
+        )
+        self.assertEqual(
+            configured_rpc_http_url("wss://solana-mainnet.g.alchemy.com/v2/key"),
+            "https://solana-mainnet.g.alchemy.com/v2/key",
+        )
+        with self.assertRaisesRegex(ValueError, "SOLANA_RPC_URL"):
+            configured_rpc_http_url("")
+
+    def test_configured_provider_identity_is_explicit_and_operational_only(self) -> None:
+        self.assertEqual(
+            CONFIGURED_RPC_SOURCE_PROVIDER,
+            "configured_solana_standard_wss",
+        )
+        self.assertEqual(CONFIGURED_RPC_TRACE_VERSION, "solana_standard_wss_shadow_v0")
+
     def test_operational_warmup_is_fixed_and_rpc_batches_respect_protocol_limit(self) -> None:
         self.assertEqual(WARMUP_SECONDS, 60)
         self.assertEqual(RPC_BATCH_SIZE, 100)

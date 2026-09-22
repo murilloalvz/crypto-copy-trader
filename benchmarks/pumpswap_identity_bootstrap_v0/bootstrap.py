@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import time
 from typing import Any, Iterable, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 import uuid
 
@@ -22,6 +22,7 @@ from benchmarks.helius_standard_wss_shadow_v0.reduce import reduce_shadow
 from benchmarks.market_first_live_smoke_v0.run import _run_carbon_decoder
 from benchmarks.pumpswap_identity_bootstrap_v0 import BOOTSTRAP_VERSION
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
+from src.config import settings
 
 
 PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
@@ -36,6 +37,8 @@ ACCOUNT_DECODER_MANIFEST = (
 )
 PASS_CLASSIFICATION = "PASS_PUMPSWAP_IDENTITY_BOOTSTRAP_V0"
 FAIL_CLASSIFICATION = "FAIL_PUMPSWAP_IDENTITY_BOOTSTRAP_V0"
+CONFIGURED_RPC_SOURCE_PROVIDER = "configured_solana_standard_wss"
+CONFIGURED_RPC_TRACE_VERSION = "solana_standard_wss_shadow_v0"
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -68,6 +71,17 @@ def helius_http_url(api_key: str) -> str:
     if not key:
         raise ValueError("HELIUS_API_KEY cannot be blank")
     return "https://mainnet.helius-rpc.com/?api-key=" + quote(key, safe="")
+
+
+def configured_rpc_http_url(rpc_url: str) -> str:
+    raw = rpc_url.strip()
+    if not raw:
+        raise ValueError("SOLANA_RPC_URL cannot be blank")
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        raise ValueError("SOLANA_RPC_URL must use http(s) or ws(s)")
+    scheme = {"http": "http", "https": "https", "ws": "http", "wss": "https"}[parsed.scheme]
+    return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _unique_pools_from_carbon(path: Path) -> tuple[str, ...]:
@@ -154,8 +168,8 @@ def _account_inputs_from_rpc_result(
 
 def _fetch_account_batch(
     *,
-    api_key: str,
     pools: Sequence[str],
+    rpc_url: str,
     timeout_seconds: float = 30.0,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     body = json.dumps(
@@ -168,7 +182,7 @@ def _fetch_account_batch(
         separators=(",", ":"),
     ).encode("utf-8")
     request = Request(
-        helius_http_url(api_key),
+        configured_rpc_http_url(rpc_url),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -190,8 +204,8 @@ def _fetch_account_batch(
 
 def fetch_pool_account_inputs(
     *,
-    api_key: str,
     pools: Sequence[str],
+    rpc_url: str,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     unique = tuple(dict.fromkeys(str(pool).strip() for pool in pools if str(pool).strip()))
     rows: list[dict[str, Any]] = []
@@ -203,7 +217,7 @@ def fetch_pool_account_inputs(
         "rpc_batches": 0,
     }
     for batch in _chunks(unique):
-        batch_rows, counters = _fetch_account_batch(api_key=api_key, pools=batch)
+        batch_rows, counters = _fetch_account_batch(rpc_url=rpc_url, pools=batch)
         rows.extend(batch_rows)
         totals["rpc_batches"] += 1
         for key in ("requested", "account_missing", "account_present", "invalid_account_shape"):
@@ -302,7 +316,13 @@ def classify_bootstrap(report: dict[str, Any]) -> str:
     return PASS_CLASSIFICATION if gates and all(bool(value) for value in gates.values()) else FAIL_CLASSIFICATION
 
 
-async def run_bootstrap(*, api_key: str, cargo: str = "cargo", artifacts_root: Path = DEFAULT_ARTIFACTS_ROOT) -> dict[str, Any]:
+async def run_bootstrap(
+    *,
+    rpc_url: str,
+    cargo: str = "cargo",
+    artifacts_root: Path = DEFAULT_ARTIFACTS_ROOT,
+) -> dict[str, Any]:
+    configured_rpc_http_url(rpc_url)
     started_at = int(time.time())
     run_id = f"{BOOTSTRAP_VERSION}-{started_at}-{uuid.uuid4().hex[:12]}"
     run_dir = artifacts_root / run_id
@@ -321,7 +341,9 @@ async def run_bootstrap(*, api_key: str, cargo: str = "cargo", artifacts_root: P
         "bootstrap_version": BOOTSTRAP_VERSION,
         "run_id": run_id,
         "warmup_seconds": WARMUP_SECONDS,
-        "source_provider": SOURCE_PROVIDER,
+        "source_provider": CONFIGURED_RPC_SOURCE_PROVIDER,
+        "source_endpoint_host": urlsplit(rpc_url).hostname or "unknown",
+        "trace_version": CONFIGURED_RPC_TRACE_VERSION,
         "coverage_classification": COVERAGE_CLASSIFICATION,
         "chain_complete_coverage_claimed": False,
         "artifacts": {
@@ -338,19 +360,23 @@ async def run_bootstrap(*, api_key: str, cargo: str = "cargo", artifacts_root: P
     }
     try:
         acquisition = await collect_shadow(
-            api_key=api_key,
+            api_key="",
             out_path=trace_path,
             duration_seconds=float(WARMUP_SECONDS),
             max_log_notifications=0,
             max_reconnects=5,
             ack_timeout_seconds=20.0,
             reconnect_delay_seconds=2.0,
+            rpc_url=rpc_url,
+            trace_version=CONFIGURED_RPC_TRACE_VERSION,
+            source_provider=CONFIGURED_RPC_SOURCE_PROVIDER,
         )
         report["acquisition"] = acquisition
         reducer = reduce_shadow(
             trace_path=trace_path,
             carbon_input_path=carbon_input_path,
             manifest_path=manifest_path,
+            trace_version=CONFIGURED_RPC_TRACE_VERSION,
         )
         report["reducer"] = reducer
         decoder = await asyncio.to_thread(
@@ -364,8 +390,8 @@ async def run_bootstrap(*, api_key: str, cargo: str = "cargo", artifacts_root: P
         pools = _unique_pools_from_carbon(carbon_output_path)
         account_inputs, rpc = await asyncio.to_thread(
             fetch_pool_account_inputs,
-            api_key=api_key,
             pools=pools,
+            rpc_url=rpc_url,
         )
         _write_jsonl(account_input_path, account_inputs)
         report["rpc"] = {**rpc, "unique_pools_observed": len(pools)}
@@ -416,7 +442,7 @@ async def run_bootstrap(*, api_key: str, cargo: str = "cargo", artifacts_root: P
     except Exception as exc:
         report["fatal_error"] = {
             "type": type(exc).__name__,
-            "message": redact_secret(str(exc), api_key),
+            "message": redact_secret(str(exc), rpc_url),
         }
         report.setdefault("gates", {})["no_fatal_stage_error"] = False
 
@@ -433,6 +459,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Causal PumpSwap pool-identity bootstrap before Market-First discovery."
     )
+    parser.add_argument(
+        "--rpc-url",
+        default=os.environ.get("SOLANA_RPC_URL", settings.rpc_url),
+        help="Configured Solana HTTP(S)/WS(S) RPC URL used for WSS and getMultipleAccounts.",
+    )
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--artifacts-root", type=Path, default=DEFAULT_ARTIFACTS_ROOT)
     return parser
@@ -440,13 +471,12 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    api_key = os.environ.get("HELIUS_API_KEY", "")
-    if not api_key.strip():
-        print("HELIUS_API_KEY is required in the environment", flush=True)
+    if not str(args.rpc_url).strip():
+        print("SOLANA_RPC_URL or --rpc-url is required", flush=True)
         return 2
     report = asyncio.run(
         run_bootstrap(
-            api_key=api_key,
+            rpc_url=str(args.rpc_url),
             cargo=args.cargo,
             artifacts_root=args.artifacts_root,
         )

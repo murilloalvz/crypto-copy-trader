@@ -102,7 +102,7 @@ fn decode_row(input: &InputAccount) -> Value {
         "observed_slot": input.observed_slot,
         "observed_wall_ns": input.observed_wall_ns,
         "evidence_key": input.evidence_key,
-        "source": "helius_getMultipleAccounts_carbon_pool_v0",
+        "source": "configured_rpc_getMultipleAccounts_carbon_pool_v0",
     })
 }
 

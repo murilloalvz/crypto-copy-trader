@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from benchmarks.helius_standard_wss_shadow_v0 import TRACE_VERSION
+from src.pumpswap_stream import rpc_http_to_ws_url
 
 PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
@@ -71,11 +72,27 @@ def subscription_payloads() -> list[dict[str, Any]]:
 
 
 def trace_header(*, duration_seconds: float, max_log_notifications: int, started_wall_ns: int) -> dict[str, Any]:
+    return _trace_header(
+        duration_seconds=duration_seconds,
+        max_log_notifications=max_log_notifications,
+        started_wall_ns=started_wall_ns,
+    )
+
+
+def _trace_header(
+    *,
+    duration_seconds: float,
+    max_log_notifications: int,
+    started_wall_ns: int,
+    trace_version: str = TRACE_VERSION,
+    source_provider: str = SOURCE_PROVIDER,
+    endpoint_host: str = "mainnet.helius-rpc.com",
+) -> dict[str, Any]:
     return {
         "type": "trace_header",
-        "version": TRACE_VERSION,
-        "source_provider": SOURCE_PROVIDER,
-        "endpoint_host": "mainnet.helius-rpc.com",
+        "version": trace_version,
+        "source_provider": source_provider,
+        "endpoint_host": endpoint_host,
         "commitment": "processed",
         "programs": {"pump": PUMP_PROGRAM_ID, "pumpswap": PUMPSWAP_PROGRAM_ID},
         "started_wall_ns": started_wall_ns,
@@ -162,6 +179,7 @@ def _record_notification(
     label: str | None,
     normalized: dict[str, Any],
     received_wall_ns: int,
+    trace_version: str = TRACE_VERSION,
 ) -> None:
     if label == "pump_logs":
         counters.pump_log_notifications += 1
@@ -179,7 +197,7 @@ def _record_notification(
         handle,
         {
             "type": row_type,
-            "version": TRACE_VERSION,
+            "version": trace_version,
             "session_key": session_key,
             "received_wall_ns": received_wall_ns,
             **normalized,
@@ -197,6 +215,8 @@ async def _run_session(
     global_deadline: float,
     max_log_notifications: int,
     ack_timeout_seconds: float,
+    trace_version: str = TRACE_VERSION,
+    source_provider: str = SOURCE_PROVIDER,
 ) -> str:
     try:
         from websockets.asyncio.client import connect
@@ -211,10 +231,10 @@ async def _run_session(
         handle,
         {
             "type": "transport_session_attempt_start",
-            "version": TRACE_VERSION,
+            "version": trace_version,
             "session_key": session_key,
             "attempt_started_wall_ns": time.time_ns(),
-            "source_provider": SOURCE_PROVIDER,
+            "source_provider": source_provider,
             "coverage_classification": COVERAGE_CLASSIFICATION,
             "chain_complete_coverage_claimed": False,
         },
@@ -238,9 +258,10 @@ async def _run_session(
                 handle,
                 {
                     "type": "transport_session_connected",
-                    "version": TRACE_VERSION,
+                    "version": trace_version,
                     "session_key": session_key,
                     "connected_wall_ns": time.time_ns(),
+                    "source_provider": source_provider,
                     "coverage_classification": COVERAGE_CLASSIFICATION,
                     "chain_complete_coverage_claimed": False,
                 },
@@ -282,8 +303,9 @@ async def _run_session(
                         handle,
                         {
                             "type": "subscription_ack",
-                            "version": TRACE_VERSION,
+                            "version": trace_version,
                             "session_key": session_key,
+                            "source_provider": source_provider,
                             "request_id": request_id,
                             "subscription_id": subscription_id,
                             "subscription_label": label,
@@ -301,6 +323,7 @@ async def _run_session(
                         label=label,
                         normalized=normalized,
                         received_wall_ns=received_wall_ns,
+                        trace_version=trace_version,
                     )
 
             counters.sessions_activated += 1
@@ -308,9 +331,10 @@ async def _run_session(
                 handle,
                 {
                     "type": "transport_session_active",
-                    "version": TRACE_VERSION,
+                    "version": trace_version,
                     "session_key": session_key,
                     "activated_wall_ns": time.time_ns(),
+                    "source_provider": source_provider,
                     "subscriptions": {str(key): value for key, value in sorted(subscription_labels.items())},
                     "coverage_classification": COVERAGE_CLASSIFICATION,
                     "chain_complete_coverage_claimed": False,
@@ -343,9 +367,10 @@ async def _run_session(
                         handle,
                         {
                             "type": "rpc_error",
-                            "version": TRACE_VERSION,
+                            "version": trace_version,
                             "session_key": session_key,
                             "received_wall_ns": received_wall_ns,
+                            "source_provider": source_provider,
                             "error": message.get("error"),
                         },
                         counters,
@@ -362,6 +387,7 @@ async def _run_session(
                     label=label,
                     normalized=normalized,
                     received_wall_ns=received_wall_ns,
+                    trace_version=trace_version,
                 )
             return "duration_elapsed"
     finally:
@@ -369,10 +395,11 @@ async def _run_session(
             handle,
             {
                 "type": "transport_session_end",
-                "version": TRACE_VERSION,
+                "version": trace_version,
                 "session_key": session_key,
                 "ended_wall_ns": time.time_ns(),
                 "connected": connected,
+                "source_provider": source_provider,
                 "coverage_classification": COVERAGE_CLASSIFICATION,
                 "chain_complete_coverage_claimed": False,
             },
@@ -389,6 +416,9 @@ async def collect_shadow(
     max_reconnects: int,
     ack_timeout_seconds: float,
     reconnect_delay_seconds: float,
+    rpc_url: str | None = None,
+    trace_version: str = TRACE_VERSION,
+    source_provider: str = SOURCE_PROVIDER,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
@@ -399,7 +429,13 @@ async def collect_shadow(
     if ack_timeout_seconds <= 0 or reconnect_delay_seconds < 0:
         raise ValueError("invalid timeout/reconnect delay")
 
-    websocket_url = helius_wss_url(api_key)
+    redaction_secret = api_key.strip() or (rpc_url or "").strip()
+    if rpc_url is None or not rpc_url.strip():
+        websocket_url = helius_wss_url(api_key)
+        endpoint_host = "mainnet.helius-rpc.com"
+    else:
+        websocket_url = rpc_http_to_ws_url(rpc_url)
+        endpoint_host = urlsplit(websocket_url).hostname or "unknown"
     counters = Counters()
     started_wall_ns = time.time_ns()
     started_monotonic = time.monotonic()
@@ -410,10 +446,13 @@ async def collect_shadow(
     with out_path.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
         _write_jsonl(
             handle,
-            trace_header(
+            _trace_header(
                 duration_seconds=duration_seconds,
                 max_log_notifications=max_log_notifications,
                 started_wall_ns=started_wall_ns,
+                trace_version=trace_version,
+                source_provider=source_provider,
+                endpoint_host=endpoint_host,
             ),
             counters,
         )
@@ -429,6 +468,8 @@ async def collect_shadow(
                     global_deadline=global_deadline,
                     max_log_notifications=max_log_notifications,
                     ack_timeout_seconds=ack_timeout_seconds,
+                    trace_version=trace_version,
+                    source_provider=source_provider,
                 )
                 if stop_reason in {"duration_elapsed", "max_log_notifications"}:
                     break
@@ -438,11 +479,11 @@ async def collect_shadow(
                     handle,
                     {
                         "type": "transport_error",
-                        "version": TRACE_VERSION,
+                        "version": trace_version,
                         "session_key": f"session-{session_number:04d}",
                         "at_wall_ns": time.time_ns(),
                         "error_type": type(exc).__name__,
-                        "error": redact_secret(str(exc), api_key),
+                        "error": redact_secret(str(exc), redaction_secret),
                         "coverage_classification": COVERAGE_CLASSIFICATION,
                         "chain_complete_coverage_claimed": False,
                     },
@@ -459,8 +500,8 @@ async def collect_shadow(
         elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
         footer = {
             "type": "trace_footer",
-            "version": TRACE_VERSION,
-            "source_provider": SOURCE_PROVIDER,
+            "version": trace_version,
+            "source_provider": source_provider,
             "coverage_classification": COVERAGE_CLASSIFICATION,
             "chain_complete_coverage_claimed": False,
             "stop_reason": stop_reason,
