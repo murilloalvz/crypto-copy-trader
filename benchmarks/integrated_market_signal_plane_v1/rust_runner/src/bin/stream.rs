@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, BufWriter, Write};
 
 mod frozen_kernel {
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     include!("../main.rs");
 
