@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from src.market_observation_store import (
     record_market_lifecycle,
@@ -41,6 +41,7 @@ def persist_signal_plane_research_record(
     acquisition_run_key: str,
     record: SignalPlaneResearchRecord,
     trigger_snapshot: dict | None,
+    admit_episode_fn: Callable[..., bool] | None = None,
 ) -> SignalPlaneResearchPersistResult:
     """Persist one canonical Signal Plane record before durable episode admission.
 
@@ -57,6 +58,7 @@ def persist_signal_plane_research_record(
             event_key=record.event_key,
             source_provider=record.source_provider,
             observation=record.trade,
+            admit_episode_fn=admit_episode_fn,
         )
         episode = admit_signal_plane_trigger_snapshot(
             acquisition_run_key=acquisition_run_key,
