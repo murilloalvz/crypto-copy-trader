@@ -43,9 +43,9 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v0"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V0"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V0"
+VERSION = "rust_signal_plane_live_shadow_v1_identity_plane"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V1_IDENTITY_PLANE"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V1_IDENTITY_PLANE"
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
 
@@ -580,6 +580,12 @@ async def run_live_shadow_v0(
     carbon_ready = carbon.start()
     rust_ready = rust.start()
 
+    identity_plane = AsyncPumpSwapIdentityPlane(
+        identities_by_pool=identities_by_pool,
+        rpc_url=settings.rpc_url,
+    )
+    identity_plane.start()
+
     python_state = IndexedWindowRadarState()
     seen_event_keys: set[str] = set()
     subscription_labels: dict[int, str] = {}
@@ -855,6 +861,10 @@ async def run_live_shadow_v0(
                                     counters[
                                         "pumpswap_missing_without_causal_live_create_pool"
                                     ] += 1
+                                if identity_plane.enqueue(pool):
+                                    counters[
+                                        "pumpswap_identity_async_lookup_enqueued"
+                                    ] += 1
                         market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
                             row,
                             matched,
@@ -972,6 +982,12 @@ async def run_live_shadow_v0(
     except Exception as exc:
         errors.append(f"fatal:{type(exc).__name__}:{exc}")
     finally:
+        try:
+            await identity_plane.stop()
+        except Exception as exc:
+            errors.append(
+                f"identity_plane_stop:{type(exc).__name__}:{exc}"
+            )
         carbon.close()
         rust.close()
 
@@ -1027,6 +1043,7 @@ async def run_live_shadow_v0(
         "counters": dict(sorted(counters.items())),
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
+        "identity_plane": identity_plane.summary(),
         "pumpswap_context_diagnostics": {
             "unique_pools_seen": len(pumpswap_pools_seen),
             "unique_pools_adapted": len(pumpswap_pools_adapted),
@@ -1046,8 +1063,9 @@ async def run_live_shadow_v0(
                 ]
             ),
             "policy": (
-                "diagnostic only; no threshold or signal-path change. "
-                "Live CreatePool identity is causal only from its local receive time forward."
+                "Live CreatePool identity is causal only from its local receive time forward. "
+                "Async RPC identity never backfills the triggering trade and is usable only "
+                "for later events after the RPC response wall time."
             ),
         },
         "trigger_parity": {
@@ -1083,8 +1101,9 @@ async def run_live_shadow_v0(
         "chain_complete_coverage_claimed": False,
         "interpretation": (
             "PASS means the Rust Signal Plane matched the Python indexed Radar on the "
-            "same live canonical observations while remaining persistence/RPC/economic free. "
-            "It does not establish economic edge."
+            "same live canonical observations. Unknown PumpSwap identity resolution ran "
+            "asynchronously outside the hot path with no causal backfill. It does not "
+            "establish economic edge."
             if classification == PASS_CLASSIFICATION
             else "Shadow is not eligible for promotion; inspect failed systems/parity gates."
         ),
