@@ -43,9 +43,10 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v1_identity_plane"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V1_IDENTITY_PLANE"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V1_IDENTITY_PLANE"
+VERSION = "rust_signal_plane_live_shadow_v2_transport_isolated"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V2_TRANSPORT_ISOLATED"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V2_TRANSPORT_ISOLATED"
+INGRESS_QUEUE_SIZE = 8192
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
 
@@ -552,6 +553,138 @@ def _build_signal_record(
     }
 
 
+async def _surface_reader_v2(
+    *,
+    endpoint: str,
+    label: str,
+    request: dict[str, Any],
+    deadline: float,
+    ingress_queue: asyncio.Queue[dict[str, Any]],
+    counters: Counter[str],
+    ready_event: asyncio.Event,
+    transport_errors: list[str],
+) -> None:
+    """Own one WebSocket session and never run Carbon/Radar work in the reader."""
+    from websockets.asyncio.client import connect
+
+    subscription_id: int | None = None
+    try:
+        async with connect(
+            endpoint,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=5,
+            max_size=16 * 1024 * 1024,
+            max_queue=1024,
+        ) as ws:
+            await ws.send(json.dumps(request, separators=(",", ":")))
+
+            while subscription_id is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"{label} subscription acknowledgement timeout")
+                raw = await asyncio.wait_for(
+                    ws.recv(),
+                    timeout=min(20.0, remaining),
+                )
+                message = json.loads(raw)
+                if message.get("id") != request.get("id"):
+                    continue
+                if message.get("error") is not None:
+                    raise RuntimeError(
+                        f"{label} subscription RPC error: {message['error']}"
+                    )
+                candidate = message.get("result")
+                if not isinstance(candidate, int) or isinstance(candidate, bool):
+                    raise RuntimeError(
+                        f"{label} subscription acknowledgement missing integer id"
+                    )
+                subscription_id = candidate
+                counters[f"{label}_ack"] += 1
+                counters[f"{label}_sessions_active"] += 1
+                ready_event.set()
+
+            while time.monotonic() < deadline:
+                remaining = min(1.0, max(0.0, deadline - time.monotonic()))
+                if remaining <= 0:
+                    break
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue
+                received_wall_ns = time.time_ns()
+                message = json.loads(raw)
+                if not isinstance(message, dict):
+                    counters[f"{label}_malformed_messages"] += 1
+                    continue
+                if message.get("method") != "logsNotification":
+                    continue
+                params = message.get("params")
+                if not isinstance(params, dict):
+                    counters[f"{label}_malformed_messages"] += 1
+                    continue
+                if params.get("subscription") != subscription_id:
+                    counters[f"{label}_foreign_subscription_messages"] += 1
+                    continue
+                result = params.get("result")
+                if not isinstance(result, dict):
+                    counters[f"{label}_malformed_messages"] += 1
+                    continue
+                context = result.get("context")
+                value = result.get("value")
+                if not isinstance(context, dict) or not isinstance(value, dict):
+                    counters[f"{label}_malformed_messages"] += 1
+                    continue
+                slot = context.get("slot")
+                signature = value.get("signature")
+                logs = value.get("logs")
+                if (
+                    not isinstance(slot, int)
+                    or isinstance(slot, bool)
+                    or not isinstance(signature, str)
+                    or not signature
+                    or not isinstance(logs, list)
+                ):
+                    counters[f"{label}_malformed_messages"] += 1
+                    continue
+
+                normalized = {
+                    "subscription_label": label,
+                    "slot": slot,
+                    "signature": signature,
+                    "err": value.get("err"),
+                    "logs": logs,
+                }
+                counters[f"{label}_notifications"] += 1
+                item = {
+                    "label": label,
+                    "received_wall_ns": received_wall_ns,
+                    "normalized": normalized,
+                }
+                try:
+                    ingress_queue.put_nowait(item)
+                except asyncio.QueueFull:
+                    counters[f"{label}_ingress_drops"] += 1
+                    continue
+                counters[f"{label}_ingress_enqueued"] += 1
+                counters["ingress_queue_high_water"] = max(
+                    counters["ingress_queue_high_water"],
+                    ingress_queue.qsize(),
+                )
+
+            counters[f"{label}_reader_duration_elapsed"] += 1
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        transport_errors.append(
+            f"{label}:{type(exc).__name__}:{exc}"
+        )
+    finally:
+        if not ready_event.is_set():
+            ready_event.set()
+        counters[f"{label}_reader_stopped"] += 1
+
+
 async def run_live_shadow_v0(
     *,
     bootstrap_report: Path,
@@ -620,377 +753,362 @@ async def run_live_shadow_v0(
     live_create_pool_seen_at: dict[str, int] = {}
     pumpswap_identity_sources: Counter[str] = Counter()
 
+    ingress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+        maxsize=INGRESS_QUEUE_SIZE
+    )
+    transport_errors: list[str] = []
+    pump_ready = asyncio.Event()
+    pumpswap_ready = asyncio.Event()
+    reader_tasks: list[asyncio.Task[None]] = []
+
     try:
-        from websockets.asyncio.client import connect
-
         deadline = time.monotonic() + duration_seconds
-        async with connect(
-            endpoint,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-            max_size=16 * 1024 * 1024,
-            max_queue=256,
-        ) as ws:
-            requests = [
-                build_pump_subscribe(request_id=1, commitment="confirmed"),
-                build_pumpswap_subscribe(request_id=2, commitment="confirmed"),
-            ]
-            for request in requests:
-                await ws.send(json.dumps(request, separators=(",", ":")))
+        reader_tasks = [
+            asyncio.create_task(
+                _surface_reader_v2(
+                    endpoint=endpoint,
+                    label="pump_logs",
+                    request=build_pump_subscribe(
+                        request_id=1,
+                        commitment="confirmed",
+                    ),
+                    deadline=deadline,
+                    ingress_queue=ingress_queue,
+                    counters=counters,
+                    ready_event=pump_ready,
+                    transport_errors=transport_errors,
+                ),
+                name="pump-live-reader-v2",
+            ),
+            asyncio.create_task(
+                _surface_reader_v2(
+                    endpoint=endpoint,
+                    label="pumpswap_logs",
+                    request=build_pumpswap_subscribe(
+                        request_id=2,
+                        commitment="confirmed",
+                    ),
+                    deadline=deadline,
+                    ingress_queue=ingress_queue,
+                    counters=counters,
+                    ready_event=pumpswap_ready,
+                    transport_errors=transport_errors,
+                ),
+                name="pumpswap-live-reader-v2",
+            ),
+        ]
 
-            while len(subscription_labels) < 2:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("subscription acknowledgement timeout")
-                raw = await asyncio.wait_for(ws.recv(), timeout=min(20.0, remaining))
-                message = json.loads(raw)
-                request_id = message.get("id")
-                if request_id in request_labels:
-                    if message.get("error") is not None:
-                        raise RuntimeError(
-                            f"subscription RPC error for {request_labels[request_id]}: "
-                            f"{message['error']}"
-                        )
-                    subscription_id = message.get("result")
-                    if not isinstance(subscription_id, int) or isinstance(subscription_id, bool):
-                        raise RuntimeError("subscription acknowledgement missing integer id")
-                    subscription_labels[subscription_id] = request_labels[request_id]
-                    counters[f"{request_labels[request_id]}_ack"] += 1
+        await asyncio.wait_for(
+            asyncio.gather(
+                pump_ready.wait(),
+                pumpswap_ready.wait(),
+            ),
+            timeout=min(25.0, max(1.0, deadline - time.monotonic())),
+        )
+        if (
+            counters["pump_logs_ack"] != 1
+            or counters["pumpswap_logs_ack"] != 1
+        ):
+            raise RuntimeError(
+                "transport startup incomplete: "
+                + " | ".join(transport_errors or ["missing subscription ACK"])
+            )
+        counters["sessions_active"] = 2
 
-            counters["sessions_active"] = 1
-
-            while time.monotonic() < deadline:
-                if max_log_notifications > 0 and log_notifications >= max_log_notifications:
-                    break
-                remaining = min(5.0, max(0.0, deadline - time.monotonic()))
-                if remaining <= 0:
-                    break
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    continue
-                received_wall_ns = time.time_ns()
-                message = json.loads(raw)
-                if not isinstance(message, dict):
-                    counters["malformed_messages"] += 1
-                    continue
-                if message.get("method") != "logsNotification":
-                    continue
-                params = message.get("params")
-                if not isinstance(params, dict):
-                    counters["malformed_messages"] += 1
-                    continue
-                subscription = params.get("subscription")
-                label = (
-                    subscription_labels.get(subscription)
-                    if isinstance(subscription, int)
-                    else None
+        while time.monotonic() < deadline:
+            if max_log_notifications > 0 and log_notifications >= max_log_notifications:
+                break
+            if all(task.done() for task in reader_tasks) and ingress_queue.empty():
+                break
+            remaining = min(1.0, max(0.0, deadline - time.monotonic()))
+            if remaining <= 0:
+                break
+            try:
+                ingress = await asyncio.wait_for(
+                    ingress_queue.get(),
+                    timeout=remaining,
                 )
-                if label not in {"pump_logs", "pumpswap_logs"}:
-                    continue
-                result = params.get("result")
-                if not isinstance(result, dict):
-                    counters["malformed_messages"] += 1
-                    continue
-                context = result.get("context")
-                value = result.get("value")
-                if not isinstance(context, dict) or not isinstance(value, dict):
-                    counters["malformed_messages"] += 1
-                    continue
-                slot = context.get("slot")
-                signature = value.get("signature")
-                logs = value.get("logs")
-                if (
-                    not isinstance(slot, int)
-                    or isinstance(slot, bool)
-                    or not isinstance(signature, str)
-                    or not signature
-                    or not isinstance(logs, list)
-                ):
-                    counters["malformed_messages"] += 1
-                    continue
+            except asyncio.TimeoutError:
+                continue
 
-                normalized = {
-                    "subscription_label": label,
-                    "slot": slot,
-                    "signature": signature,
-                    "err": value.get("err"),
-                    "logs": logs,
-                }
-                counters[f"{label}_notifications"] += 1
-                log_notifications += 1
+            normalized = dict(ingress["normalized"])
+            label = str(ingress["label"])
+            received_wall_ns = int(ingress["received_wall_ns"])
+            items, manifests, stack_errors = _target_inputs_from_notification(
+                normalized=normalized,
+                received_wall_ns=received_wall_ns,
+                seen_event_keys=seen_event_keys,
+            )
+            counters["stack_errors"] += stack_errors
+            counters["target_events"] += len(items)
+            if not items:
+                continue
 
-                items, manifests, stack_errors = _target_inputs_from_notification(
-                    normalized=normalized,
-                    received_wall_ns=received_wall_ns,
-                    seen_event_keys=seen_event_keys,
+            batch_id += 1
+            decoder_row = await asyncio.to_thread(
+                carbon.request,
+                {
+                    "type": "carbon_decoder_batch",
+                    "batch_id": batch_id,
+                    "items": items,
+                },
+            )
+            if (
+                decoder_row.get("type") != "carbon_canonical_batch"
+                or decoder_row.get("batch_id") != batch_id
+            ):
+                raise RuntimeError(
+                    f"unexpected Carbon stream response: {decoder_row!r}"
                 )
-                counters["stack_errors"] += stack_errors
-                counters["target_events"] += len(items)
-                if not items:
-                    continue
+            canonical_ready_wall_ns = time.time_ns()
+            canonical_items = decoder_row.get("items")
+            if not isinstance(canonical_items, list):
+                raise RuntimeError("Carbon canonical batch missing items")
 
-                batch_id += 1
-                decoder_row = await asyncio.to_thread(
-                    carbon.request,
-                    {
-                        "type": "carbon_decoder_batch",
-                        "batch_id": batch_id,
-                        "items": items,
-                    },
-                )
-                if (
-                    decoder_row.get("type") != "carbon_canonical_batch"
-                    or decoder_row.get("batch_id") != batch_id
-                ):
-                    raise RuntimeError(
-                        f"unexpected Carbon stream response: {decoder_row!r}"
+            for row in canonical_items:
+                if not isinstance(row, dict):
+                    counters["decode_failures"] += 1
+                    continue
+                event_key = _text(row, "event_key")
+                manifest = manifests.get(event_key or "")
+                if manifest is None:
+                    errors.append(f"canonical_missing_manifest:{event_key}")
+                    continue
+                source_wall_ns = int(manifest["first_received_wall_ns"])
+                observed_at = source_wall_ns // 1_000_000_000
+                if row.get("status") != "decoded":
+                    counters["decode_failures"] += 1
+                    continue
+                counters["decoded_events"] += 1
+                event_type = _text(row, "event_type")
+
+                observation: Any | None = None
+                kind: str | None = None
+
+                if event_type == "pump_create":
+                    mint = _text(row, "mint")
+                    chain_time = _nonnegative_int(row, "timestamp")
+                    if mint is None or chain_time is None:
+                        errors.append(f"invalid_pump_create:{event_key}")
+                        continue
+                    observation = MarketLifecycleObservation(
+                        token_mint=mint,
+                        market_started_at=chain_time,
+                        observed_at=observed_at,
+                        venue="pump",
                     )
-                canonical_ready_wall_ns = time.time_ns()
-                canonical_items = decoder_row.get("items")
-                if not isinstance(canonical_items, list):
-                    raise RuntimeError("Carbon canonical batch missing items")
+                    kind = "lifecycle"
+                    counters["pump_lifecycle"] += 1
 
-                for row in canonical_items:
-                    if not isinstance(row, dict):
-                        counters["decode_failures"] += 1
+                elif event_type == "pumpswap_create_pool":
+                    pool = _text(row, "pool")
+                    base_mint = _text(row, "base_mint")
+                    quote_mint = _text(row, "quote_mint")
+                    chain_time = _nonnegative_int(row, "timestamp")
+                    row_slot = _nonnegative_int(row, "slot")
+                    if None in (pool, base_mint, quote_mint, chain_time, row_slot):
+                        errors.append(f"invalid_pumpswap_create_pool:{event_key}")
                         continue
-                    event_key = _text(row, "event_key")
-                    manifest = manifests.get(event_key or "")
-                    if manifest is None:
-                        errors.append(f"canonical_missing_manifest:{event_key}")
+                    identity = PumpSwapPoolIdentityObservation(
+                        pool=str(pool),
+                        base_mint=str(base_mint),
+                        quote_mint=str(quote_mint),
+                        observed_wall_ns=source_wall_ns,
+                        observed_slot=int(row_slot),
+                        evidence_key=str(event_key),
+                        source="carbon_pumpswap_create_pool_event_v0",
+                    )
+                    _add_identity(identities_by_pool, identity)
+                    live_create_pool_seen_at[str(pool)] = source_wall_ns
+                    observation = MarketLifecycleObservation(
+                        token_mint=str(base_mint),
+                        market_started_at=int(chain_time),
+                        observed_at=observed_at,
+                        venue="pumpswap",
+                    )
+                    kind = "lifecycle"
+                    counters["pumpswap_lifecycle"] += 1
+
+                elif event_type == "pump_trade":
+                    matched = adapt_carbon_pump_trade_v0(
+                        row,
+                        observed_at=observed_at,
+                    )
+                    matched_statuses[matched.status] += 1
+                    market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
+                        row,
+                        matched,
+                    )
+                    market_trade_statuses[market_trade.status] += 1
+                    if market_trade.status != ADAPTED or market_trade.observation is None:
                         continue
-                    source_wall_ns = int(manifest["first_received_wall_ns"])
-                    observed_at = source_wall_ns // 1_000_000_000
-                    if row.get("status") != "decoded":
-                        counters["decode_failures"] += 1
-                        continue
-                    counters["decoded_events"] += 1
-                    event_type = _text(row, "event_type")
+                    observation = market_trade.observation
+                    kind = "trade"
+                    counters["pump_adapted_trades"] += 1
 
-                    observation: Any | None = None
-                    kind: str | None = None
-
-                    if event_type == "pump_create":
-                        mint = _text(row, "mint")
-                        chain_time = _nonnegative_int(row, "timestamp")
-                        if mint is None or chain_time is None:
-                            errors.append(f"invalid_pump_create:{event_key}")
-                            continue
-                        observation = MarketLifecycleObservation(
-                            token_mint=mint,
-                            market_started_at=chain_time,
-                            observed_at=observed_at,
-                            venue="pump",
+                elif event_type in {"pumpswap_buy", "pumpswap_sell"}:
+                    pool = _text(row, "pool")
+                    if pool is not None:
+                        pumpswap_pools_seen.add(pool)
+                    causal_identities = (
+                        identities_available_before_v0(
+                            identities_by_pool.get(pool or "", ()),
+                            pool=pool or "",
+                            event_wall_ns=source_wall_ns,
                         )
-                        kind = "lifecycle"
-                        counters["pump_lifecycle"] += 1
-
-                    elif event_type == "pumpswap_create_pool":
-                        pool = _text(row, "pool")
-                        base_mint = _text(row, "base_mint")
-                        quote_mint = _text(row, "quote_mint")
-                        chain_time = _nonnegative_int(row, "timestamp")
-                        row_slot = _nonnegative_int(row, "slot")
-                        if None in (pool, base_mint, quote_mint, chain_time, row_slot):
-                            errors.append(f"invalid_pumpswap_create_pool:{event_key}")
-                            continue
-                        identity = PumpSwapPoolIdentityObservation(
-                            pool=str(pool),
-                            base_mint=str(base_mint),
-                            quote_mint=str(quote_mint),
-                            observed_wall_ns=source_wall_ns,
-                            observed_slot=int(row_slot),
-                            evidence_key=str(event_key),
-                            source="carbon_pumpswap_create_pool_event_v0",
-                        )
-                        _add_identity(identities_by_pool, identity)
-                        live_create_pool_seen_at[str(pool)] = source_wall_ns
-                        observation = MarketLifecycleObservation(
-                            token_mint=str(base_mint),
-                            market_started_at=int(chain_time),
-                            observed_at=observed_at,
-                            venue="pumpswap",
-                        )
-                        kind = "lifecycle"
-                        counters["pumpswap_lifecycle"] += 1
-
-                    elif event_type == "pump_trade":
-                        matched = adapt_carbon_pump_trade_v0(
-                            row,
-                            observed_at=observed_at,
-                        )
-                        matched_statuses[matched.status] += 1
-                        market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
-                            row,
-                            matched,
-                        )
-                        market_trade_statuses[market_trade.status] += 1
-                        if market_trade.status != ADAPTED or market_trade.observation is None:
-                            continue
-                        observation = market_trade.observation
-                        kind = "trade"
-                        counters["pump_adapted_trades"] += 1
-
-                    elif event_type in {"pumpswap_buy", "pumpswap_sell"}:
-                        pool = _text(row, "pool")
+                        if pool is not None
+                        else ()
+                    )
+                    matched = adapt_carbon_pumpswap_trade_v0(
+                        row,
+                        observed_at=observed_at,
+                        observed_wall_ns=source_wall_ns,
+                        pool_observations=(),
+                        pool_identity_observations=causal_identities,
+                    )
+                    matched_statuses[matched.status] += 1
+                    if matched.status == MISSING_CONTEXT:
+                        counters["pumpswap_missing_context"] += 1
                         if pool is not None:
-                            pumpswap_pools_seen.add(pool)
-                        causal_identities = (
-                            identities_available_before_v0(
-                                identities_by_pool.get(pool or "", ()),
-                                pool=pool or "",
-                                event_wall_ns=source_wall_ns,
-                            )
-                            if pool is not None
-                            else ()
-                        )
-                        matched = adapt_carbon_pumpswap_trade_v0(
-                            row,
-                            observed_at=observed_at,
-                            observed_wall_ns=source_wall_ns,
-                            pool_observations=(),
-                            pool_identity_observations=causal_identities,
-                        )
-                        matched_statuses[matched.status] += 1
-                        if matched.status == MISSING_CONTEXT:
-                            counters["pumpswap_missing_context"] += 1
-                            if pool is not None:
-                                pumpswap_pools_missing.add(pool)
-                                live_create_at = live_create_pool_seen_at.get(pool)
-                                if (
-                                    live_create_at is not None
-                                    and live_create_at <= source_wall_ns
-                                ):
-                                    counters[
-                                        "pumpswap_missing_after_causal_live_create_pool"
-                                    ] += 1
-                                else:
-                                    counters[
-                                        "pumpswap_missing_without_causal_live_create_pool"
-                                    ] += 1
-                                if identity_plane.enqueue(pool):
-                                    counters[
-                                        "pumpswap_identity_async_lookup_enqueued"
-                                    ] += 1
-                        market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
-                            row,
-                            matched,
-                        )
-                        market_trade_statuses[market_trade.status] += 1
-                        if market_trade.status != ADAPTED or market_trade.observation is None:
-                            continue
-                        observation = market_trade.observation
-                        kind = "trade"
-                        counters["pumpswap_adapted_trades"] += 1
-                        if pool is not None:
-                            pumpswap_pools_adapted.add(pool)
-                        identity_evidence_key = (
-                            matched.provenance_keys[1]
-                            if len(matched.provenance_keys) >= 2
-                            else None
-                        )
-                        identity_source = _identity_source_for_evidence(
-                            causal_identities,
-                            identity_evidence_key,
-                        )
-                        pumpswap_identity_sources[
-                            identity_source or "UNKNOWN"
-                        ] += 1
-                    else:
+                            pumpswap_pools_missing.add(pool)
+                            live_create_at = live_create_pool_seen_at.get(pool)
+                            if (
+                                live_create_at is not None
+                                and live_create_at <= source_wall_ns
+                            ):
+                                counters[
+                                    "pumpswap_missing_after_causal_live_create_pool"
+                                ] += 1
+                            else:
+                                counters[
+                                    "pumpswap_missing_without_causal_live_create_pool"
+                                ] += 1
+                            if identity_plane.enqueue(pool):
+                                counters[
+                                    "pumpswap_identity_async_lookup_enqueued"
+                                ] += 1
+                    market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
+                        row,
+                        matched,
+                    )
+                    market_trade_statuses[market_trade.status] += 1
+                    if market_trade.status != ADAPTED or market_trade.observation is None:
                         continue
+                    observation = market_trade.observation
+                    kind = "trade"
+                    counters["pumpswap_adapted_trades"] += 1
+                    if pool is not None:
+                        pumpswap_pools_adapted.add(pool)
+                    identity_evidence_key = (
+                        matched.provenance_keys[1]
+                        if len(matched.provenance_keys) >= 2
+                        else None
+                    )
+                    identity_source = _identity_source_for_evidence(
+                        causal_identities,
+                        identity_evidence_key,
+                    )
+                    pumpswap_identity_sources[
+                        identity_source or "UNKNOWN"
+                    ] += 1
+                else:
+                    continue
 
-                    assert observation is not None and kind is not None
-                    signal_record = _build_signal_record(
+                assert observation is not None and kind is not None
+                signal_record = _build_signal_record(
+                    sequence=signal_sequence,
+                    kind=kind,
+                    observation=observation,
+                    source_received_wall_ns=source_wall_ns,
+                    canonical_ready_wall_ns=canonical_ready_wall_ns,
+                )
+
+                rust_dispatch_wall_ns = time.time_ns()
+                await asyncio.to_thread(rust.send, signal_record)
+
+                py_started_ns = time.perf_counter_ns()
+                python_trigger = python_state.ingest(
+                    TraceRecord(
                         sequence=signal_sequence,
+                        arrival_offset_ns=max(0, source_wall_ns - start_wall_ns),
                         kind=kind,
-                        observation=observation,
-                        source_received_wall_ns=source_wall_ns,
-                        canonical_ready_wall_ns=canonical_ready_wall_ns,
+                        event_key=str(event_key),
+                        source_provider=f"shadow:{endpoint_host}",
+                        trade=(observation if kind == "trade" else None),
+                        lifecycle=(observation if kind == "lifecycle" else None),
                     )
+                )
+                py_service_elapsed_ns = time.perf_counter_ns() - py_started_ns
+                python_signal_ready_wall_ns = time.time_ns()
 
-                    rust_dispatch_wall_ns = time.time_ns()
-                    await asyncio.to_thread(rust.send, signal_record)
-
-                    py_started_ns = time.perf_counter_ns()
-                    python_trigger = python_state.ingest(
-                        TraceRecord(
-                            sequence=signal_sequence,
-                            arrival_offset_ns=max(0, source_wall_ns - start_wall_ns),
-                            kind=kind,
-                            event_key=str(event_key),
-                            source_provider=f"shadow:{endpoint_host}",
-                            trade=(observation if kind == "trade" else None),
-                            lifecycle=(observation if kind == "lifecycle" else None),
-                        )
-                    )
-                    py_service_elapsed_ns = time.perf_counter_ns() - py_started_ns
-                    python_signal_ready_wall_ns = time.time_ns()
-
-                    rust_row = await asyncio.to_thread(rust.receive)
-                    if rust_row.get("type") == "signal_error":
-                        errors.append(
-                            f"rust_signal_error:{rust_row.get('error')}"
-                        )
-                        signal_sequence += 1
-                        continue
-                    if (
-                        rust_row.get("type") != "signal_result"
-                        or int(rust_row.get("sequence", -1)) != signal_sequence
-                    ):
-                        errors.append(
-                            f"rust_sequence_or_type_mismatch:{signal_sequence}:{rust_row!r}"
-                        )
-                        signal_sequence += 1
-                        continue
-
-                    python_snapshot = _trigger_snapshot(python_trigger)
-                    rust_snapshot = rust_row.get("trigger")
-                    counters["signal_records"] += 1
-                    if kind == "trade":
-                        counters["trade_decision_points"] += 1
-                        if _json_equivalent(python_snapshot, rust_snapshot):
-                            counters["trigger_exact_matches"] += 1
-                        else:
-                            counters["trigger_mismatches"] += 1
-                            if len(mismatches) < 20:
-                                mismatches.append(
-                                    {
-                                        "sequence": signal_sequence,
-                                        "event_key": event_key,
-                                        "python": python_snapshot,
-                                        "rust": rust_snapshot,
-                                    }
-                                )
-
-                    rust_signal_ready_wall_ns = int(
-                        rust_row["signal_ready_wall_ns"]
-                    )
-                    rust_service_elapsed_ns = int(rust_row["service_ns"])
-
-                    python_service_ns.append(py_service_elapsed_ns)
-                    rust_service_ns.append(rust_service_elapsed_ns)
-                    python_source_to_signal_ns.append(
-                        max(0, python_signal_ready_wall_ns - source_wall_ns)
-                    )
-                    rust_source_to_signal_ns.append(
-                        max(0, rust_signal_ready_wall_ns - source_wall_ns)
-                    )
-                    python_canonical_to_signal_ns.append(
-                        max(0, python_signal_ready_wall_ns - canonical_ready_wall_ns)
-                    )
-                    rust_canonical_to_signal_ns.append(
-                        max(0, rust_signal_ready_wall_ns - canonical_ready_wall_ns)
-                    )
-                    rust_dispatch_to_signal_ns.append(
-                        max(0, rust_signal_ready_wall_ns - rust_dispatch_wall_ns)
+                rust_row = await asyncio.to_thread(rust.receive)
+                if rust_row.get("type") == "signal_error":
+                    errors.append(
+                        f"rust_signal_error:{rust_row.get('error')}"
                     )
                     signal_sequence += 1
+                    continue
+                if (
+                    rust_row.get("type") != "signal_result"
+                    or int(rust_row.get("sequence", -1)) != signal_sequence
+                ):
+                    errors.append(
+                        f"rust_sequence_or_type_mismatch:{signal_sequence}:{rust_row!r}"
+                    )
+                    signal_sequence += 1
+                    continue
+
+                python_snapshot = _trigger_snapshot(python_trigger)
+                rust_snapshot = rust_row.get("trigger")
+                counters["signal_records"] += 1
+                if kind == "trade":
+                    counters["trade_decision_points"] += 1
+                    if _json_equivalent(python_snapshot, rust_snapshot):
+                        counters["trigger_exact_matches"] += 1
+                    else:
+                        counters["trigger_mismatches"] += 1
+                        if len(mismatches) < 20:
+                            mismatches.append(
+                                {
+                                    "sequence": signal_sequence,
+                                    "event_key": event_key,
+                                    "python": python_snapshot,
+                                    "rust": rust_snapshot,
+                                }
+                            )
+
+                rust_signal_ready_wall_ns = int(
+                    rust_row["signal_ready_wall_ns"]
+                )
+                rust_service_elapsed_ns = int(rust_row["service_ns"])
+
+                python_service_ns.append(py_service_elapsed_ns)
+                rust_service_ns.append(rust_service_elapsed_ns)
+                python_source_to_signal_ns.append(
+                    max(0, python_signal_ready_wall_ns - source_wall_ns)
+                )
+                rust_source_to_signal_ns.append(
+                    max(0, rust_signal_ready_wall_ns - source_wall_ns)
+                )
+                python_canonical_to_signal_ns.append(
+                    max(0, python_signal_ready_wall_ns - canonical_ready_wall_ns)
+                )
+                rust_canonical_to_signal_ns.append(
+                    max(0, rust_signal_ready_wall_ns - canonical_ready_wall_ns)
+                )
+                rust_dispatch_to_signal_ns.append(
+                    max(0, rust_signal_ready_wall_ns - rust_dispatch_wall_ns)
+                )
+                signal_sequence += 1
 
     except Exception as exc:
         errors.append(f"fatal:{type(exc).__name__}:{exc}")
     finally:
+        for task in reader_tasks:
+            if not task.done():
+                task.cancel()
+        if reader_tasks:
+            await asyncio.gather(*reader_tasks, return_exceptions=True)
         try:
             await identity_plane.stop()
         except Exception as exc:
@@ -999,6 +1117,12 @@ async def run_live_shadow_v0(
             )
         carbon.close()
         rust.close()
+
+    errors.extend(
+        f"transport:{item}"
+        for item in transport_errors
+        if f"transport:{item}" not in errors
+    )
 
     trade_points = int(counters["trade_decision_points"])
     exact_matches = int(counters["trigger_exact_matches"])
@@ -1014,6 +1138,18 @@ async def run_live_shadow_v0(
             counters["pump_logs_ack"] == 1
             and counters["pumpswap_logs_ack"] == 1
         ),
+        "transport_sessions_isolated": counters["sessions_active"] == 2,
+        "pump_reader_duration_elapsed": (
+            counters["pump_logs_reader_duration_elapsed"] == 1
+        ),
+        "pumpswap_reader_duration_elapsed": (
+            counters["pumpswap_logs_reader_duration_elapsed"] == 1
+        ),
+        "transport_zero_ingress_drops": (
+            counters["pump_logs_ingress_drops"] == 0
+            and counters["pumpswap_logs_ingress_drops"] == 0
+        ),
+        "transport_no_reader_errors": not transport_errors,
         "pump_observed": counters["pump_logs_notifications"] > 0,
         "pumpswap_observed": counters["pumpswap_logs_notifications"] > 0,
         "canonical_events_decoded": counters["decoded_events"] > 0,
@@ -1067,6 +1203,17 @@ async def run_live_shadow_v0(
         "counters": dict(sorted(counters.items())),
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
+        "transport": {
+            "mode": "isolated_dual_wss_bounded_ingress_v2",
+            "queue_capacity": INGRESS_QUEUE_SIZE,
+            "queue_high_water": int(counters["ingress_queue_high_water"]),
+            "queue_depth_at_report": ingress_queue.qsize(),
+            "reader_errors": list(transport_errors),
+            "pump_notifications": int(counters["pump_logs_notifications"]),
+            "pumpswap_notifications": int(counters["pumpswap_logs_notifications"]),
+            "pump_ingress_drops": int(counters["pump_logs_ingress_drops"]),
+            "pumpswap_ingress_drops": int(counters["pumpswap_logs_ingress_drops"]),
+        },
         "identity_plane": identity_plane.summary(),
         "pumpswap_context_diagnostics": {
             "unique_pools_seen": len(pumpswap_pools_seen),
