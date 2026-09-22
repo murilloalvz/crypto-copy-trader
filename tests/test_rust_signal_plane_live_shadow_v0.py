@@ -6,6 +6,7 @@ import unittest
 from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     _add_identity,
     _build_signal_record,
+    _identity_source_for_evidence,
     _latency_summary_ns,
     _target_inputs_from_notification,
 )
@@ -48,6 +49,35 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
         self.assertEqual(
             [item.evidence_key for item in buckets["POOL"]],
             ["earlier", "later"],
+        )
+
+    def test_identity_source_attribution_uses_exact_evidence_key(self):
+        identities = (
+            PumpSwapPoolIdentityObservation(
+                pool="POOL",
+                base_mint="BASE",
+                quote_mint="QUOTE",
+                observed_wall_ns=10,
+                observed_slot=1,
+                evidence_key="bootstrap",
+                source="bootstrap_rpc",
+            ),
+            PumpSwapPoolIdentityObservation(
+                pool="POOL",
+                base_mint="BASE",
+                quote_mint="QUOTE",
+                observed_wall_ns=20,
+                observed_slot=2,
+                evidence_key="live-create",
+                source="carbon_pumpswap_create_pool_event_v0",
+            ),
+        )
+        self.assertEqual(
+            _identity_source_for_evidence(identities, "live-create"),
+            "carbon_pumpswap_create_pool_event_v0",
+        )
+        self.assertIsNone(
+            _identity_source_for_evidence(identities, "missing")
         )
 
     def test_signal_record_preserves_exact_observation(self):
