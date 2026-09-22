@@ -1309,8 +1309,8 @@ async def run_live_shadow_v0(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Short live systems shadow: standard Solana logs -> frozen Carbon decoder -> "
-            "same canonical observations -> Python indexed Radar + Rust indexed Radar."
+            "Transport-isolated live systems shadow: independent Pump/PumpSwap WSS readers "
+            "-> bounded ingress -> frozen Carbon decoder -> Python/Rust indexed Radar."
         )
     )
     parser.add_argument("--bootstrap-report", type=Path, required=True)
@@ -1329,7 +1329,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v0/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v2/report.json"
         ),
     )
     args = parser.parse_args()
