@@ -44,12 +44,15 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v4_burst_microbatch"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH"
+VERSION = "rust_signal_plane_live_shadow_v4_1_startup_barrier"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_1_STARTUP_BARRIER"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_1_STARTUP_BARRIER"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
+WS_OPEN_TIMEOUT_SECONDS = 30.0
+WS_OPEN_BARRIER_TIMEOUT_SECONDS = 35.0
+SUBSCRIPTION_ACK_TIMEOUT_SECONDS = 20.0
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
 
@@ -636,10 +639,13 @@ async def _surface_reader_v2(
     endpoint: str,
     label: str,
     request: dict[str, Any],
-    deadline: float,
     ingress_queue: asyncio.Queue[dict[str, Any]],
     counters: Counter[str],
+    opened_event: asyncio.Event,
+    subscribe_event: asyncio.Event,
     ready_event: asyncio.Event,
+    acquisition_event: asyncio.Event,
+    deadline_ref: dict[str, float],
     transport_errors: list[str],
 ) -> None:
     """Own one WebSocket session and never run Carbon/Radar work in the reader."""
@@ -654,19 +660,25 @@ async def _surface_reader_v2(
             # control frames remain automatic at the protocol layer.
             ping_interval=None,
             ping_timeout=None,
+            open_timeout=WS_OPEN_TIMEOUT_SECONDS,
             close_timeout=5,
             max_size=16 * 1024 * 1024,
             max_queue=1024,
         ) as ws:
+            counters[f"{label}_socket_opened"] += 1
+            opened_event.set()
+            await subscribe_event.wait()
+
             await ws.send(json.dumps(request, separators=(",", ":")))
+            ack_deadline = time.monotonic() + SUBSCRIPTION_ACK_TIMEOUT_SECONDS
 
             while subscription_id is None:
-                remaining = deadline - time.monotonic()
+                remaining = ack_deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(f"{label} subscription acknowledgement timeout")
                 raw = await asyncio.wait_for(
                     ws.recv(),
-                    timeout=min(20.0, remaining),
+                    timeout=remaining,
                 )
                 message = json.loads(raw)
                 if message.get("id") != request.get("id"):
@@ -684,6 +696,10 @@ async def _surface_reader_v2(
                 counters[f"{label}_ack"] += 1
                 counters[f"{label}_sessions_active"] += 1
                 ready_event.set()
+
+            await acquisition_event.wait()
+            deadline = float(deadline_ref["deadline"])
+            counters[f"{label}_acquisition_started"] += 1
 
             last_application_message_at = time.monotonic()
             while time.monotonic() < deadline:
@@ -769,6 +785,8 @@ async def _surface_reader_v2(
             f"{label}:{type(exc).__name__}:{exc}"
         )
     finally:
+        if not opened_event.is_set():
+            opened_event.set()
         if not ready_event.is_set():
             ready_event.set()
         counters[f"{label}_reader_stopped"] += 1
