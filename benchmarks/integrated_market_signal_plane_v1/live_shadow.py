@@ -1569,15 +1569,22 @@ async def run_live_shadow_v0(
         "trade_decision_points_observed": trade_points > 0,
         "rust_signal_batch_exercised": counters["rust_signal_batches"] > 0,
         "rust_signal_batch_accounting_exact": (
-            counters["rust_signal_batch_records"]
+            counters["signal_records"] > 0
+            and counters["rust_signal_batch_records"]
             == counters["signal_records"]
         ),
         "python_parity_audit_complete": (
-            counters["python_audit_records"] == counters["signal_records"]
+            counters["signal_records"] > 0
+            and counters["trade_decision_points"] > 0
+            and counters["python_audit_records"] == counters["signal_records"]
             and counters["python_audit_trade_decision_points"]
             == counters["trade_decision_points"]
         ),
-        "trigger_parity_100": trigger_mismatches == 0 and parity_pct == 100.0,
+        "trigger_parity_100": (
+            trade_points > 0
+            and trigger_mismatches == 0
+            and parity_pct == 100.0
+        ),
         "no_decode_failures": counters["decode_failures"] == 0,
         "identity_plane_enqueued_unknown_pool": (
             identity_plane.counters["enqueued"] > 0
