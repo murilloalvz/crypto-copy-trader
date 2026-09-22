@@ -34,15 +34,10 @@ mod frozen_kernel {
                 let batch_started = Instant::now();
                 let mut results: Vec<Value> = Vec::with_capacity(records.len());
                 for record in records {
-                    let mut signal_record = record.clone();
-                    let object = signal_record
-                        .as_object_mut()
-                        .ok_or_else(|| "batch record must be object".to_string())?;
-                    object.insert(
-                        "type".to_string(),
-                        Value::String("signal_record".to_string()),
-                    );
-                    results.push(self.process(signal_record)?);
+                    if !record.is_object() {
+                        return Err("batch record must be object".to_string());
+                    }
+                    results.push(self.process_signal_record(record)?);
                 }
                 let batch_service_ns = batch_started
                     .elapsed()
@@ -59,6 +54,10 @@ mod frozen_kernel {
             if row_type != "signal_record" {
                 return Err(format!("unsupported input type {row_type}"));
             }
+            self.process_signal_record(&value)
+        }
+
+        fn process_signal_record(&mut self, value: &Value) -> Result<Value, String> {
             let sequence = value
                 .get("sequence")
                 .and_then(Value::as_u64)
@@ -69,7 +68,6 @@ mod frozen_kernel {
                 .ok_or_else(|| "missing kind".to_string())?;
             let observation = value
                 .get("observation")
-                .cloned()
                 .ok_or_else(|| "missing observation".to_string())?;
             let source_received_wall_ns = value
                 .get("source_received_wall_ns")
@@ -83,12 +81,12 @@ mod frozen_kernel {
             let started = Instant::now();
             let trigger = match kind {
                 "trade" => {
-                    let trade: Trade = serde_json::from_value(observation)
+                    let trade: Trade = Trade::deserialize(observation)
                         .map_err(|error| format!("parse_trade:{error}"))?;
                     self.state.ingest_trade(sequence, trade)?
                 }
                 "lifecycle" => {
-                    let lifecycle: Lifecycle = serde_json::from_value(observation)
+                    let lifecycle: Lifecycle = Lifecycle::deserialize(observation)
                         .map_err(|error| format!("parse_lifecycle:{error}"))?;
                     self.state.ingest_lifecycle(lifecycle);
                     None
