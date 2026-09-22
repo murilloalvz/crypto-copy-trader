@@ -893,6 +893,7 @@ async def run_live_shadow_v0(
                 except asyncio.QueueEmpty:
                     break
             batch_dequeued_wall_ns = time.time_ns()
+            log_notifications += len(ingress_batch)
             ingress_microbatch_sizes.append(len(ingress_batch))
             counters["consumer_microbatches"] += 1
             counters["consumer_microbatch_notifications"] += len(ingress_batch)
@@ -1273,6 +1274,12 @@ async def run_live_shadow_v0(
         else 100.0 * exact_matches / trade_points
     )
 
+    ingress_enqueued_total = (
+        int(counters["pump_logs_ingress_enqueued"])
+        + int(counters["pumpswap_logs_ingress_enqueued"])
+    )
+    ingress_consumed_total = int(counters["consumer_notifications"])
+
     gates = {
         "subscriptions_active": (
             counters["pump_logs_ack"] == 1
@@ -1289,7 +1296,16 @@ async def run_live_shadow_v0(
             counters["pump_logs_ingress_drops"] == 0
             and counters["pumpswap_logs_ingress_drops"] == 0
         ),
-        "transport_ingress_drained": ingress_queue.empty(),
+        "transport_ingress_drained": (
+            ingress_queue.empty()
+            and ingress_consumed_total == ingress_enqueued_total
+        ),
+        "transport_ingress_accounting_exact": (
+            ingress_consumed_total == ingress_enqueued_total
+        ),
+        "transport_microbatch_exercised": (
+            counters["consumer_microbatch_max_observed"] > 1
+        ),
         "transport_no_reader_errors": not transport_errors,
         "pump_observed": counters["pump_logs_notifications"] > 0,
         "pumpswap_observed": counters["pumpswap_logs_notifications"] > 0,
@@ -1349,6 +1365,8 @@ async def run_live_shadow_v0(
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
+            "enqueued_total": ingress_enqueued_total,
+            "consumed_total": ingress_consumed_total,
             "drain_after_source_ms": ingress_drain_after_source_ms,
             "reader_errors": list(transport_errors),
             "pump_notifications": int(counters["pump_logs_notifications"]),
