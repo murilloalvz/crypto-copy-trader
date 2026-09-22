@@ -159,6 +159,78 @@ Additional offline migration work completed while live provider access was unsui
 This means the remaining migration risk is now concentrated in live sustained V5 capacity and
 provider-backed systems validation of the new bridge, not in inventing a new economic contract.
 
+### Fast path to V68 edge — migration prepared (2026-09-22)
+
+The repository now contains the complete **blocked** migration path needed to test V68 on the
+new Signal Plane once V5 sustained systems evidence passes.
+
+Implemented:
+
+- `benchmarks/integrated_market_signal_plane_v1/v5_batch_suite.py`
+  - deterministic offline V5 batch IPC capacity/parity test;
+  - frozen seed=68 / 10k events;
+  - exact Python/Rust trigger parity required;
+  - preserves existing 5k and 7.5k synthetic capacity targets;
+  - includes persistent Rust stdin/stdout batch overhead.
+
+- `benchmarks/v68_signal_plane_bridge_v0/run.py`
+  - offline Rust trigger -> historical episode identity audit.
+
+- `src/signal_plane_research_persistence_v0.py`
+  - ordered durable Research Plane observations behind the live Rust hot path.
+
+- `src/signal_plane_episode_admission_v0.py`
+  - frozen trigger snapshot -> durable episode/admission semantics.
+
+- `src/signal_plane_route_research_coordinator_v0.py`
+  - new-episode admission -> hazard + Jupiter route decision using historical pacing/at-most-once
+    provider semantics.
+
+- `route_research_signal_plane_bridge_v0.py`
+  - systems-only live end-to-end Signal Plane -> Research Plane -> hazard/Jupiter bridge.
+
+- `src/signal_plane_forward_cohort_v0.py`
+  - one complete new-path prospective route-only cohort:
+    Signal Plane acquisition -> cap 40/min 30 -> exact 300/900/3600 forward outcomes -> descriptive
+    lineage/readiness gate;
+  - frozen $25 notional, 100 bps slippage and 650/1000/250ms provider-start pacing.
+
+- `route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py`
+  - two sequential fresh A/B subcohorts over the promoted Signal Plane path;
+  - strict all-table fresh-key residue check;
+  - reuses the existing frozen V55 dataset builder and V68 primary gate;
+  - does not recalculate Flow60 bins, support minima or economic thresholds.
+
+- `signal_plane_v68_promotion_v0.py`
+  - produces a fail-closed promotion manifest only after offline capacity, offline episode bridge,
+    V5 120s smoke, V5 30m soak and live route-research bridge all PASS;
+  - requires zero live ingress drops, exact accounting, 100% parity, all gates true and
+    Rust source->signal p95 <=5s;
+  - records SHA-256 for every evidence artifact and the exact git HEAD.
+
+- `route_research_v68_release.py`
+  - accepts the new Signal Plane V68 path only with a valid promotion manifest;
+  - promotion manifest must match the current git HEAD and all evidence hashes;
+  - after promotion, the historical v46/v44/v43/v42 acquisition path is not used.
+
+**Current blocker remains systems-only:** V5 live acquisition has not yet been evaluated on an
+unrestricted network. The last V5 attempt failed before acquisition because both Alchemy WSS
+opening handshakes timed out on the restricted school network. This does not consume V68 fresh
+evidence and is not a V5 capacity verdict.
+
+Once unrestricted internet is available, the shortest path is:
+
+1. offline V5 batch capacity PASS;
+2. offline V68 episode-bridge audit PASS;
+3. V5 120s live smoke PASS;
+4. V5 30m sustained soak PASS;
+5. systems-only `route_research_signal_plane_bridge_v0.py` PASS with a non-V68 key;
+6. build promotion manifest;
+7. run canonical `route_research_v68_release.py` with a brand-new V68 key and the promotion
+   manifest;
+8. evaluate the frozen V68 economic gate. No more hot-path tuning is permitted unless one of the
+   required systems gates fails.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
