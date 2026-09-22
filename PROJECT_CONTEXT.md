@@ -258,6 +258,27 @@ The economic runner remains intentionally blocked until unrestricted-network evi
 V5 120s live smoke, V5 30m sustained soak, and systems-only live route-research bridge. A school
 network handshake failure before acquisition is not V5 evidence and does not consume a V68 key.
 
+### Signal Plane release integration hardening — 2026-09-22
+
+Final seam audit found and fixed two release-only blockers before live evidence:
+
+- the promoted fresh V68 runner reused `route_research_signal_plane_bridge_v0.run_bridge`, whose
+  systems-only run-key guard rejected every `v68-flow60-fresh*` key; fresh cohorts now require the
+  promotion manifest again inside `signal_plane_forward_cohort_v0` and only that validated internal
+  path can authorize the bridge component to accept the fresh key;
+- the canonical release readiness still gated a promoted Signal Plane run on legacy V9 worker/writer
+  capacity settings even though promoted acquisition no longer uses that path; those legacy readiness
+  gates were removed from the promoted release preflight.
+
+Regression coverage now checks that a fresh V68 cohort cannot reach the bridge without a promotion
+report, and that the validated promotion report is threaded from the V68 runner into each fresh
+forward cohort. Frozen V68 economics, provider pacing, episode identity, freshness checks and
+promotion evidence hashing were not changed.
+
+Current next step is execution evidence, not more architecture: pull the branch, run the focused
+regression/offline readiness gates, then on unrestricted internet run V5 smoke -> V5 soak ->
+systems-only route bridge -> promotion manifest -> canonical fresh V68 release.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
