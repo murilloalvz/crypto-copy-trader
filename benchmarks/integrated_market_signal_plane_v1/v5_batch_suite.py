@@ -171,6 +171,8 @@ def run_v5_batch_capacity(
         wall_base_ns = 1_800_000_000_000_000_000
 
         started_ns = time.perf_counter_ns()
+        active_batch_wall_ns = 0
+        process_teardown_ns = 0
         try:
             batch_id = 0
             for offset in range(0, len(records), BATCH_SIZE):
@@ -209,9 +211,11 @@ def run_v5_batch_capacity(
                     if int(row.get("sequence", -1)) != expected_record.sequence:
                         raise RuntimeError("Rust batch sequence order changed")
                     rust_results[expected_record.sequence] = row
+            active_batch_wall_ns = time.perf_counter_ns() - started_ns
         finally:
+            teardown_started_ns = time.perf_counter_ns()
             rust.close()
-        total_wall_ns = time.perf_counter_ns() - started_ns
+            process_teardown_ns = time.perf_counter_ns() - teardown_started_ns
 
     python = IndexedWindowRadarState()
     trade_points = 0
@@ -241,10 +245,10 @@ def run_v5_batch_capacity(
         if trade_points == 0
         else 100.0 * exact_matches / trade_points
     )
-    total_wall_seconds = total_wall_ns / 1_000_000_000.0
+    active_batch_wall_seconds = active_batch_wall_ns / 1_000_000_000.0
     throughput_eps = (
-        len(records) / total_wall_seconds
-        if total_wall_seconds > 0
+        len(records) / active_batch_wall_seconds
+        if active_batch_wall_seconds > 0
         else math.inf
     )
 
@@ -293,7 +297,14 @@ def run_v5_batch_capacity(
             ),
         },
         "throughput": {
-            "wall_ms": total_wall_ns / 1_000_000.0,
+            "wall_ms": active_batch_wall_ns / 1_000_000.0,
+            "active_batch_wall_ms": active_batch_wall_ns / 1_000_000.0,
+            "process_teardown_ms": process_teardown_ns / 1_000_000.0,
+            "measurement_contract": (
+                "capacity uses active ordered batch construction + stdin/stdout IPC + "
+                "Rust processing through the final batch response; process teardown is "
+                "reported separately and excluded from capacity"
+            ),
             "effective_records_per_second": throughput_eps,
             "representative_target_eps": REPRESENTATIVE_EPS,
             "headroom_target_eps": HEADROOM_EPS,
