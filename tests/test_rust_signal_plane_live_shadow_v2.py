@@ -22,10 +22,10 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
 
 
 class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
-    def test_v4_1_startup_contract_is_frozen(self):
+    def test_v5_signal_batch_contract_is_frozen(self):
         self.assertEqual(
             VERSION,
-            "rust_signal_plane_live_shadow_v4_1_startup_barrier",
+            "rust_signal_plane_live_shadow_v5_signal_batch",
         )
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)
