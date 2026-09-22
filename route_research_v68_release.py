@@ -364,7 +364,7 @@ def print_readiness(*, run_key: str) -> bool:
 
 async def _probe_logs_subscribe(name: str, request: dict) -> ReadinessCheck:
     try:
-        import websockets
+        from websockets.asyncio.client import connect
     except ImportError:
         return ReadinessCheck(
             f"{name}_logs_subscribe",
@@ -376,15 +376,17 @@ async def _probe_logs_subscribe(name: str, request: dict) -> ReadinessCheck:
         ws_url = rpc_http_to_ws_url(settings.rpc_url)
         parsed = urlsplit(ws_url)
         endpoint = parsed.hostname or "<unknown>"
-        async with websockets.connect(
+        async with connect(
             ws_url,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=3,
-            max_queue=32,
+            ping_interval=None,
+            ping_timeout=None,
+            open_timeout=30,
+            close_timeout=5,
+            max_size=16 * 1024 * 1024,
+            max_queue=1024,
         ) as websocket:
             await websocket.send(json.dumps(request))
-            ack_raw = await asyncio.wait_for(websocket.recv(), timeout=12)
+            ack_raw = await asyncio.wait_for(websocket.recv(), timeout=20)
             ack = json.loads(ack_raw)
             if "error" in ack:
                 error = ack.get("error")
@@ -413,13 +415,15 @@ async def _probe_logs_subscribe(name: str, request: dict) -> ReadinessCheck:
 
 
 async def _collect_provider_health_checks_async() -> tuple[ReadinessCheck, ...]:
-    pump = await _probe_logs_subscribe(
-        "pump",
-        build_pump_logs_subscribe_request(commitment="confirmed"),
-    )
-    pumpswap = await _probe_logs_subscribe(
-        "pumpswap",
-        build_pumpswap_logs_subscribe_request(commitment="confirmed"),
+    pump, pumpswap = await asyncio.gather(
+        _probe_logs_subscribe(
+            "pump",
+            build_pump_logs_subscribe_request(commitment="confirmed"),
+        ),
+        _probe_logs_subscribe(
+            "pumpswap",
+            build_pumpswap_logs_subscribe_request(commitment="confirmed"),
+        ),
     )
     return (pump, pumpswap)
 
