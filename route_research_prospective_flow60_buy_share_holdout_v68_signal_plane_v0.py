@@ -104,6 +104,7 @@ def run_signal_plane_v68_v0(
         result = run_signal_plane_forward_cohort_v0(
             run_key=run_key,
             bootstrap_report=Path(bootstrap_report),
+            promotion_report=Path(promotion_report),
             acquisition_duration_seconds=acquisition_duration_seconds,
             cargo=cargo,
             max_episodes=SUBCOHORT_CAP,
