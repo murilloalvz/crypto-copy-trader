@@ -94,7 +94,7 @@ class _RustBatchProcess:
         ):
             raise RuntimeError("Rust batch stream not started")
         self.process.stdin.write(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            json.dumps(payload, separators=(",", ":")) + "\n"
         )
         self.process.stdin.flush()
         line = self.process.stdout.readline()
