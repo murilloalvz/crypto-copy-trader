@@ -1649,8 +1649,8 @@ async def run_live_shadow_v0(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Burst-microbatch live shadow: independent Pump/PumpSwap WSS readers -> "
-            "bounded ingress -> no-wait burst drain -> Carbon -> Python/Rust indexed Radar."
+            "V4.1 startup-barrier shadow: open both WSS sockets -> subscribe both -> "
+            "start one common acquisition clock -> V4 burst microbatch -> Python/Rust Radar."
         )
     )
     parser.add_argument("--bootstrap-report", type=Path, required=True)
@@ -1669,7 +1669,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v4/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v4_1/report.json"
         ),
     )
     args = parser.parse_args()
