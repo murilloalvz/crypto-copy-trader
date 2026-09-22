@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import route_research_signal_plane_bridge_v0 as bridge
+import signal_plane_v68_promotion_v0 as promotion
 import src.route_research_forward_collection_v43 as forward_collection
 from src.config import settings
 from src.jupiter_research_exit_route import JupiterResearchExitRouteProbe
@@ -69,6 +70,7 @@ def run_signal_plane_forward_cohort_v0(
     *,
     run_key: str,
     bootstrap_report: Path,
+    promotion_report: Path | None = None,
     acquisition_duration_seconds: float = 120.0,
     cargo: str = "cargo",
     max_episodes: int = SUBCOHORT_CAP,
@@ -92,6 +94,20 @@ def run_signal_plane_forward_cohort_v0(
     base = str(run_key).strip()
     if not base:
         raise ValueError("run_key cannot be empty")
+    is_v68_fresh = "v68-flow60-fresh" in base.lower()
+    if is_v68_fresh:
+        if promotion_report is None:
+            raise ValueError(
+                "fresh V68 Signal Plane cohort requires a promotion report"
+            )
+        promotion_ok, promotion_detail = promotion.validate_promotion_report(
+            Path(promotion_report)
+        )
+        if not promotion_ok:
+            raise ValueError(
+                "fresh V68 Signal Plane cohort promotion invalid: "
+                + promotion_detail
+            )
     if max_episodes != SUBCOHORT_CAP:
         raise ValueError(
             f"Signal Plane V68 migration freezes max_episodes={SUBCOHORT_CAP}"
@@ -133,6 +149,7 @@ def run_signal_plane_forward_cohort_v0(
         bridge.run_bridge(
             run_key=base,
             bootstrap_report=Path(bootstrap_report),
+            allow_v68_fresh_run_key=is_v68_fresh,
             duration_seconds=acquisition_duration_seconds,
             shadow_output=shadow_output,
             report_output=bridge_output,
