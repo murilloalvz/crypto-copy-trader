@@ -53,6 +53,13 @@ def market_movement_trigger_from_snapshot(
     features_raw = snapshot.get("features")
     if not isinstance(features_raw, dict):
         raise ValueError("trigger snapshot missing features")
+    normalized_features = dict(features_raw)
+    if isinstance(normalized_features.get("venues"), list):
+        normalized_features["venues"] = tuple(normalized_features["venues"])
+    if isinstance(normalized_features.get("data_quality_flags"), list):
+        normalized_features["data_quality_flags"] = tuple(
+            normalized_features["data_quality_flags"]
+        )
     return MarketMovementTrigger(
         token_mint=_required(snapshot.get("token_mint"), "trigger token_mint"),
         as_of=int(snapshot["as_of"]),
@@ -65,7 +72,7 @@ def market_movement_trigger_from_snapshot(
             "trigger_kind",
         ),
         direction=_required(snapshot.get("direction"), "direction"),
-        features=MarketMovementFeatures(**features_raw),
+        features=MarketMovementFeatures(**normalized_features),
     )
 
 
