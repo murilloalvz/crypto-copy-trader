@@ -18,33 +18,16 @@ from benchmarks.integrated_market_signal_plane_v1.rust_suite import (
     _run_rust,
 )
 from benchmarks.integrated_market_signal_plane_v1.suite import _trigger_snapshot
-from src.market_opportunity_radar import (
-    MarketMovementFeatures,
-    MarketMovementTrigger,
-)
 from src.signal_plane_episode_bridge_v0 import (
     SIGNAL_PLANE_EPISODE_BRIDGE_VERSION,
     build_signal_plane_episode_assignment,
+    market_movement_trigger_from_snapshot,
 )
 
 
 VERSION = "v68_signal_plane_bridge_v0"
 PASS_CLASSIFICATION = "PASS_V68_SIGNAL_PLANE_BRIDGE_V0"
 FAIL_CLASSIFICATION = "FAIL_V68_SIGNAL_PLANE_BRIDGE_V0"
-
-
-def _trigger_from_snapshot(snapshot: dict) -> MarketMovementTrigger:
-    features_raw = snapshot.get("features")
-    if not isinstance(features_raw, dict):
-        raise ValueError("trigger snapshot missing features")
-    return MarketMovementTrigger(
-        token_mint=str(snapshot["token_mint"]),
-        as_of=int(snapshot["as_of"]),
-        method_version=str(snapshot["method_version"]),
-        trigger_kind=str(snapshot["trigger_kind"]),
-        direction=str(snapshot["direction"]),
-        features=MarketMovementFeatures(**features_raw),
-    )
 
 
 def run_bridge_audit(
@@ -125,7 +108,7 @@ def run_bridge_audit(
             continue
 
         try:
-            trigger = _trigger_from_snapshot(actual)
+            trigger = market_movement_trigger_from_snapshot(actual)
             assignment = build_signal_plane_episode_assignment(
                 trigger=trigger,
                 observation=record.trade,
