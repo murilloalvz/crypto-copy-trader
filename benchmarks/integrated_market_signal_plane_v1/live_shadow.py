@@ -1622,7 +1622,7 @@ async def run_live_shadow_v0(
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
         "transport": {
-            "mode": "isolated_dual_wss_startup_barrier_v4_1",
+            "mode": "rust_signal_batch_postrun_parity_v5",
             "startup": {
                 "open_timeout_seconds": WS_OPEN_TIMEOUT_SECONDS,
                 "open_barrier_timeout_seconds": WS_OPEN_BARRIER_TIMEOUT_SECONDS,
@@ -1662,6 +1662,15 @@ async def run_live_shadow_v0(
                 "carbon_batch_event_size": _numeric_summary(
                     carbon_batch_event_sizes
                 ),
+            },
+            "rust_signal_batch": {
+                "batch_count": int(counters["rust_signal_batches"]),
+                "record_count": int(counters["rust_signal_batch_records"]),
+                "max_records": int(counters["rust_signal_batch_max_records"]),
+                "batch_size": _numeric_summary(rust_signal_batch_sizes),
+                "roundtrip": _latency_summary_ns(rust_batch_roundtrip_ns),
+                "internal_service": _latency_summary_ns(rust_batch_service_ns),
+                "external_ready_clock": "batch_response_wall_ns",
             },
             "latency": {
                 "ingress_queue_wait": _latency_summary_ns(ingress_queue_wait_ns),
@@ -1709,17 +1718,19 @@ async def run_live_shadow_v0(
             "parity_pct": parity_pct,
             "first_mismatches": mismatches,
         },
-        "latency": {
-            "python_service": _latency_summary_ns(python_service_ns),
-            "rust_service": _latency_summary_ns(rust_service_ns),
-            "python_source_to_signal": _latency_summary_ns(
-                python_source_to_signal_ns
+        "python_parity_audit": {
+            "mode": "post_run_replay_off_live_hot_path",
+            "record_count": int(counters["python_audit_records"]),
+            "trade_decision_points": int(
+                counters["python_audit_trade_decision_points"]
             ),
+            "total_ms": python_audit_total_ns / 1_000_000.0,
+            "service": _latency_summary_ns(python_audit_service_ns),
+        },
+        "latency": {
+            "rust_service": _latency_summary_ns(rust_service_ns),
             "rust_source_to_signal": _latency_summary_ns(
                 rust_source_to_signal_ns
-            ),
-            "python_canonical_to_signal": _latency_summary_ns(
-                python_canonical_to_signal_ns
             ),
             "rust_canonical_to_signal": _latency_summary_ns(
                 rust_canonical_to_signal_ns
@@ -1734,10 +1745,10 @@ async def run_live_shadow_v0(
         "economic_hypothesis_modified": False,
         "chain_complete_coverage_claimed": False,
         "interpretation": (
-            "PASS means the Rust Signal Plane matched the Python indexed Radar on the "
-            "same live canonical observations. Unknown PumpSwap identity resolution ran "
-            "asynchronously outside the hot path with no causal backfill. It does not "
-            "establish economic edge."
+            "PASS means the live hot path used ordered Rust signal batches while Python "
+            "parity ran only as a post-run replay over the exact same TraceRecords. "
+            "Unknown PumpSwap identity resolution remained asynchronous with no causal "
+            "backfill. It does not establish economic edge."
             if classification == PASS_CLASSIFICATION
             else "Shadow is not eligible for promotion; inspect failed systems/parity gates."
         ),
@@ -1754,8 +1765,8 @@ async def run_live_shadow_v0(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "V4.1 startup-barrier shadow: open both WSS sockets -> subscribe both -> "
-            "start one common acquisition clock -> V4 burst microbatch -> Python/Rust Radar."
+            "V5 Rust signal-batch shadow: V4.1 startup barrier -> burst microbatch -> "
+            "ordered Rust-only live hot path -> post-run Python parity replay."
         )
     )
     parser.add_argument("--bootstrap-report", type=Path, required=True)
@@ -1774,7 +1785,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v4_1/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v5/report.json"
         ),
     )
     args = parser.parse_args()
