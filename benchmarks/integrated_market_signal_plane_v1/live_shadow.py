@@ -815,18 +815,29 @@ async def run_live_shadow_v0(
             )
         counters["sessions_active"] = 2
 
-        while time.monotonic() < deadline:
-            if max_log_notifications > 0 and log_notifications >= max_log_notifications:
+        ingress_drain_started_monotonic: float | None = None
+        while True:
+            source_open = time.monotonic() < deadline
+            readers_done = all(task.done() for task in reader_tasks)
+            if (
+                max_log_notifications > 0
+                and log_notifications >= max_log_notifications
+            ):
                 break
-            if all(task.done() for task in reader_tasks) and ingress_queue.empty():
+            if not source_open and ingress_drain_started_monotonic is None:
+                ingress_drain_started_monotonic = time.monotonic()
+            if readers_done and ingress_queue.empty():
                 break
-            remaining = min(1.0, max(0.0, deadline - time.monotonic()))
-            if remaining <= 0:
-                break
+
+            wait_seconds = (
+                min(1.0, max(0.001, deadline - time.monotonic()))
+                if source_open
+                else 0.1
+            )
             try:
                 ingress = await asyncio.wait_for(
                     ingress_queue.get(),
-                    timeout=remaining,
+                    timeout=wait_seconds,
                 )
             except asyncio.TimeoutError:
                 continue
@@ -1118,6 +1129,13 @@ async def run_live_shadow_v0(
         carbon.close()
         rust.close()
 
+    ingress_drain_after_source_ms = 0.0
+    if ingress_drain_started_monotonic is not None:
+        ingress_drain_after_source_ms = max(
+            0.0,
+            (time.monotonic() - ingress_drain_started_monotonic) * 1000.0,
+        )
+
     errors.extend(
         f"transport:{item}"
         for item in transport_errors
@@ -1149,6 +1167,7 @@ async def run_live_shadow_v0(
             counters["pump_logs_ingress_drops"] == 0
             and counters["pumpswap_logs_ingress_drops"] == 0
         ),
+        "transport_ingress_drained": ingress_queue.empty(),
         "transport_no_reader_errors": not transport_errors,
         "pump_observed": counters["pump_logs_notifications"] > 0,
         "pumpswap_observed": counters["pumpswap_logs_notifications"] > 0,
@@ -1208,6 +1227,7 @@ async def run_live_shadow_v0(
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
+            "drain_after_source_ms": ingress_drain_after_source_ms,
             "reader_errors": list(transport_errors),
             "pump_notifications": int(counters["pump_logs_notifications"]),
             "pumpswap_notifications": int(counters["pumpswap_logs_notifications"]),
