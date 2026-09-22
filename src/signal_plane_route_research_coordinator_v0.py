@@ -115,6 +115,7 @@ class SignalPlaneRouteResearchCoordinatorV0:
         self.disposition_latencies_seconds: list[float] = []
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread_id: int | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._executor: ThreadPoolExecutor | None = None
         self._started = False
@@ -123,6 +124,7 @@ class SignalPlaneRouteResearchCoordinatorV0:
         if self._started:
             raise RuntimeError("coordinator already started")
         self._loop = asyncio.get_running_loop()
+        self._loop_thread_id = threading.get_ident()
         self._executor = ThreadPoolExecutor(
             max_workers=self.research_workers + self.hazard_workers,
             thread_name_prefix="signal-plane-route-research-v0",
@@ -180,6 +182,10 @@ class SignalPlaneRouteResearchCoordinatorV0:
             episode_key=episode_key,
             enqueued_monotonic=time.monotonic(),
         )
+        if threading.get_ident() == self._loop_thread_id:
+            self._enqueue_selected_job(job)
+            return True
+
         handoff: Future[None] = Future()
 
         def enqueue_and_ack() -> None:
@@ -354,6 +360,8 @@ class SignalPlaneRouteResearchCoordinatorV0:
             self._executor.shutdown(wait=True, cancel_futures=False)
         self._tasks = []
         self._executor = None
+        self._loop = None
+        self._loop_thread_id = None
         self._started = False
 
     def snapshot(self) -> dict:
