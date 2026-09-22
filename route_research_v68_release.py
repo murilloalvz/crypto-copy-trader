@@ -526,6 +526,8 @@ def main() -> int:
                 base,
                 "--bootstrap-report",
                 str(args.bootstrap_report),
+                "--promotion-report",
+                str(args.signal_plane_promotion_report),
                 "--hazard-start-interval-ms",
                 str(args.hazard_start_interval_ms),
                 "--entry-start-interval-ms",
