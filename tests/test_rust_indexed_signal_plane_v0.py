@@ -19,6 +19,12 @@ class RustIndexedSignalPlaneV0Tests(unittest.TestCase):
                 {"x": [1.0, 2, {"y": 3.0}]},
             )
         )
+        self.assertTrue(
+            _json_equivalent(
+                {"venues": ("pump",), "flags": ("a", "b")},
+                {"venues": ["pump"], "flags": ["a", "b"]},
+            )
+        )
         self.assertFalse(_json_equivalent({"x": 3.01}, {"x": 3.0}))
 
     def test_python_oracle_is_deterministic(self):
