@@ -44,9 +44,9 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v4_1_startup_barrier"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_1_STARTUP_BARRIER"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_1_STARTUP_BARRIER"
+VERSION = "rust_signal_plane_live_shadow_v5_signal_batch"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V5_SIGNAL_BATCH"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V5_SIGNAL_BATCH"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
@@ -831,20 +831,21 @@ async def run_live_shadow_v0(
     )
     identity_plane.start()
 
-    python_state = IndexedWindowRadarState()
     seen_event_keys: set[str] = set()
     counters: Counter[str] = Counter()
     matched_statuses: Counter[str] = Counter()
     market_trade_statuses: Counter[str] = Counter()
     mismatches: list[dict[str, Any]] = []
     errors: list[str] = []
-    python_service_ns: list[int] = []
+    python_audit_service_ns: list[int] = []
     rust_service_ns: list[int] = []
-    python_source_to_signal_ns: list[int] = []
     rust_source_to_signal_ns: list[int] = []
-    python_canonical_to_signal_ns: list[int] = []
     rust_canonical_to_signal_ns: list[int] = []
     rust_dispatch_to_signal_ns: list[int] = []
+    rust_batch_roundtrip_ns: list[int] = []
+    rust_batch_service_ns: list[int] = []
+    rust_signal_batch_sizes: list[int] = []
+    parity_audit_records: list[tuple[TraceRecord, Any, str, str]] = []
     ingress_queue_wait_ns: list[int] = []
     pump_ingress_queue_wait_ns: list[int] = []
     pumpswap_ingress_queue_wait_ns: list[int] = []
@@ -854,6 +855,7 @@ async def run_live_shadow_v0(
     carbon_batch_event_sizes: list[int] = []
     signal_sequence = 0
     batch_id = 0
+    signal_batch_id = 0
     log_notifications = 0
     pumpswap_pools_seen: set[str] = set()
     pumpswap_pools_adapted: set[str] = set()
