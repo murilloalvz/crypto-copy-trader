@@ -35,7 +35,12 @@ from src.market_opportunity_radar import MarketLifecycleObservation
 from src.pump_bonding_stream import build_logs_subscribe_request as build_pump_subscribe
 from src.pump_bonding_stream import rpc_http_to_ws_url
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
-from src.pumpswap_stream import build_logs_subscribe_request as build_pumpswap_subscribe
+from src.pumpswap_stream import (
+    PUMPSWAP_PROGRAM_ID,
+    build_logs_subscribe_request as build_pumpswap_subscribe,
+    decode_pumpswap_pool_account,
+)
+from src.solana import SolanaClient, SolanaRPCError
 
 
 VERSION = "rust_signal_plane_live_shadow_v0"
@@ -109,6 +114,208 @@ def _endpoint_host(url: str) -> str:
     from urllib.parse import urlsplit
 
     return urlsplit(url).hostname or "<unknown>"
+
+
+class AsyncPumpSwapIdentityPlane:
+    """Resolve unknown PumpSwap pools off the Signal Plane hot path.
+
+    A resolution becomes usable only from the local RPC response time forward.
+    The trade that caused the lookup remains MISSING and is never backfilled.
+    """
+
+    def __init__(
+        self,
+        *,
+        identities_by_pool: dict[str, list[PumpSwapPoolIdentityObservation]],
+        rpc_url: str,
+        batch_size: int = 64,
+        queue_size: int = 1024,
+        timeout_seconds: int = 8,
+    ):
+        if batch_size <= 0 or batch_size > 100:
+            raise ValueError("batch_size must be in 1..100")
+        if queue_size <= 0:
+            raise ValueError("queue_size must be positive")
+        self.identities_by_pool = identities_by_pool
+        self.batch_size = batch_size
+        self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=queue_size)
+        self.client = SolanaClient(
+            rpc_url=rpc_url,
+            timeout=timeout_seconds,
+        )
+        self.attempted_pools: set[str] = set()
+        self.counters: Counter[str] = Counter()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        if self._task is not None:
+            raise RuntimeError("identity plane already started")
+        self._task = asyncio.create_task(self._run())
+
+    def enqueue(self, pool: str) -> bool:
+        normalized = str(pool).strip()
+        if not normalized:
+            return False
+        if normalized in self.attempted_pools:
+            self.counters["deduplicated"] += 1
+            return False
+        self.attempted_pools.add(normalized)
+        try:
+            self.queue.put_nowait(normalized)
+        except asyncio.QueueFull:
+            self.counters["queue_full"] += 1
+            return False
+        self.counters["enqueued"] += 1
+        self.counters["queue_high_water"] = max(
+            self.counters["queue_high_water"],
+            self.queue.qsize(),
+        )
+        return True
+
+    def _resolve_batch_sync(
+        self,
+        pools: tuple[str, ...],
+    ) -> tuple[list[PumpSwapPoolIdentityObservation], Counter[str]]:
+        metrics: Counter[str] = Counter()
+        metrics["requested_pools"] = len(pools)
+        try:
+            result = self.client.call(
+                "getMultipleAccounts",
+                [
+                    list(pools),
+                    {
+                        "encoding": "base64",
+                        "commitment": "confirmed",
+                    },
+                ],
+                max_attempts=1,
+            ) or {}
+        except (SolanaRPCError, ValueError, TypeError) as exc:
+            metrics["rpc_batch_failures"] += 1
+            metrics[f"rpc_error_type:{type(exc).__name__}"] += 1
+            return [], metrics
+
+        context = result.get("context") if isinstance(result, dict) else None
+        values = result.get("value") if isinstance(result, dict) else None
+        if (
+            not isinstance(context, dict)
+            or not isinstance(values, list)
+            or len(values) != len(pools)
+        ):
+            metrics["invalid_rpc_shape"] += 1
+            return [], metrics
+
+        slot = context.get("slot")
+        if not isinstance(slot, int) or isinstance(slot, bool) or slot < 0:
+            metrics["invalid_context_slot"] += 1
+            return [], metrics
+
+        learned_wall_ns = time.time_ns()
+        identities: list[PumpSwapPoolIdentityObservation] = []
+        for pool, account in zip(pools, values):
+            if account is None:
+                metrics["account_missing"] += 1
+                continue
+            if not isinstance(account, dict):
+                metrics["invalid_account_shape"] += 1
+                continue
+            if account.get("owner") != PUMPSWAP_PROGRAM_ID:
+                metrics["owner_mismatch"] += 1
+                continue
+            data = account.get("data")
+            if (
+                not isinstance(data, (list, tuple))
+                or len(data) < 2
+                or not isinstance(data[0], str)
+                or str(data[1]) != "base64"
+            ):
+                metrics["invalid_account_data"] += 1
+                continue
+            try:
+                raw = base64.b64decode(data[0], validate=True)
+                decoded = decode_pumpswap_pool_account(raw)
+            except Exception:
+                metrics["decode_failed"] += 1
+                continue
+
+            identities.append(
+                PumpSwapPoolIdentityObservation(
+                    pool=pool,
+                    base_mint=decoded.base_mint,
+                    quote_mint=decoded.quote_mint,
+                    observed_wall_ns=learned_wall_ns,
+                    observed_slot=int(slot),
+                    evidence_key=(
+                        f"async_getMultipleAccounts:{slot}:{learned_wall_ns}:{pool}"
+                    ),
+                    source="async_solana_getMultipleAccounts_v0",
+                )
+            )
+            metrics["resolved"] += 1
+        return identities, metrics
+
+    async def _run(self) -> None:
+        while True:
+            first = await self.queue.get()
+            if first is None:
+                self.queue.task_done()
+                return
+
+            batch = [first]
+            await asyncio.sleep(0)
+            while len(batch) < self.batch_size:
+                try:
+                    item = self.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is None:
+                    self.queue.task_done()
+                    break
+                batch.append(item)
+
+            identities, metrics = await asyncio.to_thread(
+                self._resolve_batch_sync,
+                tuple(batch),
+            )
+            self.counters.update(metrics)
+            for identity in identities:
+                _add_identity(self.identities_by_pool, identity)
+
+            for _ in batch:
+                self.queue.task_done()
+
+    async def stop(self, *, drain_timeout_seconds: float = 5.0) -> None:
+        if self._task is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self.queue.join(),
+                timeout=drain_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            self.counters["drain_timeout"] += 1
+        try:
+            self.queue.put_nowait(None)
+        except asyncio.QueueFull:
+            self._task.cancel()
+        try:
+            await asyncio.wait_for(self._task, timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self._task.cancel()
+        self._task = None
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "rpc_host": self.client.rpc_host,
+            "attempted_unique_pools": len(self.attempted_pools),
+            "queue_depth_at_report": self.queue.qsize(),
+            "counters": dict(sorted(self.counters.items())),
+            "causal_policy": (
+                "unknown pool lookup is asynchronous; triggering trade remains MISSING; "
+                "resolved identity is usable only for later events whose receive time is "
+                ">= identity.observed_wall_ns"
+            ),
+        }
 
 
 class JsonLineProcess:
