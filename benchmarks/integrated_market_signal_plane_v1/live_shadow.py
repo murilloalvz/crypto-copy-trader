@@ -1123,6 +1123,17 @@ async def run_live_shadow_v0(
             if not isinstance(canonical_items, list):
                 raise RuntimeError("Carbon canonical batch missing items")
 
+            signal_entries: list[
+                tuple[
+                    dict[str, Any],
+                    TraceRecord,
+                    str,
+                    str,
+                    int,
+                    int,
+                ]
+            ] = []
+
             for row in canonical_items:
                 if not isinstance(row, dict):
                     counters["decode_failures"] += 1
@@ -1276,94 +1287,145 @@ async def run_live_shadow_v0(
                     continue
 
                 assert observation is not None and kind is not None
+                sequence = signal_sequence
                 signal_record = _build_signal_record(
-                    sequence=signal_sequence,
+                    sequence=sequence,
                     kind=kind,
                     observation=observation,
                     source_received_wall_ns=source_wall_ns,
                     canonical_ready_wall_ns=canonical_ready_wall_ns,
                 )
-
-                rust_dispatch_wall_ns = time.time_ns()
-                await asyncio.to_thread(rust.send, signal_record)
-
-                py_started_ns = time.perf_counter_ns()
-                python_trigger = python_state.ingest(
-                    TraceRecord(
-                        sequence=signal_sequence,
-                        arrival_offset_ns=max(
-                            0,
-                            source_wall_ns - int(start_wall_ns or source_wall_ns),
-                        ),
-                        kind=kind,
-                        event_key=str(event_key),
-                        source_provider=f"shadow:{endpoint_host}",
-                        trade=(observation if kind == "trade" else None),
-                        lifecycle=(observation if kind == "lifecycle" else None),
+                trace_record = TraceRecord(
+                    sequence=sequence,
+                    arrival_offset_ns=max(
+                        0,
+                        source_wall_ns - int(start_wall_ns or source_wall_ns),
+                    ),
+                    kind=kind,
+                    event_key=str(event_key),
+                    source_provider=f"shadow:{endpoint_host}",
+                    trade=(observation if kind == "trade" else None),
+                    lifecycle=(observation if kind == "lifecycle" else None),
+                )
+                signal_entries.append(
+                    (
+                        signal_record,
+                        trace_record,
+                        str(event_key),
+                        kind,
+                        source_wall_ns,
+                        canonical_ready_wall_ns,
                     )
-                )
-                py_service_elapsed_ns = time.perf_counter_ns() - py_started_ns
-                python_signal_ready_wall_ns = time.time_ns()
-
-                rust_row = await asyncio.to_thread(rust.receive)
-                if rust_row.get("type") == "signal_error":
-                    errors.append(
-                        f"rust_signal_error:{rust_row.get('error')}"
-                    )
-                    signal_sequence += 1
-                    continue
-                if (
-                    rust_row.get("type") != "signal_result"
-                    or int(rust_row.get("sequence", -1)) != signal_sequence
-                ):
-                    errors.append(
-                        f"rust_sequence_or_type_mismatch:{signal_sequence}:{rust_row!r}"
-                    )
-                    signal_sequence += 1
-                    continue
-
-                python_snapshot = _trigger_snapshot(python_trigger)
-                rust_snapshot = rust_row.get("trigger")
-                counters["signal_records"] += 1
-                if kind == "trade":
-                    counters["trade_decision_points"] += 1
-                    if _json_equivalent(python_snapshot, rust_snapshot):
-                        counters["trigger_exact_matches"] += 1
-                    else:
-                        counters["trigger_mismatches"] += 1
-                        if len(mismatches) < 20:
-                            mismatches.append(
-                                {
-                                    "sequence": signal_sequence,
-                                    "event_key": event_key,
-                                    "python": python_snapshot,
-                                    "rust": rust_snapshot,
-                                }
-                            )
-
-                rust_signal_ready_wall_ns = int(
-                    rust_row["signal_ready_wall_ns"]
-                )
-                rust_service_elapsed_ns = int(rust_row["service_ns"])
-
-                python_service_ns.append(py_service_elapsed_ns)
-                rust_service_ns.append(rust_service_elapsed_ns)
-                python_source_to_signal_ns.append(
-                    max(0, python_signal_ready_wall_ns - source_wall_ns)
-                )
-                rust_source_to_signal_ns.append(
-                    max(0, rust_signal_ready_wall_ns - source_wall_ns)
-                )
-                python_canonical_to_signal_ns.append(
-                    max(0, python_signal_ready_wall_ns - canonical_ready_wall_ns)
-                )
-                rust_canonical_to_signal_ns.append(
-                    max(0, rust_signal_ready_wall_ns - canonical_ready_wall_ns)
-                )
-                rust_dispatch_to_signal_ns.append(
-                    max(0, rust_signal_ready_wall_ns - rust_dispatch_wall_ns)
                 )
                 signal_sequence += 1
+
+            if signal_entries:
+                signal_batch_id += 1
+                rust_signal_batch_sizes.append(len(signal_entries))
+                counters["rust_signal_batches"] += 1
+                counters["rust_signal_batch_records"] += len(signal_entries)
+                counters["rust_signal_batch_max_records"] = max(
+                    counters["rust_signal_batch_max_records"],
+                    len(signal_entries),
+                )
+
+                rust_dispatch_wall_ns = time.time_ns()
+                rust_batch_started_ns = time.perf_counter_ns()
+                rust_batch_row = await asyncio.to_thread(
+                    rust.request,
+                    {
+                        "type": "signal_batch",
+                        "batch_id": signal_batch_id,
+                        "records": [
+                            entry[0]
+                            for entry in signal_entries
+                        ],
+                    },
+                )
+                rust_batch_response_wall_ns = time.time_ns()
+                rust_batch_roundtrip_ns.append(
+                    time.perf_counter_ns() - rust_batch_started_ns
+                )
+
+                if rust_batch_row.get("type") == "signal_error":
+                    raise RuntimeError(
+                        f"rust_signal_batch_error:{rust_batch_row.get('error')}"
+                    )
+                if (
+                    rust_batch_row.get("type") != "signal_batch_result"
+                    or int(rust_batch_row.get("batch_id", -1)) != signal_batch_id
+                ):
+                    raise RuntimeError(
+                        f"unexpected Rust signal batch response: {rust_batch_row!r}"
+                    )
+                rust_results = rust_batch_row.get("results")
+                if (
+                    not isinstance(rust_results, list)
+                    or len(rust_results) != len(signal_entries)
+                ):
+                    raise RuntimeError(
+                        "Rust signal batch result count mismatch: "
+                        f"expected={len(signal_entries)} "
+                        f"actual={len(rust_results) if isinstance(rust_results, list) else 'invalid'}"
+                    )
+                rust_batch_service_ns.append(
+                    int(rust_batch_row.get("batch_service_ns", 0))
+                )
+
+                for entry, rust_row in zip(signal_entries, rust_results):
+                    (
+                        _signal_record,
+                        trace_record,
+                        event_key,
+                        kind,
+                        source_wall_ns,
+                        canonical_ready_wall_ns,
+                    ) = entry
+                    sequence = trace_record.sequence
+                    if (
+                        not isinstance(rust_row, dict)
+                        or rust_row.get("type") != "signal_result"
+                        or int(rust_row.get("sequence", -1)) != sequence
+                    ):
+                        raise RuntimeError(
+                            f"rust_sequence_or_type_mismatch:{sequence}:{rust_row!r}"
+                        )
+
+                    rust_snapshot = rust_row.get("trigger")
+                    counters["signal_records"] += 1
+                    if kind == "trade":
+                        counters["trade_decision_points"] += 1
+
+                    rust_service_elapsed_ns = int(rust_row["service_ns"])
+                    rust_service_ns.append(rust_service_elapsed_ns)
+                    rust_source_to_signal_ns.append(
+                        max(
+                            0,
+                            rust_batch_response_wall_ns - source_wall_ns,
+                        )
+                    )
+                    rust_canonical_to_signal_ns.append(
+                        max(
+                            0,
+                            rust_batch_response_wall_ns
+                            - canonical_ready_wall_ns,
+                        )
+                    )
+                    rust_dispatch_to_signal_ns.append(
+                        max(
+                            0,
+                            rust_batch_response_wall_ns
+                            - rust_dispatch_wall_ns,
+                        )
+                    )
+                    parity_audit_records.append(
+                        (
+                            trace_record,
+                            rust_snapshot,
+                            event_key,
+                            kind,
+                        )
+                    )
 
             for _ in ingress_batch:
                 ingress_queue.task_done()
