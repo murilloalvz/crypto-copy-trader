@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from src.market_opportunity_radar import MarketTradeObservation
 from src.opportunity_enrichment_store import admit_opportunity_episode
@@ -26,6 +27,7 @@ def admit_signal_plane_trigger_snapshot(
     acquisition_run_key: str,
     trigger_snapshot: dict | None,
     observation: MarketTradeObservation,
+    admit_episode_fn: Callable[..., bool] | None = None,
 ) -> SignalPlaneEpisodeAdmissionResult | None:
     """Persist/admit one Rust Signal Plane trigger using frozen episode semantics.
 
@@ -43,7 +45,8 @@ def admit_signal_plane_trigger_snapshot(
         trigger=trigger,
         observation=observation,
     )
-    admitted = admit_opportunity_episode(
+    admission = admit_episode_fn or admit_opportunity_episode
+    admitted = admission(
         acquisition_run_key=acquisition_run_key,
         episode_key=episode.episode_key,
         admitted_at=episode.first_trigger_observed_at,
