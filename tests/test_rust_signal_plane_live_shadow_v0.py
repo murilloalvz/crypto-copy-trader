@@ -4,6 +4,7 @@ from dataclasses import asdict
 import unittest
 
 from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
+    AsyncPumpSwapIdentityPlane,
     _add_identity,
     _build_signal_record,
     _identity_source_for_evidence,
@@ -12,6 +13,9 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
 )
 from src.market_opportunity_radar import MarketTradeObservation
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
+from benchmarks.market_first_live_discovery_v0.contracts import (
+    identities_available_before_v0,
+)
 
 
 class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
@@ -79,6 +83,40 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
         self.assertIsNone(
             _identity_source_for_evidence(identities, "missing")
         )
+
+    def test_async_identity_plane_enqueue_is_deduplicated_without_rpc(self):
+        plane = AsyncPumpSwapIdentityPlane(
+            identities_by_pool={},
+            rpc_url="https://example.invalid",
+            queue_size=2,
+        )
+        self.assertTrue(plane.enqueue("POOL_A"))
+        self.assertFalse(plane.enqueue("POOL_A"))
+        self.assertEqual(plane.counters["enqueued"], 1)
+        self.assertEqual(plane.counters["deduplicated"], 1)
+
+    def test_async_identity_never_backfills_earlier_event(self):
+        identity = PumpSwapPoolIdentityObservation(
+            pool="POOL",
+            base_mint="BASE",
+            quote_mint="QUOTE",
+            observed_wall_ns=200,
+            observed_slot=2,
+            evidence_key="async",
+            source="async_solana_getMultipleAccounts_v0",
+        )
+        before = identities_available_before_v0(
+            (identity,),
+            pool="POOL",
+            event_wall_ns=199,
+        )
+        after = identities_available_before_v0(
+            (identity,),
+            pool="POOL",
+            event_wall_ns=200,
+        )
+        self.assertEqual(before, ())
+        self.assertEqual(after, (identity,))
 
     def test_signal_record_preserves_exact_observation(self):
         observation = MarketTradeObservation(
