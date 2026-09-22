@@ -231,6 +231,33 @@ Once unrestricted internet is available, the shortest path is:
 8. evaluate the frozen V68 economic gate. No more hot-path tuning is permitted unless one of the
    required systems gates fails.
 
+### Signal Plane edge path implementation checkpoint — 2026-09-22 school/offline work
+
+Additional migration work completed while live provider access was unreliable:
+
+- `src/signal_plane_research_persistence_v0.py` admission wiring was corrected:
+  market observation persistence no longer receives an unsupported admission callback, and the
+  injected route-research coordinator callback is now passed to trigger episode admission.
+- `benchmarks/integrated_market_signal_plane_v1/rust_suite.py` explicitly selects the original
+  `rust-indexed-signal-plane-v0` binary so the offline bridge audit is not ambiguous after adding
+  the `stream` binary.
+- `signal_plane_edge_offline_readiness_v0.py` now provides one offline gate over:
+  V5 real batched Rust stdin/stdout IPC capacity/parity, Rust->episode bridge parity, and the frozen
+  V68/cohort contracts.
+- `src/signal_plane_forward_cohort_v0.py` now bridges one promoted Signal Plane subcohort through
+  route decisions and the exact forward 300/900/3600 outcome collector with frozen 250ms exit pacing.
+- `route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py` now contains the
+  complete A/B fresh prospective V68 path over Signal Plane acquisition and reuses the existing V55
+  dataset builder + frozen V68 primary gate.
+- `signal_plane_v68_promotion_v0.py` builds and validates a promotion manifest bound to the exact
+  git HEAD and SHA-256 hashes of all required evidence artifacts.
+- Both the canonical release wrapper and the direct Signal Plane V68 runner require a valid
+  promotion manifest. There is no supported direct bypass to a fresh economic acquisition.
+
+The economic runner remains intentionally blocked until unrestricted-network evidence passes:
+V5 120s live smoke, V5 30m sustained soak, and systems-only live route-research bridge. A school
+network handshake failure before acquisition is not V5 evidence and does not consume a V68 key.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
