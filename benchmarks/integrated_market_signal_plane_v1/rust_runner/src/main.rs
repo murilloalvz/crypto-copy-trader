@@ -179,12 +179,15 @@ impl State {
         self.latest_chain_time
             .insert(trade.token_mint.clone(), chain_as_of);
 
-        let rows = self.rows.entry(trade.token_mint.clone()).or_default();
+        let token_mint = trade.token_mint.clone();
+        let observed_at = trade.observed_at;
+        let lifecycle_needed = uses_lifecycle(&trade.venue);
+        let rows = self.rows.entry(token_mint.clone()).or_default();
         let row = TradeRow {
             chain_time: trade.chain_time,
-            observed_at: trade.observed_at,
+            observed_at,
             sequence,
-            trade: trade.clone(),
+            trade,
         };
         if rows
             .last()
@@ -215,16 +218,16 @@ impl State {
         let baseline_count = fast_start.saturating_sub(baseline_start);
         let fast: Vec<&Trade> = rows[fast_start..fast_end].iter().map(|row| &row.trade).collect();
 
-        let lifecycle = if uses_lifecycle(&trade.venue) {
-            self.lifecycle.get(&trade.token_mint)
+        let lifecycle = if lifecycle_needed {
+            self.lifecycle.get(&token_mint)
         } else {
             None
         };
         Ok(detect(
             &fast,
             baseline_count,
-            &trade.token_mint,
-            trade.observed_at,
+            &token_mint,
+            observed_at,
             chain_as_of,
             lifecycle,
         ))
