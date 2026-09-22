@@ -12,7 +12,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 from benchmarks.carbon_decoder_parity_v1.parity import extract_contextual_target_payloads
 from benchmarks.commodity_signal_plane_v0.benchmark import TraceRecord
@@ -809,6 +809,7 @@ async def run_live_shadow_v0(
     output: Path,
     episode_bridge_run_key: str | None = None,
     research_plane_run_key: str | None = None,
+    research_plane_admit_episode_fn: Callable[..., bool] | None = None,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
@@ -979,6 +980,7 @@ async def run_live_shadow_v0(
                     acquisition_run_key=research_run_key,
                     record=trace_record,
                     trigger_snapshot=trigger_snapshot,
+                    admit_episode_fn=research_plane_admit_episode_fn,
                 )
                 counters["research_plane_completed"] += 1
                 if result.observation_inserted:
