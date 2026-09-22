@@ -186,55 +186,8 @@ def _signal_plane_promotion_check(
 ) -> tuple[bool, str]:
     if promotion_report is None:
         return False, "promotion_report=missing"
-    path = Path(promotion_report)
-    if not path.exists():
-        return False, f"promotion_report_not_found={path}"
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return False, f"promotion_report_invalid={type(exc).__name__}:{exc}"
-
-    if report.get("type") != "v68_signal_plane_promotion_report":
-        return False, f"promotion_type={report.get('type')!r}"
-    if report.get("version") != signal_plane_promotion.VERSION:
-        return False, f"promotion_version={report.get('version')!r}"
-    if report.get("classification") != signal_plane_promotion.PASS_CLASSIFICATION:
-        return False, f"promotion_classification={report.get('classification')!r}"
-    checks = report.get("checks")
-    if (
-        not isinstance(checks, dict)
-        or not checks
-        or not all(value is True for value in checks.values())
-    ):
-        return False, "promotion_checks_not_all_true"
-
-    try:
-        current_head = signal_plane_promotion._git_head()
-    except Exception as exc:
-        return False, f"git_head_unavailable={type(exc).__name__}:{exc}"
-    if report.get("git_head") != current_head:
-        return False, (
-            f"promotion_git_head={report.get('git_head')} "
-            f"current_git_head={current_head}"
-        )
-
-    evidence = report.get("evidence")
-    if not isinstance(evidence, dict) or not evidence:
-        return False, "promotion_evidence_missing"
-    for name, item in evidence.items():
-        if not isinstance(item, dict):
-            return False, f"promotion_evidence_invalid={name}"
-        evidence_path = Path(str(item.get("path", "")))
-        if not evidence_path.exists():
-            return False, f"promotion_evidence_not_found={name}:{evidence_path}"
-        expected_hash = str(item.get("sha256", ""))
-        actual_hash = signal_plane_promotion._sha256(evidence_path)
-        if expected_hash != actual_hash:
-            return False, f"promotion_evidence_hash_mismatch={name}"
-
-    return True, (
-        f"promotion_report={path} git_head={current_head} "
-        f"evidence_count={len(evidence)}"
+    return signal_plane_promotion.validate_promotion_report(
+        Path(promotion_report)
     )
 
 
