@@ -730,8 +730,6 @@ async def run_live_shadow_v0(
 
     python_state = IndexedWindowRadarState()
     seen_event_keys: set[str] = set()
-    subscription_labels: dict[int, str] = {}
-    request_labels = {1: "pump_logs", 2: "pumpswap_logs"}
     counters: Counter[str] = Counter()
     matched_statuses: Counter[str] = Counter()
     market_trade_statuses: Counter[str] = Counter()
@@ -760,6 +758,7 @@ async def run_live_shadow_v0(
     pump_ready = asyncio.Event()
     pumpswap_ready = asyncio.Event()
     reader_tasks: list[asyncio.Task[None]] = []
+    ingress_drain_started_monotonic: float | None = None
 
     try:
         deadline = time.monotonic() + duration_seconds
@@ -815,7 +814,6 @@ async def run_live_shadow_v0(
             )
         counters["sessions_active"] = 2
 
-        ingress_drain_started_monotonic: float | None = None
         while True:
             source_open = time.monotonic() < deadline
             readers_done = all(task.done() for task in reader_tasks)
