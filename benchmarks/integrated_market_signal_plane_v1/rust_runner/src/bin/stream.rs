@@ -2,8 +2,6 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, BufWriter, Write};
 
 mod frozen_kernel {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     include!("../main.rs");
 
     pub struct StreamKernel {
@@ -69,11 +67,11 @@ mod frozen_kernel {
             let observation = value
                 .get("observation")
                 .ok_or_else(|| "missing observation".to_string())?;
-            let source_received_wall_ns = value
+            let _source_received_wall_ns = value
                 .get("source_received_wall_ns")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| "missing source_received_wall_ns".to_string())?;
-            let canonical_ready_wall_ns = value
+            let _canonical_ready_wall_ns = value
                 .get("canonical_ready_wall_ns")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| "missing canonical_ready_wall_ns".to_string())?;
@@ -94,19 +92,10 @@ mod frozen_kernel {
                 other => return Err(format!("unsupported kind {other}")),
             };
             let service_ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-            let signal_ready_wall_ns = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|error| format!("system_time:{error}"))?
-                .as_nanos()
-                .min(u64::MAX as u128) as u64;
 
             Ok(json!({
                 "type": "signal_result",
                 "sequence": sequence,
-                "kind": kind,
-                "source_received_wall_ns": source_received_wall_ns,
-                "canonical_ready_wall_ns": canonical_ready_wall_ns,
-                "signal_ready_wall_ns": signal_ready_wall_ns,
                 "service_ns": service_ns,
                 "trigger": trigger,
                 "late_chain_time_inserts": self.state.late_chain_time_inserts,
@@ -253,7 +242,6 @@ mod tests {
 
         for (left, right) in sequential_rows.iter().zip(batch_rows.iter()) {
             assert_eq!(left["sequence"], right["sequence"]);
-            assert_eq!(left["kind"], right["kind"]);
             assert_eq!(left["trigger"], right["trigger"]);
             assert_eq!(
                 left["late_chain_time_inserts"],
