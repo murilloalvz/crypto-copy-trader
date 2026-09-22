@@ -8,6 +8,7 @@ from dataclasses import asdict
 import json
 import math
 import os
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 import subprocess
 import time
@@ -43,10 +44,11 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v2_transport_isolated"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V2_TRANSPORT_ISOLATED"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V2_TRANSPORT_ISOLATED"
+VERSION = "rust_signal_plane_live_shadow_v3_server_heartbeat"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V3_SERVER_HEARTBEAT"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V3_SERVER_HEARTBEAT"
 INGRESS_QUEUE_SIZE = 8192
+SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
 
@@ -115,6 +117,13 @@ def _endpoint_host(url: str) -> str:
     from urllib.parse import urlsplit
 
     return urlsplit(url).hostname or "<unknown>"
+
+
+def _websockets_version() -> str:
+    try:
+        return package_version("websockets")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 class AsyncPumpSwapIdentityPlane:
@@ -571,8 +580,11 @@ async def _surface_reader_v2(
     try:
         async with connect(
             endpoint,
-            ping_interval=20,
-            ping_timeout=10,
+            # Alchemy maintains liveness server-side. Disable the library's
+            # client-originated keepalive Ping timeout; replies to server Ping
+            # control frames remain automatic at the protocol layer.
+            ping_interval=None,
+            ping_timeout=None,
             close_timeout=5,
             max_size=16 * 1024 * 1024,
             max_queue=1024,
@@ -604,6 +616,7 @@ async def _surface_reader_v2(
                 counters[f"{label}_sessions_active"] += 1
                 ready_event.set()
 
+            last_application_message_at = time.monotonic()
             while time.monotonic() < deadline:
                 remaining = min(1.0, max(0.0, deadline - time.monotonic()))
                 if remaining <= 0:
@@ -611,7 +624,14 @@ async def _surface_reader_v2(
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                 except asyncio.TimeoutError:
+                    idle_for = time.monotonic() - last_application_message_at
+                    if idle_for >= SURFACE_IDLE_TIMEOUT_SECONDS:
+                        raise TimeoutError(
+                            f"{label} application stream idle for "
+                            f"{idle_for:.3f}s"
+                        )
                     continue
+                last_application_message_at = time.monotonic()
                 received_wall_ns = time.time_ns()
                 message = json.loads(raw)
                 if not isinstance(message, dict):
@@ -742,6 +762,11 @@ async def run_live_shadow_v0(
     python_canonical_to_signal_ns: list[int] = []
     rust_canonical_to_signal_ns: list[int] = []
     rust_dispatch_to_signal_ns: list[int] = []
+    ingress_queue_wait_ns: list[int] = []
+    pump_ingress_queue_wait_ns: list[int] = []
+    pumpswap_ingress_queue_wait_ns: list[int] = []
+    target_extract_service_ns: list[int] = []
+    carbon_roundtrip_ns: list[int] = []
     signal_sequence = 0
     batch_id = 0
     log_notifications = 0
@@ -843,17 +868,33 @@ async def run_live_shadow_v0(
             normalized = dict(ingress["normalized"])
             label = str(ingress["label"])
             received_wall_ns = int(ingress["received_wall_ns"])
+            dequeued_wall_ns = time.time_ns()
+            queue_wait_ns = max(0, dequeued_wall_ns - received_wall_ns)
+            ingress_queue_wait_ns.append(queue_wait_ns)
+            if label == "pump_logs":
+                pump_ingress_queue_wait_ns.append(queue_wait_ns)
+            elif label == "pumpswap_logs":
+                pumpswap_ingress_queue_wait_ns.append(queue_wait_ns)
+            counters["consumer_notifications"] += 1
+
+            target_extract_started_ns = time.perf_counter_ns()
             items, manifests, stack_errors = _target_inputs_from_notification(
                 normalized=normalized,
                 received_wall_ns=received_wall_ns,
                 seen_event_keys=seen_event_keys,
             )
+            target_extract_service_ns.append(
+                time.perf_counter_ns() - target_extract_started_ns
+            )
             counters["stack_errors"] += stack_errors
             counters["target_events"] += len(items)
             if not items:
+                ingress_queue.task_done()
                 continue
+            counters["consumer_target_notifications"] += 1
 
             batch_id += 1
+            carbon_started_ns = time.perf_counter_ns()
             decoder_row = await asyncio.to_thread(
                 carbon.request,
                 {
@@ -861,6 +902,9 @@ async def run_live_shadow_v0(
                     "batch_id": batch_id,
                     "items": items,
                 },
+            )
+            carbon_roundtrip_ns.append(
+                time.perf_counter_ns() - carbon_started_ns
             )
             if (
                 decoder_row.get("type") != "carbon_canonical_batch"
@@ -1110,6 +1154,8 @@ async def run_live_shadow_v0(
                 )
                 signal_sequence += 1
 
+            ingress_queue.task_done()
+
     except Exception as exc:
         errors.append(f"fatal:{type(exc).__name__}:{exc}")
     finally:
@@ -1231,6 +1277,23 @@ async def run_live_shadow_v0(
             "pumpswap_notifications": int(counters["pumpswap_logs_notifications"]),
             "pump_ingress_drops": int(counters["pump_logs_ingress_drops"]),
             "pumpswap_ingress_drops": int(counters["pumpswap_logs_ingress_drops"]),
+            "websockets_version": _websockets_version(),
+            "client_ping_interval": None,
+            "client_ping_timeout": None,
+            "surface_idle_timeout_seconds": SURFACE_IDLE_TIMEOUT_SECONDS,
+            "latency": {
+                "ingress_queue_wait": _latency_summary_ns(ingress_queue_wait_ns),
+                "pump_ingress_queue_wait": _latency_summary_ns(
+                    pump_ingress_queue_wait_ns
+                ),
+                "pumpswap_ingress_queue_wait": _latency_summary_ns(
+                    pumpswap_ingress_queue_wait_ns
+                ),
+                "target_extract_service": _latency_summary_ns(
+                    target_extract_service_ns
+                ),
+                "carbon_roundtrip": _latency_summary_ns(carbon_roundtrip_ns),
+            },
         },
         "identity_plane": identity_plane.summary(),
         "pumpswap_context_diagnostics": {
