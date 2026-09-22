@@ -40,11 +40,30 @@ def _signal_record(record: TraceRecord, *, wall_base_ns: int) -> dict[str, Any]:
     observation = record.trade if record.kind == "trade" else record.lifecycle
     if observation is None:
         raise ValueError("trace record missing observation")
+    if record.kind == "trade":
+        payload = {
+            "token_mint": observation.token_mint,
+            "side": observation.side,
+            "chain_time": observation.chain_time,
+            "observed_at": observation.observed_at,
+            "wallet_address": observation.wallet_address,
+            "notional_usd": observation.notional_usd,
+            "price_usd": observation.price_usd,
+            "venue": observation.venue,
+            "transaction_key": observation.transaction_key,
+        }
+    else:
+        payload = {
+            "token_mint": observation.token_mint,
+            "market_started_at": observation.market_started_at,
+            "observed_at": observation.observed_at,
+            "venue": observation.venue,
+        }
     source_wall_ns = wall_base_ns + max(0, int(record.arrival_offset_ns))
     return {
         "sequence": int(record.sequence),
         "kind": record.kind,
-        "observation": asdict(observation),
+        "observation": payload,
         "source_received_wall_ns": source_wall_ns,
         "canonical_ready_wall_ns": source_wall_ns + 1_000,
     }
