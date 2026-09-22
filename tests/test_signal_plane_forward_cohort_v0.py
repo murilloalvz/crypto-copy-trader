@@ -9,6 +9,48 @@ import src.signal_plane_forward_cohort_v0 as cohort
 
 
 class SignalPlaneForwardCohortV0Tests(unittest.TestCase):
+    def test_fresh_v68_requires_valid_promotion_before_bridge(self):
+        with patch.object(
+            cohort.bridge,
+            "run_bridge",
+            new=AsyncMock(
+                side_effect=AssertionError("bridge must not run without promotion")
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "requires a promotion report"):
+                cohort.run_signal_plane_forward_cohort_v0(
+                    run_key="v68-flow60-fresh-20260922-03-A",
+                    bootstrap_report=Path("bootstrap.json"),
+                    acquisition_duration_seconds=1,
+                )
+
+    def test_fresh_v68_valid_promotion_authorizes_bridge_component(self):
+        bridge_mock = AsyncMock(
+            return_value={
+                "classification": "FAIL_SIGNAL_PLANE_ROUTE_RESEARCH_BRIDGE_V0"
+            }
+        )
+        with patch.object(
+            cohort.promotion,
+            "validate_promotion_report",
+            return_value=(True, "ok"),
+        ), patch.object(
+            cohort.bridge,
+            "run_bridge",
+            new=bridge_mock,
+        ):
+            result = cohort.run_signal_plane_forward_cohort_v0(
+                run_key="v68-flow60-fresh-20260922-03-A",
+                bootstrap_report=Path("bootstrap.json"),
+                promotion_report=Path("promotion.json"),
+                acquisition_duration_seconds=1,
+            )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(
+            bridge_mock.await_args.kwargs["allow_v68_fresh_run_key"]
+        )
+
     def test_bridge_failure_stops_before_forward_collection(self):
         with patch.object(
             cohort.bridge,
