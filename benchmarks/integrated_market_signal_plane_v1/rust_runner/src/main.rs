@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     env,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Write},
     path::PathBuf,
     time::Instant,
 };
@@ -454,6 +454,10 @@ fn detect(
     })
 }
 
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, message.into())
+}
+
 fn parse_args() -> Result<(PathBuf, PathBuf), String> {
     let mut trace = None;
     let mut out = None;
@@ -472,14 +476,14 @@ fn parse_args() -> Result<(PathBuf, PathBuf), String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (trace_path, out_path) = parse_args().map_err(std::io::Error::other)?;
+    let (trace_path, out_path) = parse_args().map_err(invalid)?;
     let reader = BufReader::new(File::open(&trace_path)?);
     let mut lines = reader.lines();
 
-    let header_line = lines.next().ok_or("trace is empty")??;
+    let header_line = lines.next().ok_or_else(|| invalid("trace is empty"))??;
     let header: TraceHeader = serde_json::from_str(&header_line)?;
     if header.kind != "trace_header" {
-        return Err("unsupported trace header".into());
+        return Err(invalid("unsupported trace header").into());
     }
 
     let mut state = State::default();
@@ -498,14 +502,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let trigger = match record.kind.as_str() {
             "trade" => {
                 let trade: Trade = serde_json::from_value(record.observation)?;
-                state.ingest_trade(record.sequence, trade)?
+                state.ingest_trade(record.sequence, trade).map_err(invalid)?
             }
             "lifecycle" => {
                 let lifecycle: Lifecycle = serde_json::from_value(record.observation)?;
                 state.ingest_lifecycle(lifecycle);
                 None
             }
-            other => return Err(format!("unsupported record type {other}").into()),
+            other => return Err(invalid(format!("unsupported record type {other}")).into()),
         };
         service_ns.push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
         if record.kind == "trade" {
@@ -518,7 +522,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if seen != header.record_count {
-        return Err(format!("record_count mismatch: header={} seen={seen}", header.record_count).into());
+        return Err(invalid(format!(
+            "record_count mismatch: header={} seen={seen}",
+            header.record_count
+        ))
+        .into());
     }
 
     let report = json!({
