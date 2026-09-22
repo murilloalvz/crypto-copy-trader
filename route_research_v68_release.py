@@ -24,6 +24,16 @@ from src.pumpswap_stream import (
     build_logs_subscribe_request as build_pumpswap_logs_subscribe_request,
 )
 import src.sqlite_write_admission as sqlite_admission
+from src.signal_plane_episode_bridge_v0 import (
+    SIGNAL_PLANE_EPISODE_BRIDGE_VERSION,
+    build_signal_plane_episode_assignment,
+)
+from src.market_opportunity_radar import (
+    MARKET_OPPORTUNITY_RADAR_VERSION,
+    MarketMovementFeatures,
+    MarketMovementTrigger,
+    MarketTradeObservation,
+)
 
 
 V68_RELEASE_SYSTEMS_PROFILE = (
@@ -31,6 +41,8 @@ V68_RELEASE_SYSTEMS_PROFILE = (
 )
 V68_RELEASE_PUMPSWAP_WRITER_BATCH_SIZE = 64
 V68_RELEASE_PUMPSWAP_WRITER_BATCH_MAX_WAIT_MS = 10
+V68_REQUIRED_SIGNAL_PLANE_BRIDGE_VERSION = "signal_plane_episode_bridge_v0"
+V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED = False
 
 _EXPECTED_V68_ECONOMIC_CONTRACT = (
     "flow60_buy_share_pct",
@@ -68,6 +80,91 @@ def _release_v43_parser_factory(original_build_parser):
         return parser
 
     return build_parser
+
+
+def _signal_plane_bridge_contract_check() -> tuple[bool, str]:
+    """Offline proof that Rust/Python trigger semantics preserve frozen episode identity."""
+
+    features = MarketMovementFeatures(
+        token_mint="TOKEN",
+        as_of=120,
+        chain_as_of=119,
+        fast_window_seconds=30,
+        baseline_horizon_seconds=300,
+        fast_event_count=6,
+        baseline_event_count=3,
+        fast_buy_count=5,
+        fast_sell_count=1,
+        fast_unique_wallet_count=5,
+        fast_unique_transaction_count=6,
+        wallet_identity_coverage_pct=100.0,
+        transaction_identity_coverage_pct=100.0,
+        notional_coverage_pct=100.0,
+        price_coverage_pct=100.0,
+        fast_event_rate_per_second=0.2,
+        baseline_event_rate_per_second=3 / 270,
+        activity_acceleration_ratio=18.0,
+        signed_notional_imbalance_pct=50.0,
+        count_imbalance_pct=66.6666666667,
+        direction="upward_pressure",
+        first_price_usd=1.0,
+        last_price_usd=1.1,
+        fast_return_pct=10.0,
+        median_observation_lag_seconds=None,
+        max_observation_lag_seconds=None,
+        venues=("pump",),
+        market_age_seconds=20,
+        data_quality_flags=(),
+    )
+    trigger = MarketMovementTrigger(
+        token_mint="TOKEN",
+        as_of=120,
+        method_version=MARKET_OPPORTUNITY_RADAR_VERSION,
+        trigger_kind="fresh_market_burst",
+        direction="upward_pressure",
+        features=features,
+    )
+
+    pump = build_signal_plane_episode_assignment(
+        trigger=trigger,
+        observation=MarketTradeObservation(
+            token_mint="TOKEN",
+            side="buy",
+            chain_time=119,
+            observed_at=120,
+            venue="pump",
+            transaction_key="pump-signature",
+        ),
+    )
+    pumpswap = build_signal_plane_episode_assignment(
+        trigger=trigger,
+        observation=MarketTradeObservation(
+            token_mint="TOKEN",
+            side="buy",
+            chain_time=119,
+            observed_at=120,
+            venue="pumpswap",
+            transaction_key="pumpswap-signature",
+        ),
+    )
+
+    passed = (
+        SIGNAL_PLANE_EPISODE_BRIDGE_VERSION
+        == V68_REQUIRED_SIGNAL_PLANE_BRIDGE_VERSION
+        and pump.trigger_key
+        == "market-radar:pump:pump-signature:TOKEN"
+        and pump.venue == "pump_bonding_curve"
+        and pumpswap.trigger_key
+        == "market-radar:pumpswap-v3:pumpswap-signature:TOKEN"
+        and pumpswap.venue == "pump_swap"
+        and pump.observed_at == pumpswap.observed_at == 120
+        and pump.chain_time == pumpswap.chain_time == 119
+    )
+    detail = (
+        f"bridge_version={SIGNAL_PLANE_EPISODE_BRIDGE_VERSION} "
+        f"pump_key={pump.trigger_key} pumpswap_key={pumpswap.trigger_key}"
+    )
+    return passed, detail
 
 
 def _economic_contract() -> tuple[object, ...]:
@@ -186,6 +283,20 @@ def collect_readiness_checks(*, run_key: str) -> tuple[ReadinessCheck, ...]:
             "frozen_v68_economic_contract",
             _economic_contract() == _EXPECTED_V68_ECONOMIC_CONTRACT,
             f"contract={_economic_contract()}",
+        ),
+        ReadinessCheck(
+            "signal_plane_episode_bridge_contract",
+            _signal_plane_bridge_contract_check()[0],
+            _signal_plane_bridge_contract_check()[1],
+        ),
+        ReadinessCheck(
+            "signal_plane_v5_promotion_authorized",
+            V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED,
+            (
+                "authorized"
+                if V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED
+                else "BLOCKED_PENDING_V5_SUSTAINED_CAPACITY_AND_LIVE_EPISODE_BRIDGE"
+            ),
         ),
         ReadinessCheck(
             "v9_runner_available",
