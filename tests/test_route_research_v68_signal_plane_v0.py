@@ -9,6 +9,33 @@ import route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0 a
 
 
 class V68SignalPlaneProspectiveV0Tests(unittest.TestCase):
+    def test_invalid_promotion_blocks_before_freshness_or_acquisition(self):
+        with patch.object(
+            sp_v68.promotion,
+            "validate_promotion_report",
+            return_value=(False, "invalid manifest"),
+        ), patch.object(
+            sp_v68,
+            "_strict_run_keys_fresh",
+            side_effect=AssertionError("freshness must not run before promotion"),
+        ), patch.object(
+            sp_v68,
+            "run_signal_plane_forward_cohort_v0",
+            side_effect=AssertionError("acquisition must not start"),
+        ):
+            report = sp_v68.run_signal_plane_v68_v0(
+                base_run_key="base",
+                bootstrap_report=Path("bootstrap.json"),
+                promotion_report=Path("promotion.json"),
+                acquisition_duration_seconds=1,
+            )
+
+        self.assertEqual(
+            report["classification"],
+            "FAIL_V68_SIGNAL_PLANE_PROMOTION_REQUIRED",
+        )
+        self.assertIn("invalid manifest", report["promotion_detail"])
+
     def test_strict_freshness_rejects_any_existing_run_key_residue(self):
         with patch.object(
             sp_v68.promotion,
