@@ -223,6 +223,22 @@ def _rust_signal_command(cargo: str) -> list[str]:
     ]
 
 
+def _identity_source_for_evidence(
+    identities: tuple[PumpSwapPoolIdentityObservation, ...],
+    evidence_key: str | None,
+) -> str | None:
+    if evidence_key is None:
+        return None
+    return next(
+        (
+            item.source
+            for item in identities
+            if item.evidence_key == evidence_key
+        ),
+        None,
+    )
+
+
 def _add_identity(
     by_pool: dict[str, list[PumpSwapPoolIdentityObservation]],
     identity: PumpSwapPoolIdentityObservation,
@@ -649,16 +665,10 @@ async def run_live_shadow_v0(
                             if len(matched.provenance_keys) >= 2
                             else None
                         )
-                        identity_source = None
-                        if identity_evidence_key is not None:
-                            identity_source = next(
-                                (
-                                    item.source
-                                    for item in causal_identities
-                                    if item.evidence_key == identity_evidence_key
-                                ),
-                                None,
-                            )
+                        identity_source = _identity_source_for_evidence(
+                            causal_identities,
+                            identity_evidence_key,
+                        )
                         pumpswap_identity_sources[
                             identity_source or "UNKNOWN"
                         ] += 1
