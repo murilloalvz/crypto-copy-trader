@@ -874,6 +874,11 @@ async def run_live_shadow_v0(
     deadline_ref: dict[str, float] = {}
     reader_tasks: list[asyncio.Task[None]] = []
     ingress_drained_monotonic: float | None = None
+    deadline: float | None = None
+    startup_started_monotonic = time.monotonic()
+    open_barrier_ms = 0.0
+    subscription_barrier_ms = 0.0
+    pre_acquisition_queue_depth = 0
 
     try:
         reader_tasks = [
@@ -933,6 +938,9 @@ async def run_live_shadow_v0(
                 + " | ".join(transport_errors or ["missing socket open"])
             )
         counters["transport_open_barrier_passed"] += 1
+        open_barrier_ms = (
+            time.monotonic() - startup_started_monotonic
+        ) * 1000.0
 
         subscribe_event.set()
 
@@ -950,6 +958,16 @@ async def run_live_shadow_v0(
             raise RuntimeError(
                 "transport subscription incomplete: "
                 + " | ".join(transport_errors or ["missing subscription ACK"])
+            )
+
+        subscription_barrier_ms = (
+            time.monotonic() - startup_started_monotonic
+        ) * 1000.0
+        pre_acquisition_queue_depth = ingress_queue.qsize()
+        if pre_acquisition_queue_depth != 0:
+            raise RuntimeError(
+                "pre-acquisition ingress queue is not empty: "
+                f"{pre_acquisition_queue_depth}"
             )
 
         start_wall_ns = time.time_ns()
@@ -1371,15 +1389,18 @@ async def run_live_shadow_v0(
         carbon.close()
         rust.close()
 
-    drain_end = (
-        ingress_drained_monotonic
-        if ingress_drained_monotonic is not None
-        else deadline
-    )
-    ingress_drain_after_source_ms = max(
-        0.0,
-        (drain_end - deadline) * 1000.0,
-    )
+    if deadline is None:
+        ingress_drain_after_source_ms = 0.0
+    else:
+        drain_end = (
+            ingress_drained_monotonic
+            if ingress_drained_monotonic is not None
+            else deadline
+        )
+        ingress_drain_after_source_ms = max(
+            0.0,
+            (drain_end - deadline) * 1000.0,
+        )
 
     errors.extend(
         f"transport:{item}"
@@ -1403,6 +1424,19 @@ async def run_live_shadow_v0(
     ingress_consumed_total = int(counters["consumer_notifications"])
 
     gates = {
+        "transport_open_barrier_passed": (
+            counters["transport_open_barrier_passed"] == 1
+        ),
+        "transport_subscription_barrier_passed": (
+            counters["transport_subscription_barrier_passed"] == 1
+        ),
+        "transport_acquisition_started": (
+            counters["pump_logs_acquisition_started"] == 1
+            and counters["pumpswap_logs_acquisition_started"] == 1
+        ),
+        "transport_pre_acquisition_ingress_zero": (
+            pre_acquisition_queue_depth == 0
+        ),
         "subscriptions_active": (
             counters["pump_logs_ack"] == 1
             and counters["pumpswap_logs_ack"] == 1
@@ -1483,7 +1517,19 @@ async def run_live_shadow_v0(
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
         "transport": {
-            "mode": "isolated_dual_wss_burst_microbatch_v4",
+            "mode": "isolated_dual_wss_startup_barrier_v4_1",
+            "startup": {
+                "open_timeout_seconds": WS_OPEN_TIMEOUT_SECONDS,
+                "open_barrier_timeout_seconds": WS_OPEN_BARRIER_TIMEOUT_SECONDS,
+                "subscription_ack_timeout_seconds": SUBSCRIPTION_ACK_TIMEOUT_SECONDS,
+                "open_barrier_ms": open_barrier_ms,
+                "subscription_barrier_ms": subscription_barrier_ms,
+                "pre_acquisition_queue_depth": pre_acquisition_queue_depth,
+                "acquisition_started": (
+                    counters["pump_logs_acquisition_started"] == 1
+                    and counters["pumpswap_logs_acquisition_started"] == 1
+                ),
+            },
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
