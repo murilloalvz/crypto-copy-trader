@@ -1267,7 +1267,7 @@ async def run_live_shadow_v0(
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
         "transport": {
-            "mode": "isolated_dual_wss_bounded_ingress_v2",
+            "mode": "isolated_dual_wss_server_heartbeat_v3",
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
@@ -1392,7 +1392,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v2/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v3/report.json"
         ),
     )
     args = parser.parse_args()
