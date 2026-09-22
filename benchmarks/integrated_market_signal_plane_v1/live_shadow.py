@@ -1472,6 +1472,37 @@ async def run_live_shadow_v0(
         if f"transport:{item}" not in errors
     )
 
+    python_audit_state = IndexedWindowRadarState()
+    python_audit_started_ns = time.perf_counter_ns()
+    try:
+        for trace_record, rust_snapshot, event_key, kind in parity_audit_records:
+            py_started_ns = time.perf_counter_ns()
+            python_trigger = python_audit_state.ingest(trace_record)
+            python_audit_service_ns.append(
+                time.perf_counter_ns() - py_started_ns
+            )
+            counters["python_audit_records"] += 1
+            if kind != "trade":
+                continue
+            counters["python_audit_trade_decision_points"] += 1
+            python_snapshot = _trigger_snapshot(python_trigger)
+            if _json_equivalent(python_snapshot, rust_snapshot):
+                counters["trigger_exact_matches"] += 1
+            else:
+                counters["trigger_mismatches"] += 1
+                if len(mismatches) < 20:
+                    mismatches.append(
+                        {
+                            "sequence": trace_record.sequence,
+                            "event_key": event_key,
+                            "python": python_snapshot,
+                            "rust": rust_snapshot,
+                        }
+                    )
+    except Exception as exc:
+        errors.append(f"python_parity_audit:{type(exc).__name__}:{exc}")
+    python_audit_total_ns = time.perf_counter_ns() - python_audit_started_ns
+
     trade_points = int(counters["trade_decision_points"])
     exact_matches = int(counters["trigger_exact_matches"])
     trigger_mismatches = int(counters["trigger_mismatches"])
@@ -1536,6 +1567,16 @@ async def run_live_shadow_v0(
             > 0
         ),
         "trade_decision_points_observed": trade_points > 0,
+        "rust_signal_batch_exercised": counters["rust_signal_batches"] > 0,
+        "rust_signal_batch_accounting_exact": (
+            counters["rust_signal_batch_records"]
+            == counters["signal_records"]
+        ),
+        "python_parity_audit_complete": (
+            counters["python_audit_records"] == counters["signal_records"]
+            and counters["python_audit_trade_decision_points"]
+            == counters["trade_decision_points"]
+        ),
         "trigger_parity_100": trigger_mismatches == 0 and parity_pct == 100.0,
         "no_decode_failures": counters["decode_failures"] == 0,
         "identity_plane_enqueued_unknown_pool": (
