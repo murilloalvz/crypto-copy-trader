@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufWriter, Write};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod frozen_kernel {
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
     include!("../main.rs");
 
     pub struct StreamKernel {
