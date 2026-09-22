@@ -82,7 +82,7 @@ class V68SignalPlaneProspectiveV0Tests(unittest.TestCase):
             sp_v68,
             "run_signal_plane_forward_cohort_v0",
             return_value=failed,
-        ), patch.object(
+        ) as cohort_runner, patch.object(
             sp_v68,
             "build_early_opportunity_dataset_v55",
             side_effect=AssertionError("economic dataset must not run"),
@@ -96,6 +96,10 @@ class V68SignalPlaneProspectiveV0Tests(unittest.TestCase):
         self.assertEqual(
             report["classification"],
             "FAIL_V68_SIGNAL_PLANE_SUBCOHORT",
+        )
+        self.assertEqual(
+            cohort_runner.call_args.kwargs["promotion_report"],
+            Path("promotion.json"),
         )
 
     def test_frozen_primary_gate_is_used_without_threshold_recalculation(self):
