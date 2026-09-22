@@ -41,15 +41,15 @@ def _json_equivalent(left: Any, right: Any) -> bool:
         if isinstance(right, float) and not math.isfinite(right):
             return left == right
         return math.isclose(float(left), float(right), rel_tol=1e-10, abs_tol=1e-9)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _json_equivalent(a, b) for a, b in zip(left, right)
+        )
     if type(left) is not type(right):
         return False
     if isinstance(left, dict):
         return left.keys() == right.keys() and all(
             _json_equivalent(left[key], right[key]) for key in left
-        )
-    if isinstance(left, list):
-        return len(left) == len(right) and all(
-            _json_equivalent(a, b) for a, b in zip(left, right)
         )
     return left == right
 
