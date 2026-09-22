@@ -11,6 +11,7 @@ from pathlib import Path
 
 import route_research_forward_cohort_v43 as v43
 import route_research_prospective_flow60_buy_share_holdout_v68 as v68
+import route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0 as v68_signal_plane
 import route_research_prospective_flow60_buy_share_holdout_v68_tailfix_v9 as v68_v9
 import unified_market_latency_smoke_v30 as v30
 import unified_market_route_research_smoke_tailfix_v9 as tailfix_v9
@@ -454,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--run-key", required=True)
+    parser.add_argument("--bootstrap-report", type=Path)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--hazard-start-interval-ms", type=int, default=650)
     parser.add_argument("--entry-start-interval-ms", type=int, default=1000)
@@ -479,6 +481,33 @@ def main() -> int:
         return 2
     if args.preflight_only:
         return 0
+
+    if V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED:
+        if args.bootstrap_report is None:
+            print("classification=FAIL_V68_SIGNAL_PLANE_BOOTSTRAP_REQUIRED")
+            print(
+                "Interpretation: promoted Signal Plane V68 requires an explicit "
+                "--bootstrap-report; acquisition did not start."
+            )
+            return 2
+        original_v68_argv = list(sys.argv)
+        try:
+            sys.argv = [
+                "route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py",
+                "--run-key",
+                base,
+                "--bootstrap-report",
+                str(args.bootstrap_report),
+                "--hazard-start-interval-ms",
+                str(args.hazard_start_interval_ms),
+                "--entry-start-interval-ms",
+                str(args.entry_start_interval_ms),
+                "--exit-start-interval-ms",
+                str(args.exit_start_interval_ms),
+            ]
+            return int(v68_signal_plane.main())
+        finally:
+            sys.argv = original_v68_argv
 
     original_v68_argv = list(sys.argv)
     original_v43_build_parser = v43.build_parser
