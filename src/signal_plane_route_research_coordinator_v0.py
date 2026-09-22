@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import threading
 import time
@@ -180,10 +180,18 @@ class SignalPlaneRouteResearchCoordinatorV0:
             episode_key=episode_key,
             enqueued_monotonic=time.monotonic(),
         )
-        self._loop.call_soon_threadsafe(
-            self._enqueue_selected_job,
-            job,
-        )
+        handoff: Future[None] = Future()
+
+        def enqueue_and_ack() -> None:
+            try:
+                self._enqueue_selected_job(job)
+            except Exception as exc:
+                handoff.set_exception(exc)
+            else:
+                handoff.set_result(None)
+
+        self._loop.call_soon_threadsafe(enqueue_and_ack)
+        handoff.result(timeout=5.0)
         return True
 
     def _enqueue_selected_job(self, job: _EpisodeJob) -> None:
