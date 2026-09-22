@@ -134,6 +134,31 @@ Jupiter / forward-outcome bridge using a non-V68 key, then explicit release auth
 
 See `docs/v68-signal-plane-migration-v0-2026-09-22.md`.
 
+### Signal Plane -> Research Plane -> V68 downstream bridge (2026-09-22)
+
+Additional offline migration work completed while live provider access was unsuitable:
+
+- `signal_plane_research_persistence_v0` now accepts an injectable admission callback;
+- `test_signal_plane_v68_feature_bridge_v0` proves the intended durable path can reconstruct the
+  frozen V68 feature boundary from persisted flow: 4 BUY / 7 events =
+  `57.142857...%`, which must classify as LOW under frozen `V68_LOW_MAX=57.1429`;
+- `signal_plane_route_research_coordinator_v0` extracts the historical v37/v41 dual-lane topology:
+  every selected episode fans out independently to hazard and research queues, research waits for
+  terminal hazard evidence, then performs the original route-only Jupiter entry and freezes the
+  existing research decision/outcome schedule;
+- coordinator defaults preserve the frozen economic cohort shape/pacing:
+  cap=40, research_workers=4, hazard_workers=4, hazard start interval=650ms, entry start
+  interval=1000ms;
+- episode admission handoff is safe from both event-loop and worker threads and is acknowledged
+  before the caller returns, preventing a false downstream-drained race;
+- `route_research_signal_plane_bridge_v0.py` is the new systems-only end-to-end bridge runner:
+  V5 live -> ordered durable Research Plane -> frozen episode admission -> hazard -> Jupiter
+  route-only decision -> 300/900/3600 outcome scheduling. It explicitly rejects a
+  `v68-flow60-fresh*` run key and does not evaluate outcomes or V68 economics.
+
+This means the remaining migration risk is now concentrated in live sustained V5 capacity and
+provider-backed systems validation of the new bridge, not in inventing a new economic contract.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
