@@ -162,8 +162,8 @@ class V68ReleaseReadinessTests(unittest.TestCase):
         try:
             with patch.object(
                 release,
-                "V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED",
-                True,
+                "_signal_plane_promotion_check",
+                return_value=(True, "test promotion"),
             ), patch.object(
                 release,
                 "print_readiness",
@@ -189,6 +189,8 @@ class V68ReleaseReadinessTests(unittest.TestCase):
                     "unit-release",
                     "--bootstrap-report",
                     "bootstrap.json",
+                    "--signal-plane-promotion-report",
+                    "promotion.json",
                 ]
                 result = release.main()
         finally:
@@ -207,8 +209,8 @@ class V68ReleaseReadinessTests(unittest.TestCase):
         try:
             with patch.object(
                 release,
-                "V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED",
-                True,
+                "_signal_plane_promotion_check",
+                return_value=(True, "test promotion"),
             ), patch.object(
                 release,
                 "print_readiness",
