@@ -104,6 +104,36 @@ canonical batch, and moves Python parity to an exact post-run replay over the sa
 Python parity remains mandatory at 100%; it is removed only from live latency, not from correctness
 gating.
 
+### V68 Signal Plane migration active (2026-09-22)
+
+V68 fresh remains **blocked** while the accepted Signal Plane is integrated into the real research
+path. Do not run `-03` through the historical v46/v44/v43/v42 hot path.
+
+Current migration pieces:
+
+- Rust V5 ordered `signal_batch` live path with post-run Python parity audit;
+- `signal_plane_episode_bridge_v0` preserves historical Pump/PumpSwap trigger keys, clocks and
+  durable venue names;
+- `signal_plane_episode_admission_v0` reuses the existing durable episode +
+  `admit_opportunity_episode` contract and supports injected admission callbacks;
+- `signal_plane_research_persistence_v0` persists each canonical observation before any trigger
+  episode admission and is benchmark-independent via Protocol;
+- V5 live shadow has optional systems-only `--episode-bridge-run-key` and
+  `--research-plane-run-key` modes, both off the Rust hot path;
+- `benchmarks.v68_signal_plane_bridge_v0.run` is the offline Rust -> episode-identity semantic
+  audit;
+- `route_research_v68_release.py` is fail-closed with
+  `V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED = False` and cannot launch fresh V68 until explicit
+  promotion;
+- V68 provider-health probes now use concurrent Pump/PumpSwap WSS probes with
+  server-heartbeat policy (`ping_interval=None`) and explicit opening timeout.
+
+Remaining before promotion: offline bridge PASS, V5 live/sustained capacity PASS on unrestricted
+network, ordered Research Plane durability PASS, systems-only end-to-end admission -> hazard /
+Jupiter / forward-outcome bridge using a non-V68 key, then explicit release authorization.
+
+See `docs/v68-signal-plane-migration-v0-2026-09-22.md`.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
