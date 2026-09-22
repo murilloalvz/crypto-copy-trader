@@ -556,6 +556,23 @@ def _target_inputs_from_notification(
     return items, manifests, int(stack_errors)
 
 
+def _take_ready_ingress_batch(
+    queue: asyncio.Queue[dict[str, Any]],
+    first: dict[str, Any],
+    *,
+    max_notifications: int,
+) -> list[dict[str, Any]]:
+    if max_notifications <= 0:
+        raise ValueError("max_notifications must be positive")
+    batch = [first]
+    while len(batch) < max_notifications:
+        try:
+            batch.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return batch
+
+
 def _build_signal_record(
     *,
     sequence: int,
@@ -886,12 +903,11 @@ async def run_live_shadow_v0(
                     ingress_drained_monotonic = time.monotonic()
                 continue
 
-            ingress_batch = [first_ingress]
-            while len(ingress_batch) < INGRESS_MICROBATCH_MAX_NOTIFICATIONS:
-                try:
-                    ingress_batch.append(ingress_queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
+            ingress_batch = _take_ready_ingress_batch(
+                ingress_queue,
+                first_ingress,
+                max_notifications=INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
+            )
             batch_dequeued_wall_ns = time.time_ns()
             log_notifications += len(ingress_batch)
             ingress_microbatch_sizes.append(len(ingress_batch))
