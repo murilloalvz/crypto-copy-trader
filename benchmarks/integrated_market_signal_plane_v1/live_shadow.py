@@ -1557,11 +1557,12 @@ async def run_live_shadow_v0(
                     )
 
                     if research_plane_queue is not None:
-                        counters["research_plane_enqueued"] += 1
+                        counters["research_plane_attempted"] += 1
                         try:
                             research_plane_queue.put_nowait(
                                 (trace_record, rust_snapshot)
                             )
+                            counters["research_plane_enqueued"] += 1
                             counters["research_plane_queue_high_water"] = max(
                                 counters["research_plane_queue_high_water"],
                                 research_plane_queue.qsize(),
@@ -1829,6 +1830,37 @@ async def run_live_shadow_v0(
                 ),
             }
         )
+    if research_run_key:
+        gates.update(
+            {
+                "research_plane_exercised": (
+                    counters["research_plane_enqueued"] > 0
+                ),
+                "research_plane_no_queue_overflow": (
+                    counters["research_plane_queue_overflow"] == 0
+                ),
+                "research_plane_no_errors": (
+                    counters["research_plane_errors"] == 0
+                    and counters["research_plane_drain_timeout"] == 0
+                ),
+                "research_plane_accounting_exact": (
+                    counters["research_plane_completed"]
+                    == counters["research_plane_enqueued"]
+                    == counters["signal_records"]
+                ),
+                "research_plane_observation_accounting_exact": (
+                    counters["research_plane_trades_completed"]
+                    + counters["research_plane_lifecycles_completed"]
+                    == counters["research_plane_completed"]
+                ),
+                "research_plane_trigger_episode_observed": (
+                    counters["research_plane_trigger_episodes"] > 0
+                ),
+                "research_plane_new_admission_observed": (
+                    counters["research_plane_new_admissions"] > 0
+                ),
+            }
+        )
     classification = (
         PASS_CLASSIFICATION if all(gates.values()) else FAIL_CLASSIFICATION
     )
@@ -1918,6 +1950,55 @@ async def run_live_shadow_v0(
                 ),
                 "carbon_roundtrip": _latency_summary_ns(carbon_roundtrip_ns),
             },
+        },
+        "research_plane": {
+            "enabled": bool(research_run_key),
+            "version": SIGNAL_PLANE_RESEARCH_PERSISTENCE_VERSION,
+            "run_key": research_run_key or None,
+            "queue_capacity": 4096 if research_run_key else 0,
+            "queue_depth_at_report": (
+                research_plane_queue.qsize()
+                if research_plane_queue is not None
+                else 0
+            ),
+            "attempted": int(counters["research_plane_attempted"]),
+            "enqueued": int(counters["research_plane_enqueued"]),
+            "completed": int(counters["research_plane_completed"]),
+            "observations_inserted": int(
+                counters["research_plane_observations_inserted"]
+            ),
+            "observation_replays": int(
+                counters["research_plane_observation_replays"]
+            ),
+            "trades_completed": int(
+                counters["research_plane_trades_completed"]
+            ),
+            "lifecycles_completed": int(
+                counters["research_plane_lifecycles_completed"]
+            ),
+            "trigger_episodes": int(
+                counters["research_plane_trigger_episodes"]
+            ),
+            "new_admissions": int(
+                counters["research_plane_new_admissions"]
+            ),
+            "admission_replays": int(
+                counters["research_plane_admission_replays"]
+            ),
+            "queue_high_water": int(
+                counters["research_plane_queue_high_water"]
+            ),
+            "queue_overflow": int(
+                counters["research_plane_queue_overflow"]
+            ),
+            "errors": int(counters["research_plane_errors"]),
+            "drain_timeout": int(
+                counters["research_plane_drain_timeout"]
+            ),
+            "policy": (
+                "ordered off-hot-path durability: observation is persisted before "
+                "trigger episode assignment/admission; no hazard/Jupiter/outcome call"
+            ),
         },
         "episode_bridge": {
             "enabled": bool(bridge_run_key),
@@ -2053,6 +2134,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--research-plane-run-key",
+        default=None,
+        help=(
+            "Optional systems-only ordered durable Research Plane run key. "
+            "Persists every Signal Plane observation before any trigger episode admission. "
+            "Do not use a V68 fresh key."
+        ),
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path(
@@ -2069,6 +2159,7 @@ def main() -> int:
             cargo=args.cargo,
             output=args.out,
             episode_bridge_run_key=args.episode_bridge_run_key,
+            research_plane_run_key=args.research_plane_run_key,
         )
     )
     print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
