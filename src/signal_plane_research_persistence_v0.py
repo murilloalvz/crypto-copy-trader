@@ -58,12 +58,12 @@ def persist_signal_plane_research_record(
             event_key=record.event_key,
             source_provider=record.source_provider,
             observation=record.trade,
-            admit_episode_fn=admit_episode_fn,
         )
         episode = admit_signal_plane_trigger_snapshot(
             acquisition_run_key=acquisition_run_key,
             trigger_snapshot=trigger_snapshot,
             observation=record.trade,
+            admit_episode_fn=admit_episode_fn,
         )
         return SignalPlaneResearchPersistResult(
             sequence=record.sequence,
