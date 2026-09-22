@@ -67,7 +67,12 @@ The existing live parity/systems gates remain required:
 5. trade decision points observed;
 6. Python/Rust trigger parity exactly 100%;
 7. zero decode failures;
-8. zero fatal or signal-worker errors.
+8. zero fatal or signal-worker errors;
+9. at least one unknown pool is enqueued;
+10. at least one async RPC pool request is attempted;
+11. at least one causal pool identity is resolved;
+12. zero Identity Plane queue overflow;
+13. zero async RPC batch failure.
 
 V1 additionally reports, without retrospective threshold tuning:
 
