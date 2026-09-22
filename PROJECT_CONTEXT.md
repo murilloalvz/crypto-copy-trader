@@ -35,6 +35,47 @@ Este arquivo é o **source of truth operacional e científico atual** do projeto
 - provider pacing: **650/1000/250ms frozen** for current route research
 - route-only research: **US$25 / 100 bps / 300-900-3600s**
 
+### Signal Plane V4 — accepted systems baseline (2026-09-22)
+
+The current Signal Plane systems baseline is **V4 burst microbatch / PASS**.
+
+Live V4 evidence:
+
+- classification: `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH`
+- Python/Rust Radar parity: **701/701 = 100%**
+- ingress accounting: **2347 enqueued / 2347 consumed**
+- ingress drops: **0**
+- reader errors: **0**
+- ingress queue high-water: **31 / 8192**
+- true drain after source cutoff: **8.33 ms**
+- ingress queue wait p95: **0.572 ms**
+- Carbon roundtrip p95: **1.016 ms**
+- Rust service p95: **0.164 ms**
+- Rust source->signal p95: **7.754 ms**
+- Rust source->signal p99: **11.097 ms**
+- async PumpSwap identity requested/resolved: **111 / 111**
+- PumpSwap adapted via async identity: **268**
+- PumpSwap adapted coverage in this live window: **67.99%**
+- first unknown -> causal identity ready: p50 **540.9 ms**, p95 **1021.9 ms**
+- async RPC batch latency: p50 **512.1 ms**, p95 **546.5 ms**
+
+Interpretation:
+
+- the earlier multi-second systems bottleneck is closed for the isolated Signal Plane;
+- further millisecond-level tuning is not authorized from this sample;
+- the V4 microbatch reduced ingress queue p95 from the prior V3 6.664 ms to 0.572 ms, but total
+  source->signal remained in the same single-digit-millisecond class because batching moved some
+  waiting into per-event post-Carbon processing;
+- this is not economic edge evidence;
+- pending-release of the first unknown PumpSwap trade is **not** part of V4 and must not be
+  introduced without its own causal protocol.
+
+**Critical release rule:** V68 remains blocked. Its current release path still enters the historical
+v46/v44/v43/v42/V9 acquisition stack. A V4 shadow PASS does not authorize running a new V68 fresh
+key through that old acquisition path. Before V68 resumes, a systems-only bridge must prove that the
+actual V68 acquisition/admission path consumes the accepted Signal Plane semantics without changing
+the frozen V68 economic contract.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
