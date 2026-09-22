@@ -34,6 +34,7 @@ async def run_bridge(
     *,
     run_key: str,
     bootstrap_report: Path,
+    allow_v68_fresh_run_key: bool = False,
     duration_seconds: float,
     shadow_output: Path,
     report_output: Path,
@@ -53,9 +54,13 @@ async def run_bridge(
     base = str(run_key).strip()
     if not base:
         raise ValueError("run_key cannot be empty")
-    if "v68-flow60-fresh" in base.lower():
+    if (
+        "v68-flow60-fresh" in base.lower()
+        and not allow_v68_fresh_run_key
+    ):
         raise ValueError(
-            "systems bridge must not consume a V68 fresh economic run key"
+            "systems bridge must not consume a V68 fresh economic run key "
+            "without validated promotion authorization"
         )
     if downstream_drain_timeout_seconds <= 0:
         raise ValueError("downstream_drain_timeout_seconds must be positive")
@@ -170,8 +175,11 @@ async def run_bridge(
         "version": VERSION,
         "classification": classification,
         "authorization": (
-            "systems_bridge_only_no_v68_fresh_no_economic_verdict"
+            "promoted_v68_component_no_economic_verdict"
+            if allow_v68_fresh_run_key
+            else "systems_bridge_only_no_v68_fresh_no_economic_verdict"
         ),
+        "fresh_v68_run_key_authorized": bool(allow_v68_fresh_run_key),
         "run_key": base,
         "duration_seconds": duration_seconds,
         "elapsed_seconds": time.monotonic() - started,
