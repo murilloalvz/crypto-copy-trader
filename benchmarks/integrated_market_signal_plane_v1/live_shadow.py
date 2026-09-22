@@ -46,6 +46,10 @@ from src.signal_plane_episode_admission_v0 import (
     SIGNAL_PLANE_EPISODE_ADMISSION_VERSION,
     admit_signal_plane_trigger_snapshot,
 )
+from src.signal_plane_research_persistence_v0 import (
+    SIGNAL_PLANE_RESEARCH_PERSISTENCE_VERSION,
+    persist_signal_plane_research_record,
+)
 
 
 VERSION = "rust_signal_plane_live_shadow_v5_signal_batch"
@@ -804,6 +808,7 @@ async def run_live_shadow_v0(
     cargo: str,
     output: Path,
     episode_bridge_run_key: str | None = None,
+    research_plane_run_key: str | None = None,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
@@ -816,6 +821,17 @@ async def run_live_shadow_v0(
     )
     if episode_bridge_run_key is not None and not bridge_run_key:
         raise ValueError("episode_bridge_run_key cannot be blank")
+    research_run_key = (
+        str(research_plane_run_key).strip()
+        if research_plane_run_key is not None
+        else ""
+    )
+    if research_plane_run_key is not None and not research_run_key:
+        raise ValueError("research_plane_run_key cannot be blank")
+    if bridge_run_key and research_run_key:
+        raise ValueError(
+            "episode_bridge_run_key and research_plane_run_key are mutually exclusive"
+        )
 
     bootstrap = load_bootstrap_evidence_v0(Path(bootstrap_report))
     endpoint = rpc_http_to_ws_url(settings.rpc_url)
@@ -881,6 +897,14 @@ async def run_live_shadow_v0(
         else None
     )
     episode_bridge_task: asyncio.Task[None] | None = None
+    research_plane_queue: asyncio.Queue[
+        tuple[TraceRecord, dict | None] | None
+    ] | None = (
+        asyncio.Queue(maxsize=4096)
+        if research_run_key
+        else None
+    )
+    research_plane_task: asyncio.Task[None] | None = None
 
     ingress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=INGRESS_QUEUE_SIZE
@@ -934,6 +958,57 @@ async def run_live_shadow_v0(
         episode_bridge_task = asyncio.create_task(
             episode_bridge_worker(),
             name="signal-plane-episode-bridge-v0",
+        )
+
+    async def research_plane_worker() -> None:
+        assert research_plane_queue is not None
+        expected_sequence = 0
+        while True:
+            item = await research_plane_queue.get()
+            try:
+                if item is None:
+                    return
+                trace_record, trigger_snapshot = item
+                if trace_record.sequence != expected_sequence:
+                    raise RuntimeError(
+                        "research plane sequence mismatch: "
+                        f"expected={expected_sequence} actual={trace_record.sequence}"
+                    )
+                result = await asyncio.to_thread(
+                    persist_signal_plane_research_record,
+                    acquisition_run_key=research_run_key,
+                    record=trace_record,
+                    trigger_snapshot=trigger_snapshot,
+                )
+                counters["research_plane_completed"] += 1
+                if result.observation_inserted:
+                    counters["research_plane_observations_inserted"] += 1
+                else:
+                    counters["research_plane_observation_replays"] += 1
+                if trace_record.kind == "trade":
+                    counters["research_plane_trades_completed"] += 1
+                else:
+                    counters["research_plane_lifecycles_completed"] += 1
+                if result.episode is not None:
+                    counters["research_plane_trigger_episodes"] += 1
+                    if result.episode.admitted:
+                        counters["research_plane_new_admissions"] += 1
+                    else:
+                        counters["research_plane_admission_replays"] += 1
+                expected_sequence += 1
+            except Exception as exc:
+                counters["research_plane_errors"] += 1
+                errors.append(
+                    f"research_plane:{type(exc).__name__}:{exc}"
+                )
+                expected_sequence += 1
+            finally:
+                research_plane_queue.task_done()
+
+    if research_plane_queue is not None:
+        research_plane_task = asyncio.create_task(
+            research_plane_worker(),
+            name="signal-plane-research-persistence-v0",
         )
 
     try:
@@ -1481,6 +1556,22 @@ async def run_live_shadow_v0(
                         )
                     )
 
+                    if research_plane_queue is not None:
+                        counters["research_plane_enqueued"] += 1
+                        try:
+                            research_plane_queue.put_nowait(
+                                (trace_record, rust_snapshot)
+                            )
+                            counters["research_plane_queue_high_water"] = max(
+                                counters["research_plane_queue_high_water"],
+                                research_plane_queue.qsize(),
+                            )
+                        except asyncio.QueueFull:
+                            counters["research_plane_queue_overflow"] += 1
+                            errors.append(
+                                "research_plane:QueueFull:bounded persistence overflow"
+                            )
+
                     if (
                         episode_bridge_queue is not None
                         and kind == "trade"
@@ -1541,6 +1632,27 @@ async def run_live_shadow_v0(
                     episode_bridge_task.cancel()
                     errors.append(
                         f"episode_bridge_stop:{type(exc).__name__}:{exc}"
+                    )
+        if research_plane_queue is not None:
+            try:
+                await asyncio.wait_for(
+                    research_plane_queue.join(),
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                counters["research_plane_drain_timeout"] += 1
+                errors.append("research_plane:TimeoutError:drain")
+            if research_plane_task is not None:
+                try:
+                    research_plane_queue.put_nowait(None)
+                    await asyncio.wait_for(
+                        research_plane_task,
+                        timeout=5.0,
+                    )
+                except Exception as exc:
+                    research_plane_task.cancel()
+                    errors.append(
+                        f"research_plane_stop:{type(exc).__name__}:{exc}"
                     )
         carbon.close()
         rust.close()
