@@ -171,6 +171,9 @@ class AsyncPumpSwapIdentityPlane:
             fallback_urls=(),
         )
         self.attempted_pools: set[str] = set()
+        self.first_unknown_wall_ns: dict[str, int] = {}
+        self.rpc_batch_latency_ns: list[int] = []
+        self.unknown_to_identity_ready_ns: list[int] = []
         self.counters: Counter[str] = Counter()
         self._task: asyncio.Task[None] | None = None
 
@@ -179,18 +182,32 @@ class AsyncPumpSwapIdentityPlane:
             raise RuntimeError("identity plane already started")
         self._task = asyncio.create_task(self._run())
 
-    def enqueue(self, pool: str) -> bool:
+    def enqueue(
+        self,
+        pool: str,
+        *,
+        source_wall_ns: int | None = None,
+    ) -> bool:
         normalized = str(pool).strip()
         if not normalized:
             return False
         if normalized in self.attempted_pools:
             self.counters["deduplicated"] += 1
             return False
+        learned_from_wall_ns = (
+            time.time_ns()
+            if source_wall_ns is None
+            else int(source_wall_ns)
+        )
+        if learned_from_wall_ns < 0:
+            raise ValueError("source_wall_ns must be non-negative")
         self.attempted_pools.add(normalized)
+        self.first_unknown_wall_ns[normalized] = learned_from_wall_ns
         try:
             self.queue.put_nowait(normalized)
         except asyncio.QueueFull:
             self.attempted_pools.discard(normalized)
+            self.first_unknown_wall_ns.pop(normalized, None)
             self.counters["queue_full"] += 1
             return False
         self.counters["enqueued"] += 1
@@ -304,13 +321,28 @@ class AsyncPumpSwapIdentityPlane:
                     break
                 batch.append(item)
 
+            rpc_started_ns = time.perf_counter_ns()
             identities, metrics = await asyncio.to_thread(
                 self._resolve_batch_sync,
                 tuple(batch),
             )
+            self.rpc_batch_latency_ns.append(
+                time.perf_counter_ns() - rpc_started_ns
+            )
             self.counters.update(metrics)
             for identity in identities:
                 _add_identity(self.identities_by_pool, identity)
+                first_unknown_wall_ns = self.first_unknown_wall_ns.get(
+                    identity.pool
+                )
+                if first_unknown_wall_ns is not None:
+                    self.unknown_to_identity_ready_ns.append(
+                        max(
+                            0,
+                            identity.observed_wall_ns
+                            - first_unknown_wall_ns,
+                        )
+                    )
 
             for _ in batch:
                 self.queue.task_done()
@@ -341,6 +373,14 @@ class AsyncPumpSwapIdentityPlane:
             "attempted_unique_pools": len(self.attempted_pools),
             "queue_depth_at_report": self.queue.qsize(),
             "counters": dict(sorted(self.counters.items())),
+            "latency": {
+                "rpc_batch": _latency_summary_ns(
+                    self.rpc_batch_latency_ns
+                ),
+                "first_unknown_to_identity_ready": _latency_summary_ns(
+                    self.unknown_to_identity_ready_ns
+                ),
+            },
             "causal_policy": (
                 "unknown pool lookup is asynchronous; triggering trade remains MISSING; "
                 "resolved identity is usable only for later events whose receive time is "
@@ -1121,7 +1161,10 @@ async def run_live_shadow_v0(
                                 counters[
                                     "pumpswap_missing_without_causal_live_create_pool"
                                 ] += 1
-                            if identity_plane.enqueue(pool):
+                            if identity_plane.enqueue(
+                                pool,
+                                source_wall_ns=source_wall_ns,
+                            ):
                                 counters[
                                     "pumpswap_identity_async_lookup_enqueued"
                                 ] += 1
