@@ -42,6 +42,10 @@ from src.pumpswap_stream import (
     decode_pumpswap_pool_account,
 )
 from src.solana import SolanaClient, SolanaRPCError
+from src.signal_plane_episode_admission_v0 import (
+    SIGNAL_PLANE_EPISODE_ADMISSION_VERSION,
+    admit_signal_plane_trigger_snapshot,
+)
 
 
 VERSION = "rust_signal_plane_live_shadow_v5_signal_batch"
@@ -799,11 +803,19 @@ async def run_live_shadow_v0(
     max_log_notifications: int,
     cargo: str,
     output: Path,
+    episode_bridge_run_key: str | None = None,
 ) -> dict[str, Any]:
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be positive")
     if max_log_notifications < 0:
         raise ValueError("max_log_notifications cannot be negative")
+    bridge_run_key = (
+        str(episode_bridge_run_key).strip()
+        if episode_bridge_run_key is not None
+        else ""
+    )
+    if episode_bridge_run_key is not None and not bridge_run_key:
+        raise ValueError("episode_bridge_run_key cannot be blank")
 
     bootstrap = load_bootstrap_evidence_v0(Path(bootstrap_report))
     endpoint = rpc_http_to_ws_url(settings.rpc_url)
@@ -863,6 +875,13 @@ async def run_live_shadow_v0(
     live_create_pool_seen_at: dict[str, int] = {}
     pumpswap_identity_sources: Counter[str] = Counter()
 
+    episode_bridge_queue: asyncio.Queue[tuple[dict, Any] | None] | None = (
+        asyncio.Queue(maxsize=1024)
+        if bridge_run_key
+        else None
+    )
+    episode_bridge_task: asyncio.Task[None] | None = None
+
     ingress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=INGRESS_QUEUE_SIZE
     )
@@ -881,6 +900,41 @@ async def run_live_shadow_v0(
     open_barrier_ms = 0.0
     subscription_barrier_ms = 0.0
     pre_acquisition_queue_depth = 0
+
+    async def episode_bridge_worker() -> None:
+        assert episode_bridge_queue is not None
+        while True:
+            item = await episode_bridge_queue.get()
+            try:
+                if item is None:
+                    return
+                trigger_snapshot, observation = item
+                result = await asyncio.to_thread(
+                    admit_signal_plane_trigger_snapshot,
+                    acquisition_run_key=bridge_run_key,
+                    trigger_snapshot=trigger_snapshot,
+                    observation=observation,
+                )
+                counters["episode_bridge_completed"] += 1
+                if result is None:
+                    counters["episode_bridge_none"] += 1
+                elif result.admitted:
+                    counters["episode_bridge_new_admissions"] += 1
+                else:
+                    counters["episode_bridge_replays"] += 1
+            except Exception as exc:
+                counters["episode_bridge_errors"] += 1
+                errors.append(
+                    f"episode_bridge:{type(exc).__name__}:{exc}"
+                )
+            finally:
+                episode_bridge_queue.task_done()
+
+    if episode_bridge_queue is not None:
+        episode_bridge_task = asyncio.create_task(
+            episode_bridge_worker(),
+            name="signal-plane-episode-bridge-v0",
+        )
 
     try:
         reader_tasks = [
@@ -1427,6 +1481,23 @@ async def run_live_shadow_v0(
                         )
                     )
 
+                    if (
+                        episode_bridge_queue is not None
+                        and kind == "trade"
+                        and rust_snapshot is not None
+                        and trace_record.trade is not None
+                    ):
+                        counters["episode_bridge_trigger_snapshots"] += 1
+                        try:
+                            episode_bridge_queue.put_nowait(
+                                (rust_snapshot, trace_record.trade)
+                            )
+                        except asyncio.QueueFull:
+                            counters["episode_bridge_queue_overflow"] += 1
+                            errors.append(
+                                "episode_bridge:QueueFull:bounded admission overflow"
+                            )
+
             for _ in ingress_batch:
                 ingress_queue.task_done()
             if (
@@ -1450,6 +1521,27 @@ async def run_live_shadow_v0(
             errors.append(
                 f"identity_plane_stop:{type(exc).__name__}:{exc}"
             )
+        if episode_bridge_queue is not None:
+            try:
+                await asyncio.wait_for(
+                    episode_bridge_queue.join(),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                counters["episode_bridge_drain_timeout"] += 1
+                errors.append("episode_bridge:TimeoutError:drain")
+            if episode_bridge_task is not None:
+                try:
+                    episode_bridge_queue.put_nowait(None)
+                    await asyncio.wait_for(
+                        episode_bridge_task,
+                        timeout=5.0,
+                    )
+                except Exception as exc:
+                    episode_bridge_task.cancel()
+                    errors.append(
+                        f"episode_bridge_stop:{type(exc).__name__}:{exc}"
+                    )
         carbon.close()
         rust.close()
 
