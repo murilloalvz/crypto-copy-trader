@@ -9,22 +9,55 @@ from unittest.mock import patch
 
 from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     AsyncPumpSwapIdentityPlane,
+    INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
     INGRESS_QUEUE_SIZE,
     SURFACE_IDLE_TIMEOUT_SECONDS,
     VERSION,
     _surface_reader_v2,
+    _take_ready_ingress_batch,
 )
 
 
 class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
-    def test_v3_transport_contract_is_frozen(self):
+    def test_v4_transport_contract_is_frozen(self):
         self.assertEqual(
             VERSION,
-            "rust_signal_plane_live_shadow_v3_server_heartbeat",
+            "rust_signal_plane_live_shadow_v4_burst_microbatch",
         )
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)
+        self.assertEqual(INGRESS_MICROBATCH_MAX_NOTIFICATIONS, 32)
 
+
+    def test_ready_microbatch_drains_only_items_already_available(self):
+        queue = asyncio.Queue(maxsize=8)
+        first = {"id": 1}
+        queue.put_nowait({"id": 2})
+        queue.put_nowait({"id": 3})
+
+        batch = _take_ready_ingress_batch(
+            queue,
+            first,
+            max_notifications=32,
+        )
+
+        self.assertEqual([item["id"] for item in batch], [1, 2, 3])
+        self.assertTrue(queue.empty())
+
+    def test_ready_microbatch_respects_frozen_cap(self):
+        queue = asyncio.Queue(maxsize=64)
+        first = {"id": 0}
+        for value in range(1, 40):
+            queue.put_nowait({"id": value})
+
+        batch = _take_ready_ingress_batch(
+            queue,
+            first,
+            max_notifications=INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
+        )
+
+        self.assertEqual(len(batch), 32)
+        self.assertEqual(queue.qsize(), 8)
 
     def test_reader_disables_client_originated_keepalive_ping(self):
         captured = {}
