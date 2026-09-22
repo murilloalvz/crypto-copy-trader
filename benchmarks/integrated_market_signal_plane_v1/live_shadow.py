@@ -142,6 +142,7 @@ class AsyncPumpSwapIdentityPlane:
         self.client = SolanaClient(
             rpc_url=rpc_url,
             timeout=timeout_seconds,
+            fallback_urls=(),
         )
         self.attempted_pools: set[str] = set()
         self.counters: Counter[str] = Counter()
@@ -163,6 +164,7 @@ class AsyncPumpSwapIdentityPlane:
         try:
             self.queue.put_nowait(normalized)
         except asyncio.QueueFull:
+            self.attempted_pools.discard(normalized)
             self.counters["queue_full"] += 1
             return False
         self.counters["enqueued"] += 1
