@@ -808,11 +808,7 @@ async def run_live_shadow_v0(
     bootstrap = load_bootstrap_evidence_v0(Path(bootstrap_report))
     endpoint = rpc_http_to_ws_url(settings.rpc_url)
     endpoint_host = _endpoint_host(endpoint)
-    start_wall_ns = time.time_ns()
-    validate_bootstrap_before_discovery_start_v0(
-        bootstrap,
-        discovery_start_wall_ns=start_wall_ns,
-    )
+    start_wall_ns: int | None = None
 
     identities_by_pool: dict[str, list[PumpSwapPoolIdentityObservation]] = {}
     for identity in bootstrap.identities:
@@ -869,13 +865,17 @@ async def run_live_shadow_v0(
         maxsize=INGRESS_QUEUE_SIZE
     )
     transport_errors: list[str] = []
+    pump_opened = asyncio.Event()
+    pumpswap_opened = asyncio.Event()
+    subscribe_event = asyncio.Event()
     pump_ready = asyncio.Event()
     pumpswap_ready = asyncio.Event()
+    acquisition_event = asyncio.Event()
+    deadline_ref: dict[str, float] = {}
     reader_tasks: list[asyncio.Task[None]] = []
     ingress_drained_monotonic: float | None = None
 
     try:
-        deadline = time.monotonic() + duration_seconds
         reader_tasks = [
             asyncio.create_task(
                 _surface_reader_v2(
@@ -885,10 +885,13 @@ async def run_live_shadow_v0(
                         request_id=1,
                         commitment="confirmed",
                     ),
-                    deadline=deadline,
                     ingress_queue=ingress_queue,
                     counters=counters,
+                    opened_event=pump_opened,
+                    subscribe_event=subscribe_event,
                     ready_event=pump_ready,
+                    acquisition_event=acquisition_event,
+                    deadline_ref=deadline_ref,
                     transport_errors=transport_errors,
                 ),
                 name="pump-live-reader-v2",
@@ -901,10 +904,13 @@ async def run_live_shadow_v0(
                         request_id=2,
                         commitment="confirmed",
                     ),
-                    deadline=deadline,
                     ingress_queue=ingress_queue,
                     counters=counters,
+                    opened_event=pumpswap_opened,
+                    subscribe_event=subscribe_event,
                     ready_event=pumpswap_ready,
+                    acquisition_event=acquisition_event,
+                    deadline_ref=deadline_ref,
                     transport_errors=transport_errors,
                 ),
                 name="pumpswap-live-reader-v2",
@@ -913,20 +919,50 @@ async def run_live_shadow_v0(
 
         await asyncio.wait_for(
             asyncio.gather(
+                pump_opened.wait(),
+                pumpswap_opened.wait(),
+            ),
+            timeout=WS_OPEN_BARRIER_TIMEOUT_SECONDS,
+        )
+        if (
+            counters["pump_logs_socket_opened"] != 1
+            or counters["pumpswap_logs_socket_opened"] != 1
+        ):
+            raise RuntimeError(
+                "transport opening incomplete: "
+                + " | ".join(transport_errors or ["missing socket open"])
+            )
+        counters["transport_open_barrier_passed"] += 1
+
+        subscribe_event.set()
+
+        await asyncio.wait_for(
+            asyncio.gather(
                 pump_ready.wait(),
                 pumpswap_ready.wait(),
             ),
-            timeout=min(25.0, max(1.0, deadline - time.monotonic())),
+            timeout=SUBSCRIPTION_ACK_TIMEOUT_SECONDS + 2.0,
         )
         if (
             counters["pump_logs_ack"] != 1
             or counters["pumpswap_logs_ack"] != 1
         ):
             raise RuntimeError(
-                "transport startup incomplete: "
+                "transport subscription incomplete: "
                 + " | ".join(transport_errors or ["missing subscription ACK"])
             )
+
+        start_wall_ns = time.time_ns()
+        validate_bootstrap_before_discovery_start_v0(
+            bootstrap,
+            discovery_start_wall_ns=start_wall_ns,
+        )
+        source_started_monotonic = time.monotonic()
+        deadline = source_started_monotonic + duration_seconds
+        deadline_ref["deadline"] = deadline
         counters["sessions_active"] = 2
+        counters["transport_subscription_barrier_passed"] += 1
+        acquisition_event.set()
 
         while True:
             source_open = time.monotonic() < deadline
@@ -1235,7 +1271,10 @@ async def run_live_shadow_v0(
                 python_trigger = python_state.ingest(
                     TraceRecord(
                         sequence=signal_sequence,
-                        arrival_offset_ns=max(0, source_wall_ns - start_wall_ns),
+                        arrival_offset_ns=max(
+                            0,
+                            source_wall_ns - int(start_wall_ns or source_wall_ns),
+                        ),
                         kind=kind,
                         event_key=str(event_key),
                         source_provider=f"shadow:{endpoint_host}",
