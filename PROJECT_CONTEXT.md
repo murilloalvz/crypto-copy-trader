@@ -76,6 +76,34 @@ key through that old acquisition path. Before V68 resumes, a systems-only bridge
 actual V68 acquisition/admission path consumes the accepted Signal Plane semantics without changing
 the frozen V68 economic contract.
 
+### Signal Plane V4.1 long-soak result / V5 active correction
+
+The first valid 30-minute V4.1 soak **FAILED sustained capacity** after successful startup:
+
+- trigger parity: **30,200 / 30,200 = 100%**
+- ingress queue high-water: **8,192 / 8,192**
+- Pump ingress drops: **1,455**
+- PumpSwap ingress drops: **38,356**
+- ingress queue wait p95: **~29.09s**
+- Rust source->signal p95: **~29.52s**
+- Carbon roundtrip p95: **~2.04ms**
+- target extraction p95: **~0.164ms**
+- Identity Plane requested/resolved: **456 / 456**
+- both readers later closed without close frames
+- V68 remains blocked
+
+Interpretation: short-run correctness remained intact, but the live shadow verifier itself became
+load-bearing. Per-event Python Radar verification plus per-event Rust stdin/stdout IPC serialized
+inside the consumer path and saturated the bounded ingress queue. Do **not** rescue by increasing
+queue capacity or tuning the existing microbatch cap.
+
+Active correction: **V5 ordered Rust signal batch + post-run Python parity audit**.
+
+V5 keeps Rust as the only live Radar hot path, batches ordered signal records into one IPC per
+canonical batch, and moves Python parity to an exact post-run replay over the same TraceRecords.
+Python parity remains mandatory at 100%; it is removed only from live latency, not from correctness
+gating.
+
 ### Ciência econômica Solana
 
 - v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
