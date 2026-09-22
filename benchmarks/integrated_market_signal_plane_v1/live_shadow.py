@@ -44,11 +44,12 @@ from src.pumpswap_stream import (
 from src.solana import SolanaClient, SolanaRPCError
 
 
-VERSION = "rust_signal_plane_live_shadow_v3_server_heartbeat"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V3_SERVER_HEARTBEAT"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V3_SERVER_HEARTBEAT"
+VERSION = "rust_signal_plane_live_shadow_v4_burst_microbatch"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
+INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
 
@@ -767,6 +768,8 @@ async def run_live_shadow_v0(
     pumpswap_ingress_queue_wait_ns: list[int] = []
     target_extract_service_ns: list[int] = []
     carbon_roundtrip_ns: list[int] = []
+    ingress_microbatch_sizes: list[int] = []
+    carbon_batch_event_sizes: list[int] = []
     signal_sequence = 0
     batch_id = 0
     log_notifications = 0
@@ -784,6 +787,7 @@ async def run_live_shadow_v0(
     pumpswap_ready = asyncio.Event()
     reader_tasks: list[asyncio.Task[None]] = []
     ingress_drain_started_monotonic: float | None = None
+    ingress_drained_monotonic: float | None = None
 
     try:
         deadline = time.monotonic() + duration_seconds
@@ -858,40 +862,90 @@ async def run_live_shadow_v0(
                 else 0.1
             )
             try:
-                ingress = await asyncio.wait_for(
+                first_ingress = await asyncio.wait_for(
                     ingress_queue.get(),
                     timeout=wait_seconds,
                 )
             except asyncio.TimeoutError:
+                if (
+                    not source_open
+                    and ingress_queue.empty()
+                    and ingress_drained_monotonic is None
+                ):
+                    ingress_drained_monotonic = time.monotonic()
                 continue
 
-            normalized = dict(ingress["normalized"])
-            label = str(ingress["label"])
-            received_wall_ns = int(ingress["received_wall_ns"])
-            dequeued_wall_ns = time.time_ns()
-            queue_wait_ns = max(0, dequeued_wall_ns - received_wall_ns)
-            ingress_queue_wait_ns.append(queue_wait_ns)
-            if label == "pump_logs":
-                pump_ingress_queue_wait_ns.append(queue_wait_ns)
-            elif label == "pumpswap_logs":
-                pumpswap_ingress_queue_wait_ns.append(queue_wait_ns)
-            counters["consumer_notifications"] += 1
+            ingress_batch = [first_ingress]
+            while len(ingress_batch) < INGRESS_MICROBATCH_MAX_NOTIFICATIONS:
+                try:
+                    ingress_batch.append(ingress_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            ingress_microbatch_sizes.append(len(ingress_batch))
+            counters["consumer_microbatches"] += 1
+            counters["consumer_microbatch_notifications"] += len(ingress_batch)
+            counters["consumer_microbatch_max_observed"] = max(
+                counters["consumer_microbatch_max_observed"],
+                len(ingress_batch),
+            )
 
-            target_extract_started_ns = time.perf_counter_ns()
-            items, manifests, stack_errors = _target_inputs_from_notification(
-                normalized=normalized,
-                received_wall_ns=received_wall_ns,
-                seen_event_keys=seen_event_keys,
-            )
-            target_extract_service_ns.append(
-                time.perf_counter_ns() - target_extract_started_ns
-            )
-            counters["stack_errors"] += stack_errors
+            items: list[dict[str, Any]] = []
+            manifests: dict[str, dict[str, Any]] = {}
+            batch_stack_errors = 0
+            batch_target_notifications = 0
+
+            for ingress in ingress_batch:
+                normalized = dict(ingress["normalized"])
+                label = str(ingress["label"])
+                received_wall_ns = int(ingress["received_wall_ns"])
+                dequeued_wall_ns = time.time_ns()
+                queue_wait_ns = max(0, dequeued_wall_ns - received_wall_ns)
+                ingress_queue_wait_ns.append(queue_wait_ns)
+                if label == "pump_logs":
+                    pump_ingress_queue_wait_ns.append(queue_wait_ns)
+                elif label == "pumpswap_logs":
+                    pumpswap_ingress_queue_wait_ns.append(queue_wait_ns)
+                counters["consumer_notifications"] += 1
+
+                target_extract_started_ns = time.perf_counter_ns()
+                notification_items, notification_manifests, stack_errors = (
+                    _target_inputs_from_notification(
+                        normalized=normalized,
+                        received_wall_ns=received_wall_ns,
+                        seen_event_keys=seen_event_keys,
+                    )
+                )
+                target_extract_service_ns.append(
+                    time.perf_counter_ns() - target_extract_started_ns
+                )
+                batch_stack_errors += stack_errors
+                if notification_items:
+                    batch_target_notifications += 1
+                    items.extend(notification_items)
+                    manifests.update(notification_manifests)
+
+            counters["stack_errors"] += batch_stack_errors
             counters["target_events"] += len(items)
+            counters["consumer_target_notifications"] += batch_target_notifications
+
             if not items:
-                ingress_queue.task_done()
+                for _ in ingress_batch:
+                    ingress_queue.task_done()
+                if (
+                    not source_open
+                    and ingress_queue.empty()
+                    and ingress_drained_monotonic is None
+                ):
+                    ingress_drained_monotonic = time.monotonic()
                 continue
-            counters["consumer_target_notifications"] += 1
+
+            carbon_batch_event_sizes.append(len(items))
+            counters["carbon_microbatches"] += 1
+            counters["carbon_microbatch_events"] += len(items)
+            counters["carbon_microbatch_max_events"] = max(
+                counters["carbon_microbatch_max_events"],
+                len(items),
+            )
 
             batch_id += 1
             carbon_started_ns = time.perf_counter_ns()
@@ -1154,7 +1208,14 @@ async def run_live_shadow_v0(
                 )
                 signal_sequence += 1
 
-            ingress_queue.task_done()
+            for _ in ingress_batch:
+                ingress_queue.task_done()
+            if (
+                not source_open
+                and ingress_queue.empty()
+                and ingress_drained_monotonic is None
+            ):
+                ingress_drained_monotonic = time.monotonic()
 
     except Exception as exc:
         errors.append(f"fatal:{type(exc).__name__}:{exc}")
@@ -1175,9 +1236,14 @@ async def run_live_shadow_v0(
 
     ingress_drain_after_source_ms = 0.0
     if ingress_drain_started_monotonic is not None:
+        drain_end = (
+            ingress_drained_monotonic
+            if ingress_drained_monotonic is not None
+            else ingress_drain_started_monotonic
+        )
         ingress_drain_after_source_ms = max(
             0.0,
-            (time.monotonic() - ingress_drain_started_monotonic) * 1000.0,
+            (drain_end - ingress_drain_started_monotonic) * 1000.0,
         )
 
     errors.extend(
@@ -1267,7 +1333,7 @@ async def run_live_shadow_v0(
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
         "transport": {
-            "mode": "isolated_dual_wss_server_heartbeat_v3",
+            "mode": "isolated_dual_wss_burst_microbatch_v4",
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
@@ -1281,6 +1347,25 @@ async def run_live_shadow_v0(
             "client_ping_interval": None,
             "client_ping_timeout": None,
             "surface_idle_timeout_seconds": SURFACE_IDLE_TIMEOUT_SECONDS,
+            "microbatch": {
+                "max_notifications": INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
+                "consumer_microbatches": int(counters["consumer_microbatches"]),
+                "consumer_microbatch_max_observed": int(
+                    counters["consumer_microbatch_max_observed"]
+                ),
+                "ingress_microbatch_size": _latency_summary_ns(
+                    [
+                        int(size) * 1_000_000
+                        for size in ingress_microbatch_sizes
+                    ]
+                ),
+                "carbon_batch_event_size": _latency_summary_ns(
+                    [
+                        int(size) * 1_000_000
+                        for size in carbon_batch_event_sizes
+                    ]
+                ),
+            },
             "latency": {
                 "ingress_queue_wait": _latency_summary_ns(ingress_queue_wait_ns),
                 "pump_ingress_queue_wait": _latency_summary_ns(
@@ -1372,8 +1457,8 @@ async def run_live_shadow_v0(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Transport-isolated live systems shadow: independent Pump/PumpSwap WSS readers "
-            "-> bounded ingress -> frozen Carbon decoder -> Python/Rust indexed Radar."
+            "Burst-microbatch live shadow: independent Pump/PumpSwap WSS readers -> "
+            "bounded ingress -> no-wait burst drain -> Carbon -> Python/Rust indexed Radar."
         )
     )
     parser.add_argument("--bootstrap-report", type=Path, required=True)
@@ -1392,7 +1477,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v3/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v4/report.json"
         ),
     )
     args = parser.parse_args()
