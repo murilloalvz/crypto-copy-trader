@@ -22,8 +22,42 @@ mod frozen_kernel {
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "missing type".to_string())?;
+            if row_type == "signal_batch" {
+                let batch_id = value
+                    .get("batch_id")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "missing batch_id".to_string())?;
+                let records = value
+                    .get("records")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "missing records".to_string())?;
+                let batch_started = Instant::now();
+                let mut results: Vec<Value> = Vec::with_capacity(records.len());
+                for record in records {
+                    let mut signal_record = record.clone();
+                    let object = signal_record
+                        .as_object_mut()
+                        .ok_or_else(|| "batch record must be object".to_string())?;
+                    object.insert(
+                        "type".to_string(),
+                        Value::String("signal_record".to_string()),
+                    );
+                    results.push(self.process(signal_record)?);
+                }
+                let batch_service_ns = batch_started
+                    .elapsed()
+                    .as_nanos()
+                    .min(u64::MAX as u128) as u64;
+                return Ok(json!({
+                    "type": "signal_batch_result",
+                    "batch_id": batch_id,
+                    "count": results.len(),
+                    "batch_service_ns": batch_service_ns,
+                    "results": results,
+                }));
+            }
             if row_type != "signal_record" {
-                return Err("unsupported input type".to_string());
+                return Err(format!("unsupported input type {row_type}"));
             }
             let sequence = value
                 .get("sequence")
