@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +36,7 @@ class SignalPlaneRouteResearchCoordinatorV0Tests(unittest.TestCase):
                 max_episodes=2,
             )
             coordinator._loop = asyncio.get_running_loop()
+            coordinator._loop_thread_id = threading.get_ident()
             coordinator._started = True
 
             with patch(
@@ -66,6 +68,7 @@ class SignalPlaneRouteResearchCoordinatorV0Tests(unittest.TestCase):
                 acquisition_run_key="systems-coordinator",
             )
             coordinator._loop = asyncio.get_running_loop()
+            coordinator._loop_thread_id = threading.get_ident()
             coordinator._started = True
 
             with patch(
@@ -95,6 +98,7 @@ class SignalPlaneRouteResearchCoordinatorV0Tests(unittest.TestCase):
                 max_episodes=1,
             )
             coordinator._loop = asyncio.get_running_loop()
+            coordinator._loop_thread_id = threading.get_ident()
             coordinator._started = True
 
             with patch(
