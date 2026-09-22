@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &json!({
             "type": "rust_signal_stream_ready",
             "version": frozen_kernel::version(),
-            "transport": "ndjson_stdio_v0",
+            "transport": "ndjson_stdio_v1_signal_batch",
         }),
     )?;
 
@@ -175,4 +175,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lifecycle_record(sequence: u64, observed_at: i64) -> Value {
+        json!({
+            "type": "signal_record",
+            "sequence": sequence,
+            "kind": "lifecycle",
+            "source_received_wall_ns": 1_000_000_000u64 + sequence,
+            "canonical_ready_wall_ns": 1_000_100_000u64 + sequence,
+            "observation": {
+                "token_mint": "TOKEN",
+                "market_started_at": 100i64,
+                "observed_at": observed_at,
+                "venue": "pump"
+            }
+        })
+    }
+
+    fn trade_record(sequence: u64, side: &str, chain_time: i64) -> Value {
+        json!({
+            "type": "signal_record",
+            "sequence": sequence,
+            "kind": "trade",
+            "source_received_wall_ns": 2_000_000_000u64 + sequence,
+            "canonical_ready_wall_ns": 2_000_100_000u64 + sequence,
+            "observation": {
+                "token_mint": "TOKEN",
+                "side": side,
+                "chain_time": chain_time,
+                "observed_at": chain_time,
+                "wallet_address": format!("wallet-{sequence}"),
+                "notional_usd": 10.0,
+                "price_usd": 1.0 + (sequence as f64 * 0.01),
+                "venue": "pump",
+                "transaction_key": format!("tx-{sequence}")
+            }
+        })
+    }
+
+    #[test]
+    fn signal_batch_preserves_sequential_kernel_semantics() {
+        let records = vec![
+            lifecycle_record(0, 100),
+            trade_record(1, "buy", 101),
+            trade_record(2, "buy", 102),
+            trade_record(3, "sell", 103),
+            trade_record(4, "buy", 104),
+            trade_record(5, "buy", 105),
+            trade_record(6, "buy", 106),
+        ];
+
+        let mut sequential = frozen_kernel::StreamKernel::new();
+        let sequential_rows: Vec<Value> = records
+            .iter()
+            .cloned()
+            .map(|row| sequential.process(row).expect("sequential process"))
+            .collect();
+
+        let mut batched = frozen_kernel::StreamKernel::new();
+        let batch = batched
+            .process(json!({
+                "type": "signal_batch",
+                "batch_id": 42u64,
+                "records": records,
+            }))
+            .expect("batch process");
+
+        assert_eq!(batch["type"], "signal_batch_result");
+        assert_eq!(batch["batch_id"], 42u64);
+        assert_eq!(batch["count"], sequential_rows.len());
+        let batch_rows = batch["results"].as_array().expect("results array");
+        assert_eq!(batch_rows.len(), sequential_rows.len());
+
+        for (left, right) in sequential_rows.iter().zip(batch_rows.iter()) {
+            assert_eq!(left["sequence"], right["sequence"]);
+            assert_eq!(left["kind"], right["kind"]);
+            assert_eq!(left["trigger"], right["trigger"]);
+            assert_eq!(
+                left["late_chain_time_inserts"],
+                right["late_chain_time_inserts"]
+            );
+        }
+    }
 }
