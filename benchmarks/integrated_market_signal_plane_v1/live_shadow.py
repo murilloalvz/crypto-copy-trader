@@ -632,13 +632,34 @@ def _build_signal_record(
     source_received_wall_ns: int,
     canonical_ready_wall_ns: int,
 ) -> dict[str, Any]:
+    if kind == "trade":
+        payload = {
+            "token_mint": observation.token_mint,
+            "side": observation.side,
+            "chain_time": observation.chain_time,
+            "observed_at": observation.observed_at,
+            "wallet_address": observation.wallet_address,
+            "notional_usd": observation.notional_usd,
+            "price_usd": observation.price_usd,
+            "venue": observation.venue,
+            "transaction_key": observation.transaction_key,
+        }
+    elif kind == "lifecycle":
+        payload = {
+            "token_mint": observation.token_mint,
+            "market_started_at": observation.market_started_at,
+            "observed_at": observation.observed_at,
+            "venue": observation.venue,
+        }
+    else:
+        raise ValueError(f"unsupported signal record kind: {kind!r}")
     return {
         "type": "signal_record",
         "sequence": sequence,
         "kind": kind,
         "source_received_wall_ns": source_received_wall_ns,
         "canonical_ready_wall_ns": canonical_ready_wall_ns,
-        "observation": asdict(observation),
+        "observation": payload,
     }
 
 
