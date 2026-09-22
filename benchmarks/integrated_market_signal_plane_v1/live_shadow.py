@@ -943,10 +943,16 @@ async def run_live_shadow_v0(
                     ingress_drained_monotonic = time.monotonic()
                 continue
 
+            microbatch_limit = INGRESS_MICROBATCH_MAX_NOTIFICATIONS
+            if max_log_notifications > 0:
+                microbatch_limit = min(
+                    microbatch_limit,
+                    max(1, max_log_notifications - log_notifications),
+                )
             ingress_batch = _take_ready_ingress_batch(
                 ingress_queue,
                 first_ingress,
-                max_notifications=INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
+                max_notifications=microbatch_limit,
             )
             batch_dequeued_wall_ns = time.time_ns()
             log_notifications += len(ingress_batch)
@@ -1003,7 +1009,7 @@ async def run_live_shadow_v0(
                 for _ in ingress_batch:
                     ingress_queue.task_done()
                 if (
-                    not source_open
+                    time.monotonic() >= deadline
                     and ingress_queue.empty()
                     and ingress_drained_monotonic is None
                 ):
