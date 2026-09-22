@@ -1695,6 +1695,28 @@ async def run_live_shadow_v0(
         ),
         "no_fatal_or_signal_errors": not errors,
     }
+    if bridge_run_key:
+        gates.update(
+            {
+                "episode_bridge_trigger_observed": (
+                    counters["episode_bridge_trigger_snapshots"] > 0
+                ),
+                "episode_bridge_no_queue_overflow": (
+                    counters["episode_bridge_queue_overflow"] == 0
+                ),
+                "episode_bridge_no_errors": (
+                    counters["episode_bridge_errors"] == 0
+                    and counters["episode_bridge_drain_timeout"] == 0
+                ),
+                "episode_bridge_accounting_exact": (
+                    counters["episode_bridge_completed"]
+                    == counters["episode_bridge_trigger_snapshots"]
+                ),
+                "episode_bridge_new_admission_observed": (
+                    counters["episode_bridge_new_admissions"] > 0
+                ),
+            }
+        )
     classification = (
         PASS_CLASSIFICATION if all(gates.values()) else FAIL_CLASSIFICATION
     )
@@ -1784,6 +1806,36 @@ async def run_live_shadow_v0(
                 ),
                 "carbon_roundtrip": _latency_summary_ns(carbon_roundtrip_ns),
             },
+        },
+        "episode_bridge": {
+            "enabled": bool(bridge_run_key),
+            "version": SIGNAL_PLANE_EPISODE_ADMISSION_VERSION,
+            "run_key": bridge_run_key or None,
+            "queue_capacity": 1024 if bridge_run_key else 0,
+            "queue_depth_at_report": (
+                episode_bridge_queue.qsize()
+                if episode_bridge_queue is not None
+                else 0
+            ),
+            "trigger_snapshots": int(
+                counters["episode_bridge_trigger_snapshots"]
+            ),
+            "completed": int(counters["episode_bridge_completed"]),
+            "new_admissions": int(
+                counters["episode_bridge_new_admissions"]
+            ),
+            "replays": int(counters["episode_bridge_replays"]),
+            "errors": int(counters["episode_bridge_errors"]),
+            "queue_overflow": int(
+                counters["episode_bridge_queue_overflow"]
+            ),
+            "drain_timeout": int(
+                counters["episode_bridge_drain_timeout"]
+            ),
+            "policy": (
+                "off-hot-path durable episode assignment/admission; "
+                "does not call hazard, Jupiter, outcomes or V68 evaluator"
+            ),
         },
         "identity_plane": identity_plane.summary(),
         "pumpswap_context_diagnostics": {
@@ -1881,6 +1933,14 @@ def main() -> int:
     )
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument(
+        "--episode-bridge-run-key",
+        default=None,
+        help=(
+            "Optional systems-only durable episode/admission bridge run key. "
+            "Do not use a V68 fresh key."
+        ),
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path(
@@ -1896,6 +1956,7 @@ def main() -> int:
             max_log_notifications=args.max_log_notifications,
             cargo=args.cargo,
             output=args.out,
+            episode_bridge_run_key=args.episode_bridge_run_key,
         )
     )
     print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
