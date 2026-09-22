@@ -93,6 +93,17 @@ def _latency_summary_ns(values: list[int]) -> dict[str, float | int]:
     }
 
 
+def _numeric_summary(values: list[int]) -> dict[str, float | int]:
+    numbers = [int(value) for value in values]
+    return {
+        "count": len(numbers),
+        "p50": _percentile(numbers, 50.0),
+        "p95": _percentile(numbers, 95.0),
+        "p99": _percentile(numbers, 99.0),
+        "max": max(numbers) if numbers else 0,
+    }
+
+
 def _text(row: dict[str, Any], name: str) -> str | None:
     value = row.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -786,7 +797,6 @@ async def run_live_shadow_v0(
     pump_ready = asyncio.Event()
     pumpswap_ready = asyncio.Event()
     reader_tasks: list[asyncio.Task[None]] = []
-    ingress_drain_started_monotonic: float | None = None
     ingress_drained_monotonic: float | None = None
 
     try:
@@ -851,10 +861,11 @@ async def run_live_shadow_v0(
                 and log_notifications >= max_log_notifications
             ):
                 break
-            if not source_open and ingress_drain_started_monotonic is None:
-                ingress_drain_started_monotonic = time.monotonic()
-            if readers_done and ingress_queue.empty():
-                break
+            if not source_open and ingress_queue.empty():
+                if ingress_drained_monotonic is None:
+                    ingress_drained_monotonic = time.monotonic()
+                if readers_done:
+                    break
 
             wait_seconds = (
                 min(1.0, max(0.001, deadline - time.monotonic()))
@@ -868,7 +879,7 @@ async def run_live_shadow_v0(
                 )
             except asyncio.TimeoutError:
                 if (
-                    not source_open
+                    time.monotonic() >= deadline
                     and ingress_queue.empty()
                     and ingress_drained_monotonic is None
                 ):
@@ -881,6 +892,7 @@ async def run_live_shadow_v0(
                     ingress_batch.append(ingress_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
+            batch_dequeued_wall_ns = time.time_ns()
             ingress_microbatch_sizes.append(len(ingress_batch))
             counters["consumer_microbatches"] += 1
             counters["consumer_microbatch_notifications"] += len(ingress_batch)
@@ -898,8 +910,10 @@ async def run_live_shadow_v0(
                 normalized = dict(ingress["normalized"])
                 label = str(ingress["label"])
                 received_wall_ns = int(ingress["received_wall_ns"])
-                dequeued_wall_ns = time.time_ns()
-                queue_wait_ns = max(0, dequeued_wall_ns - received_wall_ns)
+                queue_wait_ns = max(
+                    0,
+                    batch_dequeued_wall_ns - received_wall_ns,
+                )
                 ingress_queue_wait_ns.append(queue_wait_ns)
                 if label == "pump_logs":
                     pump_ingress_queue_wait_ns.append(queue_wait_ns)
@@ -1211,7 +1225,7 @@ async def run_live_shadow_v0(
             for _ in ingress_batch:
                 ingress_queue.task_done()
             if (
-                not source_open
+                time.monotonic() >= deadline
                 and ingress_queue.empty()
                 and ingress_drained_monotonic is None
             ):
@@ -1234,17 +1248,15 @@ async def run_live_shadow_v0(
         carbon.close()
         rust.close()
 
-    ingress_drain_after_source_ms = 0.0
-    if ingress_drain_started_monotonic is not None:
-        drain_end = (
-            ingress_drained_monotonic
-            if ingress_drained_monotonic is not None
-            else ingress_drain_started_monotonic
-        )
-        ingress_drain_after_source_ms = max(
-            0.0,
-            (drain_end - ingress_drain_started_monotonic) * 1000.0,
-        )
+    drain_end = (
+        ingress_drained_monotonic
+        if ingress_drained_monotonic is not None
+        else deadline
+    )
+    ingress_drain_after_source_ms = max(
+        0.0,
+        (drain_end - deadline) * 1000.0,
+    )
 
     errors.extend(
         f"transport:{item}"
@@ -1353,17 +1365,11 @@ async def run_live_shadow_v0(
                 "consumer_microbatch_max_observed": int(
                     counters["consumer_microbatch_max_observed"]
                 ),
-                "ingress_microbatch_size": _latency_summary_ns(
-                    [
-                        int(size) * 1_000_000
-                        for size in ingress_microbatch_sizes
-                    ]
+                "ingress_microbatch_size": _numeric_summary(
+                    ingress_microbatch_sizes
                 ),
-                "carbon_batch_event_size": _latency_summary_ns(
-                    [
-                        int(size) * 1_000_000
-                        for size in carbon_batch_event_sizes
-                    ]
+                "carbon_batch_event_size": _numeric_summary(
+                    carbon_batch_event_sizes
                 ),
             },
             "latency": {
