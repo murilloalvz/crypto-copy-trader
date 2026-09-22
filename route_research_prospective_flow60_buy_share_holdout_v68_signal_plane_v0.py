@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import route_research_prospective_flow60_buy_share_holdout_v68 as legacy_v68
+import signal_plane_v68_promotion_v0 as promotion
 from src.database import connection
 from src.route_research_early_opportunity_v55 import (
     V55_MIN_ROWS_PER_SUBCOHORT,
@@ -58,6 +59,7 @@ def run_signal_plane_v68_v0(
     *,
     base_run_key: str,
     bootstrap_report: Path,
+    promotion_report: Path,
     cargo: str = "cargo",
     acquisition_duration_seconds: float = 120.0,
     hazard_start_interval_ms: int = 650,
@@ -70,6 +72,19 @@ def run_signal_plane_v68_v0(
     base = str(base_run_key).strip()
     if not base:
         raise ValueError("base_run_key cannot be empty")
+
+    promotion_ok, promotion_detail = promotion.validate_promotion_report(
+        Path(promotion_report)
+    )
+    if not promotion_ok:
+        return {
+            "type": "v68_signal_plane_prospective_report",
+            "version": VERSION,
+            "classification": "FAIL_V68_SIGNAL_PLANE_PROMOTION_REQUIRED",
+            "promotion_detail": promotion_detail,
+            "authorization": AUTHORIZATION,
+        }
+
     run_keys = (f"{base}-A", f"{base}-B")
 
     strict_fresh, residue = _strict_run_keys_fresh(run_keys)
@@ -211,6 +226,7 @@ def main() -> int:
     )
     parser.add_argument("--run-key", required=True)
     parser.add_argument("--bootstrap-report", required=True, type=Path)
+    parser.add_argument("--promotion-report", required=True, type=Path)
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--acquisition-duration-seconds", type=float, default=120.0)
     parser.add_argument("--hazard-start-interval-ms", type=int, default=650)
@@ -221,6 +237,7 @@ def main() -> int:
     report = run_signal_plane_v68_v0(
         base_run_key=args.run_key,
         bootstrap_report=args.bootstrap_report,
+        promotion_report=args.promotion_report,
         cargo=args.cargo,
         acquisition_duration_seconds=args.acquisition_duration_seconds,
         hazard_start_interval_ms=args.hazard_start_interval_ms,
