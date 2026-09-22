@@ -8,6 +8,7 @@ from src.market_opportunity_episode_store import (
 )
 from src.market_opportunity_radar import (
     MARKET_OPPORTUNITY_RADAR_VERSION,
+    MarketMovementFeatures,
     MarketMovementTrigger,
     MarketTradeObservation,
 )
@@ -44,6 +45,28 @@ def _episode_venue_and_prefix(
     if venue in {"pumpswap", "pump_swap"}:
         return "pump_swap", "market-radar:pumpswap-v3"
     raise ValueError(f"unsupported Signal Plane episode venue: {observation.venue!r}")
+
+
+def market_movement_trigger_from_snapshot(
+    snapshot: dict,
+) -> MarketMovementTrigger:
+    features_raw = snapshot.get("features")
+    if not isinstance(features_raw, dict):
+        raise ValueError("trigger snapshot missing features")
+    return MarketMovementTrigger(
+        token_mint=_required(snapshot.get("token_mint"), "trigger token_mint"),
+        as_of=int(snapshot["as_of"]),
+        method_version=_required(
+            snapshot.get("method_version"),
+            "trigger method_version",
+        ),
+        trigger_kind=_required(
+            snapshot.get("trigger_kind"),
+            "trigger_kind",
+        ),
+        direction=_required(snapshot.get("direction"), "direction"),
+        features=MarketMovementFeatures(**features_raw),
+    )
 
 
 def build_signal_plane_episode_assignment(
