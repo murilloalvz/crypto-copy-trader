@@ -376,6 +376,11 @@ async def run_live_shadow_v0(
     signal_sequence = 0
     batch_id = 0
     log_notifications = 0
+    pumpswap_pools_seen: set[str] = set()
+    pumpswap_pools_adapted: set[str] = set()
+    pumpswap_pools_missing: set[str] = set()
+    live_create_pool_seen_at: dict[str, int] = {}
+    pumpswap_identity_sources: Counter[str] = Counter()
 
     try:
         from websockets.asyncio.client import connect
@@ -563,6 +568,7 @@ async def run_live_shadow_v0(
                             source="carbon_pumpswap_create_pool_event_v0",
                         )
                         _add_identity(identities_by_pool, identity)
+                        live_create_pool_seen_at[str(pool)] = source_wall_ns
                         observation = MarketLifecycleObservation(
                             token_mint=str(base_mint),
                             market_started_at=int(chain_time),
@@ -591,6 +597,8 @@ async def run_live_shadow_v0(
 
                     elif event_type in {"pumpswap_buy", "pumpswap_sell"}:
                         pool = _text(row, "pool")
+                        if pool is not None:
+                            pumpswap_pools_seen.add(pool)
                         causal_identities = (
                             identities_available_before_v0(
                                 identities_by_pool.get(pool or "", ()),
@@ -610,6 +618,20 @@ async def run_live_shadow_v0(
                         matched_statuses[matched.status] += 1
                         if matched.status == MISSING_CONTEXT:
                             counters["pumpswap_missing_context"] += 1
+                            if pool is not None:
+                                pumpswap_pools_missing.add(pool)
+                                live_create_at = live_create_pool_seen_at.get(pool)
+                                if (
+                                    live_create_at is not None
+                                    and live_create_at <= source_wall_ns
+                                ):
+                                    counters[
+                                        "pumpswap_missing_after_causal_live_create_pool"
+                                    ] += 1
+                                else:
+                                    counters[
+                                        "pumpswap_missing_without_causal_live_create_pool"
+                                    ] += 1
                         market_trade = adapt_carbon_matched_unit_to_market_trade_v0(
                             row,
                             matched,
@@ -620,6 +642,26 @@ async def run_live_shadow_v0(
                         observation = market_trade.observation
                         kind = "trade"
                         counters["pumpswap_adapted_trades"] += 1
+                        if pool is not None:
+                            pumpswap_pools_adapted.add(pool)
+                        identity_evidence_key = (
+                            matched.provenance_keys[1]
+                            if len(matched.provenance_keys) >= 2
+                            else None
+                        )
+                        identity_source = None
+                        if identity_evidence_key is not None:
+                            identity_source = next(
+                                (
+                                    item.source
+                                    for item in causal_identities
+                                    if item.evidence_key == identity_evidence_key
+                                ),
+                                None,
+                            )
+                        pumpswap_identity_sources[
+                            identity_source or "UNKNOWN"
+                        ] += 1
                     else:
                         continue
 
@@ -768,6 +810,29 @@ async def run_live_shadow_v0(
         "counters": dict(sorted(counters.items())),
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
+        "pumpswap_context_diagnostics": {
+            "unique_pools_seen": len(pumpswap_pools_seen),
+            "unique_pools_adapted": len(pumpswap_pools_adapted),
+            "unique_pools_missing": len(pumpswap_pools_missing),
+            "live_create_pools_seen": len(live_create_pool_seen_at),
+            "adapted_identity_sources": dict(
+                sorted(pumpswap_identity_sources.items())
+            ),
+            "missing_after_causal_live_create_pool": int(
+                counters[
+                    "pumpswap_missing_after_causal_live_create_pool"
+                ]
+            ),
+            "missing_without_causal_live_create_pool": int(
+                counters[
+                    "pumpswap_missing_without_causal_live_create_pool"
+                ]
+            ),
+            "policy": (
+                "diagnostic only; no threshold or signal-path change. "
+                "Live CreatePool identity is causal only from its local receive time forward."
+            ),
+        },
         "trigger_parity": {
             "decision_points": trade_points,
             "exact_matches": exact_matches,
