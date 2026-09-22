@@ -131,13 +131,17 @@ class AsyncPumpSwapIdentityPlane:
         batch_size: int = 64,
         queue_size: int = 1024,
         timeout_seconds: int = 8,
+        coalesce_seconds: float = 0.01,
     ):
         if batch_size <= 0 or batch_size > 100:
             raise ValueError("batch_size must be in 1..100")
         if queue_size <= 0:
             raise ValueError("queue_size must be positive")
         self.identities_by_pool = identities_by_pool
+        if coalesce_seconds < 0:
+            raise ValueError("coalesce_seconds cannot be negative")
         self.batch_size = batch_size
+        self.coalesce_seconds = coalesce_seconds
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=queue_size)
         self.client = SolanaClient(
             rpc_url=rpc_url,
@@ -264,7 +268,10 @@ class AsyncPumpSwapIdentityPlane:
                 return
 
             batch = [first]
-            await asyncio.sleep(0)
+            if self.coalesce_seconds > 0:
+                await asyncio.sleep(self.coalesce_seconds)
+            else:
+                await asyncio.sleep(0)
             while len(batch) < self.batch_size:
                 try:
                     item = self.queue.get_nowait()
@@ -1018,6 +1025,21 @@ async def run_live_shadow_v0(
         "trade_decision_points_observed": trade_points > 0,
         "trigger_parity_100": trigger_mismatches == 0 and parity_pct == 100.0,
         "no_decode_failures": counters["decode_failures"] == 0,
+        "identity_plane_enqueued_unknown_pool": (
+            identity_plane.counters["enqueued"] > 0
+        ),
+        "identity_plane_rpc_attempted": (
+            identity_plane.counters["requested_pools"] > 0
+        ),
+        "identity_plane_resolved_identity": (
+            identity_plane.counters["resolved"] > 0
+        ),
+        "identity_plane_no_queue_overflow": (
+            identity_plane.counters["queue_full"] == 0
+        ),
+        "identity_plane_no_rpc_batch_failure": (
+            identity_plane.counters["rpc_batch_failures"] == 0
+        ),
         "no_fatal_or_signal_errors": not errors,
     }
     classification = (
