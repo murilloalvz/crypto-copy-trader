@@ -434,7 +434,7 @@ class JsonLineProcess:
         if self.process is None or self.process.stdin is None or self.process.stdout is None:
             raise RuntimeError("process is not started")
         self.process.stdin.write(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            json.dumps(payload, separators=(",", ":")) + "\n"
         )
         self.process.stdin.flush()
         line = self.process.stdout.readline()
@@ -449,7 +449,7 @@ class JsonLineProcess:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("process is not started")
         self.process.stdin.write(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            json.dumps(payload, separators=(",", ":")) + "\n"
         )
         self.process.stdin.flush()
 
