@@ -64,6 +64,43 @@ class SignalPlaneResearchPersistenceV0Tests(unittest.TestCase):
         self.assertTrue(result.observation_inserted)
         self.assertEqual(result.sequence, 7)
 
+    def test_trade_threads_injected_admission_callback(self):
+        record = TraceRecord(
+            sequence=9,
+            arrival_offset_ns=20,
+            kind="trade",
+            event_key="event-9",
+            source_provider="provider",
+            trade=MarketTradeObservation(
+                token_mint="TOKEN",
+                side="buy",
+                chain_time=109,
+                observed_at=110,
+                venue="pump",
+                transaction_key="tx-9",
+            ),
+        )
+        callback = lambda **kwargs: True
+
+        with patch(
+            "src.signal_plane_research_persistence_v0.record_market_trade",
+            return_value=True,
+        ), patch(
+            "src.signal_plane_research_persistence_v0.admit_signal_plane_trigger_snapshot",
+            return_value=None,
+        ) as admit:
+            persist_signal_plane_research_record(
+                acquisition_run_key="run",
+                record=record,
+                trigger_snapshot={"trigger": "placeholder"},
+                admit_episode_fn=callback,
+            )
+
+        self.assertIs(
+            admit.call_args.kwargs["admit_episode_fn"],
+            callback,
+        )
+
     def test_lifecycle_never_admits_episode(self):
         record = TraceRecord(
             sequence=3,
