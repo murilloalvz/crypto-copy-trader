@@ -11,22 +11,28 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     AsyncPumpSwapIdentityPlane,
     INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
     INGRESS_QUEUE_SIZE,
+    SUBSCRIPTION_ACK_TIMEOUT_SECONDS,
     SURFACE_IDLE_TIMEOUT_SECONDS,
     VERSION,
+    WS_OPEN_BARRIER_TIMEOUT_SECONDS,
+    WS_OPEN_TIMEOUT_SECONDS,
     _surface_reader_v2,
     _take_ready_ingress_batch,
 )
 
 
 class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
-    def test_v4_transport_contract_is_frozen(self):
+    def test_v4_1_startup_contract_is_frozen(self):
         self.assertEqual(
             VERSION,
-            "rust_signal_plane_live_shadow_v4_burst_microbatch",
+            "rust_signal_plane_live_shadow_v4_1_startup_barrier",
         )
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)
         self.assertEqual(INGRESS_MICROBATCH_MAX_NOTIFICATIONS, 32)
+        self.assertEqual(WS_OPEN_TIMEOUT_SECONDS, 30.0)
+        self.assertEqual(WS_OPEN_BARRIER_TIMEOUT_SECONDS, 35.0)
+        self.assertEqual(SUBSCRIPTION_ACK_TIMEOUT_SECONDS, 20.0)
 
 
     def test_ready_microbatch_drains_only_items_already_available(self):
@@ -94,8 +100,14 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
         async def run():
             queue = asyncio.Queue(maxsize=8)
             counters = Counter()
+            opened = asyncio.Event()
+            subscribe = asyncio.Event()
             ready = asyncio.Event()
+            acquisition = asyncio.Event()
             errors = []
+            deadline_ref = {"deadline": time.monotonic() + 0.02}
+            subscribe.set()
+            acquisition.set()
             with patch("websockets.asyncio.client.connect", new=fake_connect):
                 await _surface_reader_v2(
                     endpoint="wss://example.invalid/v2/test",
@@ -106,17 +118,27 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
                         "method": "logsSubscribe",
                         "params": [],
                     },
-                    deadline=time.monotonic() + 0.02,
                     ingress_queue=queue,
                     counters=counters,
+                    opened_event=opened,
+                    subscribe_event=subscribe,
                     ready_event=ready,
+                    acquisition_event=acquisition,
+                    deadline_ref=deadline_ref,
                     transport_errors=errors,
                 )
-            return counters, errors
+            return counters, errors, opened
 
-        counters, errors = asyncio.run(run())
+        counters, errors, opened = asyncio.run(run())
         self.assertEqual(errors, [])
+        self.assertTrue(opened.is_set())
+        self.assertEqual(counters["pump_logs_socket_opened"], 1)
         self.assertEqual(counters["pump_logs_ack"], 1)
+        self.assertEqual(counters["pump_logs_acquisition_started"], 1)
+        self.assertEqual(
+            captured["connect_kwargs"]["open_timeout"],
+            WS_OPEN_TIMEOUT_SECONDS,
+        )
         self.assertIsNone(captured["connect_kwargs"]["ping_interval"])
         self.assertIsNone(captured["connect_kwargs"]["ping_timeout"])
 
