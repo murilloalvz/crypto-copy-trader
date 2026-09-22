@@ -39,6 +39,17 @@ class V68ReleaseReadinessTests(unittest.TestCase):
             release.V68_RELEASE_PUMPSWAP_WRITER_BATCH_MAX_WAIT_MS,
         )
 
+    def test_signal_plane_episode_bridge_contract_is_frozen(self):
+        passed, detail = release._signal_plane_bridge_contract_check()
+        self.assertTrue(passed, detail)
+        self.assertEqual(
+            release.V68_REQUIRED_SIGNAL_PLANE_BRIDGE_VERSION,
+            "signal_plane_episode_bridge_v0",
+        )
+
+    def test_v68_remains_blocked_until_signal_plane_promotion(self):
+        self.assertFalse(release.V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED)
+
     def test_release_preserves_frozen_economic_contract(self):
         self.assertEqual(
             release._economic_contract(),
