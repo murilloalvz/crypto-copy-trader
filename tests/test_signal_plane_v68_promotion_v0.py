@@ -55,6 +55,16 @@ def _live_report(*, duration: float, drops: int = 0) -> dict:
 
 
 class SignalPlaneV68PromotionV0Tests(unittest.TestCase):
+    def test_promotion_requires_v7_live_contract(self):
+        self.assertEqual(
+            promotion.REQUIRED_LIVE_VERSION,
+            "rust_signal_plane_live_shadow_v7_rust_hotpath",
+        )
+        self.assertEqual(
+            promotion.REQUIRED_LIVE_CLASSIFICATION,
+            "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH",
+        )
+
     def _files(self, root: Path, *, soak_drops: int = 0):
         return {
             "offline_capacity": _write(
