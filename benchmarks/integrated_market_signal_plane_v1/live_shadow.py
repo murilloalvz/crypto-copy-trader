@@ -52,9 +52,9 @@ from src.signal_plane_research_persistence_v0 import (
 )
 
 
-VERSION = "rust_signal_plane_live_shadow_v6_target_prefilter"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V6_TARGET_PREFILTER"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V6_TARGET_PREFILTER"
+VERSION = "rust_signal_plane_live_shadow_v7_rust_hotpath"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
@@ -2167,7 +2167,7 @@ async def run_live_shadow_v0(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "V5 Rust signal-batch shadow: V4.1 startup barrier -> burst microbatch -> "
+            "V7 Rust hot-path shadow: V6 target-prefilter -> burst microbatch -> "
             "ordered Rust-only live hot path -> post-run Python parity replay."
         )
     )
@@ -2204,7 +2204,7 @@ def main() -> int:
         "--out",
         type=Path,
         default=Path(
-            "artifacts/rust_signal_plane_live_shadow_v5/report.json"
+            "artifacts/rust_signal_plane_live_shadow_v7/report.json"
         ),
     )
     args = parser.parse_args()
