@@ -121,8 +121,11 @@ struct State {
 }
 
 fn uses_lifecycle(venue: &Option<String>) -> bool {
-    let normalized = venue.as_deref().unwrap_or("").trim().to_ascii_lowercase();
-    matches!(normalized.as_str(), "pump" | "pump_bonding_curve" | "pumpfun" | "pump.fun")
+    let normalized = venue.as_deref().unwrap_or("").trim();
+    normalized.eq_ignore_ascii_case("pump")
+        || normalized.eq_ignore_ascii_case("pump_bonding_curve")
+        || normalized.eq_ignore_ascii_case("pumpfun")
+        || normalized.eq_ignore_ascii_case("pump.fun")
 }
 
 fn coverage(known: usize, total: usize) -> Option<f64> {
@@ -216,7 +219,7 @@ impl State {
         let fast_start = upper_bound_chain(rows, fast_lower);
         let fast_end = upper_bound_chain(rows, chain_as_of);
         let baseline_count = fast_start.saturating_sub(baseline_start);
-        let fast: Vec<&Trade> = rows[fast_start..fast_end].iter().map(|row| &row.trade).collect();
+        let fast_rows = &rows[fast_start..fast_end];
 
         let lifecycle = if lifecycle_needed {
             self.lifecycle.get(&token_mint)
@@ -224,7 +227,7 @@ impl State {
             None
         };
         Ok(detect(
-            &fast,
+            fast_rows,
             baseline_count,
             &token_mint,
             observed_at,
@@ -235,38 +238,113 @@ impl State {
 }
 
 fn detect(
-    fast: &[&Trade],
+    fast_rows: &[TradeRow],
     baseline_count: usize,
     token_mint: &str,
     as_of: i64,
     chain_as_of: i64,
     lifecycle: Option<&Lifecycle>,
 ) -> Option<Trigger> {
-    let mut buys = 0usize;
-    let mut sells = 0usize;
-    let mut wallets = BTreeSet::new();
-    let mut transactions = BTreeSet::new();
+    let fast_count = fast_rows.len();
+
+    // Phase A: prove that a trigger is even possible before building the full
+    // feature payload. This keeps all trigger semantics unchanged while
+    // avoiding per-trade allocations for the overwhelmingly common None path.
+    if fast_count < MIN_FAST_EVENTS {
+        return None;
+    }
+
+    let fast_rate = fast_count as f64 / FAST_WINDOW_SECONDS as f64;
+    let baseline_duration = BASELINE_HORIZON_SECONDS - FAST_WINDOW_SECONDS;
+    let baseline_rate = if baseline_count > 0 {
+        Some(baseline_count as f64 / baseline_duration as f64)
+    } else {
+        None
+    };
+    let acceleration =
+        baseline_rate.and_then(|rate| if rate > 0.0 { Some(fast_rate / rate) } else { None });
+
+    let market_age = match lifecycle {
+        Some(item) if item.observed_at > as_of => None,
+        Some(item) if item.market_started_at <= chain_as_of => {
+            Some(chain_as_of - item.market_started_at)
+        }
+        Some(_) | None => None,
+    };
+
+    let established_activity_ready = baseline_count >= MIN_BASELINE_EVENTS
+        && acceleration
+            .map(|value| value >= MIN_ACTIVITY_ACCELERATION_RATIO)
+            .unwrap_or(false);
+    let fresh_age_ready = market_age
+        .map(|age| age >= 0 && age <= FRESH_MARKET_MAX_AGE_SECONDS)
+        .unwrap_or(false);
+
+    if !established_activity_ready && !fresh_age_ready {
+        return None;
+    }
+
     let mut wallet_rows = 0usize;
     let mut transaction_rows = 0usize;
+    let mut wallets: BTreeSet<&str> = BTreeSet::new();
+    let mut transactions: BTreeSet<&str> = BTreeSet::new();
+
+    for row in fast_rows {
+        let item = &row.trade;
+        if let Some(wallet) = item.wallet_address.as_deref() {
+            wallet_rows += 1;
+            wallets.insert(wallet);
+        }
+        if let Some(tx) = item.transaction_key.as_deref() {
+            transaction_rows += 1;
+            transactions.insert(tx);
+        }
+    }
+
+    let wallet_coverage = coverage(wallet_rows, fast_count);
+    let transaction_coverage = coverage(transaction_rows, fast_count);
+    let unique_transaction_count = if transaction_rows > 0 {
+        Some(transactions.len())
+    } else {
+        None
+    };
+    let transaction_breadth_ready = if transaction_coverage == Some(100.0) {
+        unique_transaction_count
+            .map(|count| count >= MIN_UNIQUE_TRANSACTIONS)
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    let breadth_ready = wallets.len() >= MIN_UNIQUE_WALLETS;
+
+    if !breadth_ready || !transaction_breadth_ready {
+        return None;
+    }
+
+    let trigger_kind = if established_activity_ready {
+        "activity_acceleration"
+    } else if fresh_age_ready {
+        "fresh_market_burst"
+    } else {
+        unreachable!("eligibility precheck guarantees one trigger family")
+    };
+
+    // Phase B: only actual triggers pay for output-only feature computation.
+    let mut buys = 0usize;
+    let mut sells = 0usize;
     let mut notional_rows = 0usize;
     let mut price_rows = 0usize;
     let mut buy_notional = 0.0f64;
     let mut sell_notional = 0.0f64;
-    let mut venues = BTreeSet::new();
+    let mut venues: BTreeSet<&str> = BTreeSet::new();
+    let mut chain_clock_ahead = false;
 
-    for item in fast {
+    for row in fast_rows {
+        let item = &row.trade;
         if item.side == "buy" {
             buys += 1;
         } else {
             sells += 1;
-        }
-        if let Some(wallet) = &item.wallet_address {
-            wallet_rows += 1;
-            wallets.insert(wallet.clone());
-        }
-        if let Some(tx) = &item.transaction_key {
-            transaction_rows += 1;
-            transactions.insert(tx.clone());
         }
         if let Some(notional) = item.notional_usd {
             notional_rows += 1;
@@ -279,22 +357,18 @@ fn detect(
         if item.price_usd.is_some() {
             price_rows += 1;
         }
-        if let Some(venue) = &item.venue {
-            venues.insert(venue.clone());
+        if let Some(venue) = item.venue.as_deref() {
+            venues.insert(venue);
+        }
+        if item.chain_time > item.observed_at {
+            chain_clock_ahead = true;
         }
     }
 
-    let wallet_coverage = coverage(wallet_rows, fast.len());
-    let transaction_coverage = coverage(transaction_rows, fast.len());
-    let unique_transaction_count = if transaction_rows > 0 {
-        Some(transactions.len())
-    } else {
-        None
-    };
-    let notional_coverage = coverage(notional_rows, fast.len());
-    let price_coverage = coverage(price_rows, fast.len());
+    let notional_coverage = coverage(notional_rows, fast_count);
+    let price_coverage = coverage(price_rows, fast_count);
 
-    let notionals_complete = !fast.is_empty() && notional_rows == fast.len();
+    let notionals_complete = notional_rows == fast_count;
     let signed_notional_imbalance_pct = if notionals_complete {
         let total = buy_notional + sell_notional;
         if total > 0.0 {
@@ -305,11 +379,8 @@ fn detect(
     } else {
         None
     };
-    let count_imbalance_pct = if fast.is_empty() {
-        None
-    } else {
-        Some(100.0 * (buys as f64 - sells as f64) / fast.len() as f64)
-    };
+    let count_imbalance_pct =
+        Some(100.0 * (buys as f64 - sells as f64) / fast_count as f64);
     let pressure = signed_notional_imbalance_pct.or(count_imbalance_pct);
     let direction = match pressure {
         None => "unknown_pressure",
@@ -319,68 +390,51 @@ fn detect(
     }
     .to_string();
 
-    let prices_complete = !fast.is_empty() && price_rows == fast.len();
+    let prices_complete = price_rows == fast_count;
     let first_price = if prices_complete {
-        fast.first().and_then(|item| item.price_usd)
+        fast_rows.first().and_then(|row| row.trade.price_usd)
     } else {
         None
     };
     let last_price = if prices_complete {
-        fast.last().and_then(|item| item.price_usd)
+        fast_rows.last().and_then(|row| row.trade.price_usd)
     } else {
         None
     };
     let fast_return_pct = match (first_price, last_price) {
-        (Some(first), Some(last)) if fast.len() >= 2 => Some(100.0 * (last / first - 1.0)),
+        (Some(first), Some(last)) if fast_count >= 2 => Some(100.0 * (last / first - 1.0)),
         _ => None,
     };
 
-    let fast_rate = fast.len() as f64 / FAST_WINDOW_SECONDS as f64;
-    let baseline_duration = BASELINE_HORIZON_SECONDS - FAST_WINDOW_SECONDS;
-    let baseline_rate = if baseline_count > 0 {
-        Some(baseline_count as f64 / baseline_duration as f64)
-    } else {
-        None
-    };
-    let acceleration = baseline_rate.and_then(|rate| if rate > 0.0 { Some(fast_rate / rate) } else { None });
-
-    let mut market_age = None;
     let mut quality = Vec::new();
     match lifecycle {
         Some(item) if item.observed_at > as_of => {
             quality.push("lifecycle_not_available_by_as_of".to_string());
         }
-        Some(item) if item.market_started_at <= chain_as_of => {
-            market_age = Some(chain_as_of - item.market_started_at);
-        }
+        Some(item) if item.market_started_at <= chain_as_of => {}
         Some(_) => quality.push("lifecycle_started_after_chain_as_of".to_string()),
         None => quality.push("lifecycle_missing".to_string()),
     }
 
-    if !fast.is_empty() && wallet_rows < fast.len() {
+    if wallet_rows < fast_count {
         quality.push("partial_wallet_identity_coverage".to_string());
     }
-    if !fast.is_empty() && transaction_rows == 0 {
+    if transaction_rows == 0 {
         quality.push("transaction_identity_missing".to_string());
-    } else if !fast.is_empty() && transaction_rows < fast.len() {
+    } else if transaction_rows < fast_count {
         quality.push("partial_transaction_identity_coverage".to_string());
     }
-    if !fast.is_empty() && !notionals_complete {
+    if !notionals_complete {
         quality.push("partial_notional_coverage".to_string());
     }
-    if !fast.is_empty() && !prices_complete {
+    if !prices_complete {
         quality.push("partial_price_coverage".to_string());
-    }
-    if fast.is_empty() {
-        quality.push("no_fast_window_events".to_string());
     }
     if baseline_count < MIN_BASELINE_EVENTS {
         quality.push("baseline_activity_insufficient".to_string());
     }
-    if !fast.is_empty() {
-        quality.push("observation_lag_unavailable_unaligned_clock_domains".to_string());
-    }
-    if fast.iter().any(|item| item.chain_time > item.observed_at) {
+    quality.push("observation_lag_unavailable_unaligned_clock_domains".to_string());
+    if chain_clock_ahead {
         quality.push("chain_clock_ahead_of_local_observation_clock_observed".to_string());
     }
 
@@ -390,7 +444,7 @@ fn detect(
         chain_as_of,
         fast_window_seconds: FAST_WINDOW_SECONDS,
         baseline_horizon_seconds: BASELINE_HORIZON_SECONDS,
-        fast_event_count: fast.len(),
+        fast_event_count: fast_count,
         baseline_event_count: baseline_count,
         fast_buy_count: buys,
         fast_sell_count: sells,
@@ -411,40 +465,9 @@ fn detect(
         fast_return_pct,
         median_observation_lag_seconds: None,
         max_observation_lag_seconds: None,
-        venues: venues.into_iter().collect(),
+        venues: venues.into_iter().map(|venue| venue.to_string()).collect(),
         market_age_seconds: market_age,
         data_quality_flags: quality,
-    };
-
-    let transaction_breadth_ready = if transaction_coverage == Some(100.0) {
-        unique_transaction_count
-            .map(|count| count >= MIN_UNIQUE_TRANSACTIONS)
-            .unwrap_or(false)
-    } else {
-        true
-    };
-    let fast_ready = fast.len() >= MIN_FAST_EVENTS;
-    let breadth_ready = wallets.len() >= MIN_UNIQUE_WALLETS;
-    let established_ready = fast_ready
-        && breadth_ready
-        && transaction_breadth_ready
-        && baseline_count >= MIN_BASELINE_EVENTS
-        && acceleration
-            .map(|value| value >= MIN_ACTIVITY_ACCELERATION_RATIO)
-            .unwrap_or(false);
-    let fresh_ready = fast_ready
-        && breadth_ready
-        && transaction_breadth_ready
-        && market_age
-            .map(|age| age >= 0 && age <= FRESH_MARKET_MAX_AGE_SECONDS)
-            .unwrap_or(false);
-
-    let trigger_kind = if established_ready {
-        "activity_acceleration"
-    } else if fresh_ready {
-        "fresh_market_burst"
-    } else {
-        return None;
     };
 
     Some(Trigger {
