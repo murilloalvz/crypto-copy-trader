@@ -227,7 +227,7 @@ async def run_bridge(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Systems-only V5 Signal Plane -> Research Plane -> hazard/Jupiter "
+            "Systems-only V7 Signal Plane -> Research Plane -> hazard/Jupiter "
             "route-decision bridge. Never use a V68 fresh key."
         )
     )
