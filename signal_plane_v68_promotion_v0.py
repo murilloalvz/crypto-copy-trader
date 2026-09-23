@@ -12,10 +12,10 @@ VERSION = "v68_signal_plane_promotion_v0"
 PASS_CLASSIFICATION = "PASS_V68_SIGNAL_PLANE_PROMOTION_V0"
 FAIL_CLASSIFICATION = "FAIL_V68_SIGNAL_PLANE_PROMOTION_V0"
 
-REQUIRED_LIVE_VERSION = "rust_signal_plane_live_shadow_v5_signal_batch"
+REQUIRED_LIVE_VERSION = "rust_signal_plane_live_shadow_v7_rust_hotpath"
 REQUIRED_OFFLINE_CAPACITY = "PASS_RUST_SIGNAL_BATCH_OFFLINE_CAPACITY_V0"
 REQUIRED_OFFLINE_BRIDGE = "PASS_V68_SIGNAL_PLANE_BRIDGE_V0"
-REQUIRED_LIVE_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V5_SIGNAL_BATCH"
+REQUIRED_LIVE_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 REQUIRED_ROUTE_BRIDGE = "PASS_SIGNAL_PLANE_ROUTE_RESEARCH_BRIDGE_V0"
 
 SMOKE_MIN_DURATION_SECONDS = 120.0
@@ -71,7 +71,7 @@ def _live_checks(
     rust_source = latency.get("rust_source_to_signal") or {}
     trigger = report.get("trigger_parity") or {}
     return {
-        "version_v5": report.get("version") == REQUIRED_LIVE_VERSION,
+        "version_v7": report.get("version") == REQUIRED_LIVE_VERSION,
         "classification_pass": (
             report.get("classification") == REQUIRED_LIVE_CLASSIFICATION
         ),
@@ -273,7 +273,7 @@ def build_promotion_report(
         "scientific_thresholds_modified": False,
         "economic_hypothesis_modified": False,
         "interpretation": (
-            "PASS authorizes only the V5 Signal Plane acquisition path to enter "
+            "PASS authorizes only the V7 Signal Plane acquisition path to enter "
             "the frozen V68 release wrapper on this exact git HEAD. It is not "
             "economic edge evidence."
             if classification == PASS_CLASSIFICATION
@@ -286,7 +286,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Build the fail-closed promotion manifest required before a fresh "
-            "V68 run may use the V5 Signal Plane acquisition path."
+            "V68 run may use the V7 Signal Plane acquisition path."
         )
     )
     parser.add_argument("--offline-capacity", required=True, type=Path)
