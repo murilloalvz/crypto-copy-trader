@@ -293,13 +293,13 @@ mod tests {
         let trigger = &final_row["trigger"];
         assert_eq!(trigger["trigger_kind"], "fresh_market_burst");
         assert_eq!(trigger["direction"], "upward_pressure");
-        assert_eq!(trigger["features"]["fast_event_count"], 6);
-        assert_eq!(trigger["features"]["baseline_event_count"], 0);
-        assert_eq!(trigger["features"]["fast_buy_count"], 5);
-        assert_eq!(trigger["features"]["fast_sell_count"], 1);
-        assert_eq!(trigger["features"]["fast_unique_wallet_count"], 6);
-        assert_eq!(trigger["features"]["fast_unique_transaction_count"], 6);
-        assert_eq!(trigger["features"]["market_age_seconds"], 6);
+        assert_eq!(trigger["features"]["fast_event_count"], json!(6));
+        assert_eq!(trigger["features"]["baseline_event_count"], json!(0));
+        assert_eq!(trigger["features"]["fast_buy_count"], json!(5));
+        assert_eq!(trigger["features"]["fast_sell_count"], json!(1));
+        assert_eq!(trigger["features"]["fast_unique_wallet_count"], json!(6));
+        assert_eq!(trigger["features"]["fast_unique_transaction_count"], json!(6));
+        assert_eq!(trigger["features"]["market_age_seconds"], json!(6));
         assert_eq!(
             trigger["features"]["data_quality_flags"],
             json!([
@@ -330,10 +330,10 @@ mod tests {
 
         let trigger = &final_row["trigger"];
         assert_eq!(trigger["trigger_kind"], "activity_acceleration");
-        assert_eq!(trigger["features"]["fast_event_count"], 6);
-        assert_eq!(trigger["features"]["baseline_event_count"], 3);
-        assert_eq!(trigger["features"]["fast_unique_wallet_count"], 6);
-        assert_eq!(trigger["features"]["fast_unique_transaction_count"], 6);
+        assert_eq!(trigger["features"]["fast_event_count"], json!(6));
+        assert_eq!(trigger["features"]["baseline_event_count"], json!(3));
+        assert_eq!(trigger["features"]["fast_unique_wallet_count"], json!(6));
+        assert_eq!(trigger["features"]["fast_unique_transaction_count"], json!(6));
         assert_eq!(
             trigger["features"]["data_quality_flags"],
             json!([
@@ -357,7 +357,7 @@ mod tests {
             .process(trade_record_with_observed(3, "buy", 101, 103))
             .expect("late chain trade");
 
-        assert_eq!(late["late_chain_time_inserts"], 1);
+        assert_eq!(late["late_chain_time_inserts"], json!(1));
         assert!(late["trigger"].is_null());
     }
 
