@@ -309,7 +309,7 @@ def collect_readiness_checks(
             _signal_plane_bridge_contract_check()[1],
         ),
         ReadinessCheck(
-            "signal_plane_v5_promotion_authorized",
+            "signal_plane_v7_promotion_authorized",
             promotion_ok,
             promotion_detail,
         ),
