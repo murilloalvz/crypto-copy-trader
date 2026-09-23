@@ -185,7 +185,12 @@ mod tests {
         })
     }
 
-    fn trade_record(sequence: u64, side: &str, chain_time: i64) -> Value {
+    fn trade_record_with_observed(
+        sequence: u64,
+        side: &str,
+        chain_time: i64,
+        observed_at: i64,
+    ) -> Value {
         json!({
             "type": "signal_record",
             "sequence": sequence,
@@ -196,7 +201,7 @@ mod tests {
                 "token_mint": "TOKEN",
                 "side": side,
                 "chain_time": chain_time,
-                "observed_at": chain_time,
+                "observed_at": observed_at,
                 "wallet_address": format!("wallet-{sequence}"),
                 "notional_usd": 10.0,
                 "price_usd": 1.0 + (sequence as f64 * 0.01),
@@ -204,6 +209,10 @@ mod tests {
                 "transaction_key": format!("tx-{sequence}")
             }
         })
+    }
+
+    fn trade_record(sequence: u64, side: &str, chain_time: i64) -> Value {
+        trade_record_with_observed(sequence, side, chain_time, chain_time)
     }
 
     #[test]
@@ -249,4 +258,107 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn non_trigger_path_short_circuits_before_min_fast_events() {
+        let mut kernel = frozen_kernel::StreamKernel::new();
+        kernel
+            .process(lifecycle_record(0, 100))
+            .expect("lifecycle process");
+
+        for sequence in 1..=5u64 {
+            let row = kernel
+                .process(trade_record(sequence, "buy", 100 + sequence as i64))
+                .expect("trade process");
+            assert!(row["trigger"].is_null());
+        }
+    }
+
+    #[test]
+    fn fresh_market_trigger_preserves_full_feature_shape() {
+        let mut kernel = frozen_kernel::StreamKernel::new();
+        kernel
+            .process(lifecycle_record(0, 100))
+            .expect("lifecycle process");
+
+        let sides = ["buy", "buy", "sell", "buy", "buy", "buy"];
+        let mut final_row = Value::Null;
+        for (index, side) in sides.iter().enumerate() {
+            let sequence = index as u64 + 1;
+            final_row = kernel
+                .process(trade_record(sequence, side, 100 + sequence as i64))
+                .expect("trade process");
+        }
+
+        let trigger = &final_row["trigger"];
+        assert_eq!(trigger["trigger_kind"], "fresh_market_burst");
+        assert_eq!(trigger["direction"], "upward_pressure");
+        assert_eq!(trigger["features"]["fast_event_count"], 6);
+        assert_eq!(trigger["features"]["baseline_event_count"], 0);
+        assert_eq!(trigger["features"]["fast_buy_count"], 5);
+        assert_eq!(trigger["features"]["fast_sell_count"], 1);
+        assert_eq!(trigger["features"]["fast_unique_wallet_count"], 6);
+        assert_eq!(trigger["features"]["fast_unique_transaction_count"], 6);
+        assert_eq!(trigger["features"]["market_age_seconds"], 6);
+        assert_eq!(
+            trigger["features"]["data_quality_flags"],
+            json!([
+                "baseline_activity_insufficient",
+                "observation_lag_unavailable_unaligned_clock_domains"
+            ])
+        );
+    }
+
+    #[test]
+    fn established_trigger_preserves_activity_acceleration_semantics() {
+        let mut kernel = frozen_kernel::StreamKernel::new();
+
+        for (sequence, chain_time) in [(1u64, 100i64), (2, 101), (3, 102)] {
+            let row = kernel
+                .process(trade_record(sequence, "buy", chain_time))
+                .expect("baseline trade");
+            assert!(row["trigger"].is_null());
+        }
+
+        let mut final_row = Value::Null;
+        for offset in 0..6u64 {
+            let sequence = 4 + offset;
+            final_row = kernel
+                .process(trade_record(sequence, "buy", 350 + offset as i64))
+                .expect("fast trade");
+        }
+
+        let trigger = &final_row["trigger"];
+        assert_eq!(trigger["trigger_kind"], "activity_acceleration");
+        assert_eq!(trigger["features"]["fast_event_count"], 6);
+        assert_eq!(trigger["features"]["baseline_event_count"], 3);
+        assert_eq!(trigger["features"]["fast_unique_wallet_count"], 6);
+        assert_eq!(trigger["features"]["fast_unique_transaction_count"], 6);
+        assert_eq!(
+            trigger["features"]["data_quality_flags"],
+            json!([
+                "lifecycle_missing",
+                "observation_lag_unavailable_unaligned_clock_domains"
+            ])
+        );
+    }
+
+    #[test]
+    fn late_chain_insert_accounting_is_unchanged() {
+        let mut kernel = frozen_kernel::StreamKernel::new();
+
+        kernel
+            .process(trade_record_with_observed(1, "buy", 100, 100))
+            .expect("first trade");
+        kernel
+            .process(trade_record_with_observed(2, "buy", 102, 102))
+            .expect("second trade");
+        let late = kernel
+            .process(trade_record_with_observed(3, "buy", 101, 103))
+            .expect("late chain trade");
+
+        assert_eq!(late["late_chain_time_inserts"], 1);
+        assert!(late["trigger"].is_null());
+    }
+
 }
