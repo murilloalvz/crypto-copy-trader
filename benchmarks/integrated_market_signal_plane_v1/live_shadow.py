@@ -52,9 +52,9 @@ from src.signal_plane_research_persistence_v0 import (
 )
 
 
-VERSION = "rust_signal_plane_live_shadow_v5_signal_batch"
-PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V5_SIGNAL_BATCH"
-FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V5_SIGNAL_BATCH"
+VERSION = "rust_signal_plane_live_shadow_v6_target_prefilter"
+PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V6_TARGET_PREFILTER"
+FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V6_TARGET_PREFILTER"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
@@ -607,6 +607,22 @@ def _target_inputs_from_notification(
     return items, manifests, int(stack_errors)
 
 
+def _raw_ingress_prefilter(normalized: dict[str, Any]) -> str:
+    """Classify raw logs before queue admission without changing semantics.
+
+    This intentionally shares the contextual target extractor with the final
+    consumer authority. It never performs Carbon decoding, adaptation,
+    identity resolution, deduplication, or Radar work.
+    """
+    if normalized.get("err") is not None:
+        return "failed_tx"
+    logs = normalized.get("logs")
+    if not isinstance(logs, list):
+        return "no_target"
+    targets, _stack_errors = extract_contextual_target_payloads(logs)
+    return "target_candidate" if targets else "no_target"
+
+
 def _take_ready_ingress_batch(
     queue: asyncio.Queue[dict[str, Any]],
     first: dict[str, Any],
@@ -790,6 +806,15 @@ async def _surface_reader_v2(
                     "logs": logs,
                 }
                 counters[f"{label}_notifications"] += 1
+                counters["raw_notifications"] += 1
+                prefilter_result = _raw_ingress_prefilter(normalized)
+                if prefilter_result == "failed_tx":
+                    counters["prefilter_failed_tx"] += 1
+                    continue
+                if prefilter_result == "no_target":
+                    counters["prefilter_no_target"] += 1
+                    continue
+                counters["prefilter_target_candidate"] += 1
                 item = {
                     "label": label,
                     "received_wall_ns": received_wall_ns,
@@ -799,8 +824,10 @@ async def _surface_reader_v2(
                     ingress_queue.put_nowait(item)
                 except asyncio.QueueFull:
                     counters[f"{label}_ingress_drops"] += 1
+                    counters["ingress_drops"] += 1
                     continue
                 counters[f"{label}_ingress_enqueued"] += 1
+                counters["ingress_enqueued"] += 1
                 counters["ingress_queue_high_water"] = max(
                     counters["ingress_queue_high_water"],
                     ingress_queue.qsize(),
@@ -1926,6 +1953,14 @@ async def run_live_shadow_v0(
             "queue_capacity": INGRESS_QUEUE_SIZE,
             "queue_high_water": int(counters["ingress_queue_high_water"]),
             "queue_depth_at_report": ingress_queue.qsize(),
+            "raw_notifications": int(counters["raw_notifications"]),
+            "prefilter_failed_tx": int(counters["prefilter_failed_tx"]),
+            "prefilter_no_target": int(counters["prefilter_no_target"]),
+            "prefilter_target_candidate": int(
+                counters["prefilter_target_candidate"]
+            ),
+            "ingress_enqueued": int(counters["ingress_enqueued"]),
+            "ingress_drops": int(counters["ingress_drops"]),
             "enqueued_total": ingress_enqueued_total,
             "consumed_total": ingress_consumed_total,
             "drain_after_source_ms": ingress_drain_after_source_ms,

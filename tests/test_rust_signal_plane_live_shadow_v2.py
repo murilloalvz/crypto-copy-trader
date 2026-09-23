@@ -25,7 +25,7 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
     def test_v5_signal_batch_contract_is_frozen(self):
         self.assertEqual(
             VERSION,
-            "rust_signal_plane_live_shadow_v5_signal_batch",
+            "rust_signal_plane_live_shadow_v6_target_prefilter",
         )
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)

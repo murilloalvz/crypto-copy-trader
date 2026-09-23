@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict
 import unittest
 
@@ -9,7 +10,14 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     _build_signal_record,
     _identity_source_for_evidence,
     _latency_summary_ns,
+    _raw_ingress_prefilter,
     _target_inputs_from_notification,
+)
+from benchmarks.carbon_decoder_parity_v1.parity import (
+    PUMP_PROGRAM_ID,
+    PUMP_TRADE_EVENT_DISCRIMINATOR,
+    PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
+    PUMPSWAP_PROGRAM_ID,
 )
 from src.market_opportunity_radar import MarketTradeObservation
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
@@ -19,6 +27,74 @@ from benchmarks.market_first_live_discovery_v0.contracts import (
 
 
 class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
+    def _notification(self, *, program_id: str, payload: bytes) -> dict:
+        encoded = base64.b64encode(payload).decode("ascii")
+        return {
+            "err": None,
+            "signature": "SIG",
+            "slot": 1,
+            "logs": [
+                f"Program {program_id} invoke [1]",
+                f"Program data: {encoded}",
+                f"Program {program_id} success",
+            ],
+        }
+
+    def test_prefilter_retains_pump_target_consumer_would_decode(self):
+        normalized = self._notification(
+            program_id=PUMP_PROGRAM_ID,
+            payload=PUMP_TRADE_EVENT_DISCRIMINATOR + b"fixture",
+        )
+        items, _manifests, _stack_errors = _target_inputs_from_notification(
+            normalized=normalized,
+            received_wall_ns=10,
+            seen_event_keys=set(),
+        )
+        self.assertGreaterEqual(len(items), 1)
+        self.assertEqual(_raw_ingress_prefilter(normalized), "target_candidate")
+
+    def test_prefilter_retains_pumpswap_target_consumer_would_decode(self):
+        normalized = self._notification(
+            program_id=PUMPSWAP_PROGRAM_ID,
+            payload=PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"fixture",
+        )
+        items, _manifests, _stack_errors = _target_inputs_from_notification(
+            normalized=normalized,
+            received_wall_ns=10,
+            seen_event_keys=set(),
+        )
+        self.assertGreaterEqual(len(items), 1)
+        self.assertEqual(_raw_ingress_prefilter(normalized), "target_candidate")
+
+    def test_prefilter_rejects_failed_transaction_even_with_target_logs(self):
+        normalized = self._notification(
+            program_id=PUMPSWAP_PROGRAM_ID,
+            payload=PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"fixture",
+        )
+        normalized["err"] = {"InstructionError": [0, "Custom"]}
+        items, _manifests, _stack_errors = _target_inputs_from_notification(
+            normalized=normalized,
+            received_wall_ns=10,
+            seen_event_keys=set(),
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(_raw_ingress_prefilter(normalized), "failed_tx")
+
+    def test_prefilter_rejects_logs_without_contextual_target(self):
+        normalized = {
+            "err": None,
+            "signature": "SIG",
+            "slot": 1,
+            "logs": ["Program 11111111111111111111111111111111 success"],
+        }
+        items, _manifests, _stack_errors = _target_inputs_from_notification(
+            normalized=normalized,
+            received_wall_ns=10,
+            seen_event_keys=set(),
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(_raw_ingress_prefilter(normalized), "no_target")
+
     def test_latency_summary_uses_milliseconds(self):
         summary = _latency_summary_ns(
             [1_000_000, 2_000_000, 3_000_000, 4_000_000]
