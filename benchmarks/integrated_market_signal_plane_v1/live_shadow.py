@@ -1937,7 +1937,7 @@ async def run_live_shadow_v0(
         "matched_statuses": dict(sorted(matched_statuses.items())),
         "market_trade_statuses": dict(sorted(market_trade_statuses.items())),
         "transport": {
-            "mode": "rust_signal_batch_postrun_parity_v5",
+            "mode": "rust_signal_batch_postrun_parity_v7",
             "startup": {
                 "open_timeout_seconds": WS_OPEN_TIMEOUT_SECONDS,
                 "open_barrier_timeout_seconds": WS_OPEN_BARRIER_TIMEOUT_SECONDS,
