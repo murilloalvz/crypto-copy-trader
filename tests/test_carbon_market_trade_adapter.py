@@ -10,9 +10,10 @@ from src.carbon_matched_unit_adapter import (
     CarbonMatchedUnitAdaptationResultV0,
 )
 from src.matched_unit_flow import MatchedUnitFlowObservation
+from src.pumpswap_asset_role import USDC_MINT, WSOL_MINT
 
 
-def _matched(*, event_key: str, token: str, venue: str, side: str = "buy"):
+def _matched(*, event_key: str, token: str, venue: str, side: str = "buy", quote: str = "QUOTE"):
     observation = MatchedUnitFlowObservation(
         token_mint=token,
         side=side,
@@ -20,7 +21,7 @@ def _matched(*, event_key: str, token: str, venue: str, side: str = "buy"):
         observed_at=200,
         venue=venue,
         market_surface_key=f"{venue}:surface",
-        quote_asset_key="QUOTE",
+        quote_asset_key=quote,
         quote_amount_raw=10,
         quote_reserve_raw=1000,
         reserve_kind="test",
@@ -84,6 +85,91 @@ class CarbonMarketTradeAdapterTests(unittest.TestCase):
         self.assertEqual(result.observation.token_mint, "RESOLVED_TOKEN")
         self.assertEqual(result.observation.wallet_address, "USER")
         self.assertEqual(result.observation.venue, "pumpswap")
+
+    def test_pumpswap_standard_reference_quote_preserves_opportunity_side(self):
+        row = {
+            "type": "carbon_canonical_event",
+            "status": "decoded",
+            "event_key": "E4",
+            "event_type": "pumpswap_buy",
+            "pool": "POOL",
+            "side": "buy",
+            "timestamp": 100,
+            "user": "USER",
+            "signature": "SIG4",
+        }
+        result = adapt_carbon_matched_unit_to_market_trade_v0(
+            row,
+            _matched(
+                event_key="E4",
+                token="TOKEN",
+                venue="pumpswap",
+                quote=USDC_MINT,
+            ),
+        )
+        self.assertEqual(result.status, ADAPTED)
+        assert result.observation is not None
+        self.assertEqual(result.observation.token_mint, "TOKEN")
+        self.assertEqual(result.observation.side, "buy")
+
+    def test_pumpswap_reversed_reference_base_uses_quote_token_and_inverts_side(self):
+        row = {
+            "type": "carbon_canonical_event",
+            "status": "decoded",
+            "event_key": "E5",
+            "event_type": "pumpswap_buy",
+            "pool": "POOL",
+            "side": "buy",
+            "timestamp": 100,
+            "user": "USER",
+            "signature": "SIG5",
+        }
+        result = adapt_carbon_matched_unit_to_market_trade_v0(
+            row,
+            _matched(
+                event_key="E5",
+                token=USDC_MINT,
+                venue="pumpswap",
+                quote="TOKEN",
+            ),
+        )
+        self.assertEqual(result.status, ADAPTED)
+        assert result.observation is not None
+        self.assertEqual(result.observation.token_mint, "TOKEN")
+        self.assertEqual(result.observation.side, "sell")
+        self.assertIn(
+            "pumpswap_opportunity_asset_role_inverted",
+            result.data_quality_flags,
+        )
+
+    def test_pumpswap_reference_reference_pair_is_filtered(self):
+        row = {
+            "type": "carbon_canonical_event",
+            "status": "decoded",
+            "event_key": "E6",
+            "event_type": "pumpswap_sell",
+            "pool": "POOL",
+            "side": "sell",
+            "timestamp": 100,
+            "user": "USER",
+            "signature": "SIG6",
+        }
+        result = adapt_carbon_matched_unit_to_market_trade_v0(
+            row,
+            _matched(
+                event_key="E6",
+                token=WSOL_MINT,
+                venue="pumpswap",
+                quote=USDC_MINT,
+                side="sell",
+            ),
+        )
+        self.assertEqual(result.status, "UNSUPPORTED_EVENT")
+        self.assertIsNone(result.observation)
+        self.assertIn(
+            "pumpswap_opportunity_asset_role_filtered",
+            result.data_quality_flags,
+        )
 
     def test_missing_pumpswap_context_remains_missing(self):
         row = {
