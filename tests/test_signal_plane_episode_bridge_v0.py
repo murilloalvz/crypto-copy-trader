@@ -8,6 +8,7 @@ from src.market_opportunity_radar import (
     MarketMovementTrigger,
     MarketTradeObservation,
 )
+from src.pumpswap_asset_role import USDC_MINT
 from src.signal_plane_episode_bridge_v0 import (
     SIGNAL_PLANE_EPISODE_BRIDGE_VERSION,
     build_signal_plane_episode_assignment,
@@ -114,6 +115,23 @@ class SignalPlaneEpisodeBridgeV0Tests(unittest.TestCase):
             "market-radar:pumpswap-v3:pumpswap-signature:TOKEN",
         )
         self.assertEqual(assignment.venue, "pump_swap")
+
+    def test_pumpswap_reference_asset_target_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "reference asset"):
+            build_signal_plane_episode_assignment(
+                trigger=_trigger(USDC_MINT),
+                observation=MarketTradeObservation(
+                    token_mint=USDC_MINT,
+                    side="buy",
+                    chain_time=119,
+                    observed_at=120,
+                    wallet_address="wallet",
+                    notional_usd=None,
+                    price_usd=None,
+                    venue="pumpswap",
+                    transaction_key="pumpswap-reference-signature",
+                ),
+            )
 
     def test_trigger_token_must_match_observation(self):
         with self.assertRaisesRegex(ValueError, "token_mint"):
