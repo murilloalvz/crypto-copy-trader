@@ -247,6 +247,7 @@ def persist_signal_plane_research_batch(
             raise ValueError("lifecycle record cannot carry a market trigger")
         expected_sequence += 1
 
+    cache_enabled = episode_cache is not None
     cache = episode_cache if episode_cache is not None else {}
 
     observations_inserted = 0
@@ -364,12 +365,13 @@ def persist_signal_plane_research_batch(
         else:
             admission_replays += 1
 
-        episode = get_market_opportunity_episode(episode_result.episode_key)
-        if episode is None:
-            raise RuntimeError(
-                "admitted Signal Plane episode is missing from durable store"
-            )
-        _remember_episode(cache, episode)
+        if cache_enabled:
+            episode = get_market_opportunity_episode(episode_result.episode_key)
+            if episode is None:
+                raise RuntimeError(
+                    "admitted Signal Plane episode is missing from durable store"
+                )
+            _remember_episode(cache, episode)
 
     flush_pending()
 
