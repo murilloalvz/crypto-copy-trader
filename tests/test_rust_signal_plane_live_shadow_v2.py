@@ -11,6 +11,8 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     AsyncPumpSwapIdentityPlane,
     INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
     INGRESS_QUEUE_SIZE,
+    RESEARCH_PLANE_BATCH_MAX_RECORDS,
+    RESEARCH_PLANE_QUEUE_SIZE,
     SUBSCRIPTION_ACK_TIMEOUT_SECONDS,
     SURFACE_IDLE_TIMEOUT_SECONDS,
     VERSION,
@@ -18,6 +20,7 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     WS_OPEN_TIMEOUT_SECONDS,
     _surface_reader_v2,
     _take_ready_ingress_batch,
+    _take_ready_research_batch,
 )
 
 
@@ -30,6 +33,8 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)
         self.assertEqual(INGRESS_MICROBATCH_MAX_NOTIFICATIONS, 32)
+        self.assertEqual(RESEARCH_PLANE_QUEUE_SIZE, 4096)
+        self.assertEqual(RESEARCH_PLANE_BATCH_MAX_RECORDS, 256)
         self.assertEqual(WS_OPEN_TIMEOUT_SECONDS, 30.0)
         self.assertEqual(WS_OPEN_BARRIER_TIMEOUT_SECONDS, 35.0)
         self.assertEqual(SUBSCRIPTION_ACK_TIMEOUT_SECONDS, 20.0)
@@ -64,6 +69,43 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
 
         self.assertEqual(len(batch), 32)
         self.assertEqual(queue.qsize(), 8)
+
+
+    def test_research_batch_drains_ready_records_in_order(self):
+        queue = asyncio.Queue(maxsize=8)
+        first = ("first", None)
+        queue.put_nowait(("second", None))
+        queue.put_nowait(("third", None))
+
+        batch = _take_ready_research_batch(
+            queue,
+            first,
+            max_records=8,
+        )
+
+        self.assertEqual(
+            [item[0] for item in batch],
+            ["first", "second", "third"],
+        )
+        self.assertTrue(queue.empty())
+
+    def test_research_batch_respects_configured_cap(self):
+        queue = asyncio.Queue(maxsize=8)
+        first = ("first", None)
+        queue.put_nowait(("second", None))
+        queue.put_nowait(("third", None))
+
+        batch = _take_ready_research_batch(
+            queue,
+            first,
+            max_records=2,
+        )
+
+        self.assertEqual(
+            [item[0] for item in batch],
+            ["first", "second"],
+        )
+        self.assertEqual(queue.qsize(), 1)
 
     def test_reader_disables_client_originated_keepalive_ping(self):
         captured = {}

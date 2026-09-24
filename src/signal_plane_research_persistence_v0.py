@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
+from src.market_observation_batch_v0 import (
+    MarketLifecycleWriteV0,
+    MarketTradeWriteV0,
+    record_market_observations_batch_v0,
+)
 from src.market_observation_store import (
     record_market_lifecycle,
     record_market_trade,
@@ -29,11 +34,31 @@ class SignalPlaneResearchRecord(Protocol):
     lifecycle: MarketLifecycleObservation | None
 
 
+SignalPlaneResearchBatchItem = tuple[
+    SignalPlaneResearchRecord,
+    dict | None,
+]
+
+
 @dataclass(frozen=True)
 class SignalPlaneResearchPersistResult:
     sequence: int
     observation_inserted: bool
     episode: SignalPlaneEpisodeAdmissionResult | None
+
+
+@dataclass(frozen=True)
+class SignalPlaneResearchBatchPersistResult:
+    completed: int
+    observations_inserted: int
+    observation_replays: int
+    trades_completed: int
+    lifecycles_completed: int
+    trigger_episodes: int
+    new_admissions: int
+    admission_replays: int
+    sqlite_transactions: int
+    max_transaction_records: int
 
 
 def persist_signal_plane_research_record(
@@ -89,3 +114,149 @@ def persist_signal_plane_research_record(
         )
 
     raise ValueError(f"unsupported TraceRecord kind: {record.kind!r}")
+
+
+def _observation_write(
+    *,
+    acquisition_run_key: str,
+    record: SignalPlaneResearchRecord,
+):
+    if record.kind == "trade":
+        if record.trade is None:
+            raise ValueError("trade TraceRecord is missing trade observation")
+        return MarketTradeWriteV0(
+            acquisition_run_key=acquisition_run_key,
+            event_key=record.event_key,
+            source_provider=record.source_provider,
+            observation=record.trade,
+        )
+    if record.kind == "lifecycle":
+        if record.lifecycle is None:
+            raise ValueError("lifecycle TraceRecord is missing lifecycle observation")
+        return MarketLifecycleWriteV0(
+            acquisition_run_key=acquisition_run_key,
+            event_key=record.event_key,
+            source_provider=record.source_provider,
+            observation=record.lifecycle,
+        )
+    raise ValueError(f"unsupported TraceRecord kind: {record.kind!r}")
+
+
+def persist_signal_plane_research_batch(
+    *,
+    acquisition_run_key: str,
+    items: Sequence[SignalPlaneResearchBatchItem],
+    admit_episode_fn: Callable[..., bool] | None = None,
+) -> SignalPlaneResearchBatchPersistResult:
+    """Persist ordered Research Plane records with trigger-safe SQLite batching.
+
+    Consecutive observations share one SQLite transaction. A trigger record is
+    included in the current transaction, that transaction is committed, and only
+    then is the trigger admitted. Records after that trigger are not persisted
+    until admission returns, preserving the causal contract:
+
+        observation N durable -> trigger N admission -> sequence > N
+
+    The function is exclusively for the off-hot-path Research Plane.
+    """
+
+    if not items:
+        return SignalPlaneResearchBatchPersistResult(
+            completed=0,
+            observations_inserted=0,
+            observation_replays=0,
+            trades_completed=0,
+            lifecycles_completed=0,
+            trigger_episodes=0,
+            new_admissions=0,
+            admission_replays=0,
+            sqlite_transactions=0,
+            max_transaction_records=0,
+        )
+
+    expected_sequence = int(items[0][0].sequence)
+    for record, trigger_snapshot in items:
+        if int(record.sequence) != expected_sequence:
+            raise RuntimeError(
+                "research persistence batch sequence mismatch: "
+                f"expected={expected_sequence} actual={record.sequence}"
+            )
+        if record.kind == "lifecycle" and trigger_snapshot is not None:
+            raise ValueError("lifecycle record cannot carry a market trigger")
+        expected_sequence += 1
+
+    observations_inserted = 0
+    observation_replays = 0
+    trades_completed = 0
+    lifecycles_completed = 0
+    trigger_episodes = 0
+    new_admissions = 0
+    admission_replays = 0
+    sqlite_transactions = 0
+    max_transaction_records = 0
+    pending_writes = []
+
+    def flush_pending() -> None:
+        nonlocal observations_inserted
+        nonlocal observation_replays
+        nonlocal sqlite_transactions
+        nonlocal max_transaction_records
+        if not pending_writes:
+            return
+        transaction_records = len(pending_writes)
+        result = record_market_observations_batch_v0(tuple(pending_writes))
+        observations_inserted += int(result.inserted)
+        observation_replays += int(result.replayed)
+        sqlite_transactions += 1
+        max_transaction_records = max(
+            max_transaction_records,
+            transaction_records,
+        )
+        pending_writes.clear()
+
+    for record, trigger_snapshot in items:
+        pending_writes.append(
+            _observation_write(
+                acquisition_run_key=acquisition_run_key,
+                record=record,
+            )
+        )
+        if record.kind == "trade":
+            trades_completed += 1
+        else:
+            lifecycles_completed += 1
+
+        if trigger_snapshot is None:
+            continue
+
+        # Commit every observation through the triggering record before admission.
+        flush_pending()
+        if record.trade is None:
+            raise ValueError("triggered trade TraceRecord is missing trade observation")
+        episode = admit_signal_plane_trigger_snapshot(
+            acquisition_run_key=acquisition_run_key,
+            trigger_snapshot=trigger_snapshot,
+            observation=record.trade,
+            admit_episode_fn=admit_episode_fn,
+        )
+        if episode is not None:
+            trigger_episodes += 1
+            if episode.admitted:
+                new_admissions += 1
+            else:
+                admission_replays += 1
+
+    flush_pending()
+
+    return SignalPlaneResearchBatchPersistResult(
+        completed=len(items),
+        observations_inserted=observations_inserted,
+        observation_replays=observation_replays,
+        trades_completed=trades_completed,
+        lifecycles_completed=lifecycles_completed,
+        trigger_episodes=trigger_episodes,
+        new_admissions=new_admissions,
+        admission_replays=admission_replays,
+        sqlite_transactions=sqlite_transactions,
+        max_transaction_records=max_transaction_records,
+    )

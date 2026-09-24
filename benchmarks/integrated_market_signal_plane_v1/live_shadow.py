@@ -48,7 +48,7 @@ from src.signal_plane_episode_admission_v0 import (
 )
 from src.signal_plane_research_persistence_v0 import (
     SIGNAL_PLANE_RESEARCH_PERSISTENCE_VERSION,
-    persist_signal_plane_research_record,
+    persist_signal_plane_research_batch,
 )
 
 
@@ -63,6 +63,8 @@ WS_OPEN_BARRIER_TIMEOUT_SECONDS = 35.0
 SUBSCRIPTION_ACK_TIMEOUT_SECONDS = 20.0
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
+RESEARCH_PLANE_QUEUE_SIZE = 4096
+RESEARCH_PLANE_BATCH_MAX_RECORDS = 256
 
 CARBON_MANIFEST = (
     Path("benchmarks")
@@ -640,6 +642,30 @@ def _take_ready_ingress_batch(
     return batch
 
 
+def _take_ready_research_batch(
+    queue: asyncio.Queue[tuple[TraceRecord, dict | None] | None],
+    first: tuple[TraceRecord, dict | None],
+    *,
+    max_records: int,
+) -> list[tuple[TraceRecord, dict | None]]:
+    if max_records <= 0:
+        raise ValueError("max_records must be positive")
+    batch = [first]
+    while len(batch) < max_records:
+        try:
+            item = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if item is None:
+            # Shutdown sentinel is normally inserted only after queue.join().
+            # Preserve it if a caller ever violates that ordering.
+            queue.task_done()
+            queue.put_nowait(None)
+            break
+        batch.append(item)
+    return batch
+
+
 def _build_signal_record(
     *,
     sequence: int,
@@ -949,7 +975,7 @@ async def run_live_shadow_v0(
     research_plane_queue: asyncio.Queue[
         tuple[TraceRecord, dict | None] | None
     ] | None = (
-        asyncio.Queue(maxsize=4096)
+        asyncio.Queue(maxsize=RESEARCH_PLANE_QUEUE_SIZE)
         if research_run_key
         else None
     )
@@ -1013,47 +1039,83 @@ async def run_live_shadow_v0(
         assert research_plane_queue is not None
         expected_sequence = 0
         while True:
-            item = await research_plane_queue.get()
+            first = await research_plane_queue.get()
+            if first is None:
+                research_plane_queue.task_done()
+                return
+
+            batch = _take_ready_research_batch(
+                research_plane_queue,
+                first,
+                max_records=RESEARCH_PLANE_BATCH_MAX_RECORDS,
+            )
             try:
-                if item is None:
-                    return
-                trace_record, trigger_snapshot = item
-                if trace_record.sequence != expected_sequence:
-                    raise RuntimeError(
-                        "research plane sequence mismatch: "
-                        f"expected={expected_sequence} actual={trace_record.sequence}"
-                    )
+                next_expected = expected_sequence
+                for trace_record, _trigger_snapshot in batch:
+                    if trace_record.sequence != next_expected:
+                        counters["research_plane_sequence_mismatch_batches"] += 1
+                        raise RuntimeError(
+                            "research plane sequence mismatch: "
+                            f"expected={next_expected} actual={trace_record.sequence}"
+                        )
+                    next_expected += 1
+
                 result = await asyncio.to_thread(
-                    persist_signal_plane_research_record,
+                    persist_signal_plane_research_batch,
                     acquisition_run_key=research_run_key,
-                    record=trace_record,
-                    trigger_snapshot=trigger_snapshot,
+                    items=tuple(batch),
                     admit_episode_fn=research_plane_admit_episode_fn,
                 )
-                counters["research_plane_completed"] += 1
-                if result.observation_inserted:
-                    counters["research_plane_observations_inserted"] += 1
-                else:
-                    counters["research_plane_observation_replays"] += 1
-                if trace_record.kind == "trade":
-                    counters["research_plane_trades_completed"] += 1
-                else:
-                    counters["research_plane_lifecycles_completed"] += 1
-                if result.episode is not None:
-                    counters["research_plane_trigger_episodes"] += 1
-                    if result.episode.admitted:
-                        counters["research_plane_new_admissions"] += 1
-                    else:
-                        counters["research_plane_admission_replays"] += 1
-                expected_sequence += 1
+                counters["research_plane_batches"] += 1
+                counters["research_plane_batch_max_records"] = max(
+                    counters["research_plane_batch_max_records"],
+                    len(batch),
+                )
+                counters["research_plane_sqlite_transactions"] += (
+                    result.sqlite_transactions
+                )
+                counters["research_plane_transaction_max_records"] = max(
+                    counters["research_plane_transaction_max_records"],
+                    result.max_transaction_records,
+                )
+                counters["research_plane_completed"] += result.completed
+                counters["research_plane_observations_inserted"] += (
+                    result.observations_inserted
+                )
+                counters["research_plane_observation_replays"] += (
+                    result.observation_replays
+                )
+                counters["research_plane_trades_completed"] += (
+                    result.trades_completed
+                )
+                counters["research_plane_lifecycles_completed"] += (
+                    result.lifecycles_completed
+                )
+                counters["research_plane_trigger_episodes"] += (
+                    result.trigger_episodes
+                )
+                counters["research_plane_new_admissions"] += (
+                    result.new_admissions
+                )
+                counters["research_plane_admission_replays"] += (
+                    result.admission_replays
+                )
+                expected_sequence = next_expected
             except Exception as exc:
                 counters["research_plane_errors"] += 1
                 errors.append(
                     f"research_plane:{type(exc).__name__}:{exc}"
                 )
-                expected_sequence += 1
+                # Fail remains visible through errors/accounting/overflow gates.
+                # Resync only prevents one explicit gap from becoming thousands
+                # of derivative sequence-mismatch errors.
+                expected_sequence = max(
+                    expected_sequence,
+                    int(batch[-1][0].sequence) + 1,
+                )
             finally:
-                research_plane_queue.task_done()
+                for _ in batch:
+                    research_plane_queue.task_done()
 
     if research_plane_queue is not None:
         research_plane_task = asyncio.create_task(
@@ -2013,7 +2075,9 @@ async def run_live_shadow_v0(
             "enabled": bool(research_run_key),
             "version": SIGNAL_PLANE_RESEARCH_PERSISTENCE_VERSION,
             "run_key": research_run_key or None,
-            "queue_capacity": 4096 if research_run_key else 0,
+            "queue_capacity": (
+                RESEARCH_PLANE_QUEUE_SIZE if research_run_key else 0
+            ),
             "queue_depth_at_report": (
                 research_plane_queue.qsize()
                 if research_plane_queue is not None
@@ -2046,6 +2110,22 @@ async def run_live_shadow_v0(
             "queue_high_water": int(
                 counters["research_plane_queue_high_water"]
             ),
+            "batch_max_records_configured": (
+                RESEARCH_PLANE_BATCH_MAX_RECORDS if research_run_key else 0
+            ),
+            "batches": int(counters["research_plane_batches"]),
+            "batch_max_records": int(
+                counters["research_plane_batch_max_records"]
+            ),
+            "sqlite_transactions": int(
+                counters["research_plane_sqlite_transactions"]
+            ),
+            "transaction_max_records": int(
+                counters["research_plane_transaction_max_records"]
+            ),
+            "sequence_mismatch_batches": int(
+                counters["research_plane_sequence_mismatch_batches"]
+            ),
             "queue_overflow": int(
                 counters["research_plane_queue_overflow"]
             ),
@@ -2054,8 +2134,9 @@ async def run_live_shadow_v0(
                 counters["research_plane_drain_timeout"]
             ),
             "policy": (
-                "ordered off-hot-path durability: observation is persisted before "
-                "trigger episode assignment/admission; no hazard/Jupiter/outcome call"
+                "ordered off-hot-path durability with trigger-safe SQLite batching: "
+                "observations are committed through each trigger before that trigger "
+                "is admitted; no hazard/Jupiter/outcome call on the Signal Plane hot path"
             ),
         },
         "episode_bridge": {
