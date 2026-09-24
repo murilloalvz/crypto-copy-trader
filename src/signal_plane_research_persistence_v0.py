@@ -12,6 +12,14 @@ from src.market_observation_store import (
     record_market_lifecycle,
     record_market_trade,
 )
+from src.market_opportunity_episode_batch_v0 import (
+    MarketContinuationTriggerWriteV0,
+    record_market_continuation_triggers_batch_v0,
+)
+from src.market_opportunity_episode_store import (
+    MarketOpportunityEpisode,
+    get_market_opportunity_episode,
+)
 from src.market_opportunity_radar import (
     MarketLifecycleObservation,
     MarketTradeObservation,
@@ -19,6 +27,10 @@ from src.market_opportunity_radar import (
 from src.signal_plane_episode_admission_v0 import (
     SignalPlaneEpisodeAdmissionResult,
     admit_signal_plane_trigger_snapshot,
+)
+from src.signal_plane_episode_bridge_v0 import (
+    build_signal_plane_episode_assignment,
+    market_movement_trigger_from_snapshot,
 )
 
 
@@ -57,6 +69,8 @@ class SignalPlaneResearchBatchPersistResult:
     trigger_episodes: int
     new_admissions: int
     admission_replays: int
+    continuation_triggers: int
+    continuation_trigger_transactions: int
     sqlite_transactions: int
     max_transaction_records: int
 
@@ -142,22 +156,68 @@ def _observation_write(
     raise ValueError(f"unsupported TraceRecord kind: {record.kind!r}")
 
 
+def _remember_episode(
+    cache: dict[str, list[MarketOpportunityEpisode]],
+    episode: MarketOpportunityEpisode,
+) -> None:
+    bucket = cache.setdefault(episode.token_mint, [])
+    for index, existing in enumerate(bucket):
+        if existing.episode_key == episode.episode_key:
+            bucket[index] = episode
+            break
+    else:
+        bucket.append(episode)
+    bucket.sort(
+        key=lambda item: (
+            item.first_trigger_observed_at,
+            item.episode_key,
+        )
+    )
+
+
+def _cached_continuation_episode(
+    cache: dict[str, list[MarketOpportunityEpisode]],
+    *,
+    token_mint: str,
+    trigger_key: str,
+    observed_at: int,
+) -> MarketOpportunityEpisode | None:
+    for episode in reversed(cache.get(token_mint, [])):
+        if (
+            episode.first_trigger_key != trigger_key
+            and episode.first_trigger_observed_at
+            <= observed_at
+            < episode.episode_closes_at
+        ):
+            return episode
+    return None
+
+
 def persist_signal_plane_research_batch(
     *,
     acquisition_run_key: str,
     items: Sequence[SignalPlaneResearchBatchItem],
     admit_episode_fn: Callable[..., bool] | None = None,
+    episode_cache: dict[str, list[MarketOpportunityEpisode]] | None = None,
 ) -> SignalPlaneResearchBatchPersistResult:
-    """Persist ordered Research Plane records with trigger-safe SQLite batching.
+    """Persist ordered Research Plane records with trigger-safe batching.
 
-    Consecutive observations share one SQLite transaction. A trigger record is
-    included in the current transaction, that transaction is committed, and only
-    then is the trigger admitted. Records after that trigger are not persisted
-    until admission returns, preserving the causal contract:
+    Observation writes are batched. Once an episode has been synchronously
+    established, continuation triggers inside that canonical episode window use
+    the frozen continuation-trigger batch writer and never re-enter episode T0
+    assignment/admission.
 
-        observation N durable -> trigger N admission -> sequence > N
+    A trigger that can create/move/select a canonical episode remains strictly
+    synchronous:
 
-    The function is exclusively for the off-hot-path Research Plane.
+        observations through N durable
+        -> canonical episode assignment for N
+        -> episode admission for N
+        -> sequence > N
+
+    Late-earlier triggers, first-trigger replays and triggers outside cached
+    episode windows deliberately fall back to the synchronous path, preserving
+    the frozen no-retroactive-enrollment semantics.
     """
 
     if not items:
@@ -170,6 +230,8 @@ def persist_signal_plane_research_batch(
             trigger_episodes=0,
             new_admissions=0,
             admission_replays=0,
+            continuation_triggers=0,
+            continuation_trigger_transactions=0,
             sqlite_transactions=0,
             max_transaction_records=0,
         )
@@ -185,6 +247,8 @@ def persist_signal_plane_research_batch(
             raise ValueError("lifecycle record cannot carry a market trigger")
         expected_sequence += 1
 
+    cache = episode_cache if episode_cache is not None else {}
+
     observations_inserted = 0
     observation_replays = 0
     trades_completed = 0
@@ -192,27 +256,41 @@ def persist_signal_plane_research_batch(
     trigger_episodes = 0
     new_admissions = 0
     admission_replays = 0
+    continuation_triggers = 0
+    continuation_trigger_transactions = 0
     sqlite_transactions = 0
     max_transaction_records = 0
+
     pending_writes = []
+    pending_continuations: list[MarketContinuationTriggerWriteV0] = []
 
     def flush_pending() -> None:
         nonlocal observations_inserted
         nonlocal observation_replays
+        nonlocal continuation_trigger_transactions
         nonlocal sqlite_transactions
         nonlocal max_transaction_records
-        if not pending_writes:
-            return
-        transaction_records = len(pending_writes)
-        result = record_market_observations_batch_v0(tuple(pending_writes))
-        observations_inserted += int(result.inserted)
-        observation_replays += int(result.replayed)
-        sqlite_transactions += 1
-        max_transaction_records = max(
-            max_transaction_records,
-            transaction_records,
-        )
-        pending_writes.clear()
+
+        if pending_writes:
+            transaction_records = len(pending_writes)
+            result = record_market_observations_batch_v0(tuple(pending_writes))
+            observations_inserted += int(result.inserted)
+            observation_replays += int(result.replayed)
+            sqlite_transactions += 1
+            max_transaction_records = max(
+                max_transaction_records,
+                transaction_records,
+            )
+            pending_writes.clear()
+
+        # Continuations cannot create/move T0. Persist them only after every
+        # corresponding observation in this flush is durable.
+        if pending_continuations:
+            record_market_continuation_triggers_batch_v0(
+                tuple(pending_continuations)
+            )
+            continuation_trigger_transactions += 1
+            pending_continuations.clear()
 
     for record, trigger_snapshot in items:
         pending_writes.append(
@@ -228,23 +306,64 @@ def persist_signal_plane_research_batch(
 
         if trigger_snapshot is None:
             continue
-
-        # Commit every observation through the triggering record before admission.
-        flush_pending()
         if record.trade is None:
             raise ValueError("triggered trade TraceRecord is missing trade observation")
-        episode = admit_signal_plane_trigger_snapshot(
+
+        trigger_episodes += 1
+        trigger = market_movement_trigger_from_snapshot(trigger_snapshot)
+        assignment = build_signal_plane_episode_assignment(
+            trigger=trigger,
+            observation=record.trade,
+        )
+        cached = _cached_continuation_episode(
+            cache,
+            token_mint=assignment.token_mint,
+            trigger_key=assignment.trigger_key,
+            observed_at=assignment.observed_at,
+        )
+        if cached is not None:
+            pending_continuations.append(
+                MarketContinuationTriggerWriteV0(
+                    acquisition_run_key=acquisition_run_key,
+                    episode_key=cached.episode_key,
+                    trigger_key=assignment.trigger_key,
+                    token_mint=assignment.token_mint,
+                    trigger_kind=assignment.trigger_kind,
+                    direction=assignment.direction,
+                    chain_time=assignment.chain_time,
+                    observed_at=assignment.observed_at,
+                    method_version=assignment.method_version,
+                    venue=assignment.venue,
+                )
+            )
+            continuation_triggers += 1
+            # Semantically this trigger belongs to an already-admitted episode.
+            # Do not call the durable admission store again.
+            admission_replays += 1
+            continue
+
+        # Unknown/out-of-window/late-earlier/first-trigger-replay cases retain
+        # the original synchronous fail-closed path.
+        flush_pending()
+        episode_result = admit_signal_plane_trigger_snapshot(
             acquisition_run_key=acquisition_run_key,
             trigger_snapshot=trigger_snapshot,
             observation=record.trade,
             admit_episode_fn=admit_episode_fn,
         )
-        if episode is not None:
-            trigger_episodes += 1
-            if episode.admitted:
-                new_admissions += 1
-            else:
-                admission_replays += 1
+        if episode_result is None:
+            raise RuntimeError("trigger snapshot produced no episode admission result")
+        if episode_result.admitted:
+            new_admissions += 1
+        else:
+            admission_replays += 1
+
+        episode = get_market_opportunity_episode(episode_result.episode_key)
+        if episode is None:
+            raise RuntimeError(
+                "admitted Signal Plane episode is missing from durable store"
+            )
+        _remember_episode(cache, episode)
 
     flush_pending()
 
@@ -257,6 +376,8 @@ def persist_signal_plane_research_batch(
         trigger_episodes=trigger_episodes,
         new_admissions=new_admissions,
         admission_replays=admission_replays,
+        continuation_triggers=continuation_triggers,
+        continuation_trigger_transactions=continuation_trigger_transactions,
         sqlite_transactions=sqlite_transactions,
         max_transaction_records=max_transaction_records,
     )

@@ -980,6 +980,7 @@ async def run_live_shadow_v0(
         else None
     )
     research_plane_task: asyncio.Task[None] | None = None
+    research_plane_episode_cache: dict[str, list[Any]] = {}
 
     ingress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=INGRESS_QUEUE_SIZE
@@ -1065,6 +1066,7 @@ async def run_live_shadow_v0(
                     acquisition_run_key=research_run_key,
                     items=tuple(batch),
                     admit_episode_fn=research_plane_admit_episode_fn,
+                    episode_cache=research_plane_episode_cache,
                 )
                 counters["research_plane_batches"] += 1
                 counters["research_plane_batch_max_records"] = max(
@@ -1099,6 +1101,12 @@ async def run_live_shadow_v0(
                 )
                 counters["research_plane_admission_replays"] += (
                     result.admission_replays
+                )
+                counters["research_plane_continuation_triggers"] += (
+                    result.continuation_triggers
+                )
+                counters["research_plane_continuation_trigger_transactions"] += (
+                    result.continuation_trigger_transactions
                 )
                 expected_sequence = next_expected
             except Exception as exc:
@@ -2107,6 +2115,23 @@ async def run_live_shadow_v0(
             "admission_replays": int(
                 counters["research_plane_admission_replays"]
             ),
+            "continuation_triggers": int(
+                counters["research_plane_continuation_triggers"]
+            ),
+            "continuation_trigger_transactions": int(
+                counters["research_plane_continuation_trigger_transactions"]
+            ),
+            "episode_cache_tokens": (
+                len(research_plane_episode_cache) if research_run_key else 0
+            ),
+            "episode_cache_episodes": (
+                sum(
+                    len(items)
+                    for items in research_plane_episode_cache.values()
+                )
+                if research_run_key
+                else 0
+            ),
             "queue_high_water": int(
                 counters["research_plane_queue_high_water"]
             ),
@@ -2134,9 +2159,11 @@ async def run_live_shadow_v0(
                 counters["research_plane_drain_timeout"]
             ),
             "policy": (
-                "ordered off-hot-path durability with trigger-safe SQLite batching: "
-                "observations are committed through each trigger before that trigger "
-                "is admitted; no hazard/Jupiter/outcome call on the Signal Plane hot path"
+                "ordered off-hot-path durability with cached canonical episodes: "
+                "new/ambiguous episode triggers remain synchronous after observation "
+                "durability; in-window continuation triggers are batch-persisted and "
+                "cannot create/move T0; no hazard/Jupiter/outcome call on the Signal "
+                "Plane hot path"
             ),
         },
         "episode_bridge": {
