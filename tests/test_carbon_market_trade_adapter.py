@@ -78,7 +78,13 @@ class CarbonMarketTradeAdapterTests(unittest.TestCase):
             "signature": "SIG2",
         }
         result = adapt_carbon_matched_unit_to_market_trade_v0(
-            row, _matched(event_key="E2", token="RESOLVED_TOKEN", venue="pumpswap")
+            row,
+            _matched(
+                event_key="E2",
+                token="RESOLVED_TOKEN",
+                venue="pumpswap",
+                quote=USDC_MINT,
+            ),
         )
         self.assertEqual(result.status, ADAPTED)
         assert result.observation is not None
