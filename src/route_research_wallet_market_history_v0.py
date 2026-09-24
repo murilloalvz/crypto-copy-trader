@@ -121,6 +121,7 @@ def load_route_research_wallet_history_v0(
     history_cutoff: int,
     horizon_seconds: int = 900,
     excluded_acquisition_run_keys: tuple[str, ...] | list[str] | set[str] = (),
+    allowed_acquisition_run_keys: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> RouteResearchWalletHistoryLoadResultV0:
     current_key = str(current_episode_key).strip()
     token_mint = str(current_token_mint).strip()
@@ -131,6 +132,15 @@ def load_route_research_wallet_history_v0(
         for item in excluded_acquisition_run_keys
         if str(item).strip()
     }
+    allowed_runs = (
+        None
+        if allowed_acquisition_run_keys is None
+        else {
+            str(item).strip()
+            for item in allowed_acquisition_run_keys
+            if str(item).strip()
+        }
+    )
     if not current_key:
         raise ValueError("current_episode_key cannot be empty")
     if not token_mint:
@@ -163,6 +173,9 @@ def load_route_research_wallet_history_v0(
     for run_key, episode_key in raw_prior_keys:
         if run_key in excluded_runs:
             exclusions["excluded_invalid_acquisition_run"] += 1
+            continue
+        if allowed_runs is not None and run_key not in allowed_runs:
+            exclusions["outside_allowed_acquisition_run_epoch"] += 1
             continue
         prior_keys.append((run_key, episode_key))
 
@@ -302,6 +315,8 @@ def load_route_research_wallet_history_v0(
             flags.append("partial_route_research_history_coverage")
     if excluded_runs:
         flags.append("invalid_acquisition_runs_explicitly_excluded")
+    if allowed_runs is not None:
+        flags.append("history_restricted_to_allowed_acquisition_run_epoch")
 
     return RouteResearchWalletHistoryLoadResultV0(
         method_version=VERSION,
