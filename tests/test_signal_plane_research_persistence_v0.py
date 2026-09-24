@@ -474,7 +474,7 @@ class SignalPlaneResearchPersistenceV0Tests(unittest.TestCase):
         self.assertEqual(admissions, ["tx-0"])
         self.assertEqual(
             continuation_batches,
-            (("market-radar:pump:tx-1:TOKEN",),),
+            [("market-radar:pump:tx-1:TOKEN",)],
         )
         self.assertEqual(result.trigger_episodes, 2)
         self.assertEqual(result.new_admissions, 1)
