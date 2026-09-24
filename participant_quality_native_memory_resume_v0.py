@@ -31,13 +31,14 @@ PASS_BRIDGE = bridge.PASS_CLASSIFICATION
 
 VALIDATED_M1 = "participant-quality-native-memory-20260924-01-M1"
 INVALID_M2 = "participant-quality-native-memory-20260924-01-M2"
-REPLACEMENT_M2 = "participant-quality-native-memory-20260924-01-M2R1"
+FAILED_REPLACEMENT_M2 = "participant-quality-native-memory-20260924-01-M2R1"
+REPLACEMENT_M2 = "participant-quality-native-memory-20260924-01-M2R2"
 M3 = "participant-quality-native-memory-20260924-01-M3"
 M4 = "participant-quality-native-memory-20260924-01-M4"
 
 VALID_RUN_KEYS = (VALIDATED_M1, REPLACEMENT_M2, M3, M4)
 NEW_RUN_KEYS = (REPLACEMENT_M2, M3, M4)
-EXCLUDED_HISTORY_RUN_KEYS = (INVALID_M2,)
+EXCLUDED_HISTORY_RUN_KEYS = (INVALID_M2, FAILED_REPLACEMENT_M2)
 
 MEMORY_HORIZON_SECONDS = 900
 MAX_EPISODES = 40
@@ -426,12 +427,17 @@ def run_resume(
         "valid_run_keys": list(VALID_RUN_KEYS),
         "excluded_invalid_run_keys": list(EXCLUDED_HISTORY_RUN_KEYS),
         "technical_replacement": {
-            "invalid_slot_run_key": INVALID_M2,
+            "invalid_slot_run_keys": [
+                INVALID_M2,
+                FAILED_REPLACEMENT_M2,
+            ],
             "replacement_slot_run_key": REPLACEMENT_M2,
             "reason": (
-                "original M2 bridge failed with one Research Plane worker "
-                "exception after provider attempt persisted STARTED; at-most-once "
-                "forbids provider replay"
+                "original M2 and first replacement M2R1 both failed the "
+                "Research Plane bridge with one worker exception and incomplete "
+                "entry terminal accounting. Both partial cohorts are excluded. "
+                "M2R2 is authorized only after hardening Jupiter transport/payload "
+                "error normalization and adding worker-error observability."
             ),
         },
         "run_reports": run_reports,

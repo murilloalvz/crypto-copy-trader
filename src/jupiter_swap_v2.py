@@ -1,6 +1,7 @@
 import json
 import time
 from dataclasses import dataclass
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -117,7 +118,14 @@ class JupiterSwapV2Client:
             raise JupiterOrderError(
                 f"Jupiter /order HTTP {exc.code}: {detail[:300]}"
             ) from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            HTTPException,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
             raise JupiterOrderError(f"Jupiter /order unavailable: {exc}") from exc
 
         observed_at = int(time.time())
@@ -125,7 +133,14 @@ class JupiterSwapV2Client:
             raise JupiterOrderError("Jupiter /order returned a non-object payload")
         if payload.get("error") and not payload.get("inAmount"):
             raise JupiterOrderError(str(payload.get("error")))
-        return parse_jupiter_order(payload, observed_at=observed_at)
+        try:
+            return parse_jupiter_order(payload, observed_at=observed_at)
+        except JupiterOrderError:
+            raise
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise JupiterOrderError(
+                f"Jupiter /order payload normalization failed: {exc}"
+            ) from exc
 
 
 def _optional_float(value) -> float | None:

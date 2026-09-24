@@ -1,5 +1,6 @@
 import json
 import unittest
+from http.client import RemoteDisconnected
 from unittest.mock import patch
 
 from src.jupiter_swap_v2 import (
@@ -175,6 +176,34 @@ class JupiterSwapV2Tests(unittest.TestCase):
                 amount_raw=1,
                 slippage_bps=10_001,
             )
+
+    def test_remote_disconnect_is_normalized_to_jupiter_order_error(self):
+        client = JupiterSwapV2Client(api_key="secret", timeout=3)
+        with patch(
+            "src.jupiter_swap_v2.urlopen",
+            side_effect=RemoteDisconnected("peer closed connection"),
+        ):
+            with self.assertRaises(JupiterOrderError):
+                client.order(
+                    input_mint="USDC",
+                    output_mint="TOKEN",
+                    amount_raw=25_000_000,
+                )
+
+    def test_invalid_optional_numeric_payload_is_normalized_to_jupiter_order_error(self):
+        payload = _payload(transaction=None)
+        payload["priceImpact"] = "not-a-number"
+        client = JupiterSwapV2Client(api_key="secret", timeout=3)
+        with patch(
+            "src.jupiter_swap_v2.urlopen",
+            return_value=_Response(payload),
+        ):
+            with self.assertRaises(JupiterOrderError):
+                client.order(
+                    input_mint="USDC",
+                    output_mint="TOKEN",
+                    amount_raw=25_000_000,
+                )
 
     def test_parse_requires_positive_route_amounts(self):
         payload = _payload()

@@ -113,6 +113,7 @@ class SignalPlaneRouteResearchCoordinatorV0:
         self.selected_episode_keys: set[str] = set()
         self.decision_latencies_seconds: list[float] = []
         self.disposition_latencies_seconds: list[float] = []
+        self.worker_errors: list[dict[str, object]] = []
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread_id: int | None = None
@@ -245,8 +246,17 @@ class SignalPlaneRouteResearchCoordinatorV0:
                     self.counters["hazard_reused_attempts"] += 1
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self.counters["hazard_worker_errors"] += 1
+                self.worker_errors.append(
+                    {
+                        "lane": "hazard",
+                        "worker_index": index,
+                        "episode_key": job.episode_key,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc)[:500],
+                    }
+                )
                 raise
             finally:
                 self.hazard_queue.task_done()
@@ -340,8 +350,17 @@ class SignalPlaneRouteResearchCoordinatorV0:
                 self.disposition_latencies_seconds.append(elapsed)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self.counters["research_worker_errors"] += 1
+                self.worker_errors.append(
+                    {
+                        "lane": "research",
+                        "worker_index": index,
+                        "episode_key": job.episode_key,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc)[:500],
+                    }
+                )
                 raise
             finally:
                 self.research_queue.task_done()
@@ -374,6 +393,7 @@ class SignalPlaneRouteResearchCoordinatorV0:
             "counters": dict(sorted(self.counters.items())),
             "hazard_queue_depth": self.hazard_queue.qsize(),
             "research_queue_depth": self.research_queue.qsize(),
+            "worker_errors": list(self.worker_errors),
             "hazard_pacer": {
                 "interval_ms": hazard.interval_ms,
                 "starts": hazard.starts,

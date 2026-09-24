@@ -11,17 +11,18 @@ class ParticipantQualityNativeMemoryResumeV0Tests(unittest.TestCase):
             resume.VALID_RUN_KEYS,
             (
                 "participant-quality-native-memory-20260924-01-M1",
-                "participant-quality-native-memory-20260924-01-M2R1",
+                "participant-quality-native-memory-20260924-01-M2R2",
                 "participant-quality-native-memory-20260924-01-M3",
                 "participant-quality-native-memory-20260924-01-M4",
             ),
         )
 
-    def test_failed_original_m2_is_excluded(self):
+    def test_failed_m2_attempts_are_excluded(self):
         self.assertEqual(
             resume.EXCLUDED_HISTORY_RUN_KEYS,
             (
                 "participant-quality-native-memory-20260924-01-M2",
+                "participant-quality-native-memory-20260924-01-M2R1",
             ),
         )
         self.assertNotIn(
