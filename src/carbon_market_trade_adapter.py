@@ -20,9 +20,10 @@ from src.carbon_matched_unit_adapter import (
     CarbonMatchedUnitAdaptationResultV0,
 )
 from src.market_opportunity_radar import MarketTradeObservation
+from src.pumpswap_asset_role import classify_pumpswap_opportunity_asset
 
 
-CARBON_MARKET_TRADE_ADAPTER_VERSION = "carbon_market_trade_adapter_v0"
+CARBON_MARKET_TRADE_ADAPTER_VERSION = "carbon_market_trade_adapter_v1_opportunity_asset_role"
 _VALID_EVENT_TYPES = frozenset({"pump_trade", "pumpswap_buy", "pumpswap_sell"})
 
 
@@ -122,6 +123,10 @@ def adapt_carbon_matched_unit_to_market_trade_v0(
             flags=("carbon_matched_unit_trade_semantics_mismatch",),
         )
 
+    normalized_token_mint = source.token_mint
+    normalized_side = source.side
+    extra_flags: list[str] = []
+
     if event_type == "pump_trade":
         row_mint = _text(row, "mint")
         if row_mint != source.token_mint or source.venue != "pump":
@@ -140,18 +145,35 @@ def adapt_carbon_matched_unit_to_market_trade_v0(
                 provenance_keys=matched_unit.provenance_keys,
                 flags=("pumpswap_trade_venue_mismatch",),
             )
+        role = classify_pumpswap_opportunity_asset(
+            base_mint=source.token_mint,
+            quote_mint=source.quote_asset_key,
+        )
+        if role is None:
+            return _result(
+                event_key=event_key,
+                status=UNSUPPORTED_EVENT,
+                provenance_keys=matched_unit.provenance_keys,
+                flags=matched_unit.data_quality_flags
+                + ("pumpswap_opportunity_asset_role_filtered",),
+            )
+        normalized_token_mint = role.opportunity_mint
+        normalized_side = role.normalize_event_side(source.side)
+        if not role.opportunity_is_base:
+            extra_flags.append("pumpswap_opportunity_asset_role_inverted")
         wallet = _text(row, "user")
 
     signature = _text(row, "signature")
     flags = list(matched_unit.data_quality_flags)
+    flags.extend(extra_flags)
     if wallet is None:
         flags.append("wallet_identity_missing")
     if signature is None:
         flags.append("transaction_identity_missing")
 
     observation = MarketTradeObservation(
-        token_mint=source.token_mint,
-        side=source.side,
+        token_mint=normalized_token_mint,
+        side=normalized_side,
         chain_time=source.chain_time,
         observed_at=source.observed_at,
         wallet_address=wallet,
