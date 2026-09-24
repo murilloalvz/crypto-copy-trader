@@ -12,6 +12,7 @@ from src.market_opportunity_radar import (
     MarketMovementTrigger,
     MarketTradeObservation,
 )
+from src.pumpswap_asset_role import REFERENCE_ASSET_MINTS_V1
 
 
 SIGNAL_PLANE_EPISODE_BRIDGE_VERSION = "signal_plane_episode_bridge_v0"
@@ -103,11 +104,16 @@ def build_signal_plane_episode_assignment(
     if observation.chain_time < 0 or observation.observed_at < 0:
         raise ValueError("observation clocks must be non-negative")
 
+    durable_venue, prefix = _episode_venue_and_prefix(observation)
+    if durable_venue == "pump_swap" and token_mint in REFERENCE_ASSET_MINTS_V1:
+        raise ValueError(
+            "PumpSwap opportunity token cannot be a reference asset"
+        )
+
     transaction_key = _required(
         observation.transaction_key,
         "observation transaction_key",
     )
-    durable_venue, prefix = _episode_venue_and_prefix(observation)
 
     return SignalPlaneEpisodeAssignment(
         trigger_key=f"{prefix}:{transaction_key}:{token_mint}",
