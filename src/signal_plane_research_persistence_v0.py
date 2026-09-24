@@ -310,18 +310,24 @@ def persist_signal_plane_research_batch(
             raise ValueError("triggered trade TraceRecord is missing trade observation")
 
         trigger_episodes += 1
-        trigger = market_movement_trigger_from_snapshot(trigger_snapshot)
-        assignment = build_signal_plane_episode_assignment(
-            trigger=trigger,
-            observation=record.trade,
-        )
-        cached = _cached_continuation_episode(
-            cache,
-            token_mint=assignment.token_mint,
-            trigger_key=assignment.trigger_key,
-            observed_at=assignment.observed_at,
-        )
-        if cached is not None:
+        cached = None
+        assignment = None
+        # Snapshot reconstruction is needed only when this token already has a
+        # canonical episode candidate. First/new-token triggers stay on the
+        # original synchronous path without duplicate parsing.
+        if cache.get(record.trade.token_mint):
+            trigger = market_movement_trigger_from_snapshot(trigger_snapshot)
+            assignment = build_signal_plane_episode_assignment(
+                trigger=trigger,
+                observation=record.trade,
+            )
+            cached = _cached_continuation_episode(
+                cache,
+                token_mint=assignment.token_mint,
+                trigger_key=assignment.trigger_key,
+                observed_at=assignment.observed_at,
+            )
+        if cached is not None and assignment is not None:
             pending_continuations.append(
                 MarketContinuationTriggerWriteV0(
                     acquisition_run_key=acquisition_run_key,
