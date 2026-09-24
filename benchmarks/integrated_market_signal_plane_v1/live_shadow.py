@@ -24,7 +24,10 @@ from benchmarks.market_first_live_discovery_v0.contracts import (
     load_bootstrap_evidence_v0,
     validate_bootstrap_before_discovery_start_v0,
 )
-from src.carbon_market_trade_adapter import adapt_carbon_matched_unit_to_market_trade_v0
+from src.carbon_market_trade_adapter import (
+    CARBON_MARKET_TRADE_ADAPTER_VERSION,
+    adapt_carbon_matched_unit_to_market_trade_v0,
+)
 from src.carbon_matched_unit_adapter import (
     ADAPTED,
     MISSING_CONTEXT,
@@ -35,6 +38,7 @@ from src.config import settings
 from src.market_opportunity_radar import MarketLifecycleObservation
 from src.pump_bonding_stream import build_logs_subscribe_request as build_pump_subscribe
 from src.pump_bonding_stream import rpc_http_to_ws_url
+from src.pumpswap_asset_role import classify_pumpswap_opportunity_asset
 from src.pumpswap_pool_identity import PumpSwapPoolIdentityObservation
 from src.pumpswap_stream import (
     PUMPSWAP_PROGRAM_ID,
@@ -1438,8 +1442,15 @@ async def run_live_shadow_v0(
                     )
                     _add_identity(identities_by_pool, identity)
                     live_create_pool_seen_at[str(pool)] = source_wall_ns
+                    role = classify_pumpswap_opportunity_asset(
+                        base_mint=str(base_mint),
+                        quote_mint=str(quote_mint),
+                    )
+                    if role is None:
+                        counters["pumpswap_lifecycle_role_filtered"] += 1
+                        continue
                     observation = MarketLifecycleObservation(
-                        token_mint=str(base_mint),
+                        token_mint=role.opportunity_mint,
                         market_started_at=int(chain_time),
                         observed_at=observed_at,
                         venue="pumpswap",
@@ -1990,6 +2001,7 @@ async def run_live_shadow_v0(
         "version": VERSION,
         "classification": classification,
         "authorization": "systems_shadow_only_no_v68_no_economic_verdict",
+        "market_trade_adapter_version": CARBON_MARKET_TRADE_ADAPTER_VERSION,
         "endpoint_host": endpoint_host,
         "commitment": "confirmed",
         "duration_seconds": duration_seconds,
