@@ -19,19 +19,19 @@ class ParticipantQualityNativeMemoryV0Tests(unittest.TestCase):
         rows = [
             SimpleNamespace(
                 wallet_address="A",
-                executable_quote_return_pct=10.0,
+                route_quote_return_pct=10.0,
             ),
             SimpleNamespace(
                 wallet_address="A",
-                executable_quote_return_pct=20.0,
+                route_quote_return_pct=20.0,
             ),
             SimpleNamespace(
                 wallet_address="B",
-                executable_quote_return_pct=-20.0,
+                route_quote_return_pct=-20.0,
             ),
             SimpleNamespace(
                 wallet_address="B",
-                executable_quote_return_pct=-10.0,
+                route_quote_return_pct=-10.0,
             ),
         ]
         self.assertEqual(

@@ -22,11 +22,11 @@ from src.opportunity_route_research_store import (
     load_route_research_decision,
     load_route_research_outcomes,
 )
-from src.opportunity_wallet_market_history import (
-    load_market_first_wallet_opportunity_history,
-)
 from src.route_research_forward_collection_900_v0 import (
     collect_route_research_forward_through_900_v0,
+)
+from src.route_research_wallet_market_history_v0 import (
+    load_route_research_wallet_history_v0,
 )
 
 
@@ -108,9 +108,7 @@ def _finite(value: Any) -> float | None:
 def _median_of_wallet_medians(associations) -> float | None:
     by_wallet: dict[str, list[float]] = defaultdict(list)
     for item in associations:
-        value = _finite(
-            item.executable_quote_return_pct
-        )
+        value = _finite(item.route_quote_return_pct)
         wallet = str(item.wallet_address).strip()
         if wallet and value is not None:
             by_wallet[wallet].append(value)
@@ -155,8 +153,9 @@ def _participant_feature_for_episode(
             }
         )
     )
-    history = load_market_first_wallet_opportunity_history(
-        current_episode=episode,
+    history = load_route_research_wallet_history_v0(
+        current_episode_key=episode.episode_key,
+        current_token_mint=episode.token_mint,
         current_participant_wallets=participants,
         horizon_seconds=MEMORY_HORIZON_SECONDS,
         history_cutoff=episode.first_trigger_observed_at,
@@ -178,12 +177,22 @@ def _participant_feature_for_episode(
         "wallets_with_history": wallets_with_history,
         "history_coverage_pct": coverage,
         "association_count": len(history.associations),
+        "candidate_prior_episode_count": (
+            history.candidate_prior_episode_count
+        ),
+        "eligible_labeled_prior_episode_count": (
+            history.eligible_labeled_prior_episode_count
+        ),
+        "prior_episodes_with_matching_participants": (
+            history.prior_episodes_with_matching_participants
+        ),
         "status": (
             "AVAILABLE"
             if value is not None
             else "MISSING_HISTORY"
         ),
         "history_flags": list(history.data_quality_flags),
+        "history_exclusions": dict(history.exclusion_counts),
     }
 
 
@@ -412,6 +421,7 @@ def run_memory_build(
         ),
         "run_keys": list(run_keys),
         "memory_horizon_seconds": MEMORY_HORIZON_SECONDS,
+        "history_source": "route_research_decisions_and_outcomes_only",
         "run_reports": run_reports,
         "coverage_audit": audit,
         "economic_outcomes_evaluated": False,

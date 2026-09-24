@@ -5,20 +5,27 @@ Mode: PAPER / RESEARCH / READ ONLY
 ## Purpose
 
 Build native market-first memory for Participant Quality on the current Signal Plane / Research Plane
-pipeline before any new economic holdout.
+route-only pipeline before any new economic holdout.
 
 This phase does NOT test profitability. It exists only to answer:
 
 > Can the current pipeline accumulate enough strictly pre-T0 participant history for a future
 > Participant Quality hypothesis to be observable with useful support?
 
-## Why this is a separate phase
+## Source correction before acquisition
 
-The replicated historical Participant Quality result used mature Launch Burst history. When applied to
-the V68 sample, current native market-first history coverage was too sparse. Missing history is
-missing, not zero and not a loss.
+The legacy `opportunity_wallet_market_history` loader reads funded/executable opportunity outcomes
+and is NOT the authority for the current route-only Research Plane.
 
-The next action is therefore to improve causal memory, not to reinterpret the V68 economics.
+This protocol uses a dedicated native route-research history loader over:
+
+- `opportunity_route_research_decisions`;
+- `opportunity_route_research_outcomes`;
+- their route-only non-executable causal BUY/SELL quote artifacts;
+- causal 30-second participant windows reconstructed by the current enrichment layer.
+
+No memory acquisition is authorized from an implementation that uses the legacy executable-outcome
+store for this experiment.
 
 ## Frozen memory acquisition plan
 
@@ -49,7 +56,8 @@ look disappointing.
 For each memory cohort, the next cohort may not start until all scheduled 300s and 900s route-only
 outcomes for that run are terminal.
 
-3600s outcomes are not required for this memory phase and may remain pending.
+3600s outcomes are not required for this memory phase and may remain pending. They are ignored by the
+native 900s history loader and do not authorize economic analysis.
 
 The memory feature uses only the 900s horizon.
 
@@ -59,15 +67,21 @@ For a current episode:
 
 1. reconstruct the current 30-second participant wallet set using the existing causal enrichment
    semantics at research_decision_as_of;
-2. load only official market-first opportunity associations whose decision and 900s outcome were
-   both known strictly before the current episode T0;
-3. for each current participant wallet with eligible prior associations, compute that wallet's median
-   prior 900s executable quote return;
-4. take the median across those wallet medians.
+2. search prior route-research decisions strictly before current T0;
+3. require the prior 900s route-research outcome and route-only SELL quote to have been observed
+   strictly before current T0;
+4. exclude same-token prior episodes;
+5. match current participant wallets to wallets causally present in the prior episode;
+6. for each current wallet with eligible prior associations, compute its median prior 900s
+   route-quote return;
+7. take the median across those wallet medians.
 
 Feature ID:
 
-native_participant_prior_900_quote_return_median_of_wallet_medians_pct
+`native_participant_prior_900_route_quote_return_median_of_wallet_medians_pct`
+
+The return is a route-only quote-to-quote opportunity label. It is NOT wallet realized PnL and does
+not claim landed execution.
 
 Higher is the prior-informed favorable direction. This direction comes from the previously replicated
 Participant Quality concept, but this native 900s variant is a new feature and is NOT yet economically
@@ -87,13 +101,13 @@ Readiness requires BOTH:
 
 If readiness fails:
 
-INCONCLUSIVE_NATIVE_PARTICIPANT_MEMORY_COVERAGE
+`INCONCLUSIVE_NATIVE_PARTICIPANT_MEMORY_COVERAGE`
 
 Do not add more memory cohorts automatically.
 
 If readiness passes:
 
-READY_TO_PREREGISTER_NATIVE_PARTICIPANT_QUALITY_HOLDOUT
+`READY_TO_PREREGISTER_NATIVE_PARTICIPANT_QUALITY_HOLDOUT`
 
 ## Outcome-blind cutoff
 
@@ -114,6 +128,7 @@ separate future prospective holdout protocol.
 
 ## Forbidden
 
+- using the legacy executable-opportunity history store for this native route-research experiment;
 - inspecting memory-cohort economics to change run count;
 - selecting a different history horizon after seeing values;
 - treating missing history as zero or negative;
