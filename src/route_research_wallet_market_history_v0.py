@@ -120,11 +120,17 @@ def load_route_research_wallet_history_v0(
     current_participant_wallets: tuple[str, ...] | list[str] | set[str],
     history_cutoff: int,
     horizon_seconds: int = 900,
+    excluded_acquisition_run_keys: tuple[str, ...] | list[str] | set[str] = (),
 ) -> RouteResearchWalletHistoryLoadResultV0:
     current_key = str(current_episode_key).strip()
     token_mint = str(current_token_mint).strip()
     cutoff = int(history_cutoff)
     horizon = int(horizon_seconds)
+    excluded_runs = {
+        str(item).strip()
+        for item in excluded_acquisition_run_keys
+        if str(item).strip()
+    }
     if not current_key:
         raise ValueError("current_episode_key cannot be empty")
     if not token_mint:
@@ -149,10 +155,17 @@ def load_route_research_wallet_history_v0(
     if not participants:
         flags.append("no_current_participant_wallets")
 
-    prior_keys = _prior_decision_keys_before(
+    raw_prior_keys = _prior_decision_keys_before(
         cutoff=cutoff,
         current_episode_key=current_key,
     )
+    prior_keys: list[tuple[str, str]] = []
+    for run_key, episode_key in raw_prior_keys:
+        if run_key in excluded_runs:
+            exclusions["excluded_invalid_acquisition_run"] += 1
+            continue
+        prior_keys.append((run_key, episode_key))
+
     associations: list[RouteResearchWalletOpportunityAssociationV0] = []
     eligible_labeled = 0
     matched_episodes = 0
@@ -287,6 +300,8 @@ def load_route_research_wallet_history_v0(
         covered = {item.wallet_address for item in associations}
         if len(covered) < len(participants):
             flags.append("partial_route_research_history_coverage")
+    if excluded_runs:
+        flags.append("invalid_acquisition_runs_explicitly_excluded")
 
     return RouteResearchWalletHistoryLoadResultV0(
         method_version=VERSION,
