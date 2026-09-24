@@ -42,6 +42,36 @@ class RouteResearchWalletMarketHistoryV0Tests(unittest.TestCase):
             1,
         )
 
+    @patch.object(history, "_prior_decision_keys_before")
+    def test_allowed_epoch_excludes_pre_fix_history(self, prior):
+        prior.return_value = [
+            ("old-run", "ep-old"),
+            ("clean-m1", "ep-clean"),
+        ]
+        with patch.object(
+            history,
+            "load_route_research_decision",
+            return_value=None,
+        ):
+            result = history.load_route_research_wallet_history_v0(
+                current_episode_key="current",
+                current_token_mint="token",
+                current_participant_wallets=("wallet",),
+                history_cutoff=1000,
+                allowed_acquisition_run_keys=("clean-m1",),
+            )
+        self.assertEqual(result.candidate_prior_episode_count, 1)
+        self.assertEqual(
+            result.exclusion_counts.get(
+                "outside_allowed_acquisition_run_epoch"
+            ),
+            1,
+        )
+        self.assertIn(
+            "history_restricted_to_allowed_acquisition_run_epoch",
+            result.data_quality_flags,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
