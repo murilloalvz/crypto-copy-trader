@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from benchmarks.commodity_signal_plane_v0.benchmark import TraceRecord
 from src.market_opportunity_radar import (
+    MARKET_OPPORTUNITY_RADAR_VERSION,
     MarketLifecycleObservation,
     MarketTradeObservation,
 )
@@ -382,7 +383,7 @@ class SignalPlaneResearchPersistenceV0Tests(unittest.TestCase):
         snapshot0 = {
             "token_mint": "TOKEN",
             "as_of": 100,
-            "method_version": "market_opportunity_radar_v1_1_transaction_aware",
+            "method_version": MARKET_OPPORTUNITY_RADAR_VERSION,
             "trigger_kind": "fresh_market_burst",
             "direction": "upward_pressure",
             "features": {
@@ -525,7 +526,7 @@ class SignalPlaneResearchPersistenceV0Tests(unittest.TestCase):
         snapshot = {
             "token_mint": "TOKEN",
             "as_of": 200,
-            "method_version": "market_opportunity_radar_v1_1_transaction_aware",
+            "method_version": MARKET_OPPORTUNITY_RADAR_VERSION,
             "trigger_kind": "fresh_market_burst",
             "direction": "upward_pressure",
             "features": {
