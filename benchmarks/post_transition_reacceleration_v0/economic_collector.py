@@ -91,6 +91,7 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
     dynamic = payload.get("dynamic_exit_policies") or {}
     censoring = payload.get("censoring") or {}
     failure = payload.get("failure_semantics") or {}
+    fresh_run = payload.get("fresh_run") or {}
     guardrails = payload.get("scientific_guardrails") or {}
 
     exact = {
@@ -155,6 +156,22 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         ) == -100.0,
         "not_reached": failure.get("threshold_not_reached_status")
         == "NOT_REACHED",
+        "fresh_admission_1800": fresh_run.get("admission_duration_seconds")
+        == 1800,
+        "fresh_route_interval_5": fresh_run.get(
+            "route_observation_interval_seconds"
+        ) == 5,
+        "fresh_final_grace_5": fresh_run.get(
+            "route_observation_final_grace_seconds"
+        ) == 5,
+        "fresh_no_auto_extension": fresh_run.get(
+            "automatic_extension_allowed"
+        ) is False,
+        "fresh_provider_timeout_5": fresh_run.get("provider_timeout_seconds")
+        == 5,
+        "fresh_single_run_before_review": fresh_run.get(
+            "single_fresh_run_only_before_review"
+        ) is True,
         "fresh_closed": guardrails.get("fresh_economic_outcomes_opened")
         is False,
         "fresh_authorized": guardrails.get(
@@ -608,6 +625,19 @@ def collector_capabilities(contract: Mapping[str, Any]) -> dict[str, Any]:
         "HYBRID_HUMAN_EXIT": contract["dynamic_exit_policies"][
             "HYBRID_HUMAN_EXIT"
         ]["status"],
+        "fresh_run": {
+            "admission_duration_seconds": int(
+                (contract.get("fresh_run") or {})["admission_duration_seconds"]
+            ),
+            "route_observation_interval_seconds": int(
+                (contract.get("fresh_run") or {})[
+                    "route_observation_interval_seconds"
+                ]
+            ),
+            "automatic_extension_allowed": bool(
+                (contract.get("fresh_run") or {})["automatic_extension_allowed"]
+            ),
+        },
         "fresh_discovery": (
             "AUTHORIZED_300S_RIGHT_CENSORING"
             if (
