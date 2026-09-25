@@ -1,0 +1,83 @@
+{
+  "schema_version": "post_transition_discovery_label_contract_v0",
+  "status": "FROZEN",
+  "mode": "MARKET_FIRST_DISCOVERY_ONLY",
+  "chain_profile": "solana:mainnet:pumpfun:pumpswap",
+  "cohort": {
+    "requires_direct_pumpswap_create_event": true,
+    "requires_prior_pump_birth_causally_known": true,
+    "pump_birth_venue": "pump_bonding_curve",
+    "ambiguous_lineage_policy": "exclude_as_missing_evidence",
+    "decision_delay_seconds_from_transition_observed": 30,
+    "exactly_one_decision_snapshot_per_transition": true,
+    "minimum_post_transition_trade_count_by_decision": 1
+  },
+  "selection": {
+    "selector_predicates": [],
+    "all_lineage_eligible_complete_decision_snapshots_receive_labels": true,
+    "structural_reacceleration_candidate_is_selector": false,
+    "threshold_search_permitted": false
+  },
+  "entry": {
+    "latency_seconds_after_decision": 2,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "require_assembled_transaction": true
+  },
+  "position": {
+    "notional_usd": 25.0
+  },
+  "route_quality": {
+    "require_provider_price_impact": true,
+    "max_provider_price_impact_pct_points": 2.0
+  },
+  "costs": {
+    "entry_fee_bps": 20,
+    "exit_fee_bps": 20,
+    "entry_adverse_slippage_bps": 100,
+    "exit_adverse_slippage_bps": 100
+  },
+  "labels": {
+    "primary": {
+      "name": "fixed_60s_route_shadow_net_return_pct",
+      "horizon_seconds_from_entry": 60,
+      "evidence_mode": "route_only_exact_entry_quantity",
+      "require_assembled_transaction": false
+    },
+    "exploratory": {
+      "name": "fixed_300s_route_shadow_net_return_pct",
+      "horizon_seconds_from_entry": 300,
+      "evidence_mode": "route_only_exact_entry_quantity",
+      "require_assembled_transaction": false,
+      "cannot_replace_primary_based_on_results": true
+    }
+  },
+  "failure_policy": {
+    "entry_unavailable_return_pct": 0.0,
+    "unexitable_return_pct": -100.0
+  },
+  "frozen_reference_contract": {
+    "launch_burst_route_paper_v2_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+    "reused_semantics": [
+      "USDC_25_NOTIONAL",
+      "ENTRY_ASSEMBLY_REQUIRED",
+      "PRICE_IMPACT_MAX_2_PERCENT_POINTS",
+      "ENTRY_EXIT_FEES_20_BPS",
+      "ENTRY_EXIT_ADVERSE_SLIPPAGE_100_BPS",
+      "ENTRY_UNAVAILABLE_ZERO_RETURN",
+      "UNEXITABLE_MINUS_100_RETURN"
+    ]
+  },
+  "scientific_guardrails": {
+    "features_frozen_before_provider_calls": true,
+    "outcomes_separate_from_features": true,
+    "provider_route_fields_forbidden_as_selector_features": true,
+    "no_same_sample_threshold_sweep": true,
+    "no_same_sample_selector_promotion": true,
+    "discovery_cannot_claim_edge": true,
+    "one_simple_hypothesis_may_be_preregistered_after_discovery": true,
+    "fresh_holdout_required_after_candidate_reduction": true,
+    "independent_replication_required_before_mature_edge_claim": true,
+    "live_money_authorized": false
+  }
+}
