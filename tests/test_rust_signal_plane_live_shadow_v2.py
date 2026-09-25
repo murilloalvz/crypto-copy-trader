@@ -12,6 +12,7 @@ from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
     INGRESS_MICROBATCH_MAX_NOTIFICATIONS,
     INGRESS_QUEUE_SIZE,
     RESEARCH_PLANE_BATCH_MAX_RECORDS,
+    RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS,
     RESEARCH_PLANE_QUEUE_SIZE,
     SUBSCRIPTION_ACK_TIMEOUT_SECONDS,
     SURFACE_IDLE_TIMEOUT_SECONDS,
@@ -33,12 +34,15 @@ class RustSignalPlaneLiveShadowV2Tests(unittest.TestCase):
         self.assertEqual(INGRESS_QUEUE_SIZE, 8192)
         self.assertEqual(SURFACE_IDLE_TIMEOUT_SECONDS, 30.0)
         self.assertEqual(INGRESS_MICROBATCH_MAX_NOTIFICATIONS, 32)
-        self.assertEqual(RESEARCH_PLANE_QUEUE_SIZE, 4096)
-        self.assertEqual(RESEARCH_PLANE_BATCH_MAX_RECORDS, 256)
         self.assertEqual(WS_OPEN_TIMEOUT_SECONDS, 30.0)
         self.assertEqual(WS_OPEN_BARRIER_TIMEOUT_SECONDS, 35.0)
         self.assertEqual(SUBSCRIPTION_ACK_TIMEOUT_SECONDS, 20.0)
 
+
+    def test_role_normalized_research_plane_capacity_contract(self):
+        self.assertEqual(RESEARCH_PLANE_QUEUE_SIZE, 16_384)
+        self.assertEqual(RESEARCH_PLANE_BATCH_MAX_RECORDS, 256)
+        self.assertEqual(RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS, 120.0)
 
     def test_ready_microbatch_drains_only_items_already_available(self):
         queue = asyncio.Queue(maxsize=8)
