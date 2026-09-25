@@ -576,36 +576,56 @@ These remain isolated from active Solana systems/V68 validation.
 
 Status:
 
-`IMPLEMENTED / ROUTE-ONLY PAPER RESEARCH / WALLET FUNDING DEFERRED / OUTCOMES NOT YET OPENED`
+`IMPLEMENTED / ROUTE-ONLY PAPER RESEARCH / FIRST ATTEMPT VOID PRE-OUTCOME / TRANSPORT HEALTH HARDENED / OUTCOMES NOT YET OPENED`
 
-After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
+Current frozen collector contract hash:
 
-- current frozen collector contract hash: `9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891`;
+`67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b`
+
+Economic/scientific contract remains:
+
 - research execution mode: `ROUTE_ONLY_PAPER`;
 - `require_assembled_transaction=false`;
-- fresh runner uses Jupiter with `taker=None` for BUY and SELL route observations;
-- no funded wallet, USDC balance, SOL balance, ATA, signing or transaction submission is required for current research;
-- the earlier public-funded control proved Jupiter assembly capability, but that gate is now explicitly deferred to future shadow/real execution work;
-- funded-taker fixture/preflight remains in the repo as a deferred execution-realism gate and does not block research discovery;
-- exact entry output quantity is still required and reused for route-only exits;
-- US$25 paper notional unchanged;
-- +2s entry latency unchanged;
-- entry/exit adverse slippage 100 bps unchanged;
-- entry/exit fee 20 bps unchanged;
-- provider impact gate <=2 percentage points unchanged;
+- no funded wallet, ATA, signing or transaction submission is required for research;
+- exact quoted entry quantity remains required;
+- US$25 paper notional;
+- +2s entry latency;
+- entry/exit fee 20 bps;
+- entry/exit adverse slippage 100 bps;
+- provider impact gate <=2 percentage points;
 - `FIXED_60`: PRIMARY;
 - `FIXED_300`: EXPLORATORY;
-- Market Path, TP50, TP100 and TP200: ARMED;
+- TP50 / TP100 / TP200: ARMED independently;
 - dynamic exits: NOT_ARMED;
 - censoring: `FROZEN_300S_RIGHT_CENSORING`;
-- fresh admission: `1800s`;
-- route cadence: `5s`;
+- admission window: `1800s`;
+- route grid: every `5s`, with +305s reserved only for Fixed+300 quote grace;
 - automatic extension: false;
-- one fresh run only before review: true;
-- `fresh_economic_discovery_authorized=True`;
+- one completed fresh economic sample only before review;
+- live money unauthorized.
+
+First fresh attempt:
+
+- contract before transport hardening: `9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891`;
+- aborted after ~48s on `api.mainnet-beta.solana.com`;
+- transport error: keepalive ping timeout;
+- only 17 raw Pump and 10 raw PumpSwap notifications were seen;
+- zero Pump births, zero snapshots, zero episodes;
 - `fresh_economic_outcomes_opened=False`;
-- live money remains unauthorized.
+- zero economic provider calls and no P&L labels were opened;
+- therefore this artifact is classified scientifically as `VOID_PRE_OUTCOME_TRANSPORT_ABORT`, not as an economic sample and not as evidence for/against edge.
 
-Scientific note: the wallet/assembly requirement was removed before any fresh Post-Transition outcome was opened. This is a protocol amendment, not a same-sample rescue. Execution assembly/funding must be reopened later before making shadow/real execution claims.
+Frozen transport hardening before replacement attempt:
 
-Next gate: targeted tests + CI under the route-only contract, then exactly one fresh Post-Transition economic discovery run. Do not rerun or extend automatically after observing the result.
+- 10s provider traffic-health preflight;
+- require at least 20 raw Pump and 20 raw PumpSwap notifications during that preflight;
+- client WebSocket keepalive ping disabled (`ping_interval=None`);
+- 15s main-stream idle watchdog;
+- no reconnect/extension inside a started economic sample;
+- if transport aborts before any economic provider call, classify `VOID_PRE_OUTCOME_TRANSPORT_ABORT` and a replacement attempt is allowed;
+- if transport fails after outcomes open, classify FAIL and do not auto-rerun;
+- all economic thresholds, selector, costs, horizon, cadence and TP levels remain unchanged.
+
+Funded-taker assembly checks remain deferred to future shadow/real execution and do not block research.
+
+Next gate: CI + targeted tests under the transport-hardened contract, then one replacement fresh Post-Transition discovery attempt. Do not tune economic parameters based on the void artifact.
