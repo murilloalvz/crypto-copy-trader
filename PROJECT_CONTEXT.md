@@ -667,3 +667,26 @@ The remaining implementation issue was that the fresh runner health-checked one 
 Alchemy may still fail inferred WSS `logsSubscribe` and fall through to the normalized Solana public fallback; that provider capability failure is diagnostic and does not alter the economic contract.
 
 No selector, cost, latency, horizon, TP, route cadence, censoring or route-only paper semantics changed. Contract hash remains `67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b`.
+
+
+### Post-Transition transport stabilization — liveness-confirmed idle policy
+
+After a third pre-outcome VOID on the same healthy WSS connection, evidence showed the fixed 15s raw-message watchdog was too brittle for the public Solana stream. The prior 180s transport soak had already observed a ~13.662s maximum idle gap while still completing successfully with >138k dual-stream messages.
+
+Before any fresh economic outcome was opened, transport semantics were corrected without changing any economic rule:
+
+- 15s is now a soft idle threshold, not an immediate abort;
+- crossing 15s triggers a WebSocket liveness ping;
+- pong must arrive within 5s;
+- a successful pong confirms the socket is alive and the run continues;
+- 60s of continuous application-message silence is the hard fail boundary;
+- ping failure is an immediate transport failure;
+- transport liveness counters are recorded in the run artifact;
+- the same health-qualified WSS connection is still reused for capture;
+- pre-outcome transport abort remains VOID / replaceable;
+- after economic outcomes open, transport failure remains FAIL / not auto-rerunnable.
+
+No selector, notional, +2s entry delay, fees, slippage, impact limit, TP threshold, horizon, route grid, censoring or route-only paper semantics changed.
+
+Current contract hash:
+`a361556f82ff8dca256e95999bab44849eadbbac092c907df100c9fdb858464c`.
