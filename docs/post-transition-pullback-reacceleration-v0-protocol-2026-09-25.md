@@ -207,3 +207,42 @@ preregistered hypothesis and evaluated on a new holdout.
 8. independent replication before any mature-edge claim.
 
 Live economic collection is not authorized by this protocol revision.
+
+## Frozen discovery decision snapshot — amendment before outcomes
+
+This amendment is frozen after the systems-only PASS and before any Post-Transition V0 economic
+outcome is opened.
+
+Each causally eligible transition receives exactly one discovery decision snapshot at:
+
+`transition_observed_at + 30 seconds`
+
+Rationale:
+
+- V0 already froze two adjacent 10-second flow windows;
+- +30s provides causal room for both windows plus initial post-transition path formation;
+- one fixed checkpoint avoids repeated correlated provider labels per token;
+- the checkpoint is frozen before any economic outcome from this research line exists.
+
+Eligibility at the +30s checkpoint:
+
+1. direct PumpSwap CreatePool was observed;
+2. opportunity/reference asset role is unambiguous;
+3. prior Pump birth for the opportunity mint is causally known by transition observation;
+4. Pump birth chain time is not after the PumpSwap transition;
+5. at least one post-transition trade is causally available by +30s.
+
+No structural feature is a selector. In particular:
+
+`structural_reacceleration_candidate`
+
+is recorded as a diagnostic feature but does not determine who receives an economic label.
+
+All complete lineage-eligible +30s snapshots receive the same frozen labels:
+
+- primary: fixed +60s route-shadow net return from entry;
+- exploratory: fixed +300s route-shadow net return from entry.
+
+Provider calls start only after the immutable +30s feature snapshot is frozen.
+
+Primary/exploratory roles cannot be swapped after results.
