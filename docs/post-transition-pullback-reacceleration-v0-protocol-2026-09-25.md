@@ -126,7 +126,8 @@ only when all are already true at the snapshot:
 
 1. a negative pullback from the first post-transition reference trade has already been observed;
 2. current observed ratio is above the running trough already known;
-3. recent signed reference-flow rate exceeds the prior signed reference-flow rate.
+3. both the prior and recent 10-second flow windows contain at least one observed event;
+4. recent signed reference-flow rate exceeds the prior signed reference-flow rate.
 
 This marker has no magnitude threshold and carries no profitability claim.
 
