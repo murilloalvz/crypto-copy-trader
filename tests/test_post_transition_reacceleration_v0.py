@@ -96,6 +96,75 @@ class PostTransitionReaccelerationV0Tests(unittest.TestCase):
         self.assertEqual(replayed["trade_count_available"], 3)
         self.assertFalse(replayed["structural_reacceleration_candidate"])
 
+    def test_same_second_future_arrival_cannot_leak_into_earlier_snapshot(self):
+        create = PumpSwapCreatePoolEvent(
+            pool="POOL",
+            creator="CREATOR",
+            base_mint="TOKEN",
+            quote_mint=WSOL_MINT,
+            base_mint_decimals=6,
+            quote_mint_decimals=9,
+            timestamp=1000,
+        )
+        state = PostTransitionResearchState.from_create_event(
+            create,
+            observed_at=1001,
+        )
+        first = PumpSwapTradeEvent(
+            side="buy",
+            pool="POOL",
+            user="wallet-a",
+            timestamp=1002,
+            base_amount_raw=100_000_000,
+            quote_amount_raw=1_000_000_000,
+        )
+        second = PumpSwapTradeEvent(
+            side="sell",
+            pool="POOL",
+            user="wallet-b",
+            timestamp=1002,
+            base_amount_raw=100_000_000,
+            quote_amount_raw=800_000_000,
+        )
+        state.ingest_trade(
+            first,
+            observed_at=1002,
+            event_key="e1",
+            transaction_key="tx1",
+            arrival_index=0,
+        )
+        before = asdict(
+            state.snapshot(
+                as_of_observed_at=1002,
+                max_arrival_index=0,
+            )
+        )
+        state.ingest_trade(
+            second,
+            observed_at=1002,
+            event_key="e2",
+            transaction_key="tx2",
+            arrival_index=1,
+        )
+        replayed = asdict(
+            state.snapshot(
+                as_of_observed_at=1002,
+                max_arrival_index=0,
+            )
+        )
+        after = state.snapshot(
+            as_of_observed_at=1002,
+            max_arrival_index=1,
+        )
+        self.assertEqual(before, replayed)
+        self.assertEqual(before["trade_count_available"], 1)
+        self.assertEqual(after.trade_count_available, 2)
+        self.assertAlmostEqual(
+            after.running_trough_return_from_reference_pct or 0.0,
+            -20.0,
+            places=9,
+        )
+
     def test_replay_order_is_deterministic_by_causal_availability(self):
         payload = _fixture_payload()
         canonical = build_state_from_fixture(payload)
@@ -123,6 +192,7 @@ class PostTransitionReaccelerationV0Tests(unittest.TestCase):
                 observed_at=row["observed_at"],
                 event_key=row["event_key"],
                 transaction_key=row["transaction_key"],
+                arrival_index=row["arrival_index"],
             )
 
         self.assertEqual(
