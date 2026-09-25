@@ -710,3 +710,49 @@ Economic rules remain unchanged.
 
 Current contract hash:
 `17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e`.
+
+
+### Post-Transition Fresh Economic Discovery V0 — CLOSED / BURNED
+
+The first attempt that opened economic provider calls is closed and must not be rerun as V0.
+
+Observed result:
+
+- contract hash: `17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e`;
+- fresh economic outcomes opened: true;
+- run classification: `FAIL_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0`;
+- failure reason: transport failure after outcomes opened;
+- replacement run authorized: false;
+- 46 CreatePool events, 44 role-valid transitions;
+- 8 Pump lineages FOUND in the current run;
+- 2 lineage-eligible transition states;
+- 2 immutable +30s decision snapshots;
+- 2 route-only entry provider calls;
+- 2 episodes;
+- conditional economic n=0;
+- Fixed+60 / Fixed+300 / TP / Market Path remained unavailable.
+
+Both entry quotes exposed a signed negative provider `priceImpact` value and were rejected by the V0 evaluator as `PRICE_IMPACT_UNAVAILABLE` because V0 treated all negative values as unavailable.
+
+Diagnostic audit after the sample:
+
+- V0's negative-impact reason is semantically wrong for Swap V2 signed `priceImpact`;
+- future code must distinguish missing/non-finite impact from signed impact;
+- for a frozen maximum-impact magnitude gate, future evaluation should compare `abs(priceImpact)` with the frozen threshold;
+- this does NOT rescue or reinterpret V0: the two observed magnitudes were approximately 2.512pp and 87.611pp, both above the frozen 2pp maximum;
+- therefore both V0 entries remain non-usable under the intended route-quality limit;
+- no V0 P&L/edge verdict exists because conditional economic n stayed zero.
+
+Transport evidence:
+
+- the selected public Solana WSS later closed with `ConnectionClosedError: no close frame received or sent`;
+- because economic provider calls had already started, the run is FAIL, not VOID;
+- Solana public RPC is shared infrastructure and is not suitable as the reliability assumption for the next economic holdout;
+- do not create another V0 replacement run.
+
+Scientific interpretation:
+
+- V0 provides diagnostic evidence about route quality and systems behavior only;
+- it does not prove or disprove Signal Edge, Human-Assisted Edge or Autonomous Edge;
+- the next economic attempt must be a new frozen protocol revision/holdout, not a rerun of V0;
+- before that holdout, fix signed price-impact semantics and establish a more reliable transport source or explicitly gap-aware coverage protocol.
