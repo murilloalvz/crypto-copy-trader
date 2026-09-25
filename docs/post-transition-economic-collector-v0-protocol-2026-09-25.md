@@ -2,7 +2,7 @@
 
 Status:
 
-`IMPLEMENTED / CONTRACT FROZEN FOR IMPLEMENTATION / FRESH ECONOMIC DISCOVERY BLOCKED`
+`IMPLEMENTED / ROUTE-ONLY CONTRACT FROZEN / TRANSPORT HEALTH HARDENED / FRESH OUTCOMES NOT YET OPENED`
 
 ## Purpose
 
@@ -20,7 +20,7 @@ predicates. `structural_reacceleration_candidate` remains diagnostic only.
 - paper entry target: decision + 2 seconds;
 - maximum quote age: 15 seconds;
 - maximum quote wait: 5 seconds;
-- entry uses a route-only BUY quote; no route-only paper quote or funded wallet is required during research;
+- entry uses a route-only BUY quote; no assembled transaction or funded wallet is required during research;
 - notional: US$25;
 - provider price impact must be present and <= 2 percentage points;
 - entry fee: 20 bps;
@@ -146,3 +146,33 @@ Frozen semantics now:
 - +2s entry latency, US$25 notional, 100 bps entry/exit slippage, 20 bps fees, <=2pp provider impact, +60 primary, +300 exploratory, TP50/100/200, 300s censoring and 5s route grid remain unchanged;
 - funded-wallet/assembly validation is deferred to future shadow/real execution work and does not block signal-edge research;
 - this amendment occurred while `fresh_economic_outcomes_opened=false`; no observed result motivated it.
+
+
+## Transport-health amendment — first attempt void before outcomes
+
+The first route-only fresh attempt aborted after approximately 48 seconds because
+the selected public Solana WebSocket stalled and hit a keepalive ping timeout.
+That artifact contained zero immutable decision snapshots, zero episodes and
+`fresh_economic_outcomes_opened=false`. It therefore does not constitute an
+economic sample and is classified as `VOID_PRE_OUTCOME_TRANSPORT_ABORT`.
+
+Before any replacement attempt, the following systems-only policy is frozen:
+
+- 10-second dual-stream traffic-health preflight before the admission clock starts;
+- at least 20 raw Pump notifications and 20 raw PumpSwap notifications are
+  required during that preflight;
+- client WebSocket keepalive ping is disabled (`ping_interval=None`);
+- the live stream has a 15-second raw-message idle watchdog;
+- no admission-window extension is allowed;
+- no reconnect is used to splice a started economic sample;
+- transport abort before the first economic provider call is VOID and permits a
+  replacement attempt;
+- transport failure after economic outcomes open is FAIL and does not authorize
+  automatic rerun.
+
+These transport changes do not modify selector, entry timing, notional, fees,
+slippage, impact limits, standardized horizons, TP levels, censoring, route
+cadence or dynamic-exit status.
+
+Current contract hash:
+`67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b`.
