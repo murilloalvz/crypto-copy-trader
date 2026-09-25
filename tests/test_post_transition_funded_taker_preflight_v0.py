@@ -149,7 +149,7 @@ class PostTransitionFundedTakerPreflightV0Test(unittest.TestCase):
         fixture = json.loads(BASE_FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual(
             fixture["economic_collector_contract_hash_sha256"],
-            "902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15",
+            "9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891",
         )
         self.assertEqual(fixture["minimum_input_amount_raw"], 25_000_000)
         self.assertEqual(fixture["minimum_sol_lamports"], 10_000_000)
