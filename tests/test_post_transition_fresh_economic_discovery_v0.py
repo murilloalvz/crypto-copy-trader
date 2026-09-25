@@ -18,6 +18,7 @@ from benchmarks.post_transition_reacceleration_v0.fresh_economic_discovery_v0 im
     _aggregate,
     _classify_completion,
     _route_offsets,
+    _transport_idle_action,
     run_fresh_discovery,
 )
 from src.assets import USDC_MINT, WRAPPED_SOL_MINT
@@ -81,6 +82,15 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
         self.assertEqual(fresh["transport_health_seconds"], 10)
         self.assertEqual(fresh["transport_min_raw_per_source"], 20)
         self.assertEqual(fresh["transport_idle_timeout_seconds"], 15)
+        self.assertEqual(
+            fresh["transport_liveness_ping_timeout_seconds"],
+            5,
+        )
+        self.assertEqual(fresh["transport_hard_silence_seconds"], 60)
+        self.assertEqual(
+            fresh["transport_idle_policy"],
+            "PING_CONFIRM_THEN_HARD_SILENCE_ABORT",
+        )
         self.assertIsNone(fresh["websocket_ping_interval_seconds"])
         self.assertTrue(fresh["pre_outcome_transport_abort_is_void"])
 
@@ -93,6 +103,36 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
         self.assertIn("_resolve_healthy_dual_connection", source)
         self.assertNotIn("async with connect(", source)
         self.assertNotIn("await connect(", source)
+
+    def test_transport_soft_idle_pings_instead_of_aborting(self):
+        self.assertEqual(
+            _transport_idle_action(
+                idle_seconds=16.0,
+                seconds_since_ping=16.0,
+                contract=self.contract,
+            ),
+            "PING",
+        )
+
+    def test_transport_hard_silence_still_aborts(self):
+        self.assertEqual(
+            _transport_idle_action(
+                idle_seconds=60.0,
+                seconds_since_ping=15.0,
+                contract=self.contract,
+            ),
+            "ABORT_HARD_SILENCE",
+        )
+
+    def test_transport_idle_below_soft_threshold_waits(self):
+        self.assertEqual(
+            _transport_idle_action(
+                idle_seconds=14.0,
+                seconds_since_ping=14.0,
+                contract=self.contract,
+            ),
+            "WAIT",
+        )
 
     def test_route_grid_is_exactly_5_through_305(self):
         offsets = _route_offsets(self.contract)
