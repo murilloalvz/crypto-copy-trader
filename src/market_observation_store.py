@@ -25,6 +25,14 @@ class StoredMarketLifecycle:
     observation: MarketLifecycleObservation
 
 
+@dataclass(frozen=True)
+class KnownMarketLifecycleLookup:
+    status: str
+    lifecycle: StoredMarketLifecycle | None
+    row_count: int
+    distinct_identity_count: int
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_trade_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -422,17 +430,18 @@ def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, a
     )
 
 
-def load_known_market_lifecycle(
+def inspect_known_market_lifecycle(
     *,
     token_mint: str,
     as_of: int,
     venue: str | None = None,
-) -> StoredMarketLifecycle | None:
-    """Load one causally known lifecycle identity across acquisition runs.
+) -> KnownMarketLifecycleLookup:
+    """Inspect one historical lifecycle identity without collapsing missingness.
 
-    This lookup is fail-closed. If rows observed by as_of disagree on
-    market_started_at or venue for the same token, no historical lifecycle is
-    reused. The earliest local observation of one unambiguous identity is returned.
+    Status values:
+    - FOUND: at least one causally available row and exactly one lifecycle identity;
+    - MISSING: no causally available row;
+    - AMBIGUOUS: causally available rows disagree on market_started_at or venue.
     """
 
     mint = _required(token_mint, "token_mint")
@@ -456,7 +465,12 @@ def load_known_market_lifecycle(
         rows = conn.execute(query, tuple(params)).fetchall()
 
     if not rows:
-        return None
+        return KnownMarketLifecycleLookup(
+            status="MISSING",
+            lifecycle=None,
+            row_count=0,
+            distinct_identity_count=0,
+        )
 
     identities = {
         (
@@ -466,10 +480,15 @@ def load_known_market_lifecycle(
         for row in rows
     }
     if len(identities) != 1:
-        return None
+        return KnownMarketLifecycleLookup(
+            status="AMBIGUOUS",
+            lifecycle=None,
+            row_count=len(rows),
+            distinct_identity_count=len(identities),
+        )
 
     row = rows[0]
-    return StoredMarketLifecycle(
+    stored = StoredMarketLifecycle(
         acquisition_run_key=str(row["acquisition_run_key"]),
         event_key=str(row["event_key"]),
         source_provider=str(row["source_provider"]),
@@ -480,6 +499,28 @@ def load_known_market_lifecycle(
             venue=(str(row["venue"]) if row["venue"] is not None else None),
         ),
     )
+    return KnownMarketLifecycleLookup(
+        status="FOUND",
+        lifecycle=stored,
+        row_count=len(rows),
+        distinct_identity_count=1,
+    )
+
+
+def load_known_market_lifecycle(
+    *,
+    token_mint: str,
+    as_of: int,
+    venue: str | None = None,
+) -> StoredMarketLifecycle | None:
+    """Load one causally known unambiguous lifecycle identity across acquisition runs."""
+
+    result = inspect_known_market_lifecycle(
+        token_mint=token_mint,
+        as_of=as_of,
+        venue=venue,
+    )
+    return result.lifecycle
 
 
 def count_market_replay_conflicts(*, acquisition_run_key: str) -> int:
