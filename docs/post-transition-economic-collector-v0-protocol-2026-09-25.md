@@ -20,7 +20,7 @@ predicates. `structural_reacceleration_candidate` remains diagnostic only.
 - paper entry target: decision + 2 seconds;
 - maximum quote age: 15 seconds;
 - maximum quote wait: 5 seconds;
-- entry requires an assembled transaction / executable BUY quote;
+- entry uses a route-only BUY quote; no route-only paper quote or funded wallet is required during research;
 - notional: US$25;
 - provider price impact must be present and <= 2 percentage points;
 - entry fee: 20 bps;
@@ -123,7 +123,7 @@ probe using the frozen US$25 notional and 100 bps slippage. It uses no
 Post-Transition cohort token, submits no transaction, writes no economic
 outcome and leaves fresh discovery blocked.
 
-Passing this preflight proves provider route availability/normalization only.
+Passing provider preflight proves provider route availability/normalization only.
 It is not economic evidence.
 
 ## Edge claims
@@ -131,3 +131,18 @@ It is not economic evidence.
 This implementation proves no Signal Edge, Human-Assisted Edge or Autonomous
 Edge. It only makes the next fresh collection auditable once the unresolved
 censoring horizon is frozen.
+
+
+## Route-only paper-entry amendment — before fresh outcomes
+
+Before any fresh Post-Transition economic outcome was opened, the research entry gate was intentionally changed from assembled/funded-wallet entry to `ROUTE_ONLY_PAPER`.
+
+Frozen semantics now:
+
+- `require_assembled_transaction=false`;
+- Jupiter BUY quote uses `taker=None`;
+- no wallet balance, ATA, signature or transaction submission is required for research;
+- exact quoted output quantity remains required and is reused for route-only SELL path observations;
+- +2s entry latency, US$25 notional, 100 bps entry/exit slippage, 20 bps fees, <=2pp provider impact, +60 primary, +300 exploratory, TP50/100/200, 300s censoring and 5s route grid remain unchanged;
+- funded-wallet/assembly validation is deferred to future shadow/real execution work and does not block signal-edge research;
+- this amendment occurred while `fresh_economic_outcomes_opened=false`; no observed result motivated it.
