@@ -174,6 +174,19 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         "fresh_single_run_before_review": fresh_run.get(
             "single_fresh_run_only_before_review"
         ) is True,
+        "transport_health_10": fresh_run.get("transport_health_seconds") == 10,
+        "transport_min_raw_per_source_20": fresh_run.get(
+            "transport_min_raw_per_source"
+        ) == 20,
+        "transport_idle_timeout_15": fresh_run.get(
+            "transport_idle_timeout_seconds"
+        ) == 15,
+        "transport_ping_disabled": fresh_run.get(
+            "websocket_ping_interval_seconds"
+        ) is None,
+        "pre_outcome_transport_abort_void": fresh_run.get(
+            "pre_outcome_transport_abort_is_void"
+        ) is True,
         "fresh_closed": guardrails.get("fresh_economic_outcomes_opened")
         is False,
         "fresh_authorized": guardrails.get(
@@ -646,6 +659,19 @@ def collector_capabilities(contract: Mapping[str, Any]) -> dict[str, Any]:
             ),
             "automatic_extension_allowed": bool(
                 (contract.get("fresh_run") or {})["automatic_extension_allowed"]
+            ),
+            "transport_health_seconds": int(
+                (contract.get("fresh_run") or {})["transport_health_seconds"]
+            ),
+            "transport_min_raw_per_source": int(
+                (contract.get("fresh_run") or {})[
+                    "transport_min_raw_per_source"
+                ]
+            ),
+            "transport_idle_timeout_seconds": int(
+                (contract.get("fresh_run") or {})[
+                    "transport_idle_timeout_seconds"
+                ]
             ),
         },
         "research_entry_mode": contract["entry"]["research_execution_mode"],
