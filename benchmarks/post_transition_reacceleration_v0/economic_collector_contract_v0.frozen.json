@@ -56,7 +56,7 @@
   "failure_semantics": {
     "entry_unavailable_is_missing_not_zero_return": true,
     "threshold_not_reached_status": "NOT_REACHED",
-    "unexitable_after_usable_entry_return_pct": -100.0
+    "unexitable_after_usable_entry_return_pct": -100
   },
   "fresh_run": {
     "admission_duration_seconds": 1800,
@@ -69,7 +69,10 @@
     "transport_min_raw_per_source": 20,
     "transport_idle_timeout_seconds": 15,
     "websocket_ping_interval_seconds": null,
-    "pre_outcome_transport_abort_is_void": true
+    "pre_outcome_transport_abort_is_void": true,
+    "transport_liveness_ping_timeout_seconds": 5,
+    "transport_hard_silence_seconds": 60,
+    "transport_idle_policy": "PING_CONFIRM_THEN_HARD_SILENCE_ABORT"
   },
   "market_path": {
     "above_thresholds_pct": [
@@ -89,11 +92,11 @@
     "time_accounting": "sum_quote_resolution_seconds_on_observed_routeable_grid"
   },
   "position": {
-    "notional_usd": 25.0
+    "notional_usd": 25
   },
   "route_quality": {
     "exact_entry_quantity_required": true,
-    "max_provider_price_impact_pct_points": 2.0,
+    "max_provider_price_impact_pct_points": 2,
     "require_provider_price_impact": true,
     "route_only_entry_required": true,
     "route_only_sell_required": true
@@ -144,5 +147,5 @@
       "threshold_net_return_pct": 50
     }
   },
-  "contract_hash_sha256": "67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b"
+  "contract_hash_sha256": "a361556f82ff8dca256e95999bab44849eadbbac092c907df100c9fdb858464c"
 }
