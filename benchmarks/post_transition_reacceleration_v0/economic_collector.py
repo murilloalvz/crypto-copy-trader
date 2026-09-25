@@ -105,12 +105,14 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         "entry_latency_2": entry.get("latency_seconds_after_decision") == 2,
         "entry_age_15": entry.get("max_quote_age_seconds") == 15,
         "entry_wait_5": entry.get("max_quote_wait_seconds") == 5,
-        "entry_assembled": entry.get("require_assembled_transaction") is True,
+        "entry_route_only": entry.get("require_assembled_transaction") is False
+        and entry.get("research_execution_mode") == "ROUTE_ONLY_PAPER",
         "notional_25": float(position.get("notional_usd") or -1) == 25.0,
         "impact_required": quality.get("require_provider_price_impact") is True,
         "impact_2": float(
             quality.get("max_provider_price_impact_pct_points") or -1
         ) == 2.0,
+        "route_only_entry": quality.get("route_only_entry_required") is True,
         "route_only_sell": quality.get("route_only_sell_required") is True,
         "exact_quantity": quality.get("exact_entry_quantity_required") is True,
         "entry_fee_20": costs.get("entry_fee_bps") == 20,
@@ -178,6 +180,12 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
             "fresh_economic_discovery_authorized"
         ) is True,
         "live_false": guardrails.get("live_money_authorized") is False,
+        "funding_not_required_for_research": guardrails.get(
+            "funded_wallet_required_for_research"
+        ) is False,
+        "funding_deferred_to_real_execution": guardrails.get(
+            "funded_wallet_gate_deferred_to_real_execution"
+        ) is True,
         "fixed60_stays_primary": guardrails.get("fixed_60_remains_primary")
         is True,
         "fixed300_stays_exploratory": guardrails.get(
@@ -275,7 +283,9 @@ def evaluate_entry(
         ready_at=ready_at,
         max_quote_age_seconds=int(contract["entry"]["max_quote_age_seconds"]),
         max_quote_wait_seconds=int(contract["entry"]["max_quote_wait_seconds"]),
-        require_executable=True,
+        require_executable=bool(
+            contract["entry"]["require_assembled_transaction"]
+        ),
     )
     if selection.quote is None:
         return EntryEvaluation(
@@ -296,10 +306,10 @@ def evaluate_entry(
             deadline_at=deadline_at,
             quote=quote,
         )
-    if not quote.executable:
+    if contract["entry"]["require_assembled_transaction"] is False and quote.executable:
         return EntryEvaluation(
-            status="ENTRY_REJECTED:ASSEMBLED_TRANSACTION_REQUIRED",
-            reason="ASSEMBLED_TRANSACTION_REQUIRED",
+            status="ENTRY_REJECTED:ROUTE_ONLY_ENTRY_REQUIRED",
+            reason="ROUTE_ONLY_ENTRY_REQUIRED",
             ready_at=ready_at,
             deadline_at=deadline_at,
             quote=quote,
@@ -638,6 +648,10 @@ def collector_capabilities(contract: Mapping[str, Any]) -> dict[str, Any]:
                 (contract.get("fresh_run") or {})["automatic_extension_allowed"]
             ),
         },
+        "research_entry_mode": contract["entry"]["research_execution_mode"],
+        "funded_wallet_required_for_research": bool(
+            contract["scientific_guardrails"]["funded_wallet_required_for_research"]
+        ),
         "fresh_discovery": (
             "AUTHORIZED_300S_RIGHT_CENSORING"
             if (
