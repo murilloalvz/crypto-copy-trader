@@ -19,15 +19,15 @@ TOKEN = "TOKEN"
 USDC = "USDC"
 
 
-def buy(*, observed_at=1032, market_time=None, executable=True, impact=0.5,
+def buy(*, observed_at=1032, market_time=None, executable=False, impact=0.5,
         output_amount_raw="1000"):
     return CausalQuoteObservation(
         token_mint=TOKEN, side="buy",
         market_time=observed_at if market_time is None else market_time,
         observed_at=observed_at, price_usd=1.0, source="test",
         executable=executable,
-        input_mint=USDC if executable else None,
-        output_mint=TOKEN if executable else None,
+        input_mint=USDC,
+        output_mint=TOKEN,
         input_amount_raw="25000000", output_amount_raw=output_amount_raw,
         provider_price_impact_pct_points=impact,
     )
@@ -77,6 +77,20 @@ class EconomicCollectorV0Tests(unittest.TestCase):
                 "fresh_economic_discovery_authorized"
             ]
         )
+        self.assertFalse(
+            self.contract["scientific_guardrails"][
+                "funded_wallet_required_for_research"
+            ]
+        )
+        self.assertTrue(
+            self.contract["scientific_guardrails"][
+                "funded_wallet_gate_deferred_to_real_execution"
+            ]
+        )
+        self.assertEqual(
+            self.contract["entry"]["research_execution_mode"],
+            "ROUTE_ONLY_PAPER",
+        )
 
     def test_02_fresh_discovery_authorized_only_after_frozen_horizon(self):
         assert_fresh_discovery_blocked(self.contract)
@@ -114,9 +128,25 @@ class EconomicCollectorV0Tests(unittest.TestCase):
         r = evaluate_entry(token_mint=TOKEN, decision_as_of=1030, quotes=[buy(impact=2.01)], contract=self.contract)
         self.assertIn("PRICE_IMPACT", r.status)
 
-    def test_09_entry_requires_assembled_transaction_semantics(self):
-        r = evaluate_entry(token_mint=TOKEN, decision_as_of=1030, quotes=[buy(executable=False)], contract=self.contract)
-        self.assertEqual(r.status, "ENTRY_UNAVAILABLE")
+    def test_09_route_only_entry_is_required_for_research(self):
+        route_only = evaluate_entry(
+            token_mint=TOKEN,
+            decision_as_of=1030,
+            quotes=[buy(executable=False)],
+            contract=self.contract,
+        )
+        self.assertEqual(route_only.status, "ENTRY_USABLE")
+
+        executable = evaluate_entry(
+            token_mint=TOKEN,
+            decision_as_of=1030,
+            quotes=[buy(executable=True)],
+            contract=self.contract,
+        )
+        self.assertEqual(
+            executable.status,
+            "ENTRY_REJECTED:ROUTE_ONLY_ENTRY_REQUIRED",
+        )
 
     def test_10_route_mark_requires_exact_entry_quantity(self):
         m = classify_route_mark(entry=buy(), quote=sell(10, 1.2, input_amount_raw="999"), contract=self.contract)
