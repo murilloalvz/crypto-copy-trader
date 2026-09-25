@@ -25,6 +25,12 @@ class PostTransitionSystemsProbeV0Tests(unittest.TestCase):
             "wss://example.invalid/feed",
         )
 
+    def test_legacy_mainnet_beta_rpc_is_normalized_before_wss_conversion(self):
+        self.assertEqual(
+            _http_to_ws("https://api.mainnet-beta.solana.com"),
+            "wss://api.mainnet.solana.com",
+        )
+
     def test_candidate_order_is_explicit_primary_then_fallbacks_and_deduped(self):
         env = {
             "SOLANA_LOGS_WSS_URL": "wss://explicit.invalid/path",
