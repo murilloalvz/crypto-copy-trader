@@ -1,0 +1,22 @@
+{
+  "schema_version": "post_transition_funded_taker_fixture_v0",
+  "status": "FROZEN",
+  "economic_collector_contract_hash_sha256": "902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15",
+  "taker_public_key_sha256": "1ea3ae257e5405f95ced20a421f2a297bd0c2faa3d0715aa928c00cdb6d03203",
+  "input_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "input_decimals": 6,
+  "minimum_input_amount_raw": 25000000,
+  "minimum_sol_lamports": 10000000,
+  "control_output_mint": "So11111111111111111111111111111111111111112",
+  "slippage_bps": 100,
+  "no_adaptive_top_up_after_acquisition_starts": true,
+  "read_only_assembly_only": true,
+  "cohort_token_probe_before_fresh_run": false,
+  "notes": [
+    "Operational fixture only; it does not modify selector, notional, costs, TP levels or censoring.",
+    "Minimum USDC equals the frozen US$25 paper notional at 6 decimals.",
+    "Minimum SOL reuses the previously frozen 10,000,000-lamport operational assembly floor.",
+    "The preflight probes only USDC->WSOL and never queries a Post-Transition cohort token."
+  ],
+  "fixture_hash_sha256": "7a5d194770b8a743b6c00c9c93cba3e906ca097def596d9df311d6233b1e2b0b"
+}
