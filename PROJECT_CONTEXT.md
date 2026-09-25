@@ -689,4 +689,4 @@ Before any fresh economic outcome was opened, transport semantics were corrected
 No selector, notional, +2s entry delay, fees, slippage, impact limit, TP threshold, horizon, route grid, censoring or route-only paper semantics changed.
 
 Current contract hash:
-`a361556f82ff8dca256e95999bab44849eadbbac092c907df100c9fdb858464c`.
+`48ae1465f47c8f114b455feac5b03a48e4d6f6e026b3beef92f517bfb98f89b8`.
