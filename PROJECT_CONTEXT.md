@@ -756,3 +756,18 @@ Scientific interpretation:
 - it does not prove or disprove Signal Edge, Human-Assisted Edge or Autonomous Edge;
 - the next economic attempt must be a new frozen protocol revision/holdout, not a rerun of V0;
 - before that holdout, fix signed price-impact semantics and establish a more reliable transport source or explicitly gap-aware coverage protocol.
+
+
+### Future route-quality semantic fix after burned V0
+
+V0 remains closed and its artifact is not reinterpreted.
+
+For future protocol revisions only:
+
+- Jupiter Swap V2 `priceImpact` is treated as a signed finite value;
+- missing/non-finite impact => `PRICE_IMPACT_UNAVAILABLE`;
+- route-quality thresholding uses `abs(priceImpact)` against the frozen maximum;
+- signed negative values are not automatically treated as missing;
+- the burned V0 episodes remain non-usable because their observed impact magnitudes (~2.512pp and ~87.611pp) both exceed the frozen 2pp maximum.
+
+Do not use this semantic fix to rerun or rescue V0.
