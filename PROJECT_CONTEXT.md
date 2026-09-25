@@ -388,6 +388,46 @@ PASS requires all:
 
 MID and 300/3600s are diagnostic only. No same-sample rescue if a valid v68 FAILS/INCONCLUSIVE.
 
+## Post-Transition Pullback / Reacceleration V0 — OFFLINE SCAFFOLD
+
+Branch:
+
+`research/post-transition-pullback-reacceleration-v0`
+
+Status:
+
+`OFFLINE_CAUSAL_SCAFFOLD / SYSTEMS PROBE READY / NO FRESH ECONOMIC OUTCOME`
+
+Purpose:
+
+Study a later market state instead of stacking another Launch-Burst first-5s filter:
+
+`Pump birth -> PumpSwap transition -> pullback -> recovery / reacceleration`
+
+Scientific constraints:
+
+- PumpSwap CreatePool is a causal transition anchor, **not proven Pump.fun graduation**;
+- exactly one WSOL/USDC reference side is required; ambiguous pairs fail closed;
+- raw PumpSwap amounts provide only an event-implied reference/opportunity ratio, not executable USD price;
+- running peak/trough are as-of extrema only; future minima/maxima are forbidden;
+- one 10s recent vs prior 10s dynamics transform is frozen for discovery;
+- structural reacceleration is diagnostic only, never BUY/SKIP;
+- future economic labels are frozen as +60s primary and +300s exploratory before opening outcomes;
+- Participant Quality, Sniper V1 and Concentration Decay are not combined to rescue this line;
+- Rust Signal Plane V7 remains untouched.
+
+Implemented:
+
+- fail-closed historical lifecycle lookup across runs;
+- pure causal post-transition research state;
+- synthetic transition/pullback/recovery fixture;
+- deterministic offline replay;
+- anti-leakage tests;
+- systems-only live availability probe with no provider economic calls.
+
+Fresh economic discovery remains blocked until offline/full-suite gates and a systems-only live probe are
+reviewed.
+
 ## Other research tracks — isolated
 
 - v56 Exceptional Trade Pre-Entry: causal scaffold ready
