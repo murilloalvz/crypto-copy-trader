@@ -189,7 +189,10 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         ) == 60,
         "transport_idle_policy": fresh_run.get(
             "transport_idle_policy"
-        ) == "PING_CONFIRM_THEN_HARD_SILENCE_ABORT",
+        ) == "PING_TELEMETRY_THEN_HARD_SILENCE_ABORT",
+        "transport_ping_failure_nonfatal": fresh_run.get(
+            "transport_ping_failure_is_fatal"
+        ) is False,
         "transport_ping_disabled": fresh_run.get(
             "websocket_ping_interval_seconds"
         ) is None,
