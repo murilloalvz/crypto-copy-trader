@@ -372,16 +372,24 @@ def decode_pumpswap_pool_account(payload: bytes) -> PumpSwapPoolAccount:
 
 
 def _decode_program_data_bytes(line: str) -> bytes | None:
+    """Decode one Solana Program data line without letting unrelated noise kill the stream.
+
+    A logsSubscribe transaction that mentions PumpSwap can contain CPI/nested program log lines.
+    Some providers also surface malformed or non-base64 Program data text. Such a line cannot be a
+    decodable PumpSwap event, so it is treated as unavailable evidence and skipped fail-closed.
+    Structural notification errors and malformed decoded PumpSwap event payloads remain errors.
+    """
+
     prefix = "Program data: "
     if not str(line).startswith(prefix):
         return None
     encoded = str(line)[len(prefix) :].strip()
     if not encoded:
-        raise ValueError("empty Program data log")
+        return None
     try:
         return base64.b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise ValueError("invalid base64 Program data log") from exc
+    except Exception:
+        return None
 
 
 def parse_logs_notification(
@@ -417,11 +425,16 @@ def parse_logs_notification(
     lifecycle: list[PumpSwapCreatePoolEvent] = []
     program_data_index = 0
     for line in logs:
-        raw = _decode_program_data_bytes(str(line))
-        if raw is None:
+        text = str(line)
+        is_program_data = text.startswith("Program data: ")
+        if not is_program_data:
             continue
+
         event_index = program_data_index
         program_data_index += 1
+        raw = _decode_program_data_bytes(text)
+        if raw is None:
+            continue
 
         buy = decode_pumpswap_buy_event_payload(raw)
         if buy is not None:
