@@ -64,6 +64,7 @@ def build_state_from_fixture(payload: dict[str, Any]) -> PostTransitionResearchS
             observed_at=int(row["observed_at"]),
             event_key=str(row["event_key"]),
             transaction_key=str(row["transaction_key"]),
+            arrival_index=int(row["arrival_index"]),
         )
     return state
 
