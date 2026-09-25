@@ -570,3 +570,25 @@ These remain isolated from active Solana systems/V68 validation.
 3. Keep V68 as the next existing economic experiment, still `NOT_EVALUATED`; do not start it automatically.
 4. Define the future signal contract and human TAKE/SKIP workflow before implementing UI or execution.
 5. Require execution realism and shadow evidence before considering assisted or selective automation.
+
+
+## Post-Transition Economic Collector V0
+
+Status:
+
+`IMPLEMENTED / CONTRACT FROZEN FOR IMPLEMENTATION / PROVIDER PREFLIGHT READY / FRESH DISCOVERY BLOCKED PENDING CENSORING HORIZON`
+
+After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
+
+- frozen collector contract hash: `99025b0ffa02d65aed099cb9d670682ba6560ad07403717fd1f4901bdf3f3fa5`;
+- `FIXED_60`: PRIMARY;
+- `FIXED_300`: EXPLORATORY and cannot replace +60 from observed results;
+- Market Path: ARMED for routeability/impact, MFE/MAE, timing and observed-grid threshold duration; MFE is never an exit;
+- `TP50`, `TP100`, `TP200`: ARMED independently at the first causal routeable net-return crossing;
+- `DECELERATION_EXIT`, `PROFIT_PROTECTION_EXIT`, `HYBRID_HUMAN_EXIT`: NOT_ARMED pending a prospectively frozen policy;
+- `human_assisted_exit_v0` remains retrospective diagnostic only and is not reused prospectively;
+- maximum-horizon/censoring remains unresolved (`maximum_horizon_seconds=null`), therefore fresh economic discovery is fail-closed;
+- provider preflight is read-only USDC->WSOL route health only: zero cohort tokens, zero outcome writes, zero submitted transactions;
+- `FRESH_ECONOMIC_OUTCOMES_OPENED=False` and live money remains unauthorized.
+
+The next gate is targeted tests plus the read-only provider preflight. A fresh Post-Transition economic sample must not be opened until the maximum horizon/censoring policy is frozen before outcomes.
