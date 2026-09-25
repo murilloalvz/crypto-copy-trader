@@ -743,7 +743,6 @@ async def run_fresh_discovery(
                         "error": _redact(
                             f"{type(item).__name__}:{item}",
                             api_key,
-                            taker_public_key,
                         ),
                     }
                 )
