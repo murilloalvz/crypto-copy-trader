@@ -44,6 +44,22 @@ FAIL = "FAIL_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1"
 DECISION_DELAY_SECONDS = 30
 
 
+def _lineage_clock_gate(
+    *,
+    birth_chain_time: int,
+    birth_observed_at: int,
+    transition_chain_time: int,
+    transition_observed_at: int,
+) -> str:
+    if int(birth_chain_time) > int(transition_chain_time):
+        return "CHRONOLOGY_INVALID"
+    if int(birth_observed_at) > int(transition_observed_at):
+        return "AVAILABILITY_INVALID"
+    if int(birth_observed_at) == int(transition_observed_at):
+        return "SAME_SECOND_UNRESOLVED"
+    return "PASS"
+
+
 def _subscription_source(
     message: dict,
     *,
@@ -373,14 +389,16 @@ async def run_prospective_lineage_readiness(
                         counters["pump_lineage_found_preexisting"] += 1
 
                     birth = lineage.lifecycle.observation
-                    if birth.market_started_at > event.timestamp:
-                        counters["pump_lineage_chronology_invalid"] += 1
-                        continue
-                    if birth.observed_at > notification.observed_at:
-                        counters["pump_lineage_availability_invalid"] += 1
-                        continue
-                    if birth.observed_at == notification.observed_at:
-                        counters["pump_lineage_same_second_unresolved"] += 1
+                    clock_gate = _lineage_clock_gate(
+                        birth_chain_time=birth.market_started_at,
+                        birth_observed_at=birth.observed_at,
+                        transition_chain_time=event.timestamp,
+                        transition_observed_at=notification.observed_at,
+                    )
+                    if clock_gate != "PASS":
+                        counters[
+                            "pump_lineage_" + clock_gate.lower()
+                        ] += 1
                         continue
 
                     try:
