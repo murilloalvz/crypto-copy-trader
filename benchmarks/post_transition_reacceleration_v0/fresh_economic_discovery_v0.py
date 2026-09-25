@@ -217,6 +217,25 @@ async def _resolve_healthy_dual_connection(contract: dict):
             return url, ws, pump_id, pumpswap_id, attempts
     return None, None, None, None, attempts
 
+def _transport_idle_action(
+    *,
+    idle_seconds: float,
+    seconds_since_ping: float,
+    contract: dict,
+) -> str:
+    soft_idle = float(
+        contract["fresh_run"]["transport_idle_timeout_seconds"]
+    )
+    hard_silence = float(
+        contract["fresh_run"]["transport_hard_silence_seconds"]
+    )
+    if idle_seconds >= hard_silence:
+        return "ABORT_HARD_SILENCE"
+    if idle_seconds >= soft_idle and seconds_since_ping >= soft_idle:
+        return "PING"
+    return "WAIT"
+
+
 def _classify_completion(
     *,
     transport_error: str | None,
@@ -689,8 +708,11 @@ async def run_fresh_discovery(
             raise RuntimeError("healthy dual-stream connection missing after resolver")
         counters["dual_subscription_acks"] = 2
         last_raw_monotonic = time.monotonic()
-        idle_timeout = int(
-            contract["fresh_run"]["transport_idle_timeout_seconds"]
+        last_liveness_ping_monotonic = last_raw_monotonic
+        ping_timeout = float(
+            contract["fresh_run"][
+                "transport_liveness_ping_timeout_seconds"
+            ]
         )
 
         while int(time.time()) <= capture_close_wall:
@@ -700,10 +722,36 @@ async def run_fresh_discovery(
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=0.25)
             except asyncio.TimeoutError:
-                if time.monotonic() - last_raw_monotonic >= idle_timeout:
+                now_monotonic = time.monotonic()
+                idle_seconds = now_monotonic - last_raw_monotonic
+                seconds_since_ping = (
+                    now_monotonic - last_liveness_ping_monotonic
+                )
+                action = _transport_idle_action(
+                    idle_seconds=idle_seconds,
+                    seconds_since_ping=seconds_since_ping,
+                    contract=contract,
+                )
+                if action == "ABORT_HARD_SILENCE":
+                    counters["transport_hard_silence_aborts"] += 1
                     raise RuntimeError(
-                        "transport_idle_timeout_before_capture_complete"
+                        "transport_hard_silence_before_capture_complete"
                     )
+                if action == "PING":
+                    counters["transport_liveness_ping_attempts"] += 1
+                    last_liveness_ping_monotonic = now_monotonic
+                    try:
+                        pong_waiter = await ws.ping()
+                        await asyncio.wait_for(
+                            pong_waiter,
+                            timeout=ping_timeout,
+                        )
+                    except Exception as exc:
+                        counters["transport_liveness_ping_failures"] += 1
+                        raise RuntimeError(
+                            "transport_liveness_ping_failed"
+                        ) from exc
+                    counters["transport_liveness_ping_passes"] += 1
                 continue
 
             last_raw_monotonic = time.monotonic()
