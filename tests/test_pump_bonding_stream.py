@@ -82,6 +82,54 @@ class PumpBondingStreamTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decode_pump_trade_event_payload(PUMP_TRADE_EVENT_DISCRIMINATOR + b"x")
 
+    def test_malformed_program_data_line_is_ignored_before_valid_trade(self):
+        raw = payload(
+            mint=self.MINT,
+            user=self.USER,
+            is_buy=True,
+            timestamp=1000,
+        )
+        message = {
+            "method": "logsNotification",
+            "params": {
+                "result": {
+                    "context": {"slot": 9},
+                    "value": {
+                        "signature": "sig-malformed",
+                        "err": None,
+                        "logs": [
+                            "Program data: !!!not-base64!!!",
+                            "Program data: " + base64.b64encode(raw).decode(),
+                        ],
+                    },
+                }
+            },
+        }
+        notification = parse_logs_notification(message, observed_at=1005)
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(len(notification.events), 1)
+
+    def test_empty_program_data_line_is_ignored(self):
+        message = {
+            "method": "logsNotification",
+            "params": {
+                "result": {
+                    "context": {"slot": 9},
+                    "value": {
+                        "signature": "sig-empty",
+                        "err": None,
+                        "logs": ["Program data: ", "Program log: harmless"],
+                    },
+                }
+            },
+        }
+        notification = parse_logs_notification(message, observed_at=1005)
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(notification.events, ())
+        self.assertEqual(notification.lifecycle_events, ())
+
     def test_failed_transaction_is_not_observation(self):
         message = {
             "method": "logsNotification",
