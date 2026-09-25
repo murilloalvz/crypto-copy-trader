@@ -6,7 +6,6 @@
     "open_position_status": "CENSORED_STILL_OPEN",
     "policy_status": "FROZEN_300S_RIGHT_CENSORING"
   },
-  "contract_hash_sha256": "7fca6e364ce648e28061db1760f659802fc5d692a90289d9597e328b07580bd1",
   "costs": {
     "entry_adverse_slippage_bps": 100,
     "entry_fee_bps": 20,
@@ -56,7 +55,15 @@
   "failure_semantics": {
     "entry_unavailable_is_missing_not_zero_return": true,
     "threshold_not_reached_status": "NOT_REACHED",
-    "unexitable_after_usable_entry_return_pct": -100
+    "unexitable_after_usable_entry_return_pct": -100.0
+  },
+  "fresh_run": {
+    "admission_duration_seconds": 1800,
+    "route_observation_interval_seconds": 5,
+    "route_observation_final_grace_seconds": 5,
+    "automatic_extension_allowed": false,
+    "provider_timeout_seconds": 5,
+    "single_fresh_run_only_before_review": true
   },
   "market_path": {
     "above_thresholds_pct": [
@@ -76,11 +83,11 @@
     "time_accounting": "sum_quote_resolution_seconds_on_observed_routeable_grid"
   },
   "position": {
-    "notional_usd": 25
+    "notional_usd": 25.0
   },
   "route_quality": {
     "exact_entry_quantity_required": true,
-    "max_provider_price_impact_pct_points": 2,
+    "max_provider_price_impact_pct_points": 2.0,
     "require_provider_price_impact": true,
     "route_only_sell_required": true
   },
@@ -127,5 +134,6 @@
       "status": "ARMED",
       "threshold_net_return_pct": 50
     }
-  }
+  },
+  "contract_hash_sha256": "902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15"
 }
