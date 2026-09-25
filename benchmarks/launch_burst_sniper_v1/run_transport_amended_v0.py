@@ -300,8 +300,20 @@ async def _collect_selected_wss(
 def _parse_wrapper_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--env-file", type=Path, default=None)
+    parser.add_argument(
+        "--transport-preflight-only",
+        action="store_true",
+    )
     args, _unknown = parser.parse_known_args(argv)
     return args
+
+
+def _strip_wrapper_only_args(argv: list[str]) -> list[str]:
+    return [
+        item
+        for item in argv
+        if item != "--transport-preflight-only"
+    ]
 
 
 def main() -> int:
@@ -344,6 +356,9 @@ def main() -> int:
     if report.get("classification") != PASS or not selected_url:
         return 2
 
+    if wrapper_args.transport_preflight_only:
+        return 0
+
     source_label = (
         "standard_solana_wss:"
         + str(report.get("selected_host") or "unknown")
@@ -369,9 +384,15 @@ def main() -> int:
 
     v3._collect = selected_collect
     standard_collect.SOURCE_PROVIDER = source_label
+    original_argv = list(sys.argv)
+    sys.argv = [
+        sys.argv[0],
+        *_strip_wrapper_only_args(sys.argv[1:]),
+    ]
     try:
         return base_runner.main()
     finally:
+        sys.argv = original_argv
         v3._collect = original_collect
         standard_collect.SOURCE_PROVIDER = original_source_provider
 
