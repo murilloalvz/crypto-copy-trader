@@ -13,7 +13,10 @@ from benchmarks.post_transition_reacceleration_v0.economic_collector import (
     load_and_validate_contract,
 )
 from benchmarks.post_transition_reacceleration_v0.fresh_economic_discovery_v0 import (
+    FAIL as FRESH_FAIL,
+    VOID,
     _aggregate,
+    _classify_completion,
     _route_offsets,
     run_fresh_discovery,
 )
@@ -136,6 +139,30 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
         self.assertFalse(
             report["gates"]["provider_price_impact_within_frozen_limit"]
         )
+
+    def test_pre_outcome_transport_abort_is_void(self):
+        classification, reason = _classify_completion(
+            transport_error="transport_idle_timeout",
+            journal_error=None,
+            outcomes_opened=False,
+            episode_task_errors=0,
+            decision_snapshots_persisted=0,
+            contract=self.contract,
+        )
+        self.assertEqual(classification, VOID)
+        self.assertEqual(reason, "pre_outcome_transport_abort_void")
+
+    def test_transport_failure_after_outcomes_is_fail(self):
+        classification, reason = _classify_completion(
+            transport_error="transport_idle_timeout",
+            journal_error=None,
+            outcomes_opened=True,
+            episode_task_errors=0,
+            decision_snapshots_persisted=1,
+            contract=self.contract,
+        )
+        self.assertEqual(classification, FRESH_FAIL)
+        self.assertEqual(reason, "transport_or_snapshot_journal_error")
 
     def test_aggregate_preserves_tail_and_mean_without_best(self):
         result = _aggregate([100.0, 10.0, -20.0])
