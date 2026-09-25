@@ -470,6 +470,33 @@ Prospective Lineage Readiness V1 is now the active readiness gate:
 - transition +30s checkpoint and discovery labels remain unchanged.
 
 
+## Human-Assisted Exit Evaluation — CAUSAL HUMAN EXIT V0
+
+Status:
+
+`RETROSPECTIVE DIAGNOSTIC READY / POLICY FROZEN / NO EDGE CLAIM`
+
+This is an evaluation layer, not a competing Market-First entry line.
+
+Frozen historical diagnostic policy:
+
+- GOOD_PROFIT: first observed net route return >= +25%;
+- STRONG_DECELERATION: prior observed peak >= +12%, >=10pp giveback, >=5pp one-step deterioration;
+- RISK_BREAK: <= -20% and still deteriorating after at least two observations;
+- no forced time exit;
+- no-trigger paths are CENSORED_OPEN, not fake closes.
+
+Fixed +60 remains the standardized benchmark.
+
+The same frozen policy can be applied unchanged to old real-market V4 path artifacts to estimate
+whether a causal human-like exit would have improved already-observed opportunities.
+
+This retrospective result cannot confirm Human-Assisted Edge and must not be retuned on the same
+sample.
+
+Future Post-Transition discovery should extend Market Path with causal flow/participation
+deterioration before defining any prospective dynamic-exit hypothesis.
+
 ## Other research tracks — isolated
 
 - v56 Exceptional Trade Pre-Entry: causal scaffold ready
