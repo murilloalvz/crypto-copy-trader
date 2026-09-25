@@ -181,6 +181,15 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         "transport_idle_timeout_15": fresh_run.get(
             "transport_idle_timeout_seconds"
         ) == 15,
+        "transport_liveness_ping_timeout_5": fresh_run.get(
+            "transport_liveness_ping_timeout_seconds"
+        ) == 5,
+        "transport_hard_silence_60": fresh_run.get(
+            "transport_hard_silence_seconds"
+        ) == 60,
+        "transport_idle_policy": fresh_run.get(
+            "transport_idle_policy"
+        ) == "PING_CONFIRM_THEN_HARD_SILENCE_ABORT",
         "transport_ping_disabled": fresh_run.get(
             "websocket_ping_interval_seconds"
         ) is None,
@@ -671,6 +680,16 @@ def collector_capabilities(contract: Mapping[str, Any]) -> dict[str, Any]:
             "transport_idle_timeout_seconds": int(
                 (contract.get("fresh_run") or {})[
                     "transport_idle_timeout_seconds"
+                ]
+            ),
+            "transport_liveness_ping_timeout_seconds": int(
+                (contract.get("fresh_run") or {})[
+                    "transport_liveness_ping_timeout_seconds"
+                ]
+            ),
+            "transport_hard_silence_seconds": int(
+                (contract.get("fresh_run") or {})[
+                    "transport_hard_silence_seconds"
                 ]
             ),
         },
