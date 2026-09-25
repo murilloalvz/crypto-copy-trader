@@ -284,6 +284,24 @@ class PostTransitionReaccelerationV0Tests(unittest.TestCase):
                 transaction_key="tx",
             )
 
+    def test_partial_pump_birth_lineage_is_rejected(self):
+        create = PumpSwapCreatePoolEvent(
+            pool="POOL",
+            creator="CREATOR",
+            base_mint="TOKEN",
+            quote_mint=WSOL_MINT,
+            base_mint_decimals=6,
+            quote_mint_decimals=9,
+            timestamp=1000,
+        )
+        with self.assertRaisesRegex(ValueError, "requires both"):
+            PostTransitionResearchState.from_create_event(
+                create,
+                observed_at=1001,
+                pump_birth_market_started_at=900,
+                pump_birth_observed_at=None,
+            )
+
     def test_trade_before_transition_or_wrong_pool_is_rejected(self):
         create = PumpSwapCreatePoolEvent(
             pool="POOL",
