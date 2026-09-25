@@ -89,8 +89,9 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
         self.assertEqual(fresh["transport_hard_silence_seconds"], 60)
         self.assertEqual(
             fresh["transport_idle_policy"],
-            "PING_CONFIRM_THEN_HARD_SILENCE_ABORT",
+            "PING_TELEMETRY_THEN_HARD_SILENCE_ABORT",
         )
+        self.assertFalse(fresh["transport_ping_failure_is_fatal"])
         self.assertIsNone(fresh["websocket_ping_interval_seconds"])
         self.assertTrue(fresh["pre_outcome_transport_abort_is_void"])
 
