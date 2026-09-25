@@ -202,16 +202,24 @@ def decode_pump_create_event_payload(payload: bytes) -> PumpCreateEvent | None:
 
 
 def _decode_program_data_bytes(line: str) -> bytes | None:
+    """Decode one Pump Program data line fail-closed.
+
+    Pump transactions can contain nested/CPI Program data emitted by other
+    programs. Empty or non-base64 data cannot be a decodable Pump event and is
+    skipped rather than terminating the stream. Decoded Pump payloads that are
+    structurally malformed still raise in the event decoders.
+    """
+
     prefix = "Program data: "
     if not str(line).startswith(prefix):
         return None
     encoded = str(line)[len(prefix) :].strip()
     if not encoded:
-        raise ValueError("empty Program data log")
+        return None
     try:
         return base64.b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise ValueError("invalid base64 Program data log") from exc
+    except Exception:
+        return None
 
 
 def decode_program_data_log(line: str) -> PumpTradeEvent | None:
