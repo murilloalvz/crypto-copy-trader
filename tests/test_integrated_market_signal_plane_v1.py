@@ -7,6 +7,10 @@ from benchmarks.commodity_signal_plane_v0.benchmark import (
     generate_synthetic_trace,
     load_trace,
 )
+from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
+    RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS,
+    RESEARCH_PLANE_QUEUE_SIZE,
+)
 from benchmarks.integrated_market_signal_plane_v1.suite import (
     canonical_event_to_record,
     record_to_canonical_event,
@@ -42,6 +46,10 @@ class IntegratedMarketSignalPlaneV1Tests(unittest.TestCase):
                     "observation": {},
                 }
             )
+
+    def test_role_normalized_research_plane_has_burst_headroom(self):
+        self.assertGreaterEqual(RESEARCH_PLANE_QUEUE_SIZE, 16_384)
+        self.assertGreaterEqual(RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS, 120.0)
 
     def test_integrated_semantics_and_accounting(self):
         with tempfile.TemporaryDirectory() as tmp:
