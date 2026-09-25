@@ -730,7 +730,6 @@ async def run_fresh_discovery(
         transport_error = _redact(
             f"{type(exc).__name__}:{exc}",
             api_key,
-            taker_public_key,
         )
 
     if tasks:
