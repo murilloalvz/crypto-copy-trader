@@ -576,25 +576,23 @@ These remain isolated from active Solana systems/V68 validation.
 
 Status:
 
-`IMPLEMENTED / PROVIDER ASSEMBLY CONFIRMED / FUNDED TAKER BLOCKED BY BALANCE / OUTCOMES NOT YET OPENED`
+`IMPLEMENTED / ROUTE-ONLY PAPER RESEARCH / WALLET FUNDING DEFERRED / OUTCOMES NOT YET OPENED`
 
 After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
 
-- frozen collector contract hash: `902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15`;
-- route-only Jupiter preflight: PASS;
-- public-funded control diagnostic: `DIAGNOSTIC_LAUNCH_BURST_V4_PROVIDER_ASSEMBLY_CONFIRMED`;
-- the zero-balance frozen taker returned Jupiter `errorCode=2 / Missing associated token account`;
-- the same provider assembled read-only candidate transactions for a public funded control address;
-- therefore provider assembly capability is confirmed and the remaining blocker is the project taker's funding/ATA state;
-- current frozen taker balances at the diagnostic point: `USDC raw=0`, `SOL lamports=0`;
-- Post-Transition funded-taker fixture is frozen at:
-  - USDC minimum: `25,000,000` raw = 25 USDC;
-  - SOL minimum: `10,000,000` lamports = 0.01 SOL;
-  - identity frozen by SHA-256;
-  - no adaptive top-up after acquisition starts;
-  - read-only USDC->WSOL assembly control only;
-  - zero cohort-token probes before the fresh run;
-- funded-taker gate: `benchmarks/post_transition_reacceleration_v0/funded_taker_preflight.py`;
+- current frozen collector contract hash: `9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891`;
+- research execution mode: `ROUTE_ONLY_PAPER`;
+- `require_assembled_transaction=false`;
+- fresh runner uses Jupiter with `taker=None` for BUY and SELL route observations;
+- no funded wallet, USDC balance, SOL balance, ATA, signing or transaction submission is required for current research;
+- the earlier public-funded control proved Jupiter assembly capability, but that gate is now explicitly deferred to future shadow/real execution work;
+- funded-taker fixture/preflight remains in the repo as a deferred execution-realism gate and does not block research discovery;
+- exact entry output quantity is still required and reused for route-only exits;
+- US$25 paper notional unchanged;
+- +2s entry latency unchanged;
+- entry/exit adverse slippage 100 bps unchanged;
+- entry/exit fee 20 bps unchanged;
+- provider impact gate <=2 percentage points unchanged;
 - `FIXED_60`: PRIMARY;
 - `FIXED_300`: EXPLORATORY;
 - Market Path, TP50, TP100 and TP200: ARMED;
@@ -606,6 +604,8 @@ After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
 - one fresh run only before review: true;
 - `fresh_economic_discovery_authorized=True`;
 - `fresh_economic_outcomes_opened=False`;
-- no signing/submission path exists in the fresh runner; live money remains unauthorized.
+- live money remains unauthorized.
 
-Next gate: fund only the already-frozen project taker to at least 25 USDC and 0.01 SOL, then run the Post-Transition funded-taker preflight. Do not query cohort tokens, change the taker, alter notional/costs/TP/censoring, or start the fresh economic run until that gate passes.
+Scientific note: the wallet/assembly requirement was removed before any fresh Post-Transition outcome was opened. This is a protocol amendment, not a same-sample rescue. Execution assembly/funding must be reopened later before making shadow/real execution claims.
+
+Next gate: targeted tests + CI under the route-only contract, then exactly one fresh Post-Transition economic discovery run. Do not rerun or extend automatically after observing the result.
