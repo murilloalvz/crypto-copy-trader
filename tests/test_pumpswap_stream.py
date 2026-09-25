@@ -184,6 +184,43 @@ class PumpSwapStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account.base_mint, self.base)
         self.assertEqual(account.quote_mint, self.quote)
 
+    def test_malformed_program_data_line_is_ignored_without_losing_later_valid_event(self):
+        buy = trade_payload(
+            side="buy",
+            pool_raw=self.pool_raw,
+            user_raw=self.user_raw,
+            timestamp=1000,
+        )
+        payload = message("sig-malformed", [buy])
+        logs = payload["params"]["result"]["value"]["logs"]
+        logs.insert(0, "Program data: !!!not-base64!!!")
+
+        notification = parse_logs_notification(
+            payload,
+            observed_at=1005,
+        )
+
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(len(notification.trade_events), 1)
+        self.assertEqual(notification.trade_events[0].side, "buy")
+        self.assertEqual(notification.trade_events[0].event_index, 1)
+
+    def test_empty_program_data_line_is_ignored_fail_closed(self):
+        payload = message("sig-empty", [])
+        payload["params"]["result"]["value"]["logs"] = [
+            "Program data: ",
+            "Program log: harmless",
+        ]
+        notification = parse_logs_notification(
+            payload,
+            observed_at=1005,
+        )
+        self.assertIsNotNone(notification)
+        assert notification is not None
+        self.assertEqual(notification.trade_events, ())
+        self.assertEqual(notification.lifecycle_events, ())
+
     def test_failed_transaction_and_impossible_clock_are_rejected(self):
         raw = trade_payload(side="buy", pool_raw=self.pool_raw, user_raw=self.user_raw, timestamp=1000)
         self.assertIsNone(parse_logs_notification(message("failed", [raw], err={"x": 1}), observed_at=1005))
