@@ -576,23 +576,31 @@ These remain isolated from active Solana systems/V68 validation.
 
 Status:
 
-`IMPLEMENTED / PROVIDER PREFLIGHT PASS / 300S RIGHT-CENSORING FROZEN / FRESH ECONOMIC DISCOVERY AUTHORIZED / OUTCOMES NOT YET OPENED`
+`IMPLEMENTED / ROUTE-ONLY PROVIDER PREFLIGHT PASS / 300S RIGHT-CENSORING FROZEN / FRESH RUN CADENCE FROZEN / ASSEMBLED-ENTRY PREFLIGHT PENDING / OUTCOMES NOT YET OPENED`
 
 After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
 
-- frozen collector contract hash: `7fca6e364ce648e28061db1760f659802fc5d692a90289d9597e328b07580bd1`;
-- read-only Jupiter provider preflight: PASS with zero cohort tokens, zero outcome writes, zero submitted transactions and zero live money;
+- frozen collector contract hash: `902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15`;
+- read-only Jupiter route-only provider preflight: PASS with zero cohort tokens, zero outcome writes, zero submitted transactions and zero live money;
 - `FIXED_60`: PRIMARY;
 - `FIXED_300`: EXPLORATORY and cannot replace +60 from observed results;
 - Market Path: ARMED for routeability/impact, MFE/MAE, timing and observed-grid threshold duration; MFE is never an exit;
 - `TP50`, `TP100`, `TP200`: ARMED independently at the first causal routeable net-return crossing;
 - `DECELERATION_EXIT`, `PROFIT_PROTECTION_EXIT`, `HYBRID_HUMAN_EXIT`: NOT_ARMED pending a prospectively frozen policy;
 - `human_assisted_exit_v0` remains retrospective diagnostic only and is not reused prospectively;
-- maximum economic horizon is frozen at `300s` from usable entry under `FROZEN_300S_RIGHT_CENSORING`;
+- maximum economic horizon: `300s` from usable entry under `FROZEN_300S_RIGHT_CENSORING`;
 - Market Path/MFE/MAE/TP policies stop at +300s with no interpolation and no forced time exit;
-- `FIXED_300` alone may consume its pre-existing +5s quote-wait grace (300-305s); those grace marks cannot enter Market Path or TP outcomes;
+- `FIXED_300` alone may consume its pre-existing +5s quote-wait grace (300-305s); grace marks cannot enter Market Path or TP outcomes;
+- first fresh admission window: `1800s`;
+- route observation cadence: `5s`;
+- route grid: `+5,+10,...,+300,+305`, where +305 exists only for frozen fixed-benchmark quote grace;
+- provider timeout per quote: `5s`;
+- automatic admission extension: false;
+- one fresh run only before review: true;
+- fresh economic live runner: `benchmarks/post_transition_reacceleration_v0/fresh_economic_discovery_v0.py`;
+- assembled-entry control preflight: `benchmarks/post_transition_reacceleration_v0/assembled_entry_preflight.py`;
 - `fresh_economic_discovery_authorized=True`;
-- `fresh_economic_outcomes_opened=False` until the first prospective run actually starts;
-- live money remains unauthorized.
+- `fresh_economic_outcomes_opened=False` until a cohort-token Jupiter call actually begins;
+- no transaction signing/submission path exists in this runner; live money remains unauthorized.
 
-Next gate: validate the frozen-300s implementation in CI, then open exactly one fresh Post-Transition prospective economic discovery run without changing selector, thresholds, costs, TP levels, dynamic exits or censoring.
+Next gate: assembled-entry control preflight must PASS without cohort tokens or transaction submission. Only after that may exactly one fresh Post-Transition economic discovery run be opened. Do not extend or rerun automatically after observing the result.
