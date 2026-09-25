@@ -67,11 +67,19 @@ class EconomicCollectorV0Tests(unittest.TestCase):
         self.assertEqual(self.contract["discovery_contract"]["selector_predicates"], [])
         self.assertFalse(self.contract["discovery_contract"]["structural_reacceleration_candidate_is_selector"])
         self.assertFalse(self.contract["scientific_guardrails"]["fresh_economic_outcomes_opened"])
-        self.assertIsNone(self.contract["censoring"]["maximum_horizon_seconds"])
+        self.assertEqual(self.contract["censoring"]["maximum_horizon_seconds"], 300)
+        self.assertEqual(
+            self.contract["censoring"]["policy_status"],
+            "FROZEN_300S_RIGHT_CENSORING",
+        )
+        self.assertTrue(
+            self.contract["scientific_guardrails"][
+                "fresh_economic_discovery_authorized"
+            ]
+        )
 
-    def test_02_fresh_discovery_fails_closed(self):
-        with self.assertRaisesRegex(RuntimeError, "maximum horizon/censoring"):
-            assert_fresh_discovery_blocked(self.contract)
+    def test_02_fresh_discovery_authorized_only_after_frozen_horizon(self):
+        assert_fresh_discovery_blocked(self.contract)
 
     def test_03_contract_rejects_selector_mutation(self):
         payload = copy.deepcopy(self.contract)
@@ -214,7 +222,7 @@ class EconomicCollectorV0Tests(unittest.TestCase):
         self.assertEqual(c[TP50], "ARMED")
         self.assertEqual(c[TP100], "ARMED")
         self.assertEqual(c[TP200], "ARMED")
-        self.assertEqual(c["fresh_discovery"], "BLOCKED_PENDING_CENSORING_HORIZON")
+        self.assertEqual(c["fresh_discovery"], "AUTHORIZED_300S_RIGHT_CENSORING")
 
     def test_27_entry_missing_is_missing_not_zero_loss(self):
         r = evaluate_episode(token_mint=TOKEN, decision_snapshot=snapshot(), quotes=[], contract=self.contract, maximum_horizon_seconds=300)
@@ -222,6 +230,30 @@ class EconomicCollectorV0Tests(unittest.TestCase):
         self.assertIsNone(r["fixed_60"])
         self.assertIsNone(r[TP50])
         self.assertFalse(r["fresh_economic_outcomes_opened"])
+
+    def test_28_fixed300_quote_grace_does_not_leak_into_market_path_or_tp(self):
+        quotes = [buy(), sell(304, 4.0)]
+        r = evaluate_episode(
+            token_mint=TOKEN,
+            decision_snapshot=snapshot(),
+            quotes=quotes,
+            contract=self.contract,
+            maximum_horizon_seconds=300,
+        )
+        self.assertEqual(r["fixed_300"]["status"], "ROUTE_CLOSED")
+        self.assertEqual(r["fixed_300"]["actual_offset_seconds"], 304)
+        self.assertEqual(r[TP200]["status"], "NOT_REACHED")
+        self.assertEqual(r["market_path"]["marks"], [])
+
+    def test_29_runtime_horizon_cannot_override_frozen_contract(self):
+        with self.assertRaisesRegex(ValueError, "frozen contract horizon"):
+            evaluate_episode(
+                token_mint=TOKEN,
+                decision_snapshot=snapshot(),
+                quotes=[buy(), sell(60, 1.2)],
+                contract=self.contract,
+                maximum_horizon_seconds=301,
+            )
 
 
 if __name__ == "__main__":
