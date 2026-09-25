@@ -1,88 +1,32 @@
 {
-  "schema_version": "post_transition_economic_collector_contract_v0",
-  "status": "FROZEN_IMPLEMENTATION_ONLY",
-  "scope": "MARKET_FIRST_POST_TRANSITION_ECONOMIC_COLLECTION",
+  "censoring": {
+    "forced_time_exit": false,
+    "fresh_discovery_requires_prior_horizon_freeze": true,
+    "maximum_horizon_seconds": null,
+    "open_position_status": "CENSORED_STILL_OPEN",
+    "policy_status": "UNRESOLVED_BLOCKS_FRESH_DISCOVERY"
+  },
+  "contract_hash_sha256": "99025b0ffa02d65aed099cb9d670682ba6560ad07403717fd1f4901bdf3f3fa5",
+  "costs": {
+    "entry_adverse_slippage_bps": 100,
+    "entry_fee_bps": 20,
+    "exit_adverse_slippage_bps": 100,
+    "exit_fee_bps": 20
+  },
   "discovery_contract": {
-    "schema_version": "post_transition_discovery_label_contract_v0",
     "decision_delay_seconds_from_transition_observed": 30,
+    "schema_version": "post_transition_discovery_label_contract_v0",
     "selector_predicates": [],
     "structural_reacceleration_candidate_is_selector": false
-  },
-  "entry": {
-    "latency_seconds_after_decision": 2,
-    "max_quote_age_seconds": 15,
-    "max_quote_wait_seconds": 5,
-    "require_assembled_transaction": true
-  },
-  "position": {
-    "notional_usd": 25
-  },
-  "route_quality": {
-    "require_provider_price_impact": true,
-    "max_provider_price_impact_pct_points": 2,
-    "route_only_sell_required": true,
-    "exact_entry_quantity_required": true
-  },
-  "costs": {
-    "entry_fee_bps": 20,
-    "exit_fee_bps": 20,
-    "entry_adverse_slippage_bps": 100,
-    "exit_adverse_slippage_bps": 100
-  },
-  "standardized_outcomes": {
-    "fixed_60": {
-      "role": "PRIMARY",
-      "horizon_seconds_from_entry": 60,
-      "max_quote_age_seconds": 15,
-      "max_quote_wait_seconds": 5
-    },
-    "fixed_300": {
-      "role": "EXPLORATORY",
-      "horizon_seconds_from_entry": 300,
-      "max_quote_age_seconds": 15,
-      "max_quote_wait_seconds": 5,
-      "cannot_replace_primary_based_on_results": true
-    }
-  },
-  "market_path": {
-    "return_basis": "routeable_sell_exact_entry_quantity_net_of_frozen_costs",
-    "mfe_is_not_exit": true,
-    "missing_route_marks_are_not_interpolated": true,
-    "time_accounting": "sum_quote_resolution_seconds_on_observed_routeable_grid",
-    "above_thresholds_pct": [
-      10,
-      20,
-      50,
-      100,
-      200
-    ],
-    "below_thresholds_pct": [
-      -10,
-      -20
-    ]
-  },
-  "take_profit_policies": {
-    "TP50": {
-      "threshold_net_return_pct": 50,
-      "status": "ARMED"
-    },
-    "TP100": {
-      "threshold_net_return_pct": 100,
-      "status": "ARMED"
-    },
-    "TP200": {
-      "threshold_net_return_pct": 200,
-      "status": "ARMED"
-    }
   },
   "dynamic_exit_policies": {
     "DECELERATION_EXIT": {
       "status": "NOT_ARMED"
     },
-    "PROFIT_PROTECTION_EXIT": {
+    "HYBRID_HUMAN_EXIT": {
       "status": "NOT_ARMED"
     },
-    "HYBRID_HUMAN_EXIT": {
+    "PROFIT_PROTECTION_EXIT": {
       "status": "NOT_ARMED"
     },
     "required_causal_inputs": [
@@ -103,29 +47,85 @@
     ],
     "retrospective_human_assisted_exit_v0_reused": false
   },
-  "censoring": {
-    "policy_status": "UNRESOLVED_BLOCKS_FRESH_DISCOVERY",
-    "maximum_horizon_seconds": null,
-    "forced_time_exit": false,
-    "open_position_status": "CENSORED_STILL_OPEN",
-    "fresh_discovery_requires_prior_horizon_freeze": true
+  "entry": {
+    "latency_seconds_after_decision": 2,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "require_assembled_transaction": true
   },
   "failure_semantics": {
     "entry_unavailable_is_missing_not_zero_return": true,
-    "unexitable_after_usable_entry_return_pct": -100,
-    "threshold_not_reached_status": "NOT_REACHED"
+    "threshold_not_reached_status": "NOT_REACHED",
+    "unexitable_after_usable_entry_return_pct": -100.0
   },
+  "market_path": {
+    "above_thresholds_pct": [
+      10,
+      20,
+      50,
+      100,
+      200
+    ],
+    "below_thresholds_pct": [
+      -10,
+      -20
+    ],
+    "mfe_is_not_exit": true,
+    "missing_route_marks_are_not_interpolated": true,
+    "return_basis": "routeable_sell_exact_entry_quantity_net_of_frozen_costs",
+    "time_accounting": "sum_quote_resolution_seconds_on_observed_routeable_grid"
+  },
+  "position": {
+    "notional_usd": 25.0
+  },
+  "route_quality": {
+    "exact_entry_quantity_required": true,
+    "max_provider_price_impact_pct_points": 2.0,
+    "require_provider_price_impact": true,
+    "route_only_sell_required": true
+  },
+  "schema_version": "post_transition_economic_collector_contract_v0",
   "scientific_guardrails": {
-    "fresh_economic_outcomes_opened": false,
-    "fresh_economic_discovery_authorized": false,
-    "live_money_authorized": false,
-    "fixed_60_remains_primary": true,
-    "fixed_300_remains_exploratory": true,
     "best_tp_per_trade_selection_forbidden": true,
+    "fixed_300_remains_exploratory": true,
+    "fixed_60_remains_primary": true,
+    "fresh_economic_discovery_authorized": false,
+    "fresh_economic_outcomes_opened": false,
+    "human_assisted_exit_v0_is_retrospective_only": true,
+    "live_money_authorized": false,
     "mfe_as_exit_forbidden": true,
-    "same_sample_retuning_allowed": false,
     "provider_route_fields_forbidden_as_entry_selector_features": true,
-    "human_assisted_exit_v0_is_retrospective_only": true
+    "same_sample_retuning_allowed": false
   },
-  "contract_hash_sha256": "99025b0ffa02d65aed099cb9d670682ba6560ad07403717fd1f4901bdf3f3fa5"
+  "scope": "MARKET_FIRST_POST_TRANSITION_ECONOMIC_COLLECTION",
+  "standardized_outcomes": {
+    "fixed_300": {
+      "cannot_replace_primary_based_on_results": true,
+      "horizon_seconds_from_entry": 300,
+      "max_quote_age_seconds": 15,
+      "max_quote_wait_seconds": 5,
+      "role": "EXPLORATORY"
+    },
+    "fixed_60": {
+      "horizon_seconds_from_entry": 60,
+      "max_quote_age_seconds": 15,
+      "max_quote_wait_seconds": 5,
+      "role": "PRIMARY"
+    }
+  },
+  "status": "FROZEN_IMPLEMENTATION_ONLY",
+  "take_profit_policies": {
+    "TP100": {
+      "status": "ARMED",
+      "threshold_net_return_pct": 100
+    },
+    "TP200": {
+      "status": "ARMED",
+      "threshold_net_return_pct": 200
+    },
+    "TP50": {
+      "status": "ARMED",
+      "threshold_net_return_pct": 50
+    }
+  }
 }
