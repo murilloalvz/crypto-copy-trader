@@ -50,7 +50,8 @@
     "latency_seconds_after_decision": 2,
     "max_quote_age_seconds": 15,
     "max_quote_wait_seconds": 5,
-    "require_assembled_transaction": true
+    "require_assembled_transaction": false,
+    "research_execution_mode": "ROUTE_ONLY_PAPER"
   },
   "failure_semantics": {
     "entry_unavailable_is_missing_not_zero_return": true,
@@ -89,6 +90,7 @@
     "exact_entry_quantity_required": true,
     "max_provider_price_impact_pct_points": 2.0,
     "require_provider_price_impact": true,
+    "route_only_entry_required": true,
     "route_only_sell_required": true
   },
   "schema_version": "post_transition_economic_collector_contract_v0",
@@ -98,6 +100,8 @@
     "fixed_60_remains_primary": true,
     "fresh_economic_discovery_authorized": true,
     "fresh_economic_outcomes_opened": false,
+    "funded_wallet_gate_deferred_to_real_execution": true,
+    "funded_wallet_required_for_research": false,
     "human_assisted_exit_v0_is_retrospective_only": true,
     "live_money_authorized": false,
     "mfe_as_exit_forbidden": true,
@@ -135,5 +139,5 @@
       "threshold_net_return_pct": 50
     }
   },
-  "contract_hash_sha256": "902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15"
+  "contract_hash_sha256": "9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891"
 }
