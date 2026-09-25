@@ -149,6 +149,7 @@ async def run_probe(*, duration_seconds: int) -> dict:
 
     counters: Counter[str] = Counter()
     states: dict[str, PostTransitionResearchState] = {}
+    arrival_by_pool: dict[str, int] = {}
     structural_pools: set[str] = set()
     started = time.monotonic()
     deadline = started + float(duration_seconds)
@@ -214,6 +215,7 @@ async def run_probe(*, duration_seconds: int) -> dict:
                                 observed_at=notification.observed_at,
                             )
                         )
+                        arrival_by_pool[event.pool] = 0
                         counters["role_valid_transition_states"] += 1
                     except ValueError:
                         counters["transition_state_errors"] += 1
@@ -225,6 +227,7 @@ async def run_probe(*, duration_seconds: int) -> dict:
                         counters["trade_without_direct_transition_anchor"] += 1
                         continue
                     try:
+                        arrival_index = arrival_by_pool.get(event.pool, 0)
                         state.ingest_trade(
                             event,
                             observed_at=notification.observed_at,
@@ -233,10 +236,13 @@ async def run_probe(*, duration_seconds: int) -> dict:
                                 f"{notification.signature}:{event.event_index}"
                             ),
                             transaction_key=notification.signature,
+                            arrival_index=arrival_index,
                         )
+                        arrival_by_pool[event.pool] = arrival_index + 1
                         counters["anchored_trades"] += 1
                         snapshot = state.snapshot(
-                            as_of_observed_at=notification.observed_at
+                            as_of_observed_at=notification.observed_at,
+                            max_arrival_index=arrival_index,
                         )
                         counters["snapshots"] += 1
                         if snapshot.pullback_observed:
