@@ -1,7 +1,7 @@
 {
   "schema_version": "post_transition_funded_taker_fixture_v0",
   "status": "FROZEN",
-  "economic_collector_contract_hash_sha256": "48ae1465f47c8f114b455feac5b03a48e4d6f6e026b3beef92f517bfb98f89b8",
+  "economic_collector_contract_hash_sha256": "17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e",
   "taker_public_key_sha256": "1ea3ae257e5405f95ced20a421f2a297bd0c2faa3d0715aa928c00cdb6d03203",
   "input_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "input_decimals": 6,
@@ -19,5 +19,5 @@
     "Minimum SOL reuses the previously frozen 10,000,000-lamport operational assembly floor.",
     "Use this gate again only when shadow/real execution realism is intentionally reopened."
   ],
-  "fixture_hash_sha256": "6494fdffaffbbc599102cf2ca6c93a155d87ce64a8cab6959491e6d1fbbdca92"
+  "fixture_hash_sha256": "7a779d9d0fcaeeb4409d91f0044582bea433ac2b901c73a729ac85a113066fcc"
 }
