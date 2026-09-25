@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from benchmarks.post_transition_reacceleration_v0.economic_collector import (
 from benchmarks.post_transition_reacceleration_v0.fresh_economic_discovery_v0 import (
     _aggregate,
     _route_offsets,
+    run_fresh_discovery,
 )
 from src.assets import USDC_MINT, WRAPPED_SOL_MINT
 from src.jupiter_swap_v2 import JupiterOrder
@@ -61,6 +63,22 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
                 "fresh_economic_outcomes_opened"
             ]
         )
+        self.assertEqual(
+            self.contract["entry"]["research_execution_mode"],
+            "ROUTE_ONLY_PAPER",
+        )
+        self.assertFalse(
+            self.contract["entry"]["require_assembled_transaction"]
+        )
+        self.assertFalse(
+            self.contract["scientific_guardrails"][
+                "funded_wallet_required_for_research"
+            ]
+        )
+
+    def test_fresh_runner_has_no_taker_or_wallet_argument(self):
+        params = inspect.signature(run_fresh_discovery).parameters
+        self.assertNotIn("taker_public_key", params)
 
     def test_route_grid_is_exactly_5_through_305(self):
         offsets = _route_offsets(self.contract)
