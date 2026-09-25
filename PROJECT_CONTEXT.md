@@ -425,8 +425,28 @@ Implemented:
 - anti-leakage tests;
 - systems-only live availability probe with no provider economic calls.
 
-Fresh economic discovery remains blocked until offline/full-suite gates and a systems-only live probe are
-reviewed.
+Systems-only live availability PASS was observed on 2026-09-25 with 3 direct role-valid PumpSwap
+transition states and 3,248 anchored trades. Economic outcomes remained closed.
+
+The next gate is lineage/readiness only:
+
+- require causally known prior Pump birth;
+- distinguish FOUND / MISSING / AMBIGUOUS lineage;
+- freeze exactly one snapshot at transition observed +30s;
+- persist snapshots in an append-only SHA-256 hash-chained journal;
+- keep Jupiter/economic outcomes disabled.
+
+The discovery label contract is frozen before outcomes:
+
+- no selector predicates;
+- every complete lineage-eligible +30s snapshot receives labels;
+- US$25 paper notional;
+- +2s entry latency;
+- fixed +60s route-shadow primary;
+- fixed +300s route-shadow exploratory;
+- structural reacceleration remains diagnostic only.
+
+Fresh economic discovery remains blocked until the lineage/readiness gate passes.
 
 ## Other research tracks — isolated
 
