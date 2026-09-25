@@ -125,9 +125,6 @@ def identity_from_create_event(
     pump_birth_observed_at: int | None = None,
 ) -> PostTransitionIdentity:
     learned_at = int(observed_at)
-    order_index = int(arrival_index)
-    if order_index < 0:
-        raise ValueError("arrival_index must be non-negative")
     if learned_at < int(event.timestamp):
         raise ValueError("transition observed_at cannot precede CreatePoolEvent timestamp")
 
@@ -147,6 +144,12 @@ def identity_from_create_event(
     else:
         opportunity_decimals = int(event.quote_mint_decimals)
         reference_decimals = int(event.base_mint_decimals)
+
+    if (
+        (pump_birth_market_started_at is None)
+        != (pump_birth_observed_at is None)
+    ):
+        raise ValueError("Pump birth lifecycle requires both chain and observed clocks")
 
     origin_confirmed = (
         pump_birth_market_started_at is not None
@@ -193,6 +196,9 @@ def _normalize_trade(
     if _required(event.pool, "trade pool") != identity.pool:
         raise ValueError("trade pool does not match transition pool")
     learned_at = int(observed_at)
+    order_index = int(arrival_index)
+    if order_index < 0:
+        raise ValueError("arrival_index must be non-negative")
     if learned_at < int(event.timestamp):
         raise ValueError("trade observed_at cannot precede trade timestamp")
     if learned_at < identity.transition_observed_at:
