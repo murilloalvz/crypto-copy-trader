@@ -67,8 +67,9 @@ WS_OPEN_BARRIER_TIMEOUT_SECONDS = 35.0
 SUBSCRIPTION_ACK_TIMEOUT_SECONDS = 20.0
 DEFAULT_DURATION_SECONDS = 120.0
 DEFAULT_MAX_LOG_NOTIFICATIONS = 0
-RESEARCH_PLANE_QUEUE_SIZE = 4096
+RESEARCH_PLANE_QUEUE_SIZE = 16384
 RESEARCH_PLANE_BATCH_MAX_RECORDS = 256
+RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS = 120.0
 
 CARBON_MANIFEST = (
     Path("benchmarks")
@@ -1700,9 +1701,10 @@ async def run_live_shadow_v0(
                             )
                         except asyncio.QueueFull:
                             counters["research_plane_queue_overflow"] += 1
-                            errors.append(
-                                "research_plane:QueueFull:bounded persistence overflow"
-                            )
+                            if counters["research_plane_queue_overflow"] == 1:
+                                errors.append(
+                                    "research_plane:QueueFull:bounded persistence overflow"
+                                )
 
                     if (
                         episode_bridge_queue is not None
@@ -1769,7 +1771,7 @@ async def run_live_shadow_v0(
             try:
                 await asyncio.wait_for(
                     research_plane_queue.join(),
-                    timeout=60.0,
+                    timeout=RESEARCH_PLANE_DRAIN_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 counters["research_plane_drain_timeout"] += 1
