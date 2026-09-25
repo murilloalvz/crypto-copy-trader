@@ -191,10 +191,14 @@ async def run_probe(*, duration_seconds: int) -> dict:
 
                 observed_at = int(time.time())
                 message = json.loads(raw)
-                notification = parse_logs_notification(
-                    message,
-                    observed_at=observed_at,
-                )
+                try:
+                    notification = parse_logs_notification(
+                        message,
+                        observed_at=observed_at,
+                    )
+                except ValueError:
+                    counters["notification_decode_errors"] += 1
+                    continue
                 if notification is None:
                     continue
                 counters["notifications"] += 1
