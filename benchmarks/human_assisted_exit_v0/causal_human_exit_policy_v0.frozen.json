@@ -1,0 +1,51 @@
+{
+  "schema_version": "causal_human_exit_policy_v0",
+  "status": "FROZEN_RETROSPECTIVE_DIAGNOSTIC",
+  "scope": "HUMAN_ASSISTED_EXIT_DIAGNOSTIC_NOT_EDGE_CONFIRMATION",
+  "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+  "observation_semantics": "first_observed_on_existing_route_path_grid_not_continuous_first_touch",
+  "entry_semantics": "reuse_frozen_route_paper_entry_and_exact_entry_quantity",
+  "exit_order": [
+    "GOOD_PROFIT",
+    "STRONG_DECELERATION",
+    "RISK_BREAK"
+  ],
+  "good_profit": {
+    "full_exit_at_or_above_net_return_pct": 25
+  },
+  "strong_deceleration": {
+    "minimum_prior_peak_net_return_pct": 12,
+    "minimum_giveback_from_observed_peak_pct_points": 10,
+    "minimum_single_step_deterioration_pct_points": 5,
+    "requires_current_below_previous_observation": true
+  },
+  "risk_break": {
+    "full_exit_at_or_below_net_return_pct": -20,
+    "requires_current_below_previous_observation": true,
+    "minimum_observation_count": 2
+  },
+  "censoring": {
+    "forced_time_exit": false,
+    "if_no_trigger": "CENSORED_OPEN_AT_LAST_OBSERVATION",
+    "last_observation_mark_is_not_realized_exit": true
+  },
+  "market_path_metrics": [
+    "observed_mfe_pct",
+    "observed_mae_pct",
+    "time_to_observed_mfe_seconds",
+    "time_to_observed_mae_seconds",
+    "observed_peak_to_exit_giveback_pct_points",
+    "last_observed_return_pct",
+    "valid_route_observation_count"
+  ],
+  "guardrails": {
+    "thresholds_selected_from_historical_pnl": false,
+    "same_sample_retuning_allowed": false,
+    "fixed_60_remains_standardized_benchmark": true,
+    "retrospective_result_can_confirm_edge": false,
+    "mfe_is_not_simulated_exit": true,
+    "missing_route_marks_are_not_interpolated": true,
+    "provider_route_fields_are_not_entry_selector_features": true
+  },
+  "policy_hash_sha256": "858ddb5026a55c1c9ab1fc8c125ee9be8506454810777d0f858845a589e67bb2"
+}
