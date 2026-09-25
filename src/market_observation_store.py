@@ -420,6 +420,66 @@ def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, a
     )
 
 
+def load_known_market_lifecycle(
+    *,
+    token_mint: str,
+    as_of: int,
+    venue: str | None = None,
+) -> StoredMarketLifecycle | None:
+    """Load one causally known lifecycle identity across acquisition runs.
+
+    This lookup is fail-closed. If rows observed by as_of disagree on
+    market_started_at or venue for the same token, no historical lifecycle is
+    reused. The earliest local observation of one unambiguous identity is returned.
+    """
+
+    mint = _required(token_mint, "token_mint")
+    decision_time = int(as_of)
+    if decision_time < 0:
+        raise ValueError("as_of must be non-negative")
+    normalized_venue = _required(venue, "venue") if venue is not None else None
+    ensure_market_observation_schema()
+
+    query = """SELECT acquisition_run_key, event_key, source_provider, token_mint,
+        market_started_at, observed_at, venue
+        FROM market_lifecycle_observations
+        WHERE token_mint=? AND observed_at<=?"""
+    params: list[object] = [mint, decision_time]
+    if normalized_venue is not None:
+        query += " AND venue=?"
+        params.append(normalized_venue)
+    query += " ORDER BY observed_at ASC, id ASC"
+
+    with connection() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+    if not rows:
+        return None
+
+    identities = {
+        (
+            int(row["market_started_at"]),
+            str(row["venue"]) if row["venue"] is not None else None,
+        )
+        for row in rows
+    }
+    if len(identities) != 1:
+        return None
+
+    row = rows[0]
+    return StoredMarketLifecycle(
+        acquisition_run_key=str(row["acquisition_run_key"]),
+        event_key=str(row["event_key"]),
+        source_provider=str(row["source_provider"]),
+        observation=MarketLifecycleObservation(
+            token_mint=str(row["token_mint"]),
+            market_started_at=int(row["market_started_at"]),
+            observed_at=int(row["observed_at"]),
+            venue=(str(row["venue"]) if row["venue"] is not None else None),
+        ),
+    )
+
+
 def count_market_replay_conflicts(*, acquisition_run_key: str) -> int:
     run_key = _required(acquisition_run_key, "acquisition_run_key")
     ensure_market_observation_schema()
