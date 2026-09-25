@@ -689,4 +689,24 @@ Before any fresh economic outcome was opened, transport semantics were corrected
 No selector, notional, +2s entry delay, fees, slippage, impact limit, TP threshold, horizon, route grid, censoring or route-only paper semantics changed.
 
 Current contract hash:
-`48ae1465f47c8f114b455feac5b03a48e4d6f6e026b3beef92f517bfb98f89b8`.
+`17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e`.
+
+
+### Post-Transition transport stabilization — ping failure telemetry only
+
+A later pre-outcome VOID showed one liveness ping timeout after >130k dual-stream application messages had already been processed. This proved that a single missed WebSocket pong is too weak to define transport death on the public Solana RPC.
+
+Before any fresh economic outcome was opened:
+
+- 15s remains the soft application-idle threshold;
+- a ping is still attempted after soft idle for telemetry;
+- ping timeout/failure is recorded but is NOT fatal;
+- only 60s of continuous application-message silence invalidates causal coverage and aborts the run;
+- an explicit WebSocket close/error still aborts immediately;
+- pre-outcome abort remains VOID/replaceable;
+- post-outcome transport failure remains FAIL/not auto-rerunnable.
+
+Economic rules remain unchanged.
+
+Current contract hash:
+`17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e`.
