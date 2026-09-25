@@ -38,6 +38,7 @@ class ObservedPostTransitionTrade:
     event_key: str
     transaction_key: str
     observed_at: int
+    arrival_index: int
     chain_time: int
     normalized_side: str
     wallet_key: str
@@ -73,6 +74,7 @@ class PostTransitionSnapshot:
     version: str
     inference_role: str
     as_of_observed_at: int
+    as_of_arrival_index: int | None
     identity: dict[str, Any]
     transition_semantics: str
     trade_count_available: int
@@ -123,6 +125,9 @@ def identity_from_create_event(
     pump_birth_observed_at: int | None = None,
 ) -> PostTransitionIdentity:
     learned_at = int(observed_at)
+    order_index = int(arrival_index)
+    if order_index < 0:
+        raise ValueError("arrival_index must be non-negative")
     if learned_at < int(event.timestamp):
         raise ValueError("transition observed_at cannot precede CreatePoolEvent timestamp")
 
@@ -183,6 +188,7 @@ def _normalize_trade(
     observed_at: int,
     event_key: str,
     transaction_key: str,
+    arrival_index: int,
 ) -> ObservedPostTransitionTrade:
     if _required(event.pool, "trade pool") != identity.pool:
         raise ValueError("trade pool does not match transition pool")
@@ -230,6 +236,7 @@ def _normalize_trade(
         event_key=_required(event_key, "event_key"),
         transaction_key=_required(transaction_key, "transaction_key"),
         observed_at=learned_at,
+        arrival_index=order_index,
         chain_time=int(event.timestamp),
         normalized_side=normalized_side,
         wallet_key=_required(event.user, "wallet"),
@@ -289,6 +296,8 @@ class PostTransitionResearchState:
     def __init__(self, identity: PostTransitionIdentity):
         self.identity = identity
         self._trades: dict[str, ObservedPostTransitionTrade] = {}
+        self._arrival_owners: dict[int, str] = {}
+        self._next_arrival_index = 0
 
     @classmethod
     def from_create_event(
@@ -315,13 +324,31 @@ class PostTransitionResearchState:
         observed_at: int,
         event_key: str,
         transaction_key: str,
+        arrival_index: int | None = None,
     ) -> bool:
+        if arrival_index is None:
+            order_index = self._next_arrival_index
+            self._next_arrival_index += 1
+        else:
+            order_index = int(arrival_index)
+            if order_index < 0:
+                raise ValueError("arrival_index must be non-negative")
+            self._next_arrival_index = max(
+                self._next_arrival_index,
+                order_index + 1,
+            )
+
+        owner = self._arrival_owners.get(order_index)
+        if owner is not None and owner != event_key:
+            raise ValueError("arrival_index already belongs to another event")
+
         normalized = _normalize_trade(
             identity=self.identity,
             event=event,
             observed_at=observed_at,
             event_key=event_key,
             transaction_key=transaction_key,
+            arrival_index=order_index,
         )
         existing = self._trades.get(normalized.event_key)
         if existing is not None:
@@ -329,31 +356,62 @@ class PostTransitionResearchState:
                 raise ValueError("conflicting replay for post-transition trade event")
             return False
         self._trades[normalized.event_key] = normalized
+        self._arrival_owners[order_index] = normalized.event_key
         return True
 
-    def _available_rows(self, as_of_observed_at: int) -> list[ObservedPostTransitionTrade]:
+    def _available_rows(
+        self,
+        as_of_observed_at: int,
+        *,
+        max_arrival_index: int | None = None,
+    ) -> list[ObservedPostTransitionTrade]:
         cutoff = int(as_of_observed_at)
         if cutoff < self.identity.transition_observed_at:
             return []
+        order_cutoff = (
+            int(max_arrival_index)
+            if max_arrival_index is not None
+            else None
+        )
         return sorted(
             (
                 row
                 for row in self._trades.values()
-                if row.observed_at <= cutoff
+                if (
+                    row.observed_at < cutoff
+                    or (
+                        row.observed_at == cutoff
+                        and (
+                            order_cutoff is None
+                            or row.arrival_index <= order_cutoff
+                        )
+                    )
+                )
             ),
             key=lambda row: (
                 row.observed_at,
+                row.arrival_index,
                 row.chain_time,
                 row.event_key,
             ),
         )
 
-    def snapshot(self, *, as_of_observed_at: int) -> PostTransitionSnapshot:
+    def snapshot(
+        self,
+        *,
+        as_of_observed_at: int,
+        max_arrival_index: int | None = None,
+    ) -> PostTransitionSnapshot:
         cutoff = int(as_of_observed_at)
         if cutoff < self.identity.transition_observed_at:
             raise ValueError("snapshot precedes transition availability")
+        if max_arrival_index is not None and int(max_arrival_index) < 0:
+            raise ValueError("max_arrival_index must be non-negative")
 
-        rows = self._available_rows(cutoff)
+        rows = self._available_rows(
+            cutoff,
+            max_arrival_index=max_arrival_index,
+        )
         reference = rows[0] if rows else None
         current = rows[-1] if rows else None
 
@@ -505,6 +563,11 @@ class PostTransitionResearchState:
             version=VERSION,
             inference_role=INFERENCE_ROLE,
             as_of_observed_at=cutoff,
+            as_of_arrival_index=(
+                int(max_arrival_index)
+                if max_arrival_index is not None
+                else None
+            ),
             identity=asdict(self.identity),
             transition_semantics=(
                 "pumpswap_create_pool_transition_anchor_not_proven_pump_graduation"
@@ -542,5 +605,19 @@ class PostTransitionResearchState:
         )
 
     def snapshots_after_each_trade(self) -> list[PostTransitionSnapshot]:
-        cutoffs = sorted({row.observed_at for row in self._trades.values()})
-        return [self.snapshot(as_of_observed_at=cutoff) for cutoff in cutoffs]
+        ordered = sorted(
+            self._trades.values(),
+            key=lambda row: (
+                row.observed_at,
+                row.arrival_index,
+                row.chain_time,
+                row.event_key,
+            ),
+        )
+        return [
+            self.snapshot(
+                as_of_observed_at=row.observed_at,
+                max_arrival_index=row.arrival_index,
+            )
+            for row in ordered
+        ]
