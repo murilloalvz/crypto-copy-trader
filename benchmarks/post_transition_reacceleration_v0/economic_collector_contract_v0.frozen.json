@@ -64,7 +64,12 @@
     "route_observation_final_grace_seconds": 5,
     "automatic_extension_allowed": false,
     "provider_timeout_seconds": 5,
-    "single_fresh_run_only_before_review": true
+    "single_fresh_run_only_before_review": true,
+    "transport_health_seconds": 10,
+    "transport_min_raw_per_source": 20,
+    "transport_idle_timeout_seconds": 15,
+    "websocket_ping_interval_seconds": null,
+    "pre_outcome_transport_abort_is_void": true
   },
   "market_path": {
     "above_thresholds_pct": [
@@ -139,5 +144,5 @@
       "threshold_net_return_pct": 50
     }
   },
-  "contract_hash_sha256": "9d3a64ad7f21cba55c23ed2d00d952a2f4008e18edfbb09f7e27ce0057ffe891"
+  "contract_hash_sha256": "67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b"
 }
