@@ -90,25 +90,31 @@ Future dynamic policies may consume only causal state available at each update,
 including price, peak/giveback, buy/sell/event rates, signed flow, unique
 participants, concentration/delta, routeability, impact and liquidity.
 
-## Censoring / maximum horizon blocker
+## Censoring / maximum horizon
 
-No semantically compatible Post-Transition maximum horizon was already frozen
-for these new TP/dynamic outcomes.
+The maximum economic observation horizon is now frozen **before any fresh Post-Transition economic outcome**:
 
-Therefore this implementation does NOT invent one.
+`maximum_horizon_seconds = 300`
 
-The contract records:
+Policy status:
 
-`maximum_horizon_seconds = null`
+`FROZEN_300S_RIGHT_CENSORING`
 
-and:
+Semantics:
 
-`fresh_economic_discovery_authorized = false`
+- the censoring clock starts from the usable entry quote's `observed_at`;
+- Market Path, MFE/MAE and TP50/TP100/TP200 consume only causal route marks with offset <= 300s;
+- no missing interval is interpolated;
+- no TP crossing after +300s counts for that episode;
+- a TP not reached by +300s is `NOT_REACHED`, not a fabricated exit;
+- dynamic policies that remain open at +300s are `CENSORED_STILL_OPEN` once prospectively armed;
+- there is **no forced time exit at +300s**;
+- `FIXED_300` remains a separate standardized benchmark and may use its already-frozen 5s quote-wait grace, so the first valid routeable quote in [300s, 305s] can close the benchmark;
+- that 300-305s benchmark grace is excluded from Market Path, MFE/MAE and TP outcomes and therefore cannot leak into the 300s economic path.
 
-Fresh economic discovery must remain fail-closed until a maximum
-horizon/censoring policy is explicitly frozen before the sample is opened.
+Rationale: 300s was already pre-declared as the exploratory fixed benchmark before fresh economic outcomes. Reusing that existing time scale avoids introducing a new post-result horizon and provides a finite censoring boundary for TP/path analysis.
 
-This is an intentional scientific blocker, not a systems failure.
+Fresh economic discovery is authorized only under this frozen 300s censoring contract. `fresh_economic_outcomes_opened` remains false until an actual prospective run begins.
 
 ## Provider preflight
 
