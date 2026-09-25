@@ -140,9 +140,9 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         "retrospective_not_reused": dynamic.get(
             "retrospective_human_assisted_exit_v0_reused"
         ) is False,
-        "horizon_unresolved": censoring.get("maximum_horizon_seconds") is None
+        "horizon_frozen_300": censoring.get("maximum_horizon_seconds") == 300
         and censoring.get("policy_status")
-        == "UNRESOLVED_BLOCKS_FRESH_DISCOVERY",
+        == "FROZEN_300S_RIGHT_CENSORING",
         "no_forced_exit": censoring.get("forced_time_exit") is False,
         "fresh_requires_horizon": censoring.get(
             "fresh_discovery_requires_prior_horizon_freeze"
@@ -157,9 +157,9 @@ def load_and_validate_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
         == "NOT_REACHED",
         "fresh_closed": guardrails.get("fresh_economic_outcomes_opened")
         is False,
-        "fresh_not_authorized": guardrails.get(
+        "fresh_authorized": guardrails.get(
             "fresh_economic_discovery_authorized"
-        ) is False,
+        ) is True,
         "live_false": guardrails.get("live_money_authorized") is False,
         "fixed60_stays_primary": guardrails.get("fixed_60_remains_primary")
         is True,
@@ -608,7 +608,18 @@ def collector_capabilities(contract: Mapping[str, Any]) -> dict[str, Any]:
         "HYBRID_HUMAN_EXIT": contract["dynamic_exit_policies"][
             "HYBRID_HUMAN_EXIT"
         ]["status"],
-        "fresh_discovery": "BLOCKED_PENDING_CENSORING_HORIZON",
+        "fresh_discovery": (
+            "AUTHORIZED_300S_RIGHT_CENSORING"
+            if (
+                (contract.get("censoring") or {}).get("maximum_horizon_seconds")
+                == 300
+                and (contract.get("scientific_guardrails") or {}).get(
+                    "fresh_economic_discovery_authorized"
+                )
+                is True
+            )
+            else "BLOCKED_PENDING_CENSORING_HORIZON"
+        ),
     }
 
 
@@ -622,6 +633,14 @@ def evaluate_episode(
 ) -> dict[str, Any]:
     if not token_mint.strip():
         raise ValueError("token_mint cannot be empty")
+    frozen_horizon = _positive_int(
+        (contract.get("censoring") or {}).get("maximum_horizon_seconds"),
+        "contract.censoring.maximum_horizon_seconds",
+    )
+    if int(maximum_horizon_seconds) != frozen_horizon:
+        raise ValueError(
+            "maximum_horizon_seconds must equal the frozen contract horizon"
+        )
     if decision_snapshot.get("structural_reacceleration_candidate") not in {
         True,
         False,
@@ -665,7 +684,17 @@ def evaluate_episode(
         entry=entry.quote,
         quotes=quotes,
         contract=contract,
-        maximum_horizon_seconds=maximum_horizon_seconds,
+        maximum_horizon_seconds=frozen_horizon,
+    )
+    fixed_grace_seconds = max(
+        int(contract["standardized_outcomes"]["fixed_60"]["max_quote_wait_seconds"]),
+        int(contract["standardized_outcomes"]["fixed_300"]["max_quote_wait_seconds"]),
+    )
+    fixed_marks = build_market_path(
+        entry=entry.quote,
+        quotes=quotes,
+        contract=contract,
+        maximum_horizon_seconds=frozen_horizon + fixed_grace_seconds,
     )
     return {
         "type": "post_transition_economic_collector_episode_v0",
@@ -675,12 +704,12 @@ def evaluate_episode(
         "entry": asdict(entry),
         "fixed_60": evaluate_fixed_outcome(
             name=FIXED_60,
-            marks=marks,
+            marks=fixed_marks,
             contract=contract,
         ),
         "fixed_300": evaluate_fixed_outcome(
             name=FIXED_300,
-            marks=marks,
+            marks=fixed_marks,
             contract=contract,
         ),
         TP50: evaluate_take_profit(
