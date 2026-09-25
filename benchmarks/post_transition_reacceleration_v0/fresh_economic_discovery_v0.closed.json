@@ -1,0 +1,20 @@
+{
+  "type": "post_transition_fresh_economic_discovery_v0_closure",
+  "status": "CLOSED_BURNED",
+  "replacement_run_authorized": false,
+  "reason": "economic_provider_calls_opened_then_transport_failed",
+  "frozen_contract_hash_sha256": "17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e",
+  "result_classification": "FAIL_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0",
+  "fresh_economic_outcomes_opened": true,
+  "episode_count": 2,
+  "conditional_economic_n": 0,
+  "entry_status_counts": {
+    "ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE": 2
+  },
+  "diagnostic_notes": [
+    "Do not rerun V0.",
+    "The two observed signed priceImpact magnitudes were approximately 2.512pp and 87.611pp; both exceed the frozen 2pp route-quality maximum even under corrected absolute-magnitude semantics.",
+    "No Fixed+60, Fixed+300, TP or Market Path economic outcome was available.",
+    "Future work requires a new frozen protocol revision and more reliable transport."
+  ]
+}
