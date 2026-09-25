@@ -128,6 +128,26 @@ class EconomicCollectorV0Tests(unittest.TestCase):
         r = evaluate_entry(token_mint=TOKEN, decision_as_of=1030, quotes=[buy(impact=2.01)], contract=self.contract)
         self.assertIn("PRICE_IMPACT", r.status)
 
+    def test_08b_negative_signed_impact_uses_magnitude(self):
+        within = evaluate_entry(
+            token_mint=TOKEN,
+            decision_as_of=1030,
+            quotes=[buy(impact=-1.5)],
+            contract=self.contract,
+        )
+        self.assertEqual(within.status, "ENTRY_USABLE")
+
+        over = evaluate_entry(
+            token_mint=TOKEN,
+            decision_as_of=1030,
+            quotes=[buy(impact=-2.01)],
+            contract=self.contract,
+        )
+        self.assertEqual(
+            over.status,
+            "ENTRY_REJECTED:PRICE_IMPACT_EXCEEDS_LIMIT",
+        )
+
     def test_09_route_only_entry_is_required_for_research(self):
         route_only = evaluate_entry(
             token_mint=TOKEN,
