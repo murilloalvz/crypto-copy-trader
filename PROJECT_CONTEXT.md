@@ -576,31 +576,36 @@ These remain isolated from active Solana systems/V68 validation.
 
 Status:
 
-`IMPLEMENTED / ROUTE-ONLY PROVIDER PREFLIGHT PASS / 300S RIGHT-CENSORING FROZEN / FRESH RUN CADENCE FROZEN / ASSEMBLED-ENTRY PREFLIGHT PENDING / OUTCOMES NOT YET OPENED`
+`IMPLEMENTED / PROVIDER ASSEMBLY CONFIRMED / FUNDED TAKER BLOCKED BY BALANCE / OUTCOMES NOT YET OPENED`
 
 After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
 
 - frozen collector contract hash: `902d388c6d1435c7a47cc552a93f8c9f7e1df5ca0c89ff8f2b5cc1bd90998e15`;
-- read-only Jupiter route-only provider preflight: PASS with zero cohort tokens, zero outcome writes, zero submitted transactions and zero live money;
+- route-only Jupiter preflight: PASS;
+- public-funded control diagnostic: `DIAGNOSTIC_LAUNCH_BURST_V4_PROVIDER_ASSEMBLY_CONFIRMED`;
+- the zero-balance frozen taker returned Jupiter `errorCode=2 / Missing associated token account`;
+- the same provider assembled read-only candidate transactions for a public funded control address;
+- therefore provider assembly capability is confirmed and the remaining blocker is the project taker's funding/ATA state;
+- current frozen taker balances at the diagnostic point: `USDC raw=0`, `SOL lamports=0`;
+- Post-Transition funded-taker fixture is frozen at:
+  - USDC minimum: `25,000,000` raw = 25 USDC;
+  - SOL minimum: `10,000,000` lamports = 0.01 SOL;
+  - identity frozen by SHA-256;
+  - no adaptive top-up after acquisition starts;
+  - read-only USDC->WSOL assembly control only;
+  - zero cohort-token probes before the fresh run;
+- funded-taker gate: `benchmarks/post_transition_reacceleration_v0/funded_taker_preflight.py`;
 - `FIXED_60`: PRIMARY;
-- `FIXED_300`: EXPLORATORY and cannot replace +60 from observed results;
-- Market Path: ARMED for routeability/impact, MFE/MAE, timing and observed-grid threshold duration; MFE is never an exit;
-- `TP50`, `TP100`, `TP200`: ARMED independently at the first causal routeable net-return crossing;
-- `DECELERATION_EXIT`, `PROFIT_PROTECTION_EXIT`, `HYBRID_HUMAN_EXIT`: NOT_ARMED pending a prospectively frozen policy;
-- `human_assisted_exit_v0` remains retrospective diagnostic only and is not reused prospectively;
-- maximum economic horizon: `300s` from usable entry under `FROZEN_300S_RIGHT_CENSORING`;
-- Market Path/MFE/MAE/TP policies stop at +300s with no interpolation and no forced time exit;
-- `FIXED_300` alone may consume its pre-existing +5s quote-wait grace (300-305s); grace marks cannot enter Market Path or TP outcomes;
-- first fresh admission window: `1800s`;
-- route observation cadence: `5s`;
-- route grid: `+5,+10,...,+300,+305`, where +305 exists only for frozen fixed-benchmark quote grace;
-- provider timeout per quote: `5s`;
-- automatic admission extension: false;
+- `FIXED_300`: EXPLORATORY;
+- Market Path, TP50, TP100 and TP200: ARMED;
+- dynamic exits: NOT_ARMED;
+- censoring: `FROZEN_300S_RIGHT_CENSORING`;
+- fresh admission: `1800s`;
+- route cadence: `5s`;
+- automatic extension: false;
 - one fresh run only before review: true;
-- fresh economic live runner: `benchmarks/post_transition_reacceleration_v0/fresh_economic_discovery_v0.py`;
-- assembled-entry control preflight: `benchmarks/post_transition_reacceleration_v0/assembled_entry_preflight.py`;
 - `fresh_economic_discovery_authorized=True`;
-- `fresh_economic_outcomes_opened=False` until a cohort-token Jupiter call actually begins;
-- no transaction signing/submission path exists in this runner; live money remains unauthorized.
+- `fresh_economic_outcomes_opened=False`;
+- no signing/submission path exists in the fresh runner; live money remains unauthorized.
 
-Next gate: assembled-entry control preflight must PASS without cohort tokens or transaction submission. Only after that may exactly one fresh Post-Transition economic discovery run be opened. Do not extend or rerun automatically after observing the result.
+Next gate: fund only the already-frozen project taker to at least 25 USDC and 0.01 SOL, then run the Post-Transition funded-taker preflight. Do not query cohort tokens, change the taker, alter notional/costs/TP/censoring, or start the fresh economic run until that gate passes.
