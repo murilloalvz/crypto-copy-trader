@@ -176,3 +176,25 @@ cadence or dynamic-exit status.
 
 Current contract hash:
 `67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b`.
+
+
+## Ping telemetry amendment — before fresh outcomes
+
+A later pre-outcome VOID showed that one missed WebSocket pong can occur after a large amount of valid application traffic. Therefore ping is now telemetry, not a standalone death criterion.
+
+Frozen transport semantics:
+
+- 15s without application logs is a soft-idle threshold;
+- a WebSocket ping is attempted after soft idle;
+- pong timeout/failure is recorded but does not abort by itself;
+- any explicit WebSocket close/error still aborts immediately;
+- 60s of continuous application-message silence is the hard coverage failure;
+- hard silence before any economic provider call is VOID/replaceable;
+- transport failure after economic outcomes open remains FAIL/not auto-rerunnable;
+- the same health-qualified WSS connection remains in use for capture.
+
+No economic selector, entry timing, notional, cost, impact gate, TP threshold,
+horizon, route cadence or censoring rule changed.
+
+Current contract hash:
+`17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e`.
