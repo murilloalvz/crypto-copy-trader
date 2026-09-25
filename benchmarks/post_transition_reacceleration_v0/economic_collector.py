@@ -277,9 +277,9 @@ def _route_quality_ok(
     contract: Mapping[str, Any],
 ) -> tuple[bool, str]:
     impact = quote.provider_price_impact_pct_points
-    if impact is None or not math.isfinite(float(impact)) or float(impact) < 0:
+    if impact is None or not math.isfinite(float(impact)):
         return False, "PRICE_IMPACT_UNAVAILABLE"
-    if float(impact) > float(
+    if abs(float(impact)) > float(
         contract["route_quality"]["max_provider_price_impact_pct_points"]
     ):
         return False, "PRICE_IMPACT_EXCEEDS_LIMIT"
