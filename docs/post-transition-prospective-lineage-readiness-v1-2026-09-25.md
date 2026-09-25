@@ -12,7 +12,7 @@ transitions.
 
 ## Amendment
 
-V1 subscribes to Pump and PumpSwap on one ordered Solana WebSocket connection.
+V1 runs for exactly 900 seconds and subscribes to Pump and PumpSwap on one ordered Solana WebSocket connection.
 
 Subscriptions:
 
@@ -83,3 +83,11 @@ If no complete causal lineage reaches the +30s snapshot during the fixed observa
 result is INCONCLUSIVE.
 
 Do not backfill, weaken the clock rule, change +30s or promote a partial transition.
+
+## Frozen observation duration
+
+The V1 readiness window is exactly **900 seconds**.
+
+It may not be extended in-place or rerun with a different duration based on the observed overlap rate.
+
+A 900-second INCONCLUSIVE result is reviewed first; any later acquisition design requires a new explicit protocol decision.
