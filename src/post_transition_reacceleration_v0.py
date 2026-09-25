@@ -326,6 +326,26 @@ class PostTransitionResearchState:
         transaction_key: str,
         arrival_index: int | None = None,
     ) -> bool:
+        normalized_event_key = _required(event_key, "event_key")
+        existing = self._trades.get(normalized_event_key)
+        if existing is not None:
+            replay_index = (
+                existing.arrival_index
+                if arrival_index is None
+                else int(arrival_index)
+            )
+            replay = _normalize_trade(
+                identity=self.identity,
+                event=event,
+                observed_at=observed_at,
+                event_key=normalized_event_key,
+                transaction_key=transaction_key,
+                arrival_index=replay_index,
+            )
+            if existing != replay:
+                raise ValueError("conflicting replay for post-transition trade event")
+            return False
+
         if arrival_index is None:
             order_index = self._next_arrival_index
             self._next_arrival_index += 1
@@ -339,22 +359,17 @@ class PostTransitionResearchState:
             )
 
         owner = self._arrival_owners.get(order_index)
-        if owner is not None and owner != event_key:
+        if owner is not None and owner != normalized_event_key:
             raise ValueError("arrival_index already belongs to another event")
 
         normalized = _normalize_trade(
             identity=self.identity,
             event=event,
             observed_at=observed_at,
-            event_key=event_key,
+            event_key=normalized_event_key,
             transaction_key=transaction_key,
             arrival_index=order_index,
         )
-        existing = self._trades.get(normalized.event_key)
-        if existing is not None:
-            if existing != normalized:
-                raise ValueError("conflicting replay for post-transition trade event")
-            return False
         self._trades[normalized.event_key] = normalized
         self._arrival_owners[order_index] = normalized.event_key
         return True
