@@ -139,7 +139,8 @@ It must not be called a validated signal.
 
 V0 must prove:
 
-- snapshot as-of filtering by local availability;
+- snapshot filtering by the exact local `(observed_at, arrival_index)` boundary;
+- later arrivals in the same wall-clock second cannot leak into an earlier snapshot;
 - future trades cannot alter a recomputed earlier snapshot;
 - future minimum/maximum is never used;
 - transition identity is exact by pool;
