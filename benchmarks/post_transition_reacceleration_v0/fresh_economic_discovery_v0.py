@@ -79,6 +79,15 @@ def _redact(value: str, *secrets: str) -> str:
     return text[:1000]
 
 
+def _route_offsets(contract: dict) -> list[int]:
+    interval = int(contract["fresh_run"]["route_observation_interval_seconds"])
+    horizon = int(contract["censoring"]["maximum_horizon_seconds"])
+    grace = int(contract["fresh_run"]["route_observation_final_grace_seconds"])
+    if interval != 5 or horizon != 300 or grace != 5:
+        raise ValueError("fresh route grid must remain frozen at 5s / 300s / +5s grace")
+    return list(range(interval, horizon + grace + 1, interval))
+
+
 def _aggregate(values: list[float]) -> dict:
     finite = [float(v) for v in values if math.isfinite(float(v))]
     if not finite:
@@ -311,7 +320,7 @@ async def _capture_episode(
     counters["entry_usable"] += 1
     entry_quote = entry_eval.quote
     exact_quantity = int(str(entry_quote.output_amount_raw))
-    offsets = list(range(interval, horizon + grace + 1, interval))
+    offsets = _route_offsets(contract)
 
     for scheduled_offset in offsets:
         target = int(entry_quote.observed_at) + scheduled_offset
