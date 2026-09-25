@@ -6,7 +6,7 @@
     "open_position_status": "CENSORED_STILL_OPEN",
     "policy_status": "FROZEN_300S_RIGHT_CENSORING"
   },
-  "contract_hash_sha256": "27e172cc04b4ec9f30ffaa47997fa8dbf58d053422cb34239bc51ed695a0a4dd",
+  "contract_hash_sha256": "7fca6e364ce648e28061db1760f659802fc5d692a90289d9597e328b07580bd1",
   "costs": {
     "entry_adverse_slippage_bps": 100,
     "entry_fee_bps": 20,
