@@ -29,7 +29,9 @@ from benchmarks.post_transition_reacceleration_v0.prospective_lineage_readiness_
     _lineage_clock_gate,
     _persist_pump_births,
     _subscription_source,
-    resolve_dual_wss,
+)
+from benchmarks.post_transition_reacceleration_v0.systems_probe import (
+    candidate_wss_urls,
 )
 from src.assets import USDC_MINT
 from src.jupiter_swap_v2 import (
@@ -58,6 +60,7 @@ VERSION = "post_transition_fresh_economic_discovery_v0"
 PASS = "PASS_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0"
 INCONCLUSIVE = "INCONCLUSIVE_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0"
 FAIL = "FAIL_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0"
+VOID = "VOID_PRE_OUTCOME_TRANSPORT_ABORT"
 USDC_DECIMALS = 6
 
 
@@ -86,6 +89,112 @@ def _route_offsets(contract: dict) -> list[int]:
     if interval != 5 or horizon != 300 or grace != 5:
         raise ValueError("fresh route grid must remain frozen at 5s / 300s / +5s grace")
     return list(range(interval, horizon + grace + 1, interval))
+
+
+async def _probe_healthy_dual_candidate(
+    *,
+    label: str,
+    url: str,
+    contract: dict,
+) -> dict:
+    host = str(urlparse(url).hostname or "unknown")
+    health_seconds = int(contract["fresh_run"]["transport_health_seconds"])
+    minimum = int(contract["fresh_run"]["transport_min_raw_per_source"])
+    counts = {"pump": 0, "pumpswap": 0}
+    try:
+        async with connect(
+            url,
+            open_timeout=8,
+            ping_interval=None,
+            close_timeout=3,
+            max_size=16 * 1024 * 1024,
+        ) as ws:
+            await ws.send(
+                json.dumps(
+                    build_pump_subscribe_request(
+                        request_id=1,
+                        commitment="processed",
+                    ),
+                    separators=(",", ":"),
+                )
+            )
+            await ws.send(
+                json.dumps(
+                    build_pumpswap_subscribe_request(
+                        request_id=2,
+                        commitment="processed",
+                    ),
+                    separators=(",", ":"),
+                )
+            )
+            ack_by_id = {}
+            while len(ack_by_id) < 2:
+                raw = await asyncio.wait_for(ws.recv(), timeout=8)
+                payload = json.loads(raw)
+                if payload.get("id") in {1, 2}:
+                    ack_by_id[int(payload["id"])] = payload
+            for request_id, name in ((1, "pump"), (2, "pumpswap")):
+                ack = ack_by_id[request_id]
+                if "error" in ack or not isinstance(ack.get("result"), int):
+                    raise RuntimeError(f"invalid {name} subscribe ack: {ack}")
+
+            pump_id = int(ack_by_id[1]["result"])
+            pumpswap_id = int(ack_by_id[2]["result"])
+            deadline = time.monotonic() + float(health_seconds)
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                try:
+                    raw = await asyncio.wait_for(
+                        ws.recv(),
+                        timeout=min(1.0, max(0.05, remaining)),
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                payload = json.loads(raw)
+                source = _subscription_source(
+                    payload,
+                    pump_subscription_id=pump_id,
+                    pumpswap_subscription_id=pumpswap_id,
+                )
+                if source in counts:
+                    counts[source] += 1
+
+        passed = counts["pump"] >= minimum and counts["pumpswap"] >= minimum
+        return {
+            "candidate": label,
+            "host": host,
+            "status": "PASS" if passed else "FAIL",
+            "health_seconds": health_seconds,
+            "minimum_raw_per_source": minimum,
+            "pump_raw": counts["pump"],
+            "pumpswap_raw": counts["pumpswap"],
+            "reason": "traffic_health_ok" if passed else "traffic_below_frozen_floor",
+        }
+    except Exception as exc:
+        return {
+            "candidate": label,
+            "host": host,
+            "status": "FAIL",
+            "health_seconds": health_seconds,
+            "minimum_raw_per_source": minimum,
+            "pump_raw": counts["pump"],
+            "pumpswap_raw": counts["pumpswap"],
+            "reason": f"{type(exc).__name__}:{exc}"[:320],
+        }
+
+
+async def _resolve_healthy_dual_wss(contract: dict) -> tuple[str | None, list[dict]]:
+    attempts = []
+    for label, url in candidate_wss_urls():
+        result = await _probe_healthy_dual_candidate(
+            label=label,
+            url=url,
+            contract=contract,
+        )
+        attempts.append(result)
+        if result["status"] == "PASS":
+            return url, attempts
+    return None, attempts
 
 
 def _aggregate(values: list[float]) -> dict:
@@ -425,7 +534,7 @@ async def run_fresh_discovery(
     report_path = run_dir / "report.json"
     manifest_path = run_dir / "manifest.json"
 
-    selected, attempts = await resolve_dual_wss()
+    selected, attempts = await _resolve_healthy_dual_wss(contract)
     run_id = f"{VERSION}-{int(time.time())}-{uuid.uuid4().hex[:10]}"
     started_wall = int(time.time())
     admission_close_wall = started_wall + admission_seconds
@@ -459,10 +568,12 @@ async def run_fresh_discovery(
         report = {
             **manifest,
             "status": "FINISHED",
-            "classification": FAIL,
-            "reason": "no_wss_candidate_accepted_both_pump_and_pumpswap",
+            "classification": VOID,
+            "reason": "no_wss_candidate_passed_frozen_traffic_health_gate",
             "transport_attempts": attempts,
+        "transport_health_preflight": attempts,
             "fresh_economic_outcomes_opened": False,
+            "replacement_run_authorized": True,
         }
         _write_json(report_path, report)
         return report
@@ -531,8 +642,7 @@ async def run_fresh_discovery(
         async with connect(
             selected,
             open_timeout=10,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=None,
             close_timeout=5,
             max_size=16 * 1024 * 1024,
         ) as ws:
@@ -568,6 +678,10 @@ async def run_fresh_discovery(
             pump_subscription_id = int(ack_by_id[1]["result"])
             pumpswap_subscription_id = int(ack_by_id[2]["result"])
             counters["dual_subscription_acks"] = 2
+            last_raw_monotonic = time.monotonic()
+            idle_timeout = int(
+                contract["fresh_run"]["transport_idle_timeout_seconds"]
+            )
 
             while int(time.time()) <= capture_close_wall:
                 freeze_due(int(time.time()))
@@ -576,8 +690,13 @@ async def run_fresh_discovery(
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=0.25)
                 except asyncio.TimeoutError:
+                    if time.monotonic() - last_raw_monotonic >= idle_timeout:
+                        raise RuntimeError(
+                            "transport_idle_timeout_before_capture_complete"
+                        )
                     continue
 
+                last_raw_monotonic = time.monotonic()
                 observed_at = int(time.time())
                 try:
                     message = json.loads(raw)
@@ -761,7 +880,14 @@ async def run_fresh_discovery(
             journal_error = f"{type(exc).__name__}:{exc}"[:1000]
 
     opened = counters["economic_provider_calls_started"] > 0
-    if transport_error is not None or journal_error is not None:
+    if (
+        transport_error is not None
+        and not opened
+        and contract["fresh_run"]["pre_outcome_transport_abort_is_void"] is True
+    ):
+        classification = VOID
+        reason = "pre_outcome_transport_abort_void"
+    elif transport_error is not None or journal_error is not None:
         classification = FAIL
         reason = "transport_or_snapshot_journal_error"
     elif counters["episode_task_errors"] > 0:
@@ -801,6 +927,7 @@ async def run_fresh_discovery(
         "dynamic_exits_armed": False,
         "fresh_economic_discovery_authorized": True,
         "fresh_economic_outcomes_opened": opened,
+        "replacement_run_authorized": classification == VOID,
         "transaction_submitted": False,
         "live_money": False,
         "summary": _summarize(
