@@ -379,6 +379,9 @@ async def run_prospective_lineage_readiness(
                     if birth.observed_at > notification.observed_at:
                         counters["pump_lineage_availability_invalid"] += 1
                         continue
+                    if birth.observed_at == notification.observed_at:
+                        counters["pump_lineage_same_second_unresolved"] += 1
+                        continue
 
                     try:
                         state = PostTransitionResearchState.from_create_event(
