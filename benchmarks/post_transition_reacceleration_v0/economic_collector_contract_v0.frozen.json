@@ -72,7 +72,8 @@
     "pre_outcome_transport_abort_is_void": true,
     "transport_liveness_ping_timeout_seconds": 5,
     "transport_hard_silence_seconds": 60,
-    "transport_idle_policy": "PING_CONFIRM_THEN_HARD_SILENCE_ABORT"
+    "transport_idle_policy": "PING_TELEMETRY_THEN_HARD_SILENCE_ABORT",
+    "transport_ping_failure_is_fatal": false
   },
   "market_path": {
     "above_thresholds_pct": [
@@ -147,5 +148,5 @@
       "threshold_net_return_pct": 50
     }
   },
-  "contract_hash_sha256": "48ae1465f47c8f114b455feac5b03a48e4d6f6e026b3beef92f517bfb98f89b8"
+  "contract_hash_sha256": "17dd3e1a2f346dabe07872089ba2b5be5d69a59bbc247ed29a6744081bf7ca8e"
 }
