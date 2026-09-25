@@ -1,0 +1,85 @@
+{
+  "schema_version": "post_transition_reacceleration_fixture_v0",
+  "pump_birth": {
+    "market_started_at": 900,
+    "observed_at": 905
+  },
+  "transition": {
+    "pool": "POOL-V0",
+    "creator": "CREATOR-V0",
+    "base_mint": "TOKEN-V0",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "base_mint_decimals": 6,
+    "quote_mint_decimals": 9,
+    "timestamp": 1000,
+    "observed_at": 1001
+  },
+  "trades": [
+    {
+      "event_key": "trade-1",
+      "transaction_key": "tx-1",
+      "side": "buy",
+      "pool": "POOL-V0",
+      "user": "wallet-a",
+      "timestamp": 1002,
+      "observed_at": 1002,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 1000000000
+    },
+    {
+      "event_key": "trade-2",
+      "transaction_key": "tx-2",
+      "side": "sell",
+      "pool": "POOL-V0",
+      "user": "wallet-b",
+      "timestamp": 1005,
+      "observed_at": 1005,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 920000000
+    },
+    {
+      "event_key": "trade-3",
+      "transaction_key": "tx-3",
+      "side": "sell",
+      "pool": "POOL-V0",
+      "user": "wallet-c",
+      "timestamp": 1008,
+      "observed_at": 1008,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 840000000
+    },
+    {
+      "event_key": "trade-4",
+      "transaction_key": "tx-4",
+      "side": "buy",
+      "pool": "POOL-V0",
+      "user": "wallet-d",
+      "timestamp": 1014,
+      "observed_at": 1014,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 860000000
+    },
+    {
+      "event_key": "trade-5",
+      "transaction_key": "tx-5",
+      "side": "buy",
+      "pool": "POOL-V0",
+      "user": "wallet-e",
+      "timestamp": 1017,
+      "observed_at": 1017,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 900000000
+    },
+    {
+      "event_key": "trade-6",
+      "transaction_key": "tx-6",
+      "side": "buy",
+      "pool": "POOL-V0",
+      "user": "wallet-f",
+      "timestamp": 1020,
+      "observed_at": 1020,
+      "base_amount_raw": 100000000,
+      "quote_amount_raw": 960000000
+    }
+  ]
+}
