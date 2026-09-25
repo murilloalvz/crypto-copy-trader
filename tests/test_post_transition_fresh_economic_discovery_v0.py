@@ -88,6 +88,12 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
         params = inspect.signature(run_fresh_discovery).parameters
         self.assertNotIn("taker_public_key", params)
 
+    def test_fresh_runner_reuses_health_connection_for_capture(self):
+        source = inspect.getsource(run_fresh_discovery)
+        self.assertIn("_resolve_healthy_dual_connection", source)
+        self.assertNotIn("async with connect(", source)
+        self.assertNotIn("await connect(", source)
+
     def test_route_grid_is_exactly_5_through_305(self):
         offsets = _route_offsets(self.contract)
         self.assertEqual(offsets[0], 5)
