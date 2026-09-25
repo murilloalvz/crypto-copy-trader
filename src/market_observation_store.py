@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS market_lifecycle_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_market_lifecycle_observations_run_token_time
 ON market_lifecycle_observations(acquisition_run_key, token_mint, market_started_at, observed_at, id);
+CREATE INDEX IF NOT EXISTS idx_market_lifecycle_observations_token_venue_observed
+ON market_lifecycle_observations(token_mint, venue, observed_at, id);
 CREATE TABLE IF NOT EXISTS market_replay_conflicts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     acquisition_run_key TEXT NOT NULL,
