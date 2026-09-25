@@ -628,4 +628,23 @@ Frozen transport hardening before replacement attempt:
 
 Funded-taker assembly checks remain deferred to future shadow/real execution and do not block research.
 
-Next gate: CI + targeted tests under the transport-hardened contract, then one replacement fresh Post-Transition discovery attempt. Do not tune economic parameters based on the void artifact.
+Second replacement attempt also remained pre-outcome and is VOID:
+
+- transport health on the legacy public beta endpoint initially passed with high dual-stream traffic;
+- the live connection later hit the frozen 15s idle watchdog after ~84s;
+- Pump raw=5,995; PumpSwap raw=23,396;
+- role-valid transitions=2, but lineage eligible=0;
+- snapshots=0, episodes=0, conditional economic n=0;
+- `fresh_economic_outcomes_opened=False`;
+- classification: `VOID_PRE_OUTCOME_TRANSPORT_ABORT`.
+
+Root-cause hardening after the second VOID:
+
+- the WSS candidate path was bypassing the repo's existing legacy RPC normalization;
+- `https://api.mainnet-beta.solana.com` is now normalized to `https://api.mainnet.solana.com` before conversion to WSS;
+- a dedicated dual-stream transport soak was added at
+  `benchmarks/post_transition_reacceleration_v0/dual_stream_transport_soak_v0.py`;
+- soak is systems-only: no lifecycle persistence, no Jupiter, no cohort outcomes, no live money;
+- required diagnostic soak before another replacement attempt: 180s dual Pump+PumpSwap stream, 15s idle watchdog.
+
+Next gate: CI + targeted tests, then run only the 180s dual-stream transport soak. Do not start another fresh economic discovery until that soak passes on the normalized endpoint.
