@@ -134,11 +134,12 @@ Provider route evidence remains outside selector features.
 
 ## Causal clocks
 
-Every V0 snapshot is keyed by local `as_of_observed_at`.
+Every V0 snapshot is keyed by a local causal boundary:
 
-An event contributes only if:
+`(as_of_observed_at, as_of_arrival_index)`.
 
-`event.observed_at <= snapshot.as_of_observed_at`.
+The arrival index preserves collector order for events learned inside the same one-second wall-clock
+bucket. An event contributes only if it is before that exact boundary.
 
 The transition is unavailable before its CreatePool local observation time.
 
