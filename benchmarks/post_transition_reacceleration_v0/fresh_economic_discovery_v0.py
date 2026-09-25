@@ -91,76 +91,80 @@ def _route_offsets(contract: dict) -> list[int]:
     return list(range(interval, horizon + grace + 1, interval))
 
 
-async def _probe_healthy_dual_candidate(
+async def _connect_healthy_dual_candidate(
     *,
     label: str,
     url: str,
     contract: dict,
-) -> dict:
+):
     host = str(urlparse(url).hostname or "unknown")
     health_seconds = int(contract["fresh_run"]["transport_health_seconds"])
     minimum = int(contract["fresh_run"]["transport_min_raw_per_source"])
     counts = {"pump": 0, "pumpswap": 0}
+    ws = None
     try:
-        async with connect(
+        ws = await connect(
             url,
             open_timeout=8,
             ping_interval=None,
             close_timeout=3,
             max_size=16 * 1024 * 1024,
-        ) as ws:
-            await ws.send(
-                json.dumps(
-                    build_pump_subscribe_request(
-                        request_id=1,
-                        commitment="processed",
-                    ),
-                    separators=(",", ":"),
-                )
+        )
+        await ws.send(
+            json.dumps(
+                build_pump_subscribe_request(
+                    request_id=1,
+                    commitment="processed",
+                ),
+                separators=(",", ":"),
             )
-            await ws.send(
-                json.dumps(
-                    build_pumpswap_subscribe_request(
-                        request_id=2,
-                        commitment="processed",
-                    ),
-                    separators=(",", ":"),
-                )
+        )
+        await ws.send(
+            json.dumps(
+                build_pumpswap_subscribe_request(
+                    request_id=2,
+                    commitment="processed",
+                ),
+                separators=(",", ":"),
             )
-            ack_by_id = {}
-            while len(ack_by_id) < 2:
-                raw = await asyncio.wait_for(ws.recv(), timeout=8)
-                payload = json.loads(raw)
-                if payload.get("id") in {1, 2}:
-                    ack_by_id[int(payload["id"])] = payload
-            for request_id, name in ((1, "pump"), (2, "pumpswap")):
-                ack = ack_by_id[request_id]
-                if "error" in ack or not isinstance(ack.get("result"), int):
-                    raise RuntimeError(f"invalid {name} subscribe ack: {ack}")
+        )
 
-            pump_id = int(ack_by_id[1]["result"])
-            pumpswap_id = int(ack_by_id[2]["result"])
-            deadline = time.monotonic() + float(health_seconds)
-            while time.monotonic() < deadline:
-                remaining = deadline - time.monotonic()
-                try:
-                    raw = await asyncio.wait_for(
-                        ws.recv(),
-                        timeout=min(1.0, max(0.05, remaining)),
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                payload = json.loads(raw)
-                source = _subscription_source(
-                    payload,
-                    pump_subscription_id=pump_id,
-                    pumpswap_subscription_id=pumpswap_id,
+        ack_by_id = {}
+        while len(ack_by_id) < 2:
+            raw = await asyncio.wait_for(ws.recv(), timeout=8)
+            payload = json.loads(raw)
+            if payload.get("id") in {1, 2}:
+                ack_by_id[int(payload["id"])] = payload
+
+        for request_id, name in ((1, "pump"), (2, "pumpswap")):
+            ack = ack_by_id[request_id]
+            if "error" in ack or not isinstance(ack.get("result"), int):
+                raise RuntimeError(f"invalid {name} subscribe ack: {ack}")
+
+        pump_id = int(ack_by_id[1]["result"])
+        pumpswap_id = int(ack_by_id[2]["result"])
+        deadline = time.monotonic() + float(health_seconds)
+
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                raw = await asyncio.wait_for(
+                    ws.recv(),
+                    timeout=min(1.0, max(0.05, remaining)),
                 )
-                if source in counts:
-                    counts[source] += 1
+            except asyncio.TimeoutError:
+                continue
+            payload = json.loads(raw)
+            source = _subscription_source(
+                payload,
+                pump_subscription_id=pump_id,
+                pumpswap_subscription_id=pumpswap_id,
+            )
+            if source in counts:
+                counts[source] += 1
 
         passed = counts["pump"] >= minimum and counts["pumpswap"] >= minimum
-        return {
+        result = {
             "candidate": label,
             "host": host,
             "status": "PASS" if passed else "FAIL",
@@ -168,10 +172,24 @@ async def _probe_healthy_dual_candidate(
             "minimum_raw_per_source": minimum,
             "pump_raw": counts["pump"],
             "pumpswap_raw": counts["pumpswap"],
-            "reason": "traffic_health_ok" if passed else "traffic_below_frozen_floor",
+            "reason": (
+                "traffic_health_ok_same_connection"
+                if passed
+                else "traffic_below_frozen_floor"
+            ),
+            "same_connection_promoted_to_capture": passed,
         }
+        if not passed:
+            await ws.close()
+            return None, None, None, result
+        return ws, pump_id, pumpswap_id, result
     except Exception as exc:
-        return {
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        return None, None, None, {
             "candidate": label,
             "host": host,
             "status": "FAIL",
@@ -180,22 +198,24 @@ async def _probe_healthy_dual_candidate(
             "pump_raw": counts["pump"],
             "pumpswap_raw": counts["pumpswap"],
             "reason": f"{type(exc).__name__}:{exc}"[:320],
+            "same_connection_promoted_to_capture": False,
         }
 
 
-async def _resolve_healthy_dual_wss(contract: dict) -> tuple[str | None, list[dict]]:
+async def _resolve_healthy_dual_connection(contract: dict):
     attempts = []
     for label, url in candidate_wss_urls():
-        result = await _probe_healthy_dual_candidate(
-            label=label,
-            url=url,
-            contract=contract,
+        ws, pump_id, pumpswap_id, result = (
+            await _connect_healthy_dual_candidate(
+                label=label,
+                url=url,
+                contract=contract,
+            )
         )
         attempts.append(result)
         if result["status"] == "PASS":
-            return url, attempts
-    return None, attempts
-
+            return url, ws, pump_id, pumpswap_id, attempts
+    return None, None, None, None, attempts
 
 def _classify_completion(
     *,
@@ -558,7 +578,9 @@ async def run_fresh_discovery(
     report_path = run_dir / "report.json"
     manifest_path = run_dir / "manifest.json"
 
-    selected, attempts = await _resolve_healthy_dual_wss(contract)
+    selected, ws, pump_subscription_id, pumpswap_subscription_id, attempts = (
+        await _resolve_healthy_dual_connection(contract)
+    )
     run_id = f"{VERSION}-{int(time.time())}-{uuid.uuid4().hex[:10]}"
     started_wall = int(time.time())
     admission_close_wall = started_wall + admission_seconds
@@ -663,217 +685,188 @@ async def run_fresh_discovery(
             )
 
     try:
-        async with connect(
-            selected,
-            open_timeout=10,
-            ping_interval=None,
-            close_timeout=5,
-            max_size=16 * 1024 * 1024,
-        ) as ws:
-            await ws.send(
-                json.dumps(
-                    build_pump_subscribe_request(
-                        request_id=1,
-                        commitment="processed",
-                    ),
-                    separators=(",", ":"),
-                )
-            )
-            await ws.send(
-                json.dumps(
-                    build_pumpswap_subscribe_request(
-                        request_id=2,
-                        commitment="processed",
-                    ),
-                    separators=(",", ":"),
-                )
-            )
-            ack_by_id = {}
-            while len(ack_by_id) < 2:
-                raw = await asyncio.wait_for(ws.recv(), timeout=10)
-                ack = json.loads(raw)
-                if ack.get("id") in {1, 2}:
-                    ack_by_id[int(ack["id"])] = ack
-            for request_id, name in ((1, "pump"), (2, "pumpswap")):
-                ack = ack_by_id[request_id]
-                if "error" in ack or not isinstance(ack.get("result"), int):
-                    raise RuntimeError(f"invalid {name} subscribe ack: {ack}")
+        if ws is None or pump_subscription_id is None or pumpswap_subscription_id is None:
+            raise RuntimeError("healthy dual-stream connection missing after resolver")
+        counters["dual_subscription_acks"] = 2
+        last_raw_monotonic = time.monotonic()
+        idle_timeout = int(
+            contract["fresh_run"]["transport_idle_timeout_seconds"]
+        )
 
-            pump_subscription_id = int(ack_by_id[1]["result"])
-            pumpswap_subscription_id = int(ack_by_id[2]["result"])
-            counters["dual_subscription_acks"] = 2
-            last_raw_monotonic = time.monotonic()
-            idle_timeout = int(
-                contract["fresh_run"]["transport_idle_timeout_seconds"]
-            )
-
-            while int(time.time()) <= capture_close_wall:
-                freeze_due(int(time.time()))
-                if journal_error is not None:
-                    break
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=0.25)
-                except asyncio.TimeoutError:
-                    if time.monotonic() - last_raw_monotonic >= idle_timeout:
-                        raise RuntimeError(
-                            "transport_idle_timeout_before_capture_complete"
-                        )
-                    continue
-
-                last_raw_monotonic = time.monotonic()
-                observed_at = int(time.time())
-                try:
-                    message = json.loads(raw)
-                except json.JSONDecodeError:
-                    counters["json_decode_errors"] += 1
-                    continue
-
-                source = _subscription_source(
-                    message,
-                    pump_subscription_id=pump_subscription_id,
-                    pumpswap_subscription_id=pumpswap_subscription_id,
-                )
-                if source is None:
-                    counters["unrouted_messages"] += 1
-                    continue
-
-                if source == "pump":
-                    counters["pump_notifications_raw"] += 1
-                    try:
-                        notification = parse_pump_logs_notification(
-                            message,
-                            observed_at=observed_at,
-                        )
-                    except ValueError:
-                        counters["pump_notification_decode_errors"] += 1
-                        continue
-                    if notification is None:
-                        continue
-                    counters["pump_notifications_decoded"] += 1
-                    seen, inserted = _persist_pump_births(
-                        notification,
-                        acquisition_run_key=acquisition_run_key,
+        while int(time.time()) <= capture_close_wall:
+            freeze_due(int(time.time()))
+            if journal_error is not None:
+                break
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=0.25)
+            except asyncio.TimeoutError:
+                if time.monotonic() - last_raw_monotonic >= idle_timeout:
+                    raise RuntimeError(
+                        "transport_idle_timeout_before_capture_complete"
                     )
-                    counters["pump_create_events"] += seen
-                    counters["pump_births_persisted"] += inserted
-                    continue
+                continue
 
-                counters["pumpswap_notifications_raw"] += 1
+            last_raw_monotonic = time.monotonic()
+            observed_at = int(time.time())
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                counters["json_decode_errors"] += 1
+                continue
+
+            source = _subscription_source(
+                message,
+                pump_subscription_id=pump_subscription_id,
+                pumpswap_subscription_id=pumpswap_subscription_id,
+            )
+            if source is None:
+                counters["unrouted_messages"] += 1
+                continue
+
+            if source == "pump":
+                counters["pump_notifications_raw"] += 1
                 try:
-                    notification = parse_pumpswap_logs_notification(
+                    notification = parse_pump_logs_notification(
                         message,
                         observed_at=observed_at,
                     )
                 except ValueError:
-                    counters["pumpswap_notification_decode_errors"] += 1
+                    counters["pump_notification_decode_errors"] += 1
                     continue
                 if notification is None:
                     continue
-                counters["pumpswap_notifications_decoded"] += 1
+                counters["pump_notifications_decoded"] += 1
+                seen, inserted = _persist_pump_births(
+                    notification,
+                    acquisition_run_key=acquisition_run_key,
+                )
+                counters["pump_create_events"] += seen
+                counters["pump_births_persisted"] += inserted
+                continue
 
-                for event in notification.lifecycle_events:
-                    counters["create_pool_events"] += 1
-                    if observed_at > admission_close_wall:
-                        counters["transition_after_admission_close"] += 1
-                        continue
-                    role = classify_pumpswap_opportunity_asset(
-                        base_mint=event.base_mint,
-                        quote_mint=event.quote_mint,
+            counters["pumpswap_notifications_raw"] += 1
+            try:
+                notification = parse_pumpswap_logs_notification(
+                    message,
+                    observed_at=observed_at,
+                )
+            except ValueError:
+                counters["pumpswap_notification_decode_errors"] += 1
+                continue
+            if notification is None:
+                continue
+            counters["pumpswap_notifications_decoded"] += 1
+
+            for event in notification.lifecycle_events:
+                counters["create_pool_events"] += 1
+                if observed_at > admission_close_wall:
+                    counters["transition_after_admission_close"] += 1
+                    continue
+                role = classify_pumpswap_opportunity_asset(
+                    base_mint=event.base_mint,
+                    quote_mint=event.quote_mint,
+                )
+                if role is None:
+                    counters["transition_asset_role_ambiguous"] += 1
+                    continue
+                counters["role_valid_transition_events"] += 1
+                if event.pool in states:
+                    counters["transition_duplicate_pool_replay"] += 1
+                    continue
+
+                lineage = inspect_known_market_lifecycle(
+                    token_mint=role.opportunity_mint,
+                    as_of=notification.observed_at,
+                    venue="pump_bonding_curve",
+                )
+                counters[f"pump_lineage_{lineage.status.lower()}"] += 1
+                if lineage.status != "FOUND" or lineage.lifecycle is None:
+                    continue
+
+                if (
+                    lineage.lifecycle.acquisition_run_key
+                    == acquisition_run_key
+                ):
+                    counters["pump_lineage_found_current_run"] += 1
+                else:
+                    counters["pump_lineage_found_preexisting"] += 1
+
+                birth = lineage.lifecycle.observation
+                gate = _lineage_clock_gate(
+                    birth_chain_time=birth.market_started_at,
+                    birth_observed_at=birth.observed_at,
+                    transition_chain_time=event.timestamp,
+                    transition_observed_at=notification.observed_at,
+                )
+                if gate != "PASS":
+                    counters[f"pump_lineage_{gate.lower()}"] += 1
+                    continue
+
+                try:
+                    state = PostTransitionResearchState.from_create_event(
+                        event,
+                        observed_at=notification.observed_at,
+                        pump_birth_market_started_at=birth.market_started_at,
+                        pump_birth_observed_at=birth.observed_at,
                     )
-                    if role is None:
-                        counters["transition_asset_role_ambiguous"] += 1
-                        continue
-                    counters["role_valid_transition_events"] += 1
-                    if event.pool in states:
-                        counters["transition_duplicate_pool_replay"] += 1
-                        continue
+                except ValueError:
+                    counters["eligible_transition_state_errors"] += 1
+                    continue
 
-                    lineage = inspect_known_market_lifecycle(
-                        token_mint=role.opportunity_mint,
-                        as_of=notification.observed_at,
-                        venue="pump_bonding_curve",
+                states[event.pool] = state
+                arrival_by_pool[event.pool] = 0
+                decision_due_at[event.pool] = (
+                    notification.observed_at
+                    + int(
+                        contract["discovery_contract"][
+                            "decision_delay_seconds_from_transition_observed"
+                        ]
                     )
-                    counters[f"pump_lineage_{lineage.status.lower()}"] += 1
-                    if lineage.status != "FOUND" or lineage.lifecycle is None:
-                        continue
+                )
+                counters["lineage_eligible_transition_states"] += 1
 
-                    if (
-                        lineage.lifecycle.acquisition_run_key
-                        == acquisition_run_key
-                    ):
-                        counters["pump_lineage_found_current_run"] += 1
-                    else:
-                        counters["pump_lineage_found_preexisting"] += 1
+            for event in notification.trade_events:
+                counters["pumpswap_trade_events"] += 1
+                state = states.get(event.pool)
+                if state is None:
+                    counters[
+                        "trade_without_lineage_eligible_transition"
+                    ] += 1
+                    continue
+                if event.pool in decision_emitted:
+                    counters["trade_after_decision_freeze"] += 1
+                    continue
 
-                    birth = lineage.lifecycle.observation
-                    gate = _lineage_clock_gate(
-                        birth_chain_time=birth.market_started_at,
-                        birth_observed_at=birth.observed_at,
-                        transition_chain_time=event.timestamp,
-                        transition_observed_at=notification.observed_at,
+                try:
+                    arrival_index = arrival_by_pool[event.pool]
+                    state.ingest_trade(
+                        event,
+                        observed_at=notification.observed_at,
+                        event_key=(
+                            f"pumpswap-{event.side}:"
+                            f"{notification.signature}:{event.event_index}"
+                        ),
+                        transaction_key=notification.signature,
+                        arrival_index=arrival_index,
                     )
-                    if gate != "PASS":
-                        counters[f"pump_lineage_{gate.lower()}"] += 1
-                        continue
+                    arrival_by_pool[event.pool] = arrival_index + 1
+                    counters["eligible_anchored_trades"] += 1
+                except ValueError:
+                    counters["eligible_trade_state_errors"] += 1
 
-                    try:
-                        state = PostTransitionResearchState.from_create_event(
-                            event,
-                            observed_at=notification.observed_at,
-                            pump_birth_market_started_at=birth.market_started_at,
-                            pump_birth_observed_at=birth.observed_at,
-                        )
-                    except ValueError:
-                        counters["eligible_transition_state_errors"] += 1
-                        continue
-
-                    states[event.pool] = state
-                    arrival_by_pool[event.pool] = 0
-                    decision_due_at[event.pool] = (
-                        notification.observed_at
-                        + int(
-                            contract["discovery_contract"][
-                                "decision_delay_seconds_from_transition_observed"
-                            ]
-                        )
-                    )
-                    counters["lineage_eligible_transition_states"] += 1
-
-                for event in notification.trade_events:
-                    counters["pumpswap_trade_events"] += 1
-                    state = states.get(event.pool)
-                    if state is None:
-                        counters[
-                            "trade_without_lineage_eligible_transition"
-                        ] += 1
-                        continue
-                    if event.pool in decision_emitted:
-                        counters["trade_after_decision_freeze"] += 1
-                        continue
-
-                    try:
-                        arrival_index = arrival_by_pool[event.pool]
-                        state.ingest_trade(
-                            event,
-                            observed_at=notification.observed_at,
-                            event_key=(
-                                f"pumpswap-{event.side}:"
-                                f"{notification.signature}:{event.event_index}"
-                            ),
-                            transaction_key=notification.signature,
-                            arrival_index=arrival_index,
-                        )
-                        arrival_by_pool[event.pool] = arrival_index + 1
-                        counters["eligible_anchored_trades"] += 1
-                    except ValueError:
-                        counters["eligible_trade_state_errors"] += 1
-
-            freeze_due(int(time.time()))
+        freeze_due(int(time.time()))
+    
     except Exception as exc:
         transport_error = _redact(
             f"{type(exc).__name__}:{exc}",
             api_key,
         )
+    finally:
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     if tasks:
         completed = await asyncio.gather(*tasks, return_exceptions=True)
