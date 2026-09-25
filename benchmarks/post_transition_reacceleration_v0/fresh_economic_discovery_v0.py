@@ -208,7 +208,6 @@ async def _capture_episode(
     snapshot: dict,
     contract: dict,
     api_key: str,
-    taker_public_key: str,
     counters: Counter,
 ) -> dict:
     identity = snapshot["identity"]
@@ -243,7 +242,7 @@ async def _capture_episode(
                     * (10**USDC_DECIMALS)
                 )
             ),
-            taker=taker_public_key,
+            taker=None,
             slippage_bps=int(contract["costs"]["entry_adverse_slippage_bps"]),
         )
         buy = jupiter_order_to_causal_quote(
@@ -276,7 +275,7 @@ async def _capture_episode(
                 "started_at": started,
                 "observed_at": int(time.time()),
                 "status": "ERROR",
-                "error": _redact(str(exc), api_key, taker_public_key),
+                "error": _redact(str(exc), api_key),
             }
         )
         evaluation = evaluate_episode(
@@ -378,7 +377,7 @@ async def _capture_episode(
                     "started_at": attempt_started,
                     "observed_at": int(time.time()),
                     "status": "ERROR",
-                    "error": _redact(str(exc), api_key, taker_public_key),
+                    "error": _redact(str(exc), api_key),
                 }
             )
 
@@ -402,16 +401,12 @@ async def run_fresh_discovery(
     *,
     run_dir: Path,
     api_key: str,
-    taker_public_key: str,
 ) -> dict:
     contract = load_and_validate_contract()
     assert_fresh_discovery_blocked(contract)
 
     if not api_key.strip():
         raise ValueError("JUPITER_API_KEY is required")
-    if not taker_public_key.strip():
-        raise ValueError("JUPITER_TAKER_PUBLIC_KEY is required")
-
     admission_seconds = int(
         contract["fresh_run"]["admission_duration_seconds"]
     )
@@ -527,7 +522,6 @@ async def run_fresh_discovery(
                         snapshot=snapshot,
                         contract=contract,
                         api_key=api_key.strip(),
-                        taker_public_key=taker_public_key.strip(),
                         counters=counters,
                     )
                 )
@@ -817,7 +811,7 @@ async def run_fresh_discovery(
         "episodes": episodes,
         "interpretation": (
             "Fresh prospective Post-Transition discovery under the frozen "
-            "empty-selector cohort, +30s decision, +2s assembled paper entry, "
+            "empty-selector cohort, +30s decision, +2s route-only paper entry, "
             "US$25 notional, 300s right-censoring and 5s observed Jupiter "
             "route grid. Fixed+60 remains PRIMARY; Fixed+300 remains "
             "EXPLORATORY. TP50/TP100/TP200 are independent. MFE/MAE are "
@@ -850,10 +844,6 @@ def main() -> int:
             run_fresh_discovery(
                 run_dir=args.run_dir,
                 api_key=os.environ.get("JUPITER_API_KEY", ""),
-                taker_public_key=os.environ.get(
-                    "JUPITER_TAKER_PUBLIC_KEY",
-                    "",
-                ),
             )
         )
     except Exception as exc:
@@ -864,7 +854,6 @@ def main() -> int:
                     "error": _redact(
                         f"{type(exc).__name__}:{exc}",
                         os.environ.get("JUPITER_API_KEY", ""),
-                        os.environ.get("JUPITER_TAKER_PUBLIC_KEY", ""),
                     ),
                     "transaction_submitted": False,
                     "live_money": False,
