@@ -24,7 +24,8 @@
       "timestamp": 1002,
       "observed_at": 1002,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 1000000000
+      "quote_amount_raw": 1000000000,
+      "arrival_index": 0
     },
     {
       "event_key": "trade-2",
@@ -35,7 +36,8 @@
       "timestamp": 1005,
       "observed_at": 1005,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 920000000
+      "quote_amount_raw": 920000000,
+      "arrival_index": 1
     },
     {
       "event_key": "trade-3",
@@ -46,7 +48,8 @@
       "timestamp": 1008,
       "observed_at": 1008,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 840000000
+      "quote_amount_raw": 840000000,
+      "arrival_index": 2
     },
     {
       "event_key": "trade-4",
@@ -57,7 +60,8 @@
       "timestamp": 1014,
       "observed_at": 1014,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 860000000
+      "quote_amount_raw": 860000000,
+      "arrival_index": 3
     },
     {
       "event_key": "trade-5",
@@ -68,7 +72,8 @@
       "timestamp": 1017,
       "observed_at": 1017,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 900000000
+      "quote_amount_raw": 900000000,
+      "arrival_index": 4
     },
     {
       "event_key": "trade-6",
@@ -79,7 +84,8 @@
       "timestamp": 1020,
       "observed_at": 1020,
       "base_amount_raw": 100000000,
-      "quote_amount_raw": 960000000
+      "quote_amount_raw": 960000000,
+      "arrival_index": 5
     }
   ]
 }
