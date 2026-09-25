@@ -448,6 +448,28 @@ The discovery label contract is frozen before outcomes:
 
 Fresh economic discovery remains blocked until the lineage/readiness gate passes.
 
+Research Readiness V0 result (2026-09-25):
+
+- 4 role-valid direct PumpSwap transitions;
+- 4/4 Pump lineage MISSING;
+- 0 lineage-eligible states;
+- 0 immutable +30s snapshots;
+- no transport/journal errors;
+- no economic outcomes.
+
+Interpretation: local historical Pump birth coverage was the only blocker.
+
+Prospective Lineage Readiness V1 is now the active readiness gate:
+
+- one ordered WSS connection;
+- Pump + PumpSwap subscriptions together;
+- Pump CreateEvent births persisted prospectively;
+- no historical backfill;
+- birth must be locally observed strictly before transition (`birth_observed_at < transition_observed_at`);
+- same-second lineage is fail-closed as unresolved;
+- transition +30s checkpoint and discovery labels remain unchanged.
+
+
 ## Other research tracks — isolated
 
 - v56 Exceptional Trade Pre-Entry: causal scaffold ready
