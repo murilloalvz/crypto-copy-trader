@@ -75,6 +75,11 @@ class PostTransitionFreshEconomicDiscoveryV0Tests(unittest.TestCase):
                 "funded_wallet_required_for_research"
             ]
         )
+        self.assertEqual(fresh["transport_health_seconds"], 10)
+        self.assertEqual(fresh["transport_min_raw_per_source"], 20)
+        self.assertEqual(fresh["transport_idle_timeout_seconds"], 15)
+        self.assertIsNone(fresh["websocket_ping_interval_seconds"])
+        self.assertTrue(fresh["pre_outcome_transport_abort_is_void"])
 
     def test_fresh_runner_has_no_taker_or_wallet_argument(self):
         params = inspect.signature(run_fresh_discovery).parameters
