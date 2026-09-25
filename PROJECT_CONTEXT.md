@@ -576,19 +576,23 @@ These remain isolated from active Solana systems/V68 validation.
 
 Status:
 
-`IMPLEMENTED / CONTRACT FROZEN FOR IMPLEMENTATION / PROVIDER PREFLIGHT READY / FRESH DISCOVERY BLOCKED PENDING CENSORING HORIZON`
+`IMPLEMENTED / PROVIDER PREFLIGHT PASS / 300S RIGHT-CENSORING FROZEN / FRESH ECONOMIC DISCOVERY AUTHORIZED / OUTCOMES NOT YET OPENED`
 
 After `PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1`:
 
-- frozen collector contract hash: `99025b0ffa02d65aed099cb9d670682ba6560ad07403717fd1f4901bdf3f3fa5`;
+- frozen collector contract hash: `7fca6e364ce648e28061db1760f659802fc5d692a90289d9597e328b07580bd1`;
+- read-only Jupiter provider preflight: PASS with zero cohort tokens, zero outcome writes, zero submitted transactions and zero live money;
 - `FIXED_60`: PRIMARY;
 - `FIXED_300`: EXPLORATORY and cannot replace +60 from observed results;
 - Market Path: ARMED for routeability/impact, MFE/MAE, timing and observed-grid threshold duration; MFE is never an exit;
 - `TP50`, `TP100`, `TP200`: ARMED independently at the first causal routeable net-return crossing;
 - `DECELERATION_EXIT`, `PROFIT_PROTECTION_EXIT`, `HYBRID_HUMAN_EXIT`: NOT_ARMED pending a prospectively frozen policy;
 - `human_assisted_exit_v0` remains retrospective diagnostic only and is not reused prospectively;
-- maximum-horizon/censoring remains unresolved (`maximum_horizon_seconds=null`), therefore fresh economic discovery is fail-closed;
-- provider preflight is read-only USDC->WSOL route health only: zero cohort tokens, zero outcome writes, zero submitted transactions;
-- `FRESH_ECONOMIC_OUTCOMES_OPENED=False` and live money remains unauthorized.
+- maximum economic horizon is frozen at `300s` from usable entry under `FROZEN_300S_RIGHT_CENSORING`;
+- Market Path/MFE/MAE/TP policies stop at +300s with no interpolation and no forced time exit;
+- `FIXED_300` alone may consume its pre-existing +5s quote-wait grace (300-305s); those grace marks cannot enter Market Path or TP outcomes;
+- `fresh_economic_discovery_authorized=True`;
+- `fresh_economic_outcomes_opened=False` until the first prospective run actually starts;
+- live money remains unauthorized.
 
-The next gate is targeted tests plus the read-only provider preflight. A fresh Post-Transition economic sample must not be opened until the maximum horizon/censoring policy is frozen before outcomes.
+Next gate: validate the frozen-300s implementation in CI, then open exactly one fresh Post-Transition prospective economic discovery run without changing selector, thresholds, costs, TP levels, dynamic exits or censoring.
