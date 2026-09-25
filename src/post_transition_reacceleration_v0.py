@@ -480,10 +480,14 @@ class PostTransitionResearchState:
         pullback_observed = (
             trough_return is not None and trough_return < 0.0
         )
+        dynamics["both_flow_windows_observed"] = (
+            prior.event_count > 0 and recent.event_count > 0
+        )
         structural_reacceleration = bool(
             pullback_observed
             and recovery_from_trough is not None
             and recovery_from_trough > 0.0
+            and dynamics["both_flow_windows_observed"]
             and dynamics["signed_reference_flow_rate_delta_per_s"] is not None
             and dynamics["signed_reference_flow_rate_delta_per_s"] > 0.0
         )
