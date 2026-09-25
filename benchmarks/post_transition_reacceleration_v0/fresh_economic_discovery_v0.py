@@ -197,6 +197,30 @@ async def _resolve_healthy_dual_wss(contract: dict) -> tuple[str | None, list[di
     return None, attempts
 
 
+def _classify_completion(
+    *,
+    transport_error: str | None,
+    journal_error: str | None,
+    outcomes_opened: bool,
+    episode_task_errors: int,
+    decision_snapshots_persisted: int,
+    contract: dict,
+) -> tuple[str, str]:
+    if (
+        transport_error is not None
+        and not outcomes_opened
+        and contract["fresh_run"]["pre_outcome_transport_abort_is_void"] is True
+    ):
+        return VOID, "pre_outcome_transport_abort_void"
+    if transport_error is not None or journal_error is not None:
+        return FAIL, "transport_or_snapshot_journal_error"
+    if episode_task_errors > 0:
+        return FAIL, "economic_episode_task_error"
+    if decision_snapshots_persisted == 0:
+        return INCONCLUSIVE, "no_complete_eligible_transition_plus_30s_snapshot"
+    return PASS, "fresh_post_transition_economic_collection_completed"
+
+
 def _aggregate(values: list[float]) -> dict:
     finite = [float(v) for v in values if math.isfinite(float(v))]
     if not finite:
@@ -880,25 +904,16 @@ async def run_fresh_discovery(
             journal_error = f"{type(exc).__name__}:{exc}"[:1000]
 
     opened = counters["economic_provider_calls_started"] > 0
-    if (
-        transport_error is not None
-        and not opened
-        and contract["fresh_run"]["pre_outcome_transport_abort_is_void"] is True
-    ):
-        classification = VOID
-        reason = "pre_outcome_transport_abort_void"
-    elif transport_error is not None or journal_error is not None:
-        classification = FAIL
-        reason = "transport_or_snapshot_journal_error"
-    elif counters["episode_task_errors"] > 0:
-        classification = FAIL
-        reason = "economic_episode_task_error"
-    elif counters["decision_snapshots_persisted"] == 0:
-        classification = INCONCLUSIVE
-        reason = "no_complete_eligible_transition_plus_30s_snapshot"
-    else:
-        classification = PASS
-        reason = "fresh_post_transition_economic_collection_completed"
+    classification, reason = _classify_completion(
+        transport_error=transport_error,
+        journal_error=journal_error,
+        outcomes_opened=opened,
+        episode_task_errors=int(counters["episode_task_errors"]),
+        decision_snapshots_persisted=int(
+            counters["decision_snapshots_persisted"]
+        ),
+        contract=contract,
+    )
 
     report = {
         "type": "post_transition_fresh_economic_discovery_report_v0",
