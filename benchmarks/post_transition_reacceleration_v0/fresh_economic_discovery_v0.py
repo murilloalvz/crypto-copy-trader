@@ -62,6 +62,7 @@ INCONCLUSIVE = "INCONCLUSIVE_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0"
 FAIL = "FAIL_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0"
 VOID = "VOID_PRE_OUTCOME_TRANSPORT_ABORT"
 USDC_DECIMALS = 6
+CLOSURE_MARKER = Path(__file__).with_name("fresh_economic_discovery_v0.closed.json")
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -1015,6 +1016,24 @@ async def run_fresh_discovery(
 
 
 def main() -> int:
+    if CLOSURE_MARKER.exists():
+        closure = json.loads(CLOSURE_MARKER.read_text(encoding="utf-8"))
+        print(
+            json.dumps(
+                {
+                    "classification": "V0_CLOSED_BURNED",
+                    "reason": closure.get("reason"),
+                    "replacement_run_authorized": False,
+                    "fresh_economic_outcomes_opened": True,
+                    "transaction_submitted": False,
+                    "live_money": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--run-dir", type=Path, required=True)
