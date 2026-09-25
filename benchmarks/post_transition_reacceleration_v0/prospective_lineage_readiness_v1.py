@@ -42,6 +42,7 @@ PASS = "PASS_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1"
 INCONCLUSIVE = "INCONCLUSIVE_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1"
 FAIL = "FAIL_POST_TRANSITION_PROSPECTIVE_LINEAGE_READINESS_V1"
 DECISION_DELAY_SECONDS = 30
+FROZEN_DURATION_SECONDS = 900
 
 
 def _lineage_clock_gate(
@@ -182,9 +183,9 @@ async def run_prospective_lineage_readiness(
     duration_seconds: int,
     journal_path: Path,
 ) -> dict:
-    if duration_seconds <= DECISION_DELAY_SECONDS:
+    if duration_seconds != FROZEN_DURATION_SECONDS:
         raise ValueError(
-            "duration_seconds must exceed the frozen 30s decision delay"
+            "prospective lineage readiness duration is frozen at 900 seconds"
         )
 
     selected, attempts = await resolve_dual_wss()
@@ -515,7 +516,11 @@ async def run_prospective_lineage_readiness(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--duration-seconds", type=int, default=900)
+    parser.add_argument(
+        "--duration-seconds",
+        type=int,
+        default=FROZEN_DURATION_SECONDS,
+    )
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--journal", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
