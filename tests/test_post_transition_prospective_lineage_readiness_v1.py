@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from benchmarks.post_transition_reacceleration_v0.prospective_lineage_readiness_v1 import (
+    FROZEN_DURATION_SECONDS,
     _lineage_clock_gate,
     _persist_pump_births,
     _subscription_source,
@@ -17,6 +18,9 @@ from src.pump_bonding_stream import PumpCreateEvent, PumpLogNotification
 
 
 class PostTransitionProspectiveLineageReadinessV1Tests(unittest.TestCase):
+    def test_duration_is_frozen_before_readiness_run(self):
+        self.assertEqual(FROZEN_DURATION_SECONDS, 900)
+
     def test_subscription_source_routes_by_server_subscription_id(self):
         pump = {
             "method": "logsNotification",
