@@ -648,3 +648,22 @@ Root-cause hardening after the second VOID:
 - required diagnostic soak before another replacement attempt: 180s dual Pump+PumpSwap stream, 15s idle watchdog.
 
 Next gate: CI + targeted tests, then run only the 180s dual-stream transport soak. Do not start another fresh economic discovery until that soak passes on the normalized endpoint.
+
+
+### Post-Transition transport stabilization after second VOID
+
+The 180s dual-stream systems-only soak PASSed on the normalized public Solana endpoint:
+
+- selected host: `api.mainnet.solana.com`;
+- elapsed: ~185s;
+- Pump raw: 62,213;
+- PumpSwap raw: 76,606;
+- max observed idle gap: ~13.662s, below the frozen 15s watchdog;
+- transport error: none;
+- economic outcomes opened: false.
+
+The remaining implementation issue was that the fresh runner health-checked one WSS connection, closed it, then opened a second WSS connection for capture. That discontinuity is now removed. The exact connection that passes the frozen health check is promoted directly into fresh capture with the same Pump/PumpSwap subscription IDs. No second connect/resubscribe occurs before the admission window.
+
+Alchemy may still fail inferred WSS `logsSubscribe` and fall through to the normalized Solana public fallback; that provider capability failure is diagnostic and does not alter the economic contract.
+
+No selector, cost, latency, horizon, TP, route cadence, censoring or route-only paper semantics changed. Contract hash remains `67671f812f695c2b5bd957279181bfa603cb9b4e802c969169c7e03fe4ab9a6b`.
