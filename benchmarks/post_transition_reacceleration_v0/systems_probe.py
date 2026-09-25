@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from websockets.asyncio.client import connect
 
 from src.post_transition_reacceleration_v0 import PostTransitionResearchState
+from src.solana import normalize_rpc_url
 from src.pumpswap_asset_role import classify_pumpswap_opportunity_asset
 from src.pumpswap_stream import (
     build_logs_subscribe_request,
@@ -30,6 +31,8 @@ def _http_to_ws(url: str) -> str | None:
     raw = str(url or "").strip()
     if not raw:
         return None
+    if raw.startswith(("https://", "http://")):
+        raw = normalize_rpc_url(raw)
     parsed = urlparse(raw)
     if parsed.scheme == "https":
         scheme = "wss"
