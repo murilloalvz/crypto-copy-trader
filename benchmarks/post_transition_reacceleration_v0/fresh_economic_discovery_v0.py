@@ -746,12 +746,16 @@ async def run_fresh_discovery(
                             pong_waiter,
                             timeout=ping_timeout,
                         )
-                    except Exception as exc:
+                    except Exception:
                         counters["transport_liveness_ping_failures"] += 1
-                        raise RuntimeError(
-                            "transport_liveness_ping_failed"
-                        ) from exc
-                    counters["transport_liveness_ping_passes"] += 1
+                        if contract["fresh_run"].get(
+                            "transport_ping_failure_is_fatal"
+                        ) is True:
+                            raise RuntimeError(
+                                "transport_liveness_ping_failed"
+                            )
+                    else:
+                        counters["transport_liveness_ping_passes"] += 1
                 continue
 
             last_raw_monotonic = time.monotonic()
