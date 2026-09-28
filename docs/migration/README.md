@@ -21,9 +21,11 @@ Later divergent economic authority:
 1. `/CLAUDE.md`
 2. `START_HERE_CLAUDE_2026-09-27.md`
 3. `BRANCH_AUTHORITY_MAP_2026-09-27.md`
+4. `CODEBASE_MAP_2026-09-27.md`
 4. `RESEARCH_STATE_LEDGER_2026-09-27.md`
-5. branch-local `/PROJECT_CONTEXT.md`
-6. exact protocol/result docs for the task
+5. `CODEBASE_MAP_2026-09-27.md`
+6. branch-local `/PROJECT_CONTEXT.md`
+7. exact protocol/result docs for the task
 
 ### For the human operator
 
@@ -82,6 +84,10 @@ Compact scientific disposition index:
 - BLOCKED
 
 Formal result docs remain authoritative.
+
+### `CODEBASE_MAP_2026-09-27.md`
+
+Navigation map for the main Signal Plane, Research Plane, V55/V68, Participant Quality, stream, hazard, route-research and Post-Transition code/test surfaces.
 
 ### `CLAUDE_TOOLING_ECC_PONYTAIL_2026-09-27.md`
 
