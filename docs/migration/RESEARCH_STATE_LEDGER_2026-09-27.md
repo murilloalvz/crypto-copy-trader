@@ -126,7 +126,16 @@ Step 2 also has fresh live evidence (2026-09-28, operator-authorized network acc
   - trigger parity 100% (44780/44780, 0 mismatches), all 28 systems gates true, zero ingress drops, zero transport errors, `errors: []`
   - `scientific_thresholds_modified: false`, `economic_hypothesis_modified: false`
   - per the report's own `interpretation` field and `authorization: "systems_shadow_only_no_v68_no_economic_verdict"`: this is hot-path/transport evidence only and does **not** establish economic edge or authorize a fresh V68 key by itself
-- steps 3-8 (sustained soak beyond 120s, Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
+Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
+
+- attempt 1, 600s: `FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`
+  - artifact: `artifacts/rust_signal_plane_live_shadow_v7/soak-600s-report.json`
+  - root cause: `transport:pump_logs:ConnectionClosedError:no close frame received or sent` — the Pump WSS reader dropped uncleanly before `pump_reader_duration_elapsed`; the PumpSwap reader completed the full 600s cleanly
+  - trigger parity remained 100% (187670/187670) for everything captured before the drop — no accounting corruption, the system correctly failed closed on the transport loss rather than masking it
+  - this matches the risk already flagged in `V68_PROMOTION_READINESS_PLAN_2026-09-28.md`: the public `api.mainnet.solana.com` endpoint may not hold a stable `logsSubscribe` session for sustained windows
+- a same-parameters retry was started to check whether the drop was transient or systematic; result to be appended once known
+
+- steps 4-8 (Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
 
 No economic verdict exists or is any closer to existing from these systems steps alone.
 
