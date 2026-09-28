@@ -9,8 +9,9 @@ Before making any non-trivial change, read:
 1. `docs/migration/START_HERE_CLAUDE_2026-09-27.md`
 2. `docs/migration/BRANCH_AUTHORITY_MAP_2026-09-27.md`
 3. `docs/migration/CODEBASE_MAP_2026-09-27.md`
-4. the branch-local `PROJECT_CONTEXT.md`
-5. the protocol/result documents directly related to the requested subsystem
+4. `docs/migration/RESEARCH_STATE_LEDGER_2026-09-27.md`
+5. the branch-local `PROJECT_CONTEXT.md`
+6. the protocol/result documents directly related to the requested subsystem
 
 Do not treat one branch's `PROJECT_CONTEXT.md` as the global state of the whole project. The repository has intentionally divergent systems and economic/research lines.
 
