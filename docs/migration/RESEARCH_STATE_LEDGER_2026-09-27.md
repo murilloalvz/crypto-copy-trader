@@ -1,0 +1,237 @@
+# Research State Ledger — Claude Migration — 2026-09-27
+
+This ledger is a compact index. Exact protocols/results remain authoritative.
+
+## Status vocabulary
+
+- `PASS`: passed the exact gate defined by its protocol
+- `FAIL`: failed a defined gate
+- `KILL`: frozen candidate closed; do not retune on consumed data
+- `INCONCLUSIVE`: no positive/negative scientific verdict beyond the exact reason
+- `CLOSED_BURNED`: consumed sample/protocol cannot be rerun as the same experiment
+- `NOT_EVALUATED`: no valid economic verdict exists
+- `BLOCKED`: release/readiness condition not satisfied
+
+## Systems / architecture
+
+### Historical V9 systems profile
+
+Status:
+`PASS 11/11`
+
+Known recorded metrics in `PROJECT_CONTEXT.md`:
+
+- PumpSwap p95 3.151s
+- Pump p95 1.478s
+- coverage 99.6%
+- backlog 0.408%
+
+Interpretation:
+accepted historical systems evidence only.
+
+### Rust Signal Plane migration / V7 contract
+
+Authority branch:
+`research/rust-signal-plane-live-shadow-v0`
+
+Key commits:
+
+- `013ffbde...` promote V7 live evidence contract
+- `b01c9f47...` freeze V7 promotion contract
+
+Migration rule:
+hot-path changes require new systems evidence.
+
+A prior handoff reported the V7 final-head 1800s soak as PASS. That exact report artifact was not independently located during this remote migration pass, so Claude must treat the statement as **known handoff state requiring artifact confirmation if the exact metrics matter**.
+
+### Research Plane role-normalized capacity
+
+Status:
+`CORRECTION FROZEN`
+
+Authority:
+`docs/role-normalized-research-plane-capacity-incident-2026-09-24.md`
+
+Root cause:
+Research Plane queue overflow after corrected PumpSwap opportunity-role normalization increased real opportunity-token cardinality.
+
+Correction:
+
+- 4096 -> 16384 queue capacity
+- 60s -> 120s drain timeout
+- overflow remains hard FAIL
+- sequence mismatch after loss is consequential
+- no Signal Plane backpressure
+
+Later Participant Quality holdout H1/H2 both passed the Signal Plane -> Research Plane -> route-research bridge, which is verified downstream evidence of a functioning corrected path for those cohorts.
+
+## Economic / scientific ledger
+
+### V48 — Flow60 event count
+
+Status:
+`FAIL / CLOSED`
+
+Do not retune bins/horizon from its consumed sample.
+
+### V55 — causal Flow60 discovery
+
+Status:
+`COMPLETE / CLEAN`
+
+Selected rank #1:
+
+- `flow60_buy_share_pct`
+- LOW <= 57.1429
+- MID <= 65.7143
+- HIGH > 65.7143
+- favorable LOW
+- opposite HIGH
+
+V55 sample:
+discovery-only, burned for V68 validation.
+
+### V68 — prospective Flow60 buy-share
+
+Status:
+`NOT_EVALUATED economically`
+
+Frozen primary:
+
+- same feature/cutpoints/direction
+- 900s primary
+- support requirements frozen
+- no MID rescue
+- no horizon substitution
+- no new bins
+- no same-sample feature switch
+
+Systems aborts do not create an economic verdict.
+
+### Native Participant Quality Selection Edge V1
+
+Status:
+`KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`
+
+Authority:
+`docs/native-participant-quality-holdout-v1-result-2026-09-24.md`
+
+Support gates:
+passed.
+
+Positive descriptive findings included:
+
+- HIGH median > LOW median in aggregate/H1/H2
+- much lower HIGH catastrophic-loss rate
+
+Frozen failure:
+HIGH profit factor did not exceed LOW profit factor.
+
+Disposition:
+
+- CLOSED / KILL exact selector
+- no H3
+- no cutoff change
+- no direction flip
+- no horizon rescue
+- no live score integration
+
+Possible future tail-risk/rejection research requires a new protocol and independent evidence.
+
+### Concentration Decay V0
+
+Authority branch:
+`research/post-transition-pullback-reacceleration-v0`
+
+Frozen rule:
+`mf_top_wallet_gross_share_delta_pct_points_late_minus_early <= 0`
+
+Discovery:
+`ITERATE`
+
+Fresh confirmation:
+`INCONCLUSIVE_CONCENTRATION_DECAY_CONFIRMATION_SUPPORT`
+
+Reason:
+candidate route-usable n=9, minimum frozen support=10.
+
+Disposition:
+
+- no second ITERATE
+- no threshold movement
+- no direction flip
+- no subgroup rescue
+- independent replication not armed
+- no positive edge claim
+
+### Post-Transition Pullback / Reacceleration V0
+
+Authority branch:
+`research/post-transition-pullback-reacceleration-v0`
+
+Core causal path:
+
+`Pump birth -> later PumpSwap transition -> pullback/recovery dynamics -> transition+30s immutable decision snapshot -> future route labels`
+
+Important constraints:
+
+- no fake graduation claim from CreatePool
+- no ambiguous reference pair
+- no lookahead extrema
+- no backfill of birth availability
+- same-second unresolved local lineage fails closed
+- structural reacceleration diagnostic only
+
+### Post-Transition Fresh Economic Discovery V0
+
+Status:
+`CLOSED_BURNED`
+
+Closure artifact:
+`benchmarks/post_transition_reacceleration_v0/fresh_economic_discovery_v0.closed.json`
+
+Classification:
+`FAIL_POST_TRANSITION_FRESH_ECONOMIC_DISCOVERY_V0`
+
+Facts:
+
+- economic provider calls opened
+- episodes=2
+- conditional economic n=0
+- replacement run not authorized
+- no Fixed+60 / Fixed+300 / TP / Market Path result available
+
+Future semantic finding:
+Jupiter signed finite `priceImpact` must not be treated as missing merely because it is negative.
+
+Future maximum-impact evaluation:
+`abs(priceImpact) <= frozen_limit`
+
+This is not a rescue:
+the two burned magnitudes (~2.512pp and ~87.611pp) exceed the frozen 2pp maximum anyway.
+
+Future work:
+new frozen protocol revision, not V0 rerun.
+
+## Execution maturity
+
+Current state:
+
+- route research: available in defined research paths
+- funded BUY: blocked/not released
+- landing/fill: not released
+- shadow execution: not released
+- live money: not authorized
+
+No agent may infer execution maturity from signal quality.
+
+## Evidence hygiene
+
+When adding a future row to this ledger:
+
+1. link exact protocol/result file;
+2. use the protocol's exact verdict;
+3. distinguish formal verdict from descriptive diagnostics;
+4. mark consumed samples;
+5. state whether rerun is allowed;
+6. state what the result does **not** authorize.
