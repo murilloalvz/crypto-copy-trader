@@ -133,7 +133,12 @@ Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
   - root cause: `transport:pump_logs:ConnectionClosedError:no close frame received or sent` — the Pump WSS reader dropped uncleanly before `pump_reader_duration_elapsed`; the PumpSwap reader completed the full 600s cleanly
   - trigger parity remained 100% (187670/187670) for everything captured before the drop — no accounting corruption, the system correctly failed closed on the transport loss rather than masking it
   - this matches the risk already flagged in `V68_PROMOTION_READINESS_PLAN_2026-09-28.md`: the public `api.mainnet.solana.com` endpoint may not hold a stable `logsSubscribe` session for sustained windows
-- a same-parameters retry was started to check whether the drop was transient or systematic; result to be appended once known
+- attempt 2 (retry, same parameters, 600s): also `FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`, but a **different** failure mode
+  - artifact: `artifacts/rust_signal_plane_live_shadow_v7/soak-600s-retry-report.json`
+  - both WSS readers completed their full duration cleanly this time (no transport error)
+  - failed gate: `identity_plane_no_rpc_batch_failure` — 17 of ~865 PumpSwap identity RPC batches returned `SolanaRPCError` (1136/1160 pools still resolved via retry/backoff internal to the async identity plane; the gate has zero tolerance)
+  - trigger parity remained 100% (195664/195664) both times
+- conclusion: two attempts, two different failure surfaces (WSS session stability, then RPC batch errors), same root cause both times — the public `api.mainnet.solana.com` endpoint's capacity is insufficient for this system's sustained (600s) request volume. This is not a code defect; `trigger_parity_100` and all hot-path accounting gates passed both times. A third blind retry on the same free endpoint is not expected to change this conclusion; a dedicated/paid RPC provider is the realistic next step for step 3, as already flagged as an operator decision in `V68_PROMOTION_READINESS_PLAN_2026-09-28.md`.
 
 - steps 4-8 (Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
 
