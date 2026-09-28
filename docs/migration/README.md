@@ -97,6 +97,10 @@ Optional Claude Code setup:
 - project-specific restrictions
 - first-session verification prompt
 
+### `V68_PROMOTION_READINESS_PLAN_2026-09-28.md`
+
+Status snapshot of the 8-step V68 systems-promotion checklist from `docs/v68-signal-plane-migration-v0-2026-09-22.md`, plus what an operator needs to decide (infra, duration, provider budget, monitoring) before any of the remaining live steps run. Authorizes nothing by itself.
+
 ## Migration invariants
 
 The package intentionally does NOT:

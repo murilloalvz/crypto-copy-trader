@@ -108,6 +108,18 @@ Frozen primary:
 
 Systems aborts do not create an economic verdict.
 
+#### Promotion evidence progress (2026-09-28)
+
+`V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED` remains `False` in `route_research_v68_release.py`. Of the 8 sequential promotion-evidence steps in `docs/v68-signal-plane-migration-v0-2026-09-22.md`, step 1 has fresh evidence:
+
+- step 1 (offline Rust -> episode-identity bridge audit): `PASS_V68_SIGNAL_PLANE_BRIDGE_V0`
+- authority: `benchmarks/v68_signal_plane_bridge_v0/run.py`, run 2026-09-28, synthetic trace, seed=68, events=10000
+- result: 100% Rust/Python trigger parity (10000/10000), 7783 triggers bridged with 0 failures (4588 Pump, 3195 PumpSwap), frozen bridge version confirmed
+- this is systems-only and offline; per the audit's own `interpretation` field it does **not** prove live sustained capacity and does **not** authorize V68
+- steps 2-8 (live 120s smoke, sustained soak, Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone; each requires live network access to Pump/PumpSwap/Solana and is not something to start without an explicit operator decision on infra/cost/duration
+
+No economic verdict exists or is any closer to existing from this step alone.
+
 ### Native Participant Quality Selection Edge V1
 
 Status:
