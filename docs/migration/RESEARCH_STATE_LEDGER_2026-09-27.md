@@ -116,9 +116,19 @@ Systems aborts do not create an economic verdict.
 - authority: `benchmarks/v68_signal_plane_bridge_v0/run.py`, run 2026-09-28, synthetic trace, seed=68, events=10000
 - result: 100% Rust/Python trigger parity (10000/10000), 7783 triggers bridged with 0 failures (4588 Pump, 3195 PumpSwap), frozen bridge version confirmed
 - this is systems-only and offline; per the audit's own `interpretation` field it does **not** prove live sustained capacity and does **not** authorize V68
-- steps 2-8 (live 120s smoke, sustained soak, Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone; each requires live network access to Pump/PumpSwap/Solana and is not something to start without an explicit operator decision on infra/cost/duration
 
-No economic verdict exists or is any closer to existing from this step alone.
+Step 2 also has fresh live evidence (2026-09-28, operator-authorized network access, public `api.mainnet.solana.com`):
+
+- precondition (PumpSwap identity bootstrap, `benchmarks/pumpswap_identity_bootstrap_v0/bootstrap.py`, 60s live warmup): `PASS_PUMPSWAP_IDENTITY_BOOTSTRAP_V0`, `valid_bootstrap=true`, 478 decoded PumpSwap pool identities, 0 unresolved, all gates true
+  - artifact: `artifacts/pumpswap_identity_bootstrap_v0/pumpswap_identity_bootstrap_v0-1790620104-ba9141edcb06/report.json`
+- step 2 (V5 120s live smoke, `benchmarks/integrated_market_signal_plane_v1/live_shadow.py`): `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`
+  - artifact: `artifacts/rust_signal_plane_live_shadow_v7/report.json`
+  - trigger parity 100% (44780/44780, 0 mismatches), all 28 systems gates true, zero ingress drops, zero transport errors, `errors: []`
+  - `scientific_thresholds_modified: false`, `economic_hypothesis_modified: false`
+  - per the report's own `interpretation` field and `authorization: "systems_shadow_only_no_v68_no_economic_verdict"`: this is hot-path/transport evidence only and does **not** establish economic edge or authorize a fresh V68 key by itself
+- steps 3-8 (sustained soak beyond 120s, Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
+
+No economic verdict exists or is any closer to existing from these systems steps alone.
 
 ### Native Participant Quality Selection Edge V1
 

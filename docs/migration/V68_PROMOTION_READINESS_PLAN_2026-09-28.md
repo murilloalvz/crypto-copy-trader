@@ -17,7 +17,7 @@ This plan proposes no code change and authorizes nothing by itself.
 | # | Step | Status | Needs live network? |
 |---|---|---|---|
 | 1 | Offline Rust -> episode-identity bridge audit | **DONE** — `PASS_V68_SIGNAL_PLANE_BRIDGE_V0`, 2026-09-28, see `RESEARCH_STATE_LEDGER_2026-09-27.md` | No |
-| 2 | V5 120s live smoke on unrestricted internet | Not started | Yes |
+| 2 | V5 120s live smoke on unrestricted internet | **DONE** — `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`, 2026-09-28, see `RESEARCH_STATE_LEDGER_2026-09-27.md` | No (already run) |
 | 3 | V5 sustained soak (zero drops, bounded queue, 100% trigger parity) | Not started | Yes, long-running |
 | 4 | V5 Research Plane bridge smoke (zero overflow, >=1 new episode admission) | Not started | Yes |
 | 5 | Verify Research Plane reconstructs frozen V55/V68 features without clock violations | Not started | Depends on step 4 data |
