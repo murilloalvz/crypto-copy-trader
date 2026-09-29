@@ -1,10 +1,9 @@
-# Rejection Filter Prospective Holdout V1 — Preregistration DRAFT — 2026-09-29
+# Rejection Filter Prospective Holdout V1 — Preregistration — 2026-09-29
 
 Mode: PAPER / RESEARCH / PROSPECTIVE / NO LIVE MONEY
 
-**STATUS: DRAFT — NOT FROZEN. Authorizes no acquisition, provider call or run.** Items marked
-`[DECISION]` must be fixed by the project owner before freeze. Freezing follows section 16. Once
-frozen, nothing below may move.
+**STATUS: FROZEN by this commit. Nothing below may move.** Freezing authorizes no provider call and
+no funded action by itself; acquisition starts only when the project owner runs it (section 16).
 
 ## 1. Why V1 exists (lineage)
 
@@ -44,14 +43,14 @@ any exit policy.
 ## 4. What changed vs V0 (acquisition quality only)
 
 1. **On-time label.** A 900s outcome is a valid label only if `observed_at - target_at <= 60` seconds
-   `[DECISION: 60s; V0/PQ 300s lateness p95 was 1s]`. A later quote stays in coverage accounting as
+   (60s; V0/PQ 300s lateness p95 was 1s). A later quote stays in coverage accounting as
    `LATE`, is unavailable for pairing and is never converted to zero, loss or an estimate.
 2. **Error taxonomy.** From `error_type/error_message` only, never from returns:
    - TECHNICAL: HTTP 429, HTTP 5xx, timeouts, transport errors, any collector stall.
    - STRUCTURAL: HTTP 400 "Failed to get quotes" (no route), a legitimate missing outcome that is
      reported but never triggers replacement.
 3. **Cohort technical validity.** A cohort is DEGRADED iff
-   `(TECHNICAL errors at 900s + LATE 900s outcomes) / decisions > 20%` `[DECISION: 20%]`.
+   `(TECHNICAL errors at 900s + LATE 900s outcomes) / decisions > 20%` (20%).
    (V0 F1 would have scored 36/39 = 92%.) Validity is computed by the runner from statuses and timing
    only, before any return value is read, and written to the acquisition report.
 4. **Replacement.** A DEGRADED cohort is excluded from analysis (its rows stay in the database,
@@ -61,7 +60,7 @@ any exit policy.
 5. **Pre-flight (fail-closed, before any provider call).** The runner requires: protocol hash match;
    `JUPITER_API_KEY` set; RPC host not the public default; a bootstrap report with
    `PASS_PUMPSWAP_IDENTITY_BOOTSTRAP_V0`, `valid_bootstrap: true` and `ended_at` within 24 hours
-   `[DECISION: 24h]`; QuickEdit disabled and sleep blocked (the runner's console guard); previous
+   (24h); QuickEdit disabled and sleep blocked (the runner's console guard); previous
    cohort PASS in order. Any failure aborts before creating data, so the run key is not consumed.
 6. **Mandatory non-gating missingness reporting.** Per group (KEPT/REJECTED) and cohort: decisions,
    900s attempted, AVAILABLE on time, LATE, TECHNICAL error, STRUCTURAL no-route. Plus a worst-case
@@ -73,7 +72,7 @@ any exit policy.
 ## 5. Fresh acquisition
 
 Fresh untouched cohorts only. Run keys: `rejection-filter-v1-<base>-G1..G4`, reserves `G5`, `G6`,
-base `rejection-filter-v1-20260929-01` `[DECISION: date at freeze]`.
+base `rejection-filter-v1-20260929-01` (date fixed at freeze).
 
 Per cohort, unchanged from V0/PQ: 120s acquisition; max 40 selected episodes; min 30 route-research
 decisions; route-only BUY notional USD 25; slippage 100 bps; hazard pacing 650 ms; entry pacing
@@ -153,20 +152,15 @@ protocol and a separate protocol after entry-side evidence exists.
 The rule is a proxy for what a human SKIP would look like. The real human TAKE/SKIP workflow does not
 exist yet; this protocol neither implements nor validates it.
 
-## 16. Open decisions and freeze procedure
+## 16. Frozen decisions and freeze procedure
 
-Open: (1) lateness cap 60s; (2) technical-degradation threshold 20%; (3) bootstrap freshness 24h;
-(4) base run key date; (5) replacements limited to two (`G5`, `G6`).
+Closed by the owner at freeze: lateness cap 60s; technical-degradation threshold 20%; bootstrap
+freshness 24h; base run key `rejection-filter-v1-20260929-01`; at most two replacements (`G5`, `G6`).
 
-Built and tested offline (synthetic data, no provider calls): `rejection_filter_holdout_v1_collect.py`
-(pre-flight, error taxonomy, cohort validity, replacement state machine) and
-`rejection_filter_holdout_v1_analyze.py` (on-time filter, validity handling, missingness tables,
-worst-case sensitivity). Both refuse to run until the protocol SHA-256 is recorded in the runner.
-
-Freeze procedure, in this order: (a) the owner resolves the decisions above and commits this file
-renamed to `docs/rejection-filter-prospective-holdout-v1-preregistration-2026-09-29.md` with the DRAFT
-wording removed, changing nothing else, in a commit of its own; (b) in a following commit, the SHA-256
-of that file (CRLF-normalized, as `rejection_filter_holdout_v0_collect.protocol_hash` computes) is set
-as `PROTOCOL_SHA256` in `rejection_filter_holdout_v1_collect.py`; (c) only then is the first V1
-acquisition run. Any later edit of the protocol file voids the preregistration for affected runs. This
-draft releases no acquisition, funded BUY, shadow execution or live money.
+Runner `rejection_filter_holdout_v1_collect.py` and analysis `rejection_filter_holdout_v1_analyze.py`
+implement this protocol (tested offline on synthetic data). Both refuse to run until the SHA-256 of this
+file is recorded in the runner. Sequence: (a) this file is committed alone as the freeze commit;
+(b) in a following commit the file's SHA-256 (CRLF-normalized) is set as `PROTOCOL_SHA256` in the
+runner and recorded in the V1 run notes; (c) only then may the first V1 acquisition run. Any later
+edit of this file voids the preregistration for affected runs. Freezing releases no acquisition,
+funded BUY, shadow execution or live money.
