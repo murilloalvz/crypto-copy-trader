@@ -34,8 +34,12 @@ started and fails technically, the classification is INCONCLUSIVE and the failed
   tests with stubbed providers.
 - Acquisition needs live providers (Jupiter, RPC, WSS) and the owner's database, which are not
   available in this cloud session. This session did not and will not start acquisition.
-- The analysis script for the frozen gates is not written yet; it should be written and unit-tested
-  on synthetic data before F1 results exist, and must not change any gate.
+- Analysis: `rejection_filter_holdout_v0_analyze.py` implements only the frozen gates. It refuses to
+  run (no interim or partial analysis) until F1..F4 all have a PASS acquisition report carrying the
+  frozen protocol hash. Tested on synthetic data only; no F1 result exists.
+  Interpretation used for gate 4 ("KEPT between 30% and 85% of classified episodes"): classified
+  = known impact and no hard exclusion, counted before requiring a 900s outcome. This reading
+  is documented in the script and must be confirmed by the owner before F1 data exists.
 
 ## Scientific state
 
