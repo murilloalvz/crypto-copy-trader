@@ -170,9 +170,25 @@ Per `docs/participant-quality-tail-risk-rejection-v0-preregistration-2026-09-28.
 - holdout attempt 2 (base key `...-02`): also `INCONCLUSIVE_NATIVE_PARTICIPANT_QUALITY_HOLDOUT_ACQUISITION` — H1 clean again, H2 failed again on `identity_plane_no_rpc_batch_failure`, but marginally (604/605 pools resolved, 1 stray `SolanaRPCError`). Same root cause as everywhere else today; H2 consistently the one to fail, consistent with cumulative rate pressure from running two cohorts back-to-back on a free endpoint.
 - holdout attempt 3 (base key `...-03`): also `INCONCLUSIVE_NATIVE_PARTICIPANT_QUALITY_HOLDOUT_ACQUISITION` — this time H1 failed (previously H1 had passed twice), with both `identity_plane_no_rpc_batch_failure` and a WSS transport reader error. Confirms the failures are not ordering-specific (not "H2 always fails") — it's the free public RPC randomly failing whichever cohort hits it at the wrong moment.
 - stopped retrying after 3 consecutive INCONCLUSIVE acquisition attempts (6 total free-RPC failures today counting the V68 soak attempts). No blind 4th retry — same conclusion as the V68 soak: this preregistration's acquisition also needs a dedicated/paid RPC to complete. No scientific result (PASS/FAIL/INCONCLUSIVE-support) exists yet for the tail-risk hypothesis itself; only systems/acquisition attempts have run.
+- holdout attempt 4 (2026-09-29, dedicated Helius RPC, base key `...-04`): acquisition succeeded cleanly for the first time — H1 (40 decisions) and H2 (40 decisions) both `PASS_SIGNAL_PLANE_ROUTE_RESEARCH_BRIDGE_V0` / `PASS_MEMORY_FORWARD_300_900_COMPLETE`, lateness p95 = 0 on both
+  - artifact: `artifacts/participant_quality_tail_risk_holdout_v0/participant-quality-tail-risk-v0-20260929-04-report.json`
+  - note: the printed `classification=KEEP_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE` in that report's own stdout is `participant_quality_native_holdout_v1.py`'s **own** built-in verdict (HIGH-vs-LOW profit-factor gates — the closed selector's question). That is not this preregistration's verdict; the wrapper only reuses its acquisition/rows, not its classifier. Ran the report's raw `rows` through this preregistration's own evaluator (`participant_quality_tail_risk_rejection_v0.py`, LOW-vs-ALL catastrophic-tail gates) for the actual verdict below.
+- **Tail-risk rejection evaluator result (first real scientific verdict for this preregistration): `PASS_PARTICIPANT_QUALITY_TAIL_RISK_REJECTION_V0`**
+  - artifact: `artifacts/participant_quality_tail_risk_rejection_v0/participant-quality-tail-risk-v0-20260929-04-report.json`
+  - support: `low_paired_gte_15=true` (low_n=18), `all_paired_gte_40=true` (all_n=56)
+  - LOW catastrophic-loss rate (900s return <= -80%): 88.89%; ALL catastrophic-loss rate: 37.5%; gap = 51.39pp (bar: >=15pp) — gate `low_tail_worse_than_all=true`, `gap_at_least_15pp=true`
+  - HIGH-only median return: -27.14%; ALL median return: -58.33% — gate `high_only_median_not_worse_than_all=true` (excluding LOW did not harm the kept group's median; it improved it)
+  - all 3 primary gates true -> PASS
+  - per preregistration's failure discipline: this run key/sample (`...-04-{H1,H2}`) is now burned, PASS or not — no re-running, no cutoff retune, no materiality-bar change, no switching the contrast back to LOW-vs-HIGH
+  - what this PASS proves (per the preregistration's own scope): prospective evidence that the existing, already-built wallet-quality feature can act as a **fail-closed downside-risk skip filter** in a memecoin route-only context (skip LOW-flagged episodes)
+  - what this PASS does **not** prove: positive alpha for HIGH, executable slippage/fee-adjusted P&L, landing/fill probability, or any live-money edge; it does **not** reopen, retune, or reinterpret the separately closed `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE` result (that was a HIGH-vs-LOW alpha question on a different contrast and different cutoff)
+  - authorization: a PASS here authorizes only a fail-closed skip-gate candidate for a future, separately gated integration decision — not a live entry score, not funded execution
 
-Status:
+Status (closed selector, unchanged, not reopened by the above):
 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`
+
+Status (this preregistration, final per single-sample failure discipline):
+`PASS_PARTICIPANT_QUALITY_TAIL_RISK_REJECTION_V0`
 
 Authority:
 `docs/native-participant-quality-holdout-v1-result-2026-09-24.md`
