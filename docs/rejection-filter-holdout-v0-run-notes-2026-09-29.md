@@ -47,3 +47,25 @@ started and fails technically, the classification is INCONCLUSIVE and the failed
 Untouched: V48 FAIL/CLOSED; V55 COMPLETE/CLEAN, burned for V68 validation; V68 NOT_EVALUATED;
 Native Participant Quality V1 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`.
 This protocol releases no funded BUY, shadow execution or live money.
+
+## F1 technical outcome (recorded 2026-09-29; no return values read)
+
+- Runner classification: `PASS_REJECTION_FILTER_HOLDOUT_V0_ACQUISITION` (bridge PASS, 39 decisions,
+  117 scheduled = 3 x 39, exact three horizons, forward 300/900 collector completed).
+- 300s: 36 AVAILABLE, 3 PROVIDER_ERROR (2 x HTTP 400 "Failed to get quotes", 1 x HTTP 429). Lateness p95 1s.
+- 900s: 10 AVAILABLE, 29 PROVIDER_ERROR (27 x HTTP 429 "[API Gateway] Too many requests",
+  2 x HTTP 400 "Failed to get quotes"). 9 of the 10 AVAILABLE were collected ~1005-1024s late.
+- Timeline (UTC `updated_at`): first 900s outcome on time at 21:06:49; then no writes until
+  21:23:53, when the remaining 38 due outcomes were requested within ~8s and 27 hit the Jupiter
+  rate limit. Interpretation: the collector process stalled ~17 minutes (cause on the owner's
+  machine not yet identified: console QuickEdit pause, OS sleep or similar), and the backlog burst
+  then exceeded the Jupiter gateway rate limit.
+- Rule-input coverage (entry price impact known): 39/39. Support counts (no returns):
+  REJECTED 21 episodes / 6 with 900s AVAILABLE; KEPT 18 episodes / 4 with 900s AVAILABLE.
+- Consequence under the frozen protocol: support gate "REJECTED and KEPT >= 5 paired in every
+  cohort" cannot pass for F1 (KEPT = 4). PROVIDER_ERROR is a terminal status and is never
+  converted or retried. The frozen analysis will therefore end
+  `INCONCLUSIVE_REJECTION_FILTER_V0_SUPPORT` whatever F2..F4 show.
+- F1 return values have NOT been read or analyzed. No verdict exists.
+- The frozen protocol has no replacement mechanism for a technically degraded cohort and no lateness
+  cap; it is not amended here. Options for the owner are a decision, not recorded as taken.
