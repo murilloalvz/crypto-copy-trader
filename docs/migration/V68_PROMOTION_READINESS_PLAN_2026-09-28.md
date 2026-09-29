@@ -19,13 +19,13 @@ This plan proposes no code change and authorizes nothing by itself.
 | 1 | Offline Rust -> episode-identity bridge audit | **DONE** — `PASS_V68_SIGNAL_PLANE_BRIDGE_V0`, 2026-09-28, see `RESEARCH_STATE_LEDGER_2026-09-27.md` | No |
 | 2 | V5 120s live smoke on unrestricted internet | **DONE** — `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`, 2026-09-28, see `RESEARCH_STATE_LEDGER_2026-09-27.md` | No (already run) |
 | 3 | V5 sustained soak (zero drops, bounded queue, 100% trigger parity) | **DONE** — `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`, 2026-09-29, on a dedicated Helius RPC (3 prior attempts on free RPC all FAILed on capacity, confirming the root cause); see `RESEARCH_STATE_LEDGER_2026-09-27.md`. | Yes, long-running |
-| 4 | V5 Research Plane bridge smoke (zero overflow, >=1 new episode admission) | Not started; **also blocked on `JUPITER_API_KEY`** — discovered 2026-09-28 while running the Participant Quality memory build, which reuses this same bridge (`signal_plane_route_research_coordinator_v0`): with no Jupiter key, every entry attempt returns `config_missing` and zero research decisions ever freeze (`FAIL_SIGNAL_PLANE_ROUTE_RESEARCH_BRIDGE_V0`). Read-only route quotes, no funded execution. | Yes |
-| 5 | Verify Research Plane reconstructs frozen V55/V68 features without clock violations | Not started | Depends on step 4 data |
-| 6 | Attach hazard/Jupiter/forward-outcome workers to the injected admission callback | Not started | No (wiring), yes to validate |
-| 7 | Systems-only end-to-end run with a non-V68 run key | Not started | Yes |
-| 8 | Authorize a fresh V68 key | Blocked on 2-7 | N/A |
+| 4 | V5 Research Plane bridge smoke (zero overflow, >=1 new episode admission) | **DONE** — `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`, 2026-09-29, on Helius + Jupiter (`JUPITER_API_KEY` now configured); 273 new admissions, 36/36 gates true; see `RESEARCH_STATE_LEDGER_2026-09-27.md`. | Yes |
+| 5 | Verify Research Plane reconstructs frozen V55/V68 features without clock violations | **DONE** — existing offline test (`tests.test_signal_plane_v68_feature_bridge_v0`) plus a real-data spot check against step 4's persisted episodes (5 sampled, 0 clock violations); see `RESEARCH_STATE_LEDGER_2026-09-27.md`. | Depends on step 4 data |
+| 6 | Attach hazard/Jupiter/forward-outcome workers to the injected admission callback | **DONE** — wiring already existed in `route_research_signal_plane_bridge_v0.py` (`SignalPlaneRouteResearchCoordinatorV0.admit_episode` -> `research_plane_admit_episode_fn`); no new code needed. | No (wiring), yes to validate |
+| 7 | Systems-only end-to-end run with a non-V68 run key | **DONE** — `PASS_SIGNAL_PLANE_ROUTE_RESEARCH_BRIDGE_V0`, 2026-09-29, run key `v68-promotion-step6-7-20260929-01`; 16/16 checks true, 40 decisions frozen, 120 outcomes scheduled, zero clock/schedule violations; see `RESEARCH_STATE_LEDGER_2026-09-27.md`. | Yes |
+| 8 | Authorize a fresh V68 key | **Evidence complete (steps 1-7 all DONE); left for explicit operator sign-off** — flips `V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED` in `route_research_v68_release.py` and burns a scarce fresh V68 key on the frozen protocol; not actioned automatically. | N/A |
 
-Step 1 does not de-risk or shorten steps 2-8. Each remains an independent gate.
+Step 1 does not de-risk or shorten steps 2-8. Each remains an independent gate. As of 2026-09-29 all systems evidence (steps 1-7) is complete; only the operator authorization in step 8 remains.
 
 ## Why steps 2-8 were not started tonight
 
