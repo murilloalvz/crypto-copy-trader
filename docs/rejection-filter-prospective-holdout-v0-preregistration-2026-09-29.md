@@ -1,10 +1,11 @@
-# Rejection Filter Prospective Holdout V0 — Preregistration DRAFT — 2026-09-29
+# Rejection Filter Prospective Holdout V0 — Preregistration (FINAL DRAFT, pending owner freeze) — 2026-09-29
 
 Mode: PAPER / RESEARCH / PROSPECTIVE / NO LIVE MONEY
 
-**STATUS: DRAFT — NOT FROZEN. This document authorizes no acquisition, no provider call and no
-run.** Items marked `[DECISION]` must be fixed by the project owner, outcome-blind, before the
-first fresh acquisition starts. Once frozen, nothing below may move.
+**STATUS: FINAL DRAFT — NOT YET FROZEN. This document authorizes no acquisition, no provider call
+and no run.** Design decisions are closed (4 cohorts; impact-only rule; Participant Quality excluded).
+It becomes frozen only when the project owner commits it unchanged (section 15) before the first
+fresh run key exists. Once frozen, nothing below may move.
 
 ## 1. Why this hypothesis exists (lineage, stated honestly)
 
@@ -80,11 +81,11 @@ V55 study.
 
 Fresh untouched cohorts only; V55, V68, Participant Quality memory/H1/H2 rows are never reused.
 
-- Cohorts: `F1`..`F4` `[DECISION: 4 recommended; see sections 7 and 9]`. Sizing check: 40 episodes
+- Cohorts: exactly four, `F1`..`F4` (decided). Sizing check: 40 episodes
   per cohort at ~78% AVAILABLE-at-900s (V55: 62/79) and ~98% impact coverage gives ~30 paired
   outcomes per cohort, i.e. ~92 for 3 cohorts, barely above the 90 gate (INCONCLUSIVE risk) and ~123
   for 4.
-- Run keys: `rejection-filter-v0-<YYYYMMDD>-01-F1|F2|F3`.
+- Run keys: `rejection-filter-v0-<YYYYMMDD>-01-F1|F2|F3|F4`.
 - Per cohort: 120s acquisition, max 40 selected episodes, min 30 route-research decisions;
   route-only BUY notional USD 25; slippage 100 bps; hazard pacing 650 ms; entry pacing 1000 ms.
 - Exact 300/900/3600 schedule accounting; existing 300/900 forward collector must complete.
@@ -100,11 +101,12 @@ or to loss. Catastrophic loss: label <= -80% (frozen project convention).
 ## 7. Support gates (before any KEEP/KILL)
 
 1. Rule input coverage (price impact known) >= 80% in every cohort.
-2. Aggregate paired classified+900s outcomes >= 90 `[DECISION with cohort count]`.
+2. Aggregate paired classified+900s outcomes >= 90 (expected ~123 with four cohorts).
 3. REJECTED >= 15 and KEPT >= 15 paired outcomes aggregate; each >= 5 in every cohort.
 4. Aggregate catastrophic outcomes >= 10.
 
-Failure of any gate: `INCONCLUSIVE_REJECTION_FILTER_V0_SUPPORT`. No automatic extra cohort.
+Failure of any gate: `INCONCLUSIVE_REJECTION_FILTER_V0_SUPPORT`. No automatic extra cohort and no
+fifth cohort added to reach support.
 
 ## 8. Effect gates (all must pass)
 
@@ -121,16 +123,17 @@ Let `cat(G)` be the catastrophic-loss rate of group G on paired 900s outcomes.
 
 Approximate power with group sizes REJECTED/KEPT:
 
-| True cat rates (REJ / KEPT) | 20 / 40 | 30 / 60 | 45 / 45 |
-|---|---|---|---|
-| 45% / 10% (PQ-sized) | 0.87 | 0.96 | 0.98 |
-| 35% / 15% | 0.42 | 0.57 | 0.61 |
-| 25% / 18% | 0.10 | 0.12 | 0.14 |
-| 18% / 18% (no effect) | 0.02 | 0.02 | 0.03 |
+| True cat rates (REJ / KEPT) | 20 / 40 | 30 / 60 | 45 / 45 | **~58 / 65 (expected, 4 cohorts)** |
+|---|---|---|---|---|
+| 45% / 10% (PQ-sized) | 0.87 | 0.96 | 0.98 | **1.00** |
+| 35% / 15% | 0.42 | 0.57 | 0.61 | **0.76** |
+| 25% / 18% | 0.10 | 0.12 | 0.14 | **0.15** |
+| 18% / 18% (no effect) | 0.02 | 0.02 | 0.03 | **0.02** |
 
-Reading: a false KEEP under no effect is ~2-3%. A moderate real effect (35% vs 15%) is detected only
-~40-60% of the time even at 90 paired outcomes, so an INCONCLUSIVE/KILL there would not prove
-absence. Only a PQ-sized effect is reliably detectable. This is why >= 4 cohorts are proposed.
+Reading: a false KEEP under no effect is ~2-3%. With the expected four-cohort sample a PQ-sized
+effect is detected essentially always and a moderate effect (35% vs 15%) about three times in four;
+a small effect (25% vs 18%) is mostly invisible, so KILL/INCONCLUSIVE would not prove absence of a
+small effect. Simulation assumes the expected group sizes and independence; real group sizes will differ.
 
 ## 10. Descriptive, non-gating reporting
 
@@ -173,8 +176,17 @@ research justifies it. Nothing here selects or arms an exit.
 The rule is a proxy for what a human SKIP would look like. The real human TAKE/SKIP workflow is a
 roadmap item that does not yet exist; this protocol does not implement or validate it.
 
-## 15. Open decisions before freeze
+## 15. Decisions and freeze procedure
 
-1. ~~`L`~~ (removed: no liquidity source). 2. Whether Participant Quality is added as descriptive
-secondary. 3. Number of cohorts (4 recommended, see section 5). 4. ~~P1b~~ done: pooled 53.3% <= 2pp. 5. Owner sign-off
-and the commit that freezes this file, made before the first acquisition run key is created.
+Closed: (1) four cohorts F1..F4; (2) primary rule is `abs(impact) <= 2.0pp` only, liquidity removed
+(P0 failed); (3) Participant Quality is NOT part of this protocol (default; adding it would require
+an amendment before freeze); (4) P1 coverage and P1b KEPT-share (pooled 53.3%) checks passed.
+
+To freeze, the project owner:
+
+1. reviews this file and removes the "FINAL DRAFT" wording, changing nothing else;
+2. commits it on its own commit, with the commit hash recorded in the run notes;
+3. only after that commit exists, creates the first run key `rejection-filter-v0-...-F1`.
+
+Any edit after step 2 voids the preregistration for the affected runs. This draft is not a
+release of acquisition, funded BUY, shadow execution or live money.
