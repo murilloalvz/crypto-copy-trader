@@ -158,7 +158,8 @@ Per `docs/participant-quality-tail-risk-rejection-v0-preregistration-2026-09-28.
   - artifact: `artifacts/participant_quality_native_memory_v1/participant-quality-tail-risk-v0-20260929-01-report.json`
 - integration error found and fixed before any holdout data was consumed: `participant_quality_native_holdout_v1.py` hard-codes the **closed KILL selector's** own frozen `MEMORY_RUN_KEYS` (2026-09-24 rolefix memory) and `FROZEN_CUTOFF` (-65.65...), and fails closed (`ValueError: memory run keys do not match preregistration`) on any other memory — correct behavior, protecting the old closed result from silent substitution. Reusing that script unmodified for this new preregistration was a planning mistake on my part.
   - fix: added `participant_quality_tail_risk_holdout_v0.py`, a thin wrapper that imports `participant_quality_native_holdout_v1` and overrides only `MEMORY_RUN_KEYS`/`FROZEN_CUTOFF`/`VERSION` to this preregistration's own fresh values before calling its unmodified `run_holdout()`. The closed selector's script and frozen constants were not edited.
-- holdout (H1/H2) acquisition: in progress, result to be appended once known
+- holdout attempt 1 (base key `...-01`): `INCONCLUSIVE_NATIVE_PARTICIPANT_QUALITY_HOLDOUT_ACQUISITION` — H1 acquired cleanly (40 decisions), H2 failed with `identity_plane_no_rpc_batch_failure` (same free-RPC capacity ceiling seen in the V68 soak attempts, this time surfacing even at 120s). Not a scientific result; per protocol, an acquisition failure produces INCONCLUSIVE and authorizes no threshold changes. Retrying with a fresh base key rather than partially recovering H1.
+- holdout attempt 2 (base key `...-02`): in progress
 
 Status:
 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`
