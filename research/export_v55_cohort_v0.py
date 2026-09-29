@@ -16,7 +16,12 @@ import csv
 from pathlib import Path
 
 from src import database
+from src.opportunity_route_research_store import (
+    ROUTE_RESEARCH_HORIZONS_SECONDS,
+    load_route_research_outcomes,
+)
 from src.route_research_early_opportunity_v55 import build_early_opportunity_dataset_v55
+from src.route_research_evaluation import _return_for_available
 
 # From docs/route-research-v55-causal-early-opportunity-discovery-result-2026-09-08.md
 # ("Fresh base"); sub-cohorts are `<base>-A` and `<base>-B`.
@@ -36,6 +41,7 @@ COLUMNS = (
 )
 
 DEFAULT_OUT = Path(__file__).with_name("v55_cohort_export.csv")
+DEFAULT_OUT_RETURNS_ONLY = Path(__file__).with_name("v55_cohort_returns_only.csv")
 
 
 def rows_to_records(rows) -> list[dict[str, object]]:
@@ -64,11 +70,76 @@ def write_csv(records: list[dict[str, object]], out: Path) -> None:
             writer.writerow({k: ("" if v is None else v) for k, v in record.items()})
 
 
-def export(out: Path) -> int:
+def _require_database() -> None:
     db_path = database.settings.database_path
     if not Path(db_path).is_file():
         # database.connection() would silently create an empty DB; refuse instead.
         raise SystemExit(f"Database not found: {db_path} (set DATABASE_PATH or run from repo root)")
+
+
+def returns_only_records() -> list[dict[str, object]]:
+    """Fast path: persisted outcomes only; no feature/enrichment reconstruction.
+
+    `flow60_buy_share_pct` is left empty, so the V55 LOW filter cannot be applied from this
+    file. Returns come from the same `_return_for_available` used by the evaluation module.
+    """
+    records: list[dict[str, object]] = []
+    violations = 0
+    for run_key in V55_RUN_KEYS:
+        by_episode: dict[str, dict[int, object]] = {}
+        for outcome in load_route_research_outcomes(acquisition_run_key=run_key):
+            by_episode.setdefault(outcome.episode_key, {})[outcome.horizon_seconds] = outcome
+        for episode_key, outcomes in by_episode.items():
+            if set(outcomes) != set(ROUTE_RESEARCH_HORIZONS_SECONDS):
+                violations += 1
+                continue
+            as_of = {o.research_decision_as_of for o in outcomes.values()}
+            if len(as_of) != 1:
+                violations += 1
+                continue
+            record: dict[str, object] = {
+                "episode_key": episode_key,
+                "cohort": run_key.rsplit("-", 1)[-1],
+                "decision_as_of": as_of.pop(),
+                FEATURE: None,
+            }
+            try:
+                for horizon in HORIZONS_SECONDS:
+                    outcome = outcomes[horizon]
+                    record[f"status_{horizon}s"] = outcome.status
+                    record[f"return_pct_{horizon}s"] = (
+                        _return_for_available(outcome) if outcome.status == "AVAILABLE" else None
+                    )
+            except ValueError:
+                violations += 1
+                continue
+            records.append(record)
+    if violations:
+        raise SystemExit(f"Fail-closed, {violations} episode(s) with lineage/horizon problems.")
+    records.sort(key=lambda r: (r["decision_as_of"], r["episode_key"]))
+    return records
+
+
+def export_returns_only(out: Path) -> int:
+    _require_database()
+    records = returns_only_records()
+    if not records:
+        raise SystemExit(f"No rows for run keys {V55_RUN_KEYS}; wrong database or run key.")
+    write_csv(records, out)
+    print(f"mode=returns-only run_keys={V55_RUN_KEYS}")
+    print(f"rows_exported={len(records)} documented_rows={V55_DOCUMENTED_ROWS}")
+    for horizon in HORIZONS_SECONDS:
+        available = sum(1 for r in records if r[f"return_pct_{horizon}s"] is not None)
+        print(f"available_{horizon}s={available}")
+    if len(records) != V55_DOCUMENTED_ROWS:
+        print("WARNING: row count differs from the documented 79; inspect before using.")
+    print(f"NOTE: {FEATURE} is empty in this mode (LOW filter not applicable).")
+    print(f"wrote {out}")
+    return 0
+
+
+def export(out: Path) -> int:
+    _require_database()
 
     dataset = build_early_opportunity_dataset_v55(acquisition_run_keys=V55_RUN_KEYS)
     base = dataset.base
@@ -102,9 +173,16 @@ def export(out: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--returns-only",
+        action="store_true",
+        help="fast: skip feature reconstruction; flow60_buy_share_pct is left empty",
+    )
     args = parser.parse_args(argv)
-    return export(args.out)
+    if args.returns_only:
+        return export_returns_only(args.out or DEFAULT_OUT_RETURNS_ONLY)
+    return export(args.out or DEFAULT_OUT)
 
 
 if __name__ == "__main__":

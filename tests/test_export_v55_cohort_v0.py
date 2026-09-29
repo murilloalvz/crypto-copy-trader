@@ -46,6 +46,31 @@ class ExportV55CohortTests(unittest.TestCase):
         finally:
             exp.database.settings = original
 
+    def test_returns_only_groups_by_episode_and_fails_closed(self):
+        def outcome(ep, h, status="AVAILABLE", as_of=10):
+            return SimpleNamespace(
+                episode_key=ep, horizon_seconds=h, status=status, research_decision_as_of=as_of
+            )
+
+        good = [outcome("e1", h) for h in (300, 900, 3600)]
+        good[1] = outcome("e1", 900, status="UNAVAILABLE")
+        orig_load, orig_ret = exp.load_route_research_outcomes, exp._return_for_available
+        try:
+            exp.load_route_research_outcomes = lambda acquisition_run_key: (
+                good if acquisition_run_key.endswith("-A") else []
+            )
+            exp._return_for_available = lambda o: float(o.horizon_seconds) / 100
+            records = exp.returns_only_records()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["return_pct_300s"], 3.0)
+            self.assertIsNone(records[0]["return_pct_900s"])  # explicit missingness
+            self.assertEqual(records[0]["cohort"], "A")
+            exp.load_route_research_outcomes = lambda acquisition_run_key: good[:2]
+            with self.assertRaises(SystemExit):  # missing horizon -> fail closed
+                exp.returns_only_records()
+        finally:
+            exp.load_route_research_outcomes, exp._return_for_available = orig_load, orig_ret
+
 
 if __name__ == "__main__":
     unittest.main()
