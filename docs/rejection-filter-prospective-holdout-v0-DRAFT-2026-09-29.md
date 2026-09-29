@@ -68,11 +68,11 @@ V55 study.
   removed (section 3).
 - P1 (RESULT: PASS for the main source). Price impact present in BUY quotes: metis 2,099/2,129
   (98.6%), okx 97/97, dflow 201/236 (85.2%), jupiterz 5/5. Coverage gate stays >= 80%.
-- P1b `[TO RUN]`: the same script now also prints, outcome-blind and returns-free, the share of
-  BUY quotes with `abs(impact) <= 2pp`. Non-triviality gate 4 needs KEPT between 30% and 85%. If the
-  share is outside that band on recent data, the cap (or the gate) must be reconsidered *before
-  freeze*, not after; the two burned Post-Transition impacts observed (2.5pp, 87.6pp) both exceed 2pp,
-  so a small KEPT share is a real risk.
+- P1b (RESULT: PASS, outcome-blind, all persisted BUY route quotes, not a single cohort): share with
+  `abs(impact) <= 2pp` is metis 1,167/2,099 (55.6%), dflow 87/201 (43.3%), okx 21/97 (21.6%),
+  jupiterz 5/5; pooled 1,280/2,402 (53.3%). The dominant source and the pool sit inside the 30-85%
+  non-triviality band. okx (n=97) is outside it but is a small share of quotes. These are estimates
+  of the KEPT share, not guarantees for a fresh cohort; gate 4 still applies at analysis time.
 - P2: V7 Signal Plane -> Research Plane -> route-research bridge is the accepted path; systems gates
   (11/11, 5s thresholds) stay untouched.
 
@@ -80,7 +80,10 @@ V55 study.
 
 Fresh untouched cohorts only; V55, V68, Participant Quality memory/H1/H2 rows are never reused.
 
-- Cohorts: `F1`, `F2`, `F3` `[DECISION: 3 recommended; see section 9 for power]`.
+- Cohorts: `F1`..`F4` `[DECISION: 4 recommended; see sections 7 and 9]`. Sizing check: 40 episodes
+  per cohort at ~78% AVAILABLE-at-900s (V55: 62/79) and ~98% impact coverage gives ~30 paired
+  outcomes per cohort, i.e. ~92 for 3 cohorts, barely above the 90 gate (INCONCLUSIVE risk) and ~123
+  for 4.
 - Run keys: `rejection-filter-v0-<YYYYMMDD>-01-F1|F2|F3`.
 - Per cohort: 120s acquisition, max 40 selected episodes, min 30 route-research decisions;
   route-only BUY notional USD 25; slippage 100 bps; hazard pacing 650 ms; entry pacing 1000 ms.
@@ -127,7 +130,7 @@ Approximate power with group sizes REJECTED/KEPT:
 
 Reading: a false KEEP under no effect is ~2-3%. A moderate real effect (35% vs 15%) is detected only
 ~40-60% of the time even at 90 paired outcomes, so an INCONCLUSIVE/KILL there would not prove
-absence. Only a PQ-sized effect is reliably detectable. This is why >= 3 cohorts are proposed.
+absence. Only a PQ-sized effect is reliably detectable. This is why >= 4 cohorts are proposed.
 
 ## 10. Descriptive, non-gating reporting
 
@@ -173,5 +176,5 @@ roadmap item that does not yet exist; this protocol does not implement or valida
 ## 15. Open decisions before freeze
 
 1. ~~`L`~~ (removed: no liquidity source). 2. Whether Participant Quality is added as descriptive
-secondary. 3. Number of cohorts (3 recommended). 4. Result of P1b (share of BUY quotes with abs(impact) <= 2pp). 5. Owner sign-off
+secondary. 3. Number of cohorts (4 recommended, see section 5). 4. ~~P1b~~ done: pooled 53.3% <= 2pp. 5. Owner sign-off
 and the commit that freezes this file, made before the first acquisition run key is created.
