@@ -27,10 +27,11 @@ started and fails technically, the classification is INCONCLUSIVE and the failed
 
 ## What is NOT ready
 
-- No F1 acquisition runner exists for this protocol. The accepted path is the V7 Signal Plane ->
-  Research Plane -> route-research bridge with the frozen parameters (120s, max 40 episodes, USD 25,
-  100 bps, hazard pacing 650 ms, entry pacing 1000 ms). A runner must be prepared and reviewed
-  against those parameters before any live run; none was invented here.
+- Runner: `rejection_filter_holdout_v0_collect.py` (added after the freeze; it is not part of the
+  frozen protocol file and changes none of its parameters). It acquires ONE cohort per invocation
+  with the frozen parameters as constants, verifies the protocol SHA-256 first, requires a fresh run
+  key, enforces F1 -> F4 order, and computes no verdict. Not yet run live; reviewed only by offline
+  tests with stubbed providers.
 - Acquisition needs live providers (Jupiter, RPC, WSS) and the owner's database, which are not
   available in this cloud session. This session did not and will not start acquisition.
 - The analysis script for the frozen gates is not written yet; it should be written and unit-tested
