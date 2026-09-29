@@ -151,7 +151,16 @@ Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
   - `scientific_thresholds_modified: false`, `economic_hypothesis_modified: false`
   - confirms the attempt 1-3 conclusion: this was purely a free-RPC capacity ceiling, not a code defect — the identical hot path passes cleanly once given a dedicated provider
   - **Step 3 is now DONE.** Steps 4-8 remain, and step 4 additionally needs `JUPITER_API_KEY` (now configured, see Participant Quality section below for its own live confirmation).
-
+- step 4 (V5 Research Plane bridge smoke, 2026-09-29, Helius RPC, non-V68 run key `v68-promotion-step4-20260929-01`, 120s): `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`
+  - artifact: `artifacts/rust_signal_plane_live_shadow_v7/step4-research-plane-bridge-report.json`
+  - all 36 systems gates true (includes `research_plane_new_admission_observed: true`, `research_plane_no_errors: true`, `research_plane_no_queue_overflow: true`), trigger parity 100%, `errors: []`
+  - `research_plane_new_admissions: 273` (>=1 required), `scientific_thresholds_modified: false`, `economic_hypothesis_modified: false`
+  - **Step 4 is now DONE.**
+- step 5 (verify persisted Research Plane reconstructs frozen V55/V68 causal features without feature-clock violations, 2026-09-29): DONE via two checks, no new live network
+  - existing offline mechanism test: `python -m unittest tests.test_signal_plane_v68_feature_bridge_v0 -v` -> `OK` (1 test) — synthetic trace, exact reconstruction of `flow60_buy_share_pct` and frozen V68 LOW/HIGH boundary from a persisted Research Plane record
+  - real-data spot check (ad hoc, scratchpad-only, not committed) against step 4's actual persisted episodes (`acquisition_run_key='v68-promotion-step4-20260929-01'`): sampled 5 real admitted episodes, rebuilt each enrichment bundle at its own `decision_as_of`/`first_trigger_observed_at`, derived V55/V68 features successfully for all 5, `chain_as_of <= as_of` held for all 5 (0 clock violations), varied real `flow60_buy_share_pct` values (100.0, 100.0, 100.0, 66.67, 85.71) confirming the feature is actually being computed from real per-episode data, not a constant
+  - **Step 5 is now DONE.**
+- steps 6-7 (attach hazard/Jupiter/forward-outcome workers to the injected admission callback; systems-only end-to-end run with a non-V68 run key): discovered this wiring **already exists** as `route_research_signal_plane_bridge_v0.py` — it wires `SignalPlaneRouteResearchCoordinatorV0.admit_episode` into `run_live_shadow_v0`'s `research_plane_admit_episode_fn` injection point, refuses any run key containing `v68-flow60-fresh` unless `allow_v68_fresh_run_key=True` (default False), and its own `checks` dict already includes `research_decision_clock_violations_zero` and `research_schedule_violations_zero`. No new wiring code was needed. Ran it live with a non-V68 run key (`v68-promotion-step6-7-20260929-01`); result logged below once complete.
 - steps 4-8 (Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
 
 No economic verdict exists or is any closer to existing from these systems steps alone.
