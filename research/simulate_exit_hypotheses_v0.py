@@ -6,13 +6,18 @@ persisted data under different exit rules. Offline: reads the JSON from export_v
 
 Model (all declared, none tuned on the data):
 - Entry at decision_as_of at `ref_trade_price_usd` (last trade seen at/before it).
-- Path = 5s buckets [end_offset, low, high, last] from market trades (no impact/fees).
+- Path = 5s buckets [end_offset, low, high, last] from market trades (no impact/fees), OR
+  (`--returns-csv`) the three persisted route-only checkpoints 300/900/3600s treated as a
+  3-point path: TP/SL are only checked AT those checkpoints (touches between them are invisible,
+  so TP/SL are approximated and biased both ways). Route-only return != realized P&L.
   `--cost-pct` subtracts a flat round-trip cost from every trade (default 0).
 - Inside a bucket the order of events is unknown: if SL and TP are both touched, SL wins.
   TP fills at the TP level; SL fills at min(SL level, bucket last) (gap-aware).
 - Time exit uses the last bucket price <= hold; not evaluable if it is older than `--stale-seconds`.
-- Sequential, non-overlapping positions: an episode whose decision_as_of is before the previous
-  exit is skipped. Sizing/reinvestment reuses src.wave_bankroll.simulate_bankroll.
+- Overlap: `--overlap-mode sequential` (default) follows the existing simulate_bankroll contract
+  (trades taken in detection order, closed and reinvested sequentially; real overlap NOT modeled).
+  `skip` drops an episode that starts before the previous exit (very few trades on this cohort,
+  whose episodes are packed into two ~1-minute windows). Sizing reuses simulate_bankroll.
 """
 from __future__ import annotations
 
@@ -58,10 +63,10 @@ def simulate_exit(ep, tp, sl, hold, stale):
     return 100.0 * (last_seen[1] / p0 - 1.0), last_seen[0]
 
 
-def run_rule(episodes, tp, sl, hold, *, stale, cost_pct, balance, allocation):
+def run_rule(episodes, tp, sl, hold, *, stale, cost_pct, balance, allocation, overlap="sequential"):
     trades, skipped_eval, skipped_overlap, busy_until = [], 0, 0, -1
     for ep in sorted(episodes, key=lambda e: (e["decision_as_of"], e["episode_key"])):
-        if ep["decision_as_of"] < busy_until:
+        if overlap == "skip" and ep["decision_as_of"] < busy_until:
             skipped_overlap += 1
             continue
         res = simulate_exit(ep, tp, sl, hold, stale)
@@ -116,9 +121,33 @@ def aggregate(rows):
     }
 
 
-def load_episodes(path: Path, features_csv: Path | None):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    episodes = data["episodes"]
+def episodes_from_returns_csv(path: Path):
+    """Route-only checkpoints as a 3-point path with reference price 1.0 (missing = no bucket)."""
+    episodes = []
+    with path.open(encoding="utf-8") as h:
+        for r in csv.DictReader(h):
+            buckets = []
+            for hz in (300, 900, 3600):
+                v = r.get(f"return_pct_{hz}s", "")
+                if v != "":
+                    price = max(0.0, 1.0 + float(v) / 100.0)
+                    buckets.append([hz, price, price, price])
+            episodes.append({
+                "episode_key": r["episode_key"], "decision_as_of": int(r["decision_as_of"]),
+                "ref_trade_price_usd": 1.0, "buckets": buckets,
+                "flow60_buy_share_pct": r.get(FEATURE_COL, ""),
+            })
+    return episodes
+
+
+FEATURE_COL = "flow60_buy_share_pct"
+
+
+def load_episodes(path: Path, features_csv: Path | None, returns_csv: Path | None = None):
+    if returns_csv is not None:
+        episodes = episodes_from_returns_csv(returns_csv)
+    else:
+        episodes = json.loads(path.read_text(encoding="utf-8"))["episodes"]
     dropped = 0
     if features_csv is not None:
         with features_csv.open(encoding="utf-8") as h:
@@ -136,6 +165,8 @@ def load_episodes(path: Path, features_csv: Path | None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--path-json", type=Path, default=Path(__file__).with_name("v55_price_path.json"))
+    ap.add_argument("--returns-csv", type=Path, help="v55_cohort_returns_only.csv (3 checkpoints) instead of the path JSON")
+    ap.add_argument("--overlap-mode", choices=("sequential", "skip"), default="sequential")
     ap.add_argument("--features-csv", type=Path, help="v55_cohort_export.csv (full mode) to apply the LOW proxy filter")
     ap.add_argument("--balance", type=float, default=100.0)
     ap.add_argument("--allocation-pct", type=float, default=30.0)
@@ -144,8 +175,8 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=Path(__file__).with_name("v55_exit_sim_table.md"))
     a = ap.parse_args(argv)
 
-    episodes, dropped = load_episodes(a.path_json, a.features_csv)
-    common = dict(stale=a.stale_seconds, cost_pct=a.cost_pct, balance=a.balance, allocation=a.allocation_pct)
+    episodes, dropped = load_episodes(a.path_json, a.features_csv, a.returns_csv)
+    common = dict(stale=a.stale_seconds, cost_pct=a.cost_pct, balance=a.balance, allocation=a.allocation_pct, overlap=a.overlap_mode)
     core_rows = []
     for key, (name, tp, sl, hold) in CORE.items():
         core_rows.append(row(name, *run_rule(episodes, tp, sl, hold, **common)))
@@ -164,8 +195,10 @@ def main(argv=None):
         f"**{LABEL}**", "",
         f"- Cohort: V55 discovery A+B, `COMPLETE / CLEAN`, discovery-only; V68 = NOT_EVALUATED. Nada aqui é veredito.",
         f"- Entrada: {filt}; episódios usados: {len(episodes)} (excluídos pelo filtro: {dropped}).",
-        f"- Banca US$ {a.balance:.0f}, alocação {a.allocation_pct:.0f}% por entrada, reinvestimento sequencial, sem sobrepor posições; custo round-trip {a.cost_pct}%.",
-        "- Base de preço: trades de mercado persistidos (sem impacto/fees), não cotações de rota. Ordem dentro do bucket de 5s desconhecida: SL vence TP.",
+        f"- Banca US$ {a.balance:.0f}, alocação {a.allocation_pct:.0f}% por entrada, reinvestimento sequencial, custo round-trip {a.cost_pct}%.",
+        ("- Base: retornos route-only nos checkpoints 300/900/3600s; TP/SL só são checados NESSES pontos (toques entre eles são invisíveis; TP preenche no nível, SL no pior entre nível e checkpoint). Aproximação, não simulação tick a tick."
+         if a.returns_csv else "- Base de preço: trades de mercado persistidos (sem impacto/fees), não cotações de rota. Ordem dentro do bucket de 5s desconhecida: SL vence TP."),
+        f"- Sobreposição: modo `{a.overlap_mode}` ({'contrato do simulate_bankroll: ordem de detecção, sobreposição real NÃO modelada' if a.overlap_mode == 'sequential' else 'episódio que começa antes da saída anterior é pulado'}).",
         "", "## Hipóteses principais", "", HEADER, *[fmt(r) for r in core_rows],
     ]
     agg = aggregate(core_rows)
