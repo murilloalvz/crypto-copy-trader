@@ -143,6 +143,14 @@ Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
   - failed gate: `identity_plane_no_rpc_batch_failure` — 6 batches returned `SolanaRPCError`, only 470/593 pools resolved (79%, worse resolution rate than attempt 2's 98% on the official public endpoint)
   - trigger parity remained 100% (20890/20890)
 - conclusion: three attempts across two different free/public RPC endpoints, three failure instances, same root cause class — no free-tier Solana RPC has held up under this system's sustained (600s) identity-resolution request volume. This is confirmed to be a provider-capacity ceiling, not specific to one vendor and not a code defect (`trigger_parity_100` and hot-path accounting passed in every attempt). A dedicated/paid RPC provider remains the only realistic path for step 3 to pass; further blind retries on free endpoints are not expected to change this.
+- attempt 4 (2026-09-29, dedicated Helius RPC, operator-provided key): `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH`
+  - fresh bootstrap precondition also re-run on Helius: `PASS_PUMPSWAP_IDENTITY_BOOTSTRAP_V0`, `valid_bootstrap=true`
+    - artifact: `artifacts/pumpswap_identity_bootstrap_v0/pumpswap_identity_bootstrap_v0-1790709878-7fc8e4ca10f8/report.json`
+  - artifact: `artifacts/rust_signal_plane_live_shadow_v7/soak-600s-helius-report.json`
+  - trigger parity 100% (213021/213021, 0 mismatches), all 29 systems gates true, `pump_ingress_drops: 0`, `pumpswap_ingress_drops: 0`, `reader_errors: []`, `errors: []`
+  - `scientific_thresholds_modified: false`, `economic_hypothesis_modified: false`
+  - confirms the attempt 1-3 conclusion: this was purely a free-RPC capacity ceiling, not a code defect — the identical hot path passes cleanly once given a dedicated provider
+  - **Step 3 is now DONE.** Steps 4-8 remain, and step 4 additionally needs `JUPITER_API_KEY` (now configured, see Participant Quality section below for its own live confirmation).
 
 - steps 4-8 (Research Plane bridge smoke, feature-clock reconstruction check, hazard/Jupiter callback wiring, non-V68 end-to-end run, fresh V68 key authorization) remain undone
 
