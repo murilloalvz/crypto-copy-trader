@@ -200,7 +200,7 @@ def main(argv=None):
         f"- Cohort: V55 discovery A+B, `COMPLETE / CLEAN`, discovery-only; V68 = NOT_EVALUATED. Nada aqui é veredito.",
         f"- Entrada: {filt}; episódios usados: {len(episodes)} (excluídos pelo filtro: {dropped}).",
         f"- Banca US$ {a.balance:.0f}, alocação {a.allocation_pct:.0f}% por entrada, reinvestimento sequencial, custo round-trip {a.cost_pct}%.",
-        ("- Base: retornos route-only nos checkpoints 300/900/3600s; TP/SL só são checados NESSES pontos (toques entre eles são invisíveis; TP preenche no nível, SL no pior entre nível e checkpoint). Aproximação, não simulação tick a tick."
+        ("- Base: retornos route-only nos checkpoints 300/900/3600s; TP/SL só são checados NESSES pontos (toques entre eles são invisíveis; SL preenche no pior entre nível e checkpoint; ver linha de preenchimento do TP abaixo). Aproximação, não simulação tick a tick."
          if a.returns_csv else "- Base de preço: trades de mercado persistidos (sem impacto/fees), não cotações de rota. Ordem dentro do bucket de 5s desconhecida: SL vence TP."),
         f"- Preenchimento do TP: {'retorno OBSERVADO no checkpoint (sem fill no nível)' if a.tp_fill == 'observed' else 'no nível do TP (otimista; fora do contrato de exit do repo)'}.",
         f"- Sobreposição: modo `{a.overlap_mode}` ({'contrato do simulate_bankroll: ordem de detecção, sobreposição real NÃO modelada' if a.overlap_mode == 'sequential' else 'episódio que começa antes da saída anterior é pulado'}).",
