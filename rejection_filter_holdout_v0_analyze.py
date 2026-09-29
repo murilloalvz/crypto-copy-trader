@@ -12,7 +12,8 @@ Rules implemented (sections 3, 6-8, 10, 12 of the protocol):
 - No verdict until ALL four cohorts F1..F4 have a PASS acquisition report with the frozen protocol
   hash. There is deliberately no interim/partial analysis (no optional stopping).
 
-Interpretation choice (protocol gate 4 says "KEPT is between 30% and 85% of classified episodes"):
+Interpretation choice, CONFIRMED by the project owner on 2026-09-29 before any F1 data existed
+(protocol gate 4 says "KEPT is between 30% and 85% of classified episodes"):
 "classified episodes" = episodes with a known impact and no hard exclusion, counted BEFORE requiring
 a 900s outcome. The share among paired outcomes is reported too but does not gate.
 """

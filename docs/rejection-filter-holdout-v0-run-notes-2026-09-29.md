@@ -39,7 +39,8 @@ started and fails technically, the classification is INCONCLUSIVE and the failed
   frozen protocol hash. Tested on synthetic data only; no F1 result exists.
   Interpretation used for gate 4 ("KEPT between 30% and 85% of classified episodes"): classified
   = known impact and no hard exclusion, counted before requiring a 900s outcome. This reading
-  is documented in the script and must be confirmed by the owner before F1 data exists.
+  is documented in the script and was CONFIRMED by the owner on 2026-09-29, before any F1 data
+  existed. This is a clarification recorded here; the frozen protocol file is unchanged.
 
 ## Scientific state
 
