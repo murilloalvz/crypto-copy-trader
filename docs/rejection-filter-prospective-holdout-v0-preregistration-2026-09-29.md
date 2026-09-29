@@ -1,11 +1,9 @@
-# Rejection Filter Prospective Holdout V0 — Preregistration (FINAL DRAFT, pending owner freeze) — 2026-09-29
+# Rejection Filter Prospective Holdout V0 — Preregistration — 2026-09-29
 
 Mode: PAPER / RESEARCH / PROSPECTIVE / NO LIVE MONEY
 
-**STATUS: FINAL DRAFT — NOT YET FROZEN. This document authorizes no acquisition, no provider call
-and no run.** Design decisions are closed (4 cohorts; impact-only rule; Participant Quality excluded).
-It becomes frozen only when the project owner commits it unchanged (section 15) before the first
-fresh run key exists. Once frozen, nothing below may move.
+**STATUS: FROZEN by this commit. Nothing below may move.** Freezing authorizes no provider call and
+no funded action by itself; acquisition starts only when the project owner runs it (section 15).
 
 ## 1. Why this hypothesis exists (lineage, stated honestly)
 
