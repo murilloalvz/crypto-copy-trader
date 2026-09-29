@@ -44,7 +44,13 @@ DEFAULT_OUT = Path(__file__).with_name("v55_cohort_export.csv")
 DEFAULT_OUT_RETURNS_ONLY = Path(__file__).with_name("v55_cohort_returns_only.csv")
 
 
+def extra_feature_columns(rows) -> list[str]:
+    """All other causal features already built by the V47/V55 dataset (full mode only)."""
+    return sorted({k for r in rows for k in r.features} - set(COLUMNS))
+
+
 def rows_to_records(rows) -> list[dict[str, object]]:
+    extras = extra_feature_columns(rows)
     records = []
     for row in sorted(rows, key=lambda r: (r.research_decision_as_of, r.episode_key)):
         record: dict[str, object] = {
@@ -53,6 +59,8 @@ def rows_to_records(rows) -> list[dict[str, object]]:
             "decision_as_of": row.research_decision_as_of,
             FEATURE: row.features.get(FEATURE),
         }
+        for name in extras:
+            record[name] = row.features.get(name)
         for horizon in HORIZONS_SECONDS:
             record[f"return_pct_{horizon}s"] = row.labels.get(horizon)
             record[f"status_{horizon}s"] = row.outcome_statuses.get(horizon)
@@ -62,8 +70,9 @@ def rows_to_records(rows) -> list[dict[str, object]]:
 
 def write_csv(records: list[dict[str, object]], out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(COLUMNS) + [k for k in (records[0] if records else {}) if k not in COLUMNS]
     with out.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
             # Missingness stays explicit: None is written as an empty cell, never as 0.

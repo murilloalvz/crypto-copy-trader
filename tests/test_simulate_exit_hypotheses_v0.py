@@ -13,6 +13,11 @@ class ExitRuleTests(unittest.TestCase):
         e = ep("k1", 0, [[5, 1.0, 1.6, 1.5]])
         self.assertEqual(sim.simulate_exit(e, 50.0, None, 3600, 120), (50.0, 5))
 
+    def test_tp_observed_fill_has_no_threshold_fantasy(self):
+        e = ep("k1", 0, [[5, 1.0, 3.0, 2.9]])
+        self.assertEqual(sim.simulate_exit(e, 50.0, None, 3600, 120, "level")[0], 50.0)
+        self.assertAlmostEqual(sim.simulate_exit(e, 50.0, None, 3600, 120, "observed")[0], 190.0)
+
     def test_sl_wins_same_bucket_and_gap_aware(self):
         e = ep("k1", 0, [[5, 0.5, 2.0, 0.4]])
         ret, _ = sim.simulate_exit(e, 50.0, -30.0, 3600, 120)

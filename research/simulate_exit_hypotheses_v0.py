@@ -42,7 +42,7 @@ GRID_SL = (None, -20.0, -30.0, -50.0)
 GRID_HOLD = (900, 3600)
 
 
-def simulate_exit(ep, tp, sl, hold, stale):
+def simulate_exit(ep, tp, sl, hold, stale, tp_fill="level"):
     """Return (return_pct, exit_offset_s) or None if not evaluable."""
     p0 = ep.get("ref_trade_price_usd")
     buckets = ep.get("buckets") or []
@@ -57,19 +57,21 @@ def simulate_exit(ep, tp, sl, hold, stale):
             fill = min(p0 * (1 + sl / 100.0), last)
             return 100.0 * (fill / p0 - 1.0), end
         if tp is not None and high >= p0 * (1 + tp / 100.0):
-            return tp, end
+            # "observed" avoids threshold-price fantasy fills (repo exit contract): use the
+            # return actually observed at the checkpoint/bucket, not the TP level.
+            return (100.0 * (last / p0 - 1.0) if tp_fill == "observed" else tp), end
     if last_seen is None or hold - last_seen[0] > stale:
         return None
     return 100.0 * (last_seen[1] / p0 - 1.0), last_seen[0]
 
 
-def run_rule(episodes, tp, sl, hold, *, stale, cost_pct, balance, allocation, overlap="sequential"):
+def run_rule(episodes, tp, sl, hold, *, stale, cost_pct, balance, allocation, overlap="sequential", tp_fill="level"):
     trades, skipped_eval, skipped_overlap, busy_until = [], 0, 0, -1
     for ep in sorted(episodes, key=lambda e: (e["decision_as_of"], e["episode_key"])):
         if overlap == "skip" and ep["decision_as_of"] < busy_until:
             skipped_overlap += 1
             continue
-        res = simulate_exit(ep, tp, sl, hold, stale)
+        res = simulate_exit(ep, tp, sl, hold, stale, tp_fill)
         if res is None:
             skipped_eval += 1
             continue
@@ -166,6 +168,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--path-json", type=Path, default=Path(__file__).with_name("v55_price_path.json"))
     ap.add_argument("--returns-csv", type=Path, help="v55_cohort_returns_only.csv (3 checkpoints) instead of the path JSON")
+    ap.add_argument("--tp-fill", choices=("level", "observed"), default="level",
+                    help="observed = TP exits at the observed checkpoint return (no threshold-price fill)")
     ap.add_argument("--overlap-mode", choices=("sequential", "skip"), default="sequential")
     ap.add_argument("--features-csv", type=Path, help="v55_cohort_export.csv (full mode) to apply the LOW proxy filter")
     ap.add_argument("--balance", type=float, default=100.0)
@@ -176,7 +180,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     episodes, dropped = load_episodes(a.path_json, a.features_csv, a.returns_csv)
-    common = dict(stale=a.stale_seconds, cost_pct=a.cost_pct, balance=a.balance, allocation=a.allocation_pct, overlap=a.overlap_mode)
+    common = dict(stale=a.stale_seconds, cost_pct=a.cost_pct, balance=a.balance, allocation=a.allocation_pct, overlap=a.overlap_mode, tp_fill=a.tp_fill)
     core_rows = []
     for key, (name, tp, sl, hold) in CORE.items():
         core_rows.append(row(name, *run_rule(episodes, tp, sl, hold, **common)))
@@ -198,6 +202,7 @@ def main(argv=None):
         f"- Banca US$ {a.balance:.0f}, alocação {a.allocation_pct:.0f}% por entrada, reinvestimento sequencial, custo round-trip {a.cost_pct}%.",
         ("- Base: retornos route-only nos checkpoints 300/900/3600s; TP/SL só são checados NESSES pontos (toques entre eles são invisíveis; TP preenche no nível, SL no pior entre nível e checkpoint). Aproximação, não simulação tick a tick."
          if a.returns_csv else "- Base de preço: trades de mercado persistidos (sem impacto/fees), não cotações de rota. Ordem dentro do bucket de 5s desconhecida: SL vence TP."),
+        f"- Preenchimento do TP: {'retorno OBSERVADO no checkpoint (sem fill no nível)' if a.tp_fill == 'observed' else 'no nível do TP (otimista; fora do contrato de exit do repo)'}.",
         f"- Sobreposição: modo `{a.overlap_mode}` ({'contrato do simulate_bankroll: ordem de detecção, sobreposição real NÃO modelada' if a.overlap_mode == 'sequential' else 'episódio que começa antes da saída anterior é pulado'}).",
         "", "## Hipóteses principais", "", HEADER, *[fmt(r) for r in core_rows],
     ]
