@@ -148,7 +148,17 @@ Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
 
 No economic verdict exists or is any closer to existing from these systems steps alone.
 
-### Native Participant Quality Selection Edge V1
+### Native Participant Quality Tail-Risk Rejection V0 (new preregistration, in progress)
+
+Per `docs/participant-quality-tail-risk-rejection-v0-preregistration-2026-09-28.md`, operator-approved 2026-09-29.
+
+- fresh memory build (`participant_quality_native_memory_v1.py`, base key `participant-quality-tail-risk-v0-20260929-01`, JUPITER_API_KEY now configured): `READY_TO_PREREGISTER_NATIVE_PARTICIPANT_QUALITY_HOLDOUT`
+  - all 4 cohorts (M1-M4) passed bridge + forward-900 maturity
+  - fresh outcome-blind cutoff: `-86.0484432047999`, favorable direction HIGH, M2-M4 available=76, M4 coverage=80.0%
+  - artifact: `artifacts/participant_quality_native_memory_v1/participant-quality-tail-risk-v0-20260929-01-report.json`
+- integration error found and fixed before any holdout data was consumed: `participant_quality_native_holdout_v1.py` hard-codes the **closed KILL selector's** own frozen `MEMORY_RUN_KEYS` (2026-09-24 rolefix memory) and `FROZEN_CUTOFF` (-65.65...), and fails closed (`ValueError: memory run keys do not match preregistration`) on any other memory — correct behavior, protecting the old closed result from silent substitution. Reusing that script unmodified for this new preregistration was a planning mistake on my part.
+  - fix: added `participant_quality_tail_risk_holdout_v0.py`, a thin wrapper that imports `participant_quality_native_holdout_v1` and overrides only `MEMORY_RUN_KEYS`/`FROZEN_CUTOFF`/`VERSION` to this preregistration's own fresh values before calling its unmodified `run_holdout()`. The closed selector's script and frozen constants were not edited.
+- holdout (H1/H2) acquisition: in progress, result to be appended once known
 
 Status:
 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`
