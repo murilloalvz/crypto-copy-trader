@@ -45,6 +45,53 @@ class RunnerGuardTests(unittest.TestCase):
             rc.main(["--cohort", "1", "--bootstrap-report", "x.json"])
 
 
+class ConsoleGuardTests(unittest.TestCase):
+    def test_noop_off_windows(self):
+        ran = []
+        with rc.console_guards():
+            ran.append(1)
+        self.assertEqual(ran, [1])
+
+    def test_windows_disables_quickedit_prevents_sleep_and_restores(self):
+        import ctypes
+        import sys as _sys
+        calls = []
+
+        class K32:
+            def GetStdHandle(self, n):
+                calls.append(("handle", n))
+                return 7
+
+            def GetConsoleMode(self, h, ref):
+                ref._obj.value = 0x00C7  # quick edit (0x40) on
+                return 1
+
+            def SetConsoleMode(self, h, m):
+                calls.append(("mode", m))
+
+            def SetThreadExecutionState(self, f):
+                calls.append(("exec", f))
+
+        orig_platform, had = _sys.platform, hasattr(ctypes, "windll")
+        old_windll = getattr(ctypes, "windll", None)
+        _sys.platform = "win32"
+        ctypes.windll = type("W", (), {"kernel32": K32()})()
+        try:
+            with rc.console_guards():
+                pass
+        finally:
+            _sys.platform = orig_platform
+            if had:
+                ctypes.windll = old_windll
+            else:
+                del ctypes.windll
+        modes = [m for k, m in calls if k == "mode"]
+        self.assertEqual(modes[0] & 0x40, 0)          # quick edit cleared
+        self.assertEqual(modes[-1], 0x00C7)           # restored
+        execs = [f for k, f in calls if k == "exec"]
+        self.assertEqual(execs, [0x80000001, 0x80000000])  # sleep blocked, then released
+
+
 class RunnerFlowTests(unittest.TestCase):
     """No live calls: bridge, freshness, audit and collector are stubbed."""
 

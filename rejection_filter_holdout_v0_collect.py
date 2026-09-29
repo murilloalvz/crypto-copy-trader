@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,36 @@ ARTIFACT_ROOT = Path("artifacts/rejection_filter_holdout_v0")
 ACQ_PASS = "PASS_REJECTION_FILTER_HOLDOUT_V0_ACQUISITION"
 ACQ_INCONCLUSIVE = "INCONCLUSIVE_REJECTION_FILTER_HOLDOUT_V0_ACQUISITION"
 ACQ_NOT_FRESH = "FAIL_REJECTION_FILTER_HOLDOUT_V0_RUN_KEY_NOT_FRESH"
+
+
+@contextlib.contextmanager
+def console_guards():
+    """Operational guards for long unattended Windows runs (no effect on protocol or data).
+
+    Root cause of the F1 stall: console QuickEdit freezes the process while text is selected/clicked
+    until a key is pressed, producing a ~17 minute pause and a burst of overdue Jupiter requests
+    (HTTP 429). This disables QuickEdit for the run and prevents OS sleep, then restores both.
+    No-op on non-Windows platforms.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+
+    k32 = ctypes.windll.kernel32
+    handle = k32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    mode = ctypes.c_uint32()
+    old_mode = mode.value if k32.GetConsoleMode(handle, ctypes.byref(mode)) else None
+    if old_mode is not None:
+        # ENABLE_EXTENDED_FLAGS (0x80) on, ENABLE_QUICK_EDIT_MODE (0x40) off
+        k32.SetConsoleMode(handle, (old_mode | 0x0080) & ~0x0040)
+    k32.SetThreadExecutionState(0x80000000 | 0x00000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    try:
+        yield
+    finally:
+        k32.SetThreadExecutionState(0x80000000)
+        if old_mode is not None:
+            k32.SetConsoleMode(handle, old_mode)
 
 
 def protocol_hash(path: Path) -> str:
@@ -193,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Refusing to start: pass --confirm-live-acquisition (live provider calls).")
     verify_protocol()
     require_previous_cohort(args.cohort)
-    report = run_cohort(cohort=args.cohort, bootstrap_report=args.bootstrap_report)
+    with console_guards():
+        report = run_cohort(cohort=args.cohort, bootstrap_report=args.bootstrap_report)
     print(f"classification={report['classification']} run_key={report['run_key']}")
     print(f"report={report.get('artifact')}")
     return 0 if report["classification"] == ACQ_PASS else 2

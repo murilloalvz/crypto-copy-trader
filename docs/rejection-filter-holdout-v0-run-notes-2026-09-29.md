@@ -57,9 +57,10 @@ This protocol releases no funded BUY, shadow execution or live money.
   2 x HTTP 400 "Failed to get quotes"). 9 of the 10 AVAILABLE were collected ~1005-1024s late.
 - Timeline (UTC `updated_at`): first 900s outcome on time at 21:06:49; then no writes until
   21:23:53, when the remaining 38 due outcomes were requested within ~8s and 27 hit the Jupiter
-  rate limit. Interpretation: the collector process stalled ~17 minutes (cause on the owner's
-  machine not yet identified: console QuickEdit pause, OS sleep or similar), and the backlog burst
-  then exceeded the Jupiter gateway rate limit.
+  rate limit. Cause CONFIRMED by the owner: console QuickEdit froze the process; it resumed when
+  Enter was pressed in the terminal. The overdue backlog then exceeded the Jupiter gateway rate limit.
+  Operational fix (no protocol change): the runner now disables QuickEdit and blocks OS sleep while
+  running (`console_guards`).
 - Rule-input coverage (entry price impact known): 39/39. Support counts (no returns):
   REJECTED 21 episodes / 6 with 900s AVAILABLE; KEPT 18 episodes / 4 with 900s AVAILABLE.
 - Consequence under the frozen protocol: support gate "REJECTED and KEPT >= 5 paired in every
