@@ -23,6 +23,15 @@ def main() -> int:
         "GROUP BY source, side, executable ORDER BY COUNT(*) DESC LIMIT 20"
     ):
         print(" | ".join(str(v) for v in r))
+    print("\nBUY quotes by |price impact| (outcome-blind; no returns read):")
+    print("source | with_impact | abs<=2pp | share_abs<=2pp")
+    for r in conn.execute(
+        "SELECT source, COUNT(provider_price_impact_pct_points), "
+        "SUM(ABS(provider_price_impact_pct_points) <= 2.0) FROM causal_quote_observations "
+        "WHERE side='buy' AND executable=0 GROUP BY source ORDER BY COUNT(*) DESC LIMIT 20"
+    ):
+        n, ok = r[1], r[2] or 0
+        print(f"{r[0]} | {n} | {ok} | {100.0 * ok / n:.1f}%" if n else f"{r[0]} | 0 | 0 | n/a")
     conn.close()
     return 0
 

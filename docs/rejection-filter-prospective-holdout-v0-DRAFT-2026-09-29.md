@@ -17,8 +17,8 @@ first fresh acquisition starts. Once frozen, nothing below may move.
   That result said any follow-up must be a *separately preregistered tail-risk / rejection*
   hypothesis with new independent evidence. This draft is that vehicle. It does not reopen or
   reinterpret the closed selector.
-- The primary rule below uses structural, non-outcome-derived conditions (route quality and pool
-  liquidity relative to trade size), not thresholds searched on outcomes.
+- The primary rule below uses one structural, non-outcome-derived condition (route price impact at a
+  fixed notional), not a threshold searched on outcomes.
 
 Frozen statuses this draft leaves untouched: V48 FAIL/CLOSED; V55 COMPLETE/CLEAN and burned for
 V68 validation; V68 NOT_EVALUATED; Participant Quality `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`.
@@ -37,35 +37,42 @@ it (invariant: route-only return != realized P&L).
 
 For each episode, at `research_decision_as_of`, using only the causal entry BUY route quote:
 
-- `liquidity_ok`: `entry_liquidity_usd >= L`, with `L = 100 x route-only BUY notional`
-  = USD 2,500 at USD 25 notional `[DECISION: confirm L; must be structural/notional-based or set
-  from an outcome-blind coverage-only calibration cohort, never from outcomes]`.
-- `impact_ok`: `abs(provider_price_impact_pct_points) <= 2.0` (the route-quality maximum already
-  frozen elsewhere in the repo; absolute-value semantics, finite signed values are valid).
+- `impact_ok`: `abs(provider_price_impact_pct_points) <= 2.0`. The 2pp cap is the route-quality
+  maximum already frozen elsewhere in the repo (absolute-value semantics; finite signed values are
+  valid). At a fixed USD 25 route-only notional, price impact is an outcome-independent structural
+  proxy for pool depth relative to trade size.
 
 Classification:
 
-- REJECTED: `liquidity_ok` is False OR `impact_ok` is False (each evaluated only when its input is known).
-- KEPT: both known and both True.
-- UNCLASSIFIED: any input missing and no known input already rejects. Never zero-filled, never
-  imputed, never counted as KEPT or REJECTED; reported with its own counts.
+- REJECTED: `abs(impact) > 2.0`.
+- KEPT: impact known and `abs(impact) <= 2.0`.
+- UNCLASSIFIED: impact missing/non-finite. Never zero-filled, never imputed, never counted as KEPT
+  or REJECTED; reported with its own counts.
 
 Hard exclusions (preconditions, not tested rules): mint or freeze authority present, per the
 existing hazard evidence. In V55 these flags had zero variation, so they cannot be a tested rule.
 
+Dropped from the earlier draft: a `liquidity_usd >= L` condition. Precondition P0 showed no
+persisted route quote carries `liquidity_usd` (0 of 4,532 rows), so it cannot be classified. It may
+return only in a future protocol that first proves a causal liquidity source.
+
 Explicitly out of the primary rule: Participant Quality (`[DECISION]` whether to add it as a
 *descriptive* secondary using its already-frozen cutoff -65.65233776856643, LOW=reject; if added it
-cannot rescue a failed primary), `flow60_buy_share_pct`, any feature that showed nothing in the V55 study.
+cannot rescue a failed primary), `flow60_buy_share_pct`, and any feature that showed nothing in the
+V55 study.
 
 ## 4. Preconditions before freezing (offline, outcome-blind)
 
-- P0: verify persisted BUY route quotes actually carry `liquidity_usd`
-  (`python -m research.check_entry_liquidity_coverage_v0`). In the V55 dataset
-  `entry_liquidity_usd`, `flow30_notional_imbalance_pct` and `flow30_return_pct` had **0% coverage**.
-  If entry-quote liquidity is not populated by the route provider, `liquidity_ok` cannot be part of
-  the primary rule and must be replaced before freeze by a structural alternative, or this protocol
-  is not frozen. Do not proceed with a rule that cannot be classified.
-- P1: confirm price-impact coverage >= 80% on recent entry quotes.
+- P0 (RESULT: FAILED for liquidity). `python -m research.check_entry_liquidity_coverage_v0` on the
+  owner's database: `liquidity_usd` present in 0 rows for every source, buy and sell. Liquidity rule
+  removed (section 3).
+- P1 (RESULT: PASS for the main source). Price impact present in BUY quotes: metis 2,099/2,129
+  (98.6%), okx 97/97, dflow 201/236 (85.2%), jupiterz 5/5. Coverage gate stays >= 80%.
+- P1b `[TO RUN]`: the same script now also prints, outcome-blind and returns-free, the share of
+  BUY quotes with `abs(impact) <= 2pp`. Non-triviality gate 4 needs KEPT between 30% and 85%. If the
+  share is outside that band on recent data, the cap (or the gate) must be reconsidered *before
+  freeze*, not after; the two burned Post-Transition impacts observed (2.5pp, 87.6pp) both exceed 2pp,
+  so a small KEPT share is a real risk.
 - P2: V7 Signal Plane -> Research Plane -> route-research bridge is the accepted path; systems gates
   (11/11, 5s thresholds) stay untouched.
 
@@ -89,7 +96,7 @@ or to loss. Catastrophic loss: label <= -80% (frozen project convention).
 
 ## 7. Support gates (before any KEEP/KILL)
 
-1. Rule input coverage (liquidity and impact both known) >= 80% in every cohort.
+1. Rule input coverage (price impact known) >= 80% in every cohort.
 2. Aggregate paired classified+900s outcomes >= 90 `[DECISION with cohort count]`.
 3. REJECTED >= 15 and KEPT >= 15 paired outcomes aggregate; each >= 5 in every cohort.
 4. Aggregate catastrophic outcomes >= 10.
@@ -150,7 +157,7 @@ research justifies it. Nothing here selects or arms an exit.
 
 ## 13. Forbidden after fresh starts
 
-- moving `L`, the 2pp cap, the -80% threshold, alpha or any gate; adding/removing rules;
+- moving the 2pp cap, the -80% threshold, alpha or any gate; adding/removing rules;
 - flipping direction, adding cohorts because results are inconvenient, subgroup or feature rescue;
 - switching primary horizon to 300s or 3600s;
 - reusing burned/consumed rows for validation;
@@ -165,6 +172,6 @@ roadmap item that does not yet exist; this protocol does not implement or valida
 
 ## 15. Open decisions before freeze
 
-1. `L` and its derivation (section 3). 2. Whether Participant Quality is added as descriptive
-secondary. 3. Number of cohorts (3 recommended). 4. Result of P0/P1 coverage checks. 5. Owner sign-off
+1. ~~`L`~~ (removed: no liquidity source). 2. Whether Participant Quality is added as descriptive
+secondary. 3. Number of cohorts (3 recommended). 4. Result of P1b (share of BUY quotes with abs(impact) <= 2pp). 5. Owner sign-off
 and the commit that freezes this file, made before the first acquisition run key is created.
