@@ -122,9 +122,17 @@ class PreflightTests(unittest.TestCase):
         finally:
             rc.settings = orig
 
+    def test_frozen_protocol_hash_matches_repo_file(self):
+        rc.verify_protocol()  # real frozen file vs recorded constant
+
     def test_unfrozen_protocol_and_missing_flag_refuse(self):
-        with self.assertRaises(SystemExit):
-            rc.verify_protocol()  # PROTOCOL_SHA256 is None until freeze
+        orig = rc.PROTOCOL_SHA256
+        try:
+            rc.PROTOCOL_SHA256 = None
+            with self.assertRaises(SystemExit):
+                rc.verify_protocol()  # no hash recorded => not frozen
+        finally:
+            rc.PROTOCOL_SHA256 = orig
         with self.assertRaises(SystemExit):
             rc.main(["--bootstrap-report", "x.json"])
         with tempfile.TemporaryDirectory() as d:
