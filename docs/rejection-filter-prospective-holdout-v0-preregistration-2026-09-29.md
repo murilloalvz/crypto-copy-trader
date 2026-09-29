@@ -57,10 +57,9 @@ Dropped from the earlier draft: a `liquidity_usd >= L` condition. Precondition P
 persisted route quote carries `liquidity_usd` (0 of 4,532 rows), so it cannot be classified. It may
 return only in a future protocol that first proves a causal liquidity source.
 
-Explicitly out of the primary rule: Participant Quality (`[DECISION]` whether to add it as a
-*descriptive* secondary using its already-frozen cutoff -65.65233776856643, LOW=reject; if added it
-cannot rescue a failed primary), `flow60_buy_share_pct`, and any feature that showed nothing in the
-V55 study.
+Explicitly out of this protocol: Participant Quality (its frozen selector is KILL; adding it
+would need an amendment before freeze and could never rescue a failed primary),
+`flow60_buy_share_pct`, and any feature that showed nothing in the V55 study.
 
 ## 4. Preconditions before freezing (offline, outcome-blind)
 
