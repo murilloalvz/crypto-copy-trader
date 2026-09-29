@@ -180,6 +180,22 @@ Step 3 (sustained soak) first attempt FAILED with real evidence (2026-09-28):
 
 No economic verdict exists or is any closer to existing from these systems steps alone.
 
+- runbook delivered for the local 1800s soak: `docs/migration/V68_LOCAL_1800S_SOAK_RUNBOOK_2026-09-29.md` (7 steps, regenerates all 5 promotion-report inputs on the operator's own git HEAD, ends in a `--preflight-only` check that verifies readiness without opening a fresh V68 key)
+- migration PR (`murilloalvz/crypto-copy-trader#3`) merged into `research/rust-signal-plane-live-shadow-v0` at commit `4bc59974783d0dd3ad57d9338fbaa5b247c7352a`, 2026-09-29
+
+### Participant Quality Tail-Risk Shadow Annotation V0 (new preregistration, DRAFT, not armed)
+
+`docs/participant-quality-tail-risk-shadow-annotation-v0-preregistration-2026-09-29.md` — drafted
+2026-09-29 at operator request, following up on the `...-04` PASS above. Not reused as data: this
+new document proposes a **standing, append-only, annotation-only** shadow log (not another
+burn-once holdout), computed with its own fresh outcome-blind cutoff, attached read-only alongside
+`src.opportunity_decision_readiness.OpportunityDecisionReadiness` without touching that frozen
+dataclass. Authorizes nothing yet — **DRAFT, requires explicit operator sign-off before any code is
+written**, same as the tail-risk-rejection document's own DRAFT stage before it was armed. Its own
+failure discipline explicitly separates "log the label" (this document, if signed off) from
+"surface the label to a human" and "any skip-gate implementation" (each its own future, separately
+gated decision) — nothing here authorizes changing admission, hazard, entry, or exit behavior.
+
 ### Native Participant Quality Tail-Risk Rejection V0 (new preregistration, in progress)
 
 Per `docs/participant-quality-tail-risk-rejection-v0-preregistration-2026-09-28.md`, operator-approved 2026-09-29.
