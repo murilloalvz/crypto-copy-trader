@@ -157,10 +157,10 @@ def prepare_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def evaluate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def evaluate(rows: list[dict[str, Any]], cohorts: tuple[str, ...] = COHORTS) -> dict[str, Any]:
     usable = [r for r in rows if not r["excluded_authority"]]
     per: dict[str, Any] = {}
-    for c in COHORTS:
+    for c in cohorts:
         cr = [r for r in usable if r["cohort"] == c]
         counts = Counter(r["group"] for r in cr)
         known = counts["REJECTED"] + counts["KEPT"]

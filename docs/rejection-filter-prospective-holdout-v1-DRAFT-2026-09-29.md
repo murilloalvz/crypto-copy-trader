@@ -158,10 +158,15 @@ exist yet; this protocol neither implements nor validates it.
 Open: (1) lateness cap 60s; (2) technical-degradation threshold 20%; (3) bootstrap freshness 24h;
 (4) base run key date; (5) replacements limited to two (`G5`, `G6`).
 
-Before freeze, still to build and test offline (no provider calls): V1 runner (pre-flight, error
-taxonomy, cohort validity, replacement bookkeeping) and V1 analysis (on-time filter, validity
-handling, missingness and sensitivity outputs). To freeze, the owner: (a) resolves the decisions
-above and removes the DRAFT wording changing nothing else; (b) commits that file alone and records
-the hash in the V1 run notes; (c) only then creates the first V1 run key. Any later edit voids the
-preregistration for affected runs. This draft releases no acquisition, funded BUY, shadow execution
-or live money.
+Built and tested offline (synthetic data, no provider calls): `rejection_filter_holdout_v1_collect.py`
+(pre-flight, error taxonomy, cohort validity, replacement state machine) and
+`rejection_filter_holdout_v1_analyze.py` (on-time filter, validity handling, missingness tables,
+worst-case sensitivity). Both refuse to run until the protocol SHA-256 is recorded in the runner.
+
+Freeze procedure, in this order: (a) the owner resolves the decisions above and commits this file
+renamed to `docs/rejection-filter-prospective-holdout-v1-preregistration-2026-09-29.md` with the DRAFT
+wording removed, changing nothing else, in a commit of its own; (b) in a following commit, the SHA-256
+of that file (CRLF-normalized, as `rejection_filter_holdout_v0_collect.protocol_hash` computes) is set
+as `PROTOCOL_SHA256` in `rejection_filter_holdout_v1_collect.py`; (c) only then is the first V1
+acquisition run. Any later edit of the protocol file voids the preregistration for affected runs. This
+draft releases no acquisition, funded BUY, shadow execution or live money.
