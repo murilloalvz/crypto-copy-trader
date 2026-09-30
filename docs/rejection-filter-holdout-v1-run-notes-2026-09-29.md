@@ -37,3 +37,10 @@ no verdict). V0 F1 return values must not be read or analyzed before the V1 verd
 V48 FAIL/CLOSED; V55 COMPLETE/CLEAN and burned for V68 validation; V68 NOT_EVALUATED; Native Participant
 Quality V1 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`. This protocol releases no funded
 BUY, shadow execution or live money.
+
+## Result recorded 2026-09-30
+
+G1..G4 acquired VALID with no replacement; frozen-gate analysis returned
+`KEEP_REJECTION_FILTER_V1_TAIL_RISK_CANDIDATE`. Details and limits:
+`docs/rejection-filter-prospective-holdout-v1-result-2026-09-30.md`. KEEP authorizes only a separately
+preregistered independent replication; the KEPT group is not profitable in route-only terms.
