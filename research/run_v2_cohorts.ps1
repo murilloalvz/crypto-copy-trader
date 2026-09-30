@@ -17,7 +17,10 @@ $ErrorActionPreference = "Stop"
 if ($Cohorts -lt 1 -or $Cohorts -gt 3) { throw "-Cohorts must be 1..3 (at most 3 cohorts may start per UTC day)" }
 Set-Location $Repo
 $utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
-if (@("2026-09-29", "2026-09-30") -contains $utc) { throw "Today ($utc UTC) is a V1 collection day; V2 cohorts must run on another UTC day." }
+if (@("2026-09-29", "2026-09-30") -contains $utc) {
+  if ($DryRun) { Write-Warning "Today ($utc UTC) is a V1 collection day: a real run would be REFUSED. Continuing only because -DryRun changes nothing." }
+  else { throw "Today ($utc UTC) is a V1 collection day; V2 cohorts must run on another UTC day." }
+}
 Write-Host "UTC date: $utc (a cohort counts for the UTC date on which it STARTS)"
 $env:DATABASE_PATH = $Db
 if (-not (Test-Path $Db)) { throw "Database not found: $Db" }
