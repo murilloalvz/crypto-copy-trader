@@ -157,7 +157,16 @@ def prepare_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def evaluate(rows: list[dict[str, Any]], cohorts: tuple[str, ...] = COHORTS) -> dict[str, Any]:
+def evaluate(
+    rows: list[dict[str, Any]],
+    cohorts: tuple[str, ...] = COHORTS,
+    *,
+    coverage_pct_override: dict[str, float] | None = None,
+    direction_min: int | None = None,
+) -> dict[str, Any]:
+    """Frozen V0 gates. Optional parameters (used by V2 only; defaults reproduce V0/V1 exactly):
+    coverage_pct_override = per-cohort impact coverage measured elsewhere (e.g. before exclusions);
+    direction_min = minimum number of cohorts with REJECTED > KEPT (None = every cohort)."""
     usable = [r for r in rows if not r["excluded_authority"]]
     per: dict[str, Any] = {}
     for c in cohorts:
@@ -181,7 +190,11 @@ def evaluate(rows: list[dict[str, Any]], cohorts: tuple[str, ...] = COHORTS) -> 
     kept_share = (100.0 * kept_classified / classified) if classified else None
 
     support = {
-        "impact_coverage_ge_80_every_cohort": all(p["impact_coverage_pct"] >= MIN_IMPACT_COVERAGE_PCT for p in per.values()),
+        "impact_coverage_ge_80_every_cohort": all(
+            (coverage_pct_override.get(c, 0.0) if coverage_pct_override is not None else p["impact_coverage_pct"])
+            >= MIN_IMPACT_COVERAGE_PCT
+            for c, p in per.items()
+        ),
         "paired_total_ge_90": paired >= MIN_PAIRED_TOTAL,
         "rejected_and_kept_ge_15_total": rej["n"] >= MIN_GROUP_TOTAL and kept["n"] >= MIN_GROUP_TOTAL,
         "rejected_and_kept_ge_5_every_cohort": all(
@@ -203,15 +216,19 @@ def evaluate(rows: list[dict[str, Any]], cohorts: tuple[str, ...] = COHORTS) -> 
 
     diff = rej["cat_rate_pct"] - kept["cat_rate_pct"]
     p_value = fisher_one_sided(rej["catastrophic"], rej["n"], kept["catastrophic"], kept["n"])
+    right_direction = sum(
+        1 for p in per.values() if p["groups"]["REJECTED"]["cat_rate_pct"] > p["groups"]["KEPT"]["cat_rate_pct"]
+    )
+    need = len(per) if direction_min is None else direction_min
+    direction_key = ("rejected_gt_kept_in_every_cohort" if direction_min is None
+                     else f"rejected_gt_kept_in_at_least_{need}_cohorts")
     effect = {
         "diff_ge_15pp": diff >= MIN_EFFECT_PP,
         "fisher_one_sided_p_lt_0_05": p_value < ALPHA,
-        "rejected_gt_kept_in_every_cohort": all(
-            p["groups"]["REJECTED"]["cat_rate_pct"] > p["groups"]["KEPT"]["cat_rate_pct"] for p in per.values()
-        ),
+        direction_key: right_direction >= need,
         "kept_share_30_to_85": kept_share is not None and KEPT_SHARE_MIN_PCT <= kept_share <= KEPT_SHARE_MAX_PCT,
     }
-    result["effect_values"] = {"cat_diff_pp": diff, "fisher_p": p_value}
+    result["effect_values"] = {"cat_diff_pp": diff, "fisher_p": p_value, "cohorts_with_correct_direction": right_direction}
     result["effect_checks"] = effect
     result["classification"] = KEEP if all(effect.values()) else KILL
     return result

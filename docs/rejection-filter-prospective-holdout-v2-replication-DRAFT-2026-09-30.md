@@ -156,19 +156,23 @@ how much V1's independence assumption mattered.
 The rule is a proxy for what a human SKIP would look like; the real human TAKE/SKIP workflow does not
 exist yet. This protocol neither implements nor validates it.
 
-## 15. Open decisions and freeze procedure
+## 15. Decisions and freeze procedure
 
-Open: (1) 5 valid cohorts; (2) 4-of-5 direction rule; (3) >= 2 days and <= 3 per day; (4) token
-exclusion rules 4.2-4.3; (5) two replacements (`H6`, `H7`); (6) base run key date.
+Accepted by the owner on 2026-09-30 (values as written above): 5 valid cohorts H1..H5; direction rule in at
+least 4 of 5; >= 2 distinct UTC days and <= 3 per day; token exclusion rules 4.2-4.3; two replacements
+(`H6`, `H7`); base run key date `20260930`. Still to be confirmed at freeze: nothing else is open.
 
-To build and test offline before freeze (no provider calls): V2 runner (V1 machinery plus 5 required
-cohorts, replacements H6/H7, UTC start-date recording and day rules) and V2 analysis (token exclusions,
-day grouping, 4-of-5 rule, V2 verdict names, per-day tables), plus the section 12 diagnostic. V1
-modules stay untouched as provenance; V2 modules are new files.
+Built and tested offline (synthetic data, no provider calls), as NEW files (V1 modules untouched):
+`rejection_filter_holdout_v2_collect.py` (pre-flight, day rules, UTC start-date recording, 5-cohort state
+machine with H6/H7) and `rejection_filter_holdout_v2_analyze.py` (token exclusions, coverage before
+exclusions, 4-of-5 rule, day-diversity support gate, per-day and pooled-descriptive tables), plus the
+read-only V1 diagnostic `research/diagnose_rejection_filter_v1_token_overlap_v0.py`. Both V2 modules refuse
+to run until the SHA-256 of the frozen file is recorded in the runner.
 
 Freeze sequence: (a) the owner commits this file renamed to
 `docs/rejection-filter-prospective-holdout-v2-replication-preregistration-2026-09-30.md`, DRAFT wording
-removed, decisions resolved, nothing else changed, in a commit of its own; (b) in a following commit the
-file's SHA-256 (CRLF-normalized) is recorded in the V2 runner and run notes; (c) only then may the first
-V2 acquisition run. Any later edit voids the preregistration for affected runs. This draft releases no
-acquisition, funded BUY, shadow execution or live money.
+removed, nothing else changed, in a commit of its own; (b) in a following commit the file's SHA-256
+(CRLF-normalized) is recorded in `rejection_filter_holdout_v2_collect.py` and in the V2 run notes; (c) only
+then may the first V2 acquisition run, on a UTC day other than 2026-09-29/30. Any later edit voids the
+preregistration for affected runs. This draft releases no acquisition, funded BUY, shadow execution or
+live money.
