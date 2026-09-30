@@ -89,3 +89,18 @@ What it does NOT show:
   never to validate a rule derived from them. V0 F1 return values remain unread.
 - V48 FAIL/CLOSED; V55 COMPLETE/CLEAN and burned for V68 validation; V68 NOT_EVALUATED; Native
   Participant Quality V1 `KILL_NATIVE_PARTICIPANT_QUALITY_SELECTION_EDGE_CANDIDATE`: untouched.
+
+## Addendum: independence diagnostic (non-gating, added after the recorded result)
+
+Read-only diagnostic `research/diagnose_rejection_filter_v1_token_overlap_v0.py`, run on the owner's database
+after the V1 result was recorded. It cannot change the recorded classification.
+
+- Token overlap (outcome-blind): 159 episodes, 144 distinct tokens; 15 repeat episodes; 13 tokens appear in
+  more than one cohort; no repeats inside a single cohort. V0 F1 shares 3 tokens with V1.
+- V1 re-read keeping the first episode per token (descriptive, consumed data): paired 127 (KEPT 54,
+  REJECTED 73). Catastrophic KEPT 8/54 = 14.8%, REJECTED 31/73 = 42.5%; difference 27.7pp; one-sided
+  Fisher p = 0.00064; direction correct in 4/4 cohorts; all V1 support and effect gates would still pass.
+- All 15 removed repeats were non-catastrophic outcomes (12 KEPT, 3 REJECTED); catastrophic counts were
+  unchanged (8 and 31). Repeats are mostly low-impact tokens that were re-selected in later cohorts.
+- Conclusion: the V1 independence assumption did not drive the result (28.7pp -> 27.7pp). V2 still makes
+  each token count once, as preregistered.
