@@ -87,8 +87,14 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(rc.run_key_for("H7"), "rejection-filter-v2-20260930-01-H7")
         with self.assertRaises(ValueError):
             rc.run_key_for("G1")
-        with self.assertRaises(SystemExit):
-            rc.verify_protocol()  # not frozen: hash is None
+        rc.verify_protocol()  # real frozen file vs recorded constant
+        orig = rc.PROTOCOL_SHA256
+        try:
+            rc.PROTOCOL_SHA256 = None
+            with self.assertRaises(SystemExit):
+                rc.verify_protocol()  # no hash recorded => not frozen
+        finally:
+            rc.PROTOCOL_SHA256 = orig
         with self.assertRaises(SystemExit):
             rc.main(["--bootstrap-report", "x.json"])  # live flag missing
         with tempfile.TemporaryDirectory() as d:

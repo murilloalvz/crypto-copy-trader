@@ -31,7 +31,7 @@ from src.route_research_forward_collection_900_v0 import collect_route_research_
 
 VERSION = "rejection_filter_holdout_v2_collect"
 PROTOCOL_PATH = Path("docs/rejection-filter-prospective-holdout-v2-replication-preregistration-2026-09-30.md")
-PROTOCOL_SHA256: str | None = None  # set to the frozen file's SHA-256 (CRLF-normalized) at freeze
+PROTOCOL_SHA256: str | None = "c775a1a38d056ab356f4128f8c6fddf5b61940ebf7f8bca7369f5482dba905a3"  # SHA-256 (CRLF-normalized) of the file frozen at 6e1c81457f1098cb69d99d08ec6c9f3e686152d5
 BASE_RUN_KEY = "rejection-filter-v2-20260930-01"
 LABELS = ("H1", "H2", "H3", "H4", "H5", "H6", "H7")  # H6, H7 = pre-reserved replacements
 VALID_COHORTS_REQUIRED = 5
