@@ -1,10 +1,9 @@
-# Rejection Filter Prospective Holdout V2 (Independent Replication) — Preregistration DRAFT — 2026-09-30
+# Rejection Filter Prospective Holdout V2 (Independent Replication) — Preregistration — 2026-09-30
 
 Mode: PAPER / RESEARCH / PROSPECTIVE / NO LIVE MONEY
 
-**STATUS: DRAFT — NOT FROZEN. Authorizes no acquisition, provider call or run.** Items marked
-`[DECISION]` must be fixed by the project owner before freeze (section 15). Once frozen, nothing below
-may move.
+**STATUS: FROZEN by this commit. Nothing below may move.** Freezing authorizes no provider call and no
+funded action by itself; acquisition starts only when the project owner runs it (section 15).
 
 ## 1. Why V2 exists (lineage)
 
@@ -44,7 +43,7 @@ collected on time (`observed_at - target_at <= 60s`); catastrophic = return <= -
 
 1. **Different days.** No V2 cohort may start on 2026-09-29 or 2026-09-30 (UTC). Valid cohorts must span
    at least two distinct UTC calendar days, with at most three valid cohorts on any one day
-   `[DECISION: >= 2 days, <= 3 per day]`. Time of day is reported, not gated.
+   (>= 2 days, <= 3 per day). Time of day is reported, not gated.
 2. **Each token counts once.** Across the whole V2 study, only the first episode per `token_mint` (by
    `research_decision_as_of`, ties by `episode_key`) enters the gates. Later episodes of the same token
    are counted and reported as `REPEAT`, never analyzed for the gates.
@@ -62,7 +61,7 @@ collected on time (`observed_at - target_at <= 60s`); catastrophic = return <= -
    USD 25, 100 bps, hazard 650 ms, entry 1000 ms, exit 250 ms.
 
 Run keys: `rejection-filter-v2-<base>-H1..H5`, reserves `H6`, `H7`; base
-`rejection-filter-v2-<YYYYMMDD>-01` `[DECISION: date at freeze]`.
+`rejection-filter-v2-<YYYYMMDD>-01` (date fixed at freeze).
 
 ## 5. Support gates (over VALID cohorts, after token exclusions)
 
@@ -80,7 +79,7 @@ Failure: `INCONCLUSIVE_REJECTION_FILTER_V2_SUPPORT`.
 2. One-sided exact Fisher test, `cat(REJECTED) > cat(KEPT)`, `p < 0.05`. Single primary test; no
    multiplicity correction needed.
 3. `cat(REJECTED) > cat(KEPT)` (strictly) in **at least 4 of the 5** valid cohorts
-   `[DECISION: 4 of 5; V1 used all 4 of 4]`. Rationale: with about 13-16 pairs per cell, requiring all
+   (4 of 5; V1 used all 4 of 4). Rationale: with about 13-16 pairs per cell, requiring all
    five makes a true effect fail on noise about a third of the time (section 7).
 4. KEPT is between 30% and 85% of classified episodes (known impact, no hard exclusion, after token
    exclusions, counted before requiring a 900s outcome).
@@ -156,23 +155,16 @@ how much V1's independence assumption mattered.
 The rule is a proxy for what a human SKIP would look like; the real human TAKE/SKIP workflow does not
 exist yet. This protocol neither implements nor validates it.
 
-## 15. Decisions and freeze procedure
+## 15. Frozen decisions and freeze procedure
 
-Accepted by the owner on 2026-09-30 (values as written above): 5 valid cohorts H1..H5; direction rule in at
-least 4 of 5; >= 2 distinct UTC days and <= 3 per day; token exclusion rules 4.2-4.3; two replacements
-(`H6`, `H7`); base run key date `20260930`. Still to be confirmed at freeze: nothing else is open.
+Closed by the owner at freeze (2026-09-30): 5 valid cohorts H1..H5; direction rule in at least 4 of 5; >= 2
+distinct UTC days and <= 3 per day; token exclusion rules 4.2-4.3; two replacements (`H6`, `H7`); base run
+key `rejection-filter-v2-20260930-01`.
 
-Built and tested offline (synthetic data, no provider calls), as NEW files (V1 modules untouched):
-`rejection_filter_holdout_v2_collect.py` (pre-flight, day rules, UTC start-date recording, 5-cohort state
-machine with H6/H7) and `rejection_filter_holdout_v2_analyze.py` (token exclusions, coverage before
-exclusions, 4-of-5 rule, day-diversity support gate, per-day and pooled-descriptive tables), plus the
-read-only V1 diagnostic `research/diagnose_rejection_filter_v1_token_overlap_v0.py`. Both V2 modules refuse
-to run until the SHA-256 of the frozen file is recorded in the runner.
-
-Freeze sequence: (a) the owner commits this file renamed to
-`docs/rejection-filter-prospective-holdout-v2-replication-preregistration-2026-09-30.md`, DRAFT wording
-removed, nothing else changed, in a commit of its own; (b) in a following commit the file's SHA-256
-(CRLF-normalized) is recorded in `rejection_filter_holdout_v2_collect.py` and in the V2 run notes; (c) only
-then may the first V2 acquisition run, on a UTC day other than 2026-09-29/30. Any later edit voids the
-preregistration for affected runs. This draft releases no acquisition, funded BUY, shadow execution or
-live money.
+Runner `rejection_filter_holdout_v2_collect.py` and analysis `rejection_filter_holdout_v2_analyze.py`
+implement this protocol (tested offline on synthetic data; V1 modules untouched). Both refuse to run until
+the SHA-256 of this file is recorded in the runner. Sequence: (a) this file is committed alone as the
+freeze commit; (b) in a following commit the file's SHA-256 (CRLF-normalized) is set as `PROTOCOL_SHA256`
+in the runner and recorded in the V2 run notes; (c) only then may the first V2 acquisition run, on a UTC
+day other than 2026-09-29/30. Any later edit of this file voids the preregistration for affected runs.
+Freezing releases no acquisition, funded BUY, shadow execution or live money.
