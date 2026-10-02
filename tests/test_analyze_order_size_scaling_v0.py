@@ -49,5 +49,27 @@ class ScalingTests(unittest.TestCase):
         self.assertIn("US$25", text)
 
 
+class PipelineTests(unittest.TestCase):
+    """Goes through the real preparation path (raw loader rows -> prepare -> dedup -> analyze)."""
+
+    def raw(self, ep, token, impact, ret, study="V1", o900="AVAILABLE_ON_TIME"):
+        return {"cohort": "G1", "episode_key": ep, "token": token, "as_of": int(ep[1:]), "impact": impact,
+                "mint_auth": False, "freeze_auth": False, "labels": {300: ret, 900: ret, 3600: None},
+                "statuses": {}, "o900": o900, "features": {"entry_price_impact_pct_points": impact}, "study": study}
+
+    def test_real_preparation_path_keeps_impact(self):
+        from research import discover_kept_group_v0 as dk
+        import rejection_filter_holdout_v2_analyze as an2
+        raw = [self.raw("e1", "A", 0.5, 5.0), self.raw("e2", "B", -3.0, -90.0, study="V2"),
+               self.raw("e3", "A", 0.6, 9.0), self.raw("e4", "C", 8.0, None, o900="STRUCTURAL")]
+        rows = dk.prepare(raw)
+        an2.apply_token_exclusions(rows, set())
+        res = sz.analyze(rows)
+        self.assertEqual(res["episodes_deduped_with_impact"], 3)   # e3 is a REPEAT of token A
+        self.assertEqual(res["paired_with_900s_return"], 2)        # e4 has no 900s return
+        bins = {b["bin_pp"]: b for b in res["dose_response_vs_impact_at_25"]}
+        self.assertEqual(bins["(2, 5]"]["catastrophic"], 1)        # |-3.0| uses the absolute value
+
+
 if __name__ == "__main__":
     unittest.main()

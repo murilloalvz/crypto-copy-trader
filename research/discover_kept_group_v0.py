@@ -207,7 +207,7 @@ def load_rows() -> tuple[list[dict[str, Any]], dict[str, int]]:
 def prepare(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = an2.prepare_rows_v2(raw)
     for row, r in zip(rows, raw):
-        row["features"], row["study"] = r["features"], r["study"]
+        row["features"], row["study"], row["impact"] = r["features"], r["study"], r["impact"]
     return rows
 
 
