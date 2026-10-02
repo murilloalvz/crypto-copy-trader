@@ -41,7 +41,7 @@ Execution automation is not required to prove signal value. Execution realism is
 Primary authority:
 
 - branch: `research/rust-signal-plane-live-shadow-v0`
-- head at migration freeze: `e0f7bd1e239463e67bd680cc8bab1e15c406d52c`
+- head at migration freeze: `4bc59974783d0dd3ad57d9338fbaa5b247c7352a` (advanced from `e0f7bd1e239463e67bd680cc8bab1e15c406d52c` via PR #3 merge, 2026-10-02)
 - migration branch base: the exact branch above
 
 This line contains the accepted Rust Signal Plane evolution, V7 promotion contract, Research Plane capacity hardening, role-normalized opportunity handling, Participant Quality memory/holdout work, and the latest systems-side scientific disposition.

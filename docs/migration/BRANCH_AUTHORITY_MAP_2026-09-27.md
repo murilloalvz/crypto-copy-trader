@@ -12,10 +12,10 @@ Do not force one branch to become the authority for everything.
 
 | Scope | Authority | Freeze SHA | Migration interpretation |
 |---|---|---:|---|
-| Rust Signal Plane / V7 systems contract | `research/rust-signal-plane-live-shadow-v0` | `e0f7bd1e239463e67bd680cc8bab1e15c406d52c` | primary systems authority and migration base |
-| Research Plane durability/capacity | `research/rust-signal-plane-live-shadow-v0` | `e0f7bd1e239463e67bd680cc8bab1e15c406d52c` | includes role-normalized queue correction and later successful holdout bridge runs |
-| Native Participant Quality V1 | `research/rust-signal-plane-live-shadow-v0` | `e0f7bd1e239463e67bd680cc8bab1e15c406d52c` | formal selector result is KILL |
-| V48 / V55 / V68 frozen historical economic lineage | systems branch docs + exact protocol/result docs | `e0f7bd1...` base | frozen contracts remain binding; do not infer a new verdict from migration work |
+| Rust Signal Plane / V7 systems contract | `research/rust-signal-plane-live-shadow-v0` | `4bc59974783d0dd3ad57d9338fbaa5b247c7352a` | primary systems authority and migration base (advanced from `e0f7bd1...` via PR #3 merge, 2026-10-02) |
+| Research Plane durability/capacity | `research/rust-signal-plane-live-shadow-v0` | `4bc59974783d0dd3ad57d9338fbaa5b247c7352a` | includes role-normalized queue correction and later successful holdout bridge runs |
+| Native Participant Quality V1 | `research/rust-signal-plane-live-shadow-v0` | `4bc59974783d0dd3ad57d9338fbaa5b247c7352a` | formal selector result is KILL |
+| V48 / V55 / V68 frozen historical economic lineage | systems branch docs + exact protocol/result docs | `4bc5997...` base | frozen contracts remain binding; do not infer a new verdict from migration work |
 | Post-Transition Pullback/Reacceleration V0 | `research/post-transition-pullback-reacceleration-v0` | `730d32c3a0f382a1646976172a4ebd4cd3267252` | later divergent economic/research authority |
 | Concentration Decay V0 | `research/post-transition-pullback-reacceleration-v0` | `730d32c3...` | discovery ITERATE, fresh confirmation INCONCLUSIVE support, no second iterate |
 | Post-Transition Fresh Economic Discovery V0 | `research/post-transition-pullback-reacceleration-v0` | `730d32c3...` | CLOSED/BURNED; no replacement V0 run |
@@ -25,7 +25,7 @@ Do not force one branch to become the authority for everything.
 
 At migration inspection time:
 
-- systems branch: `research/rust-signal-plane-live-shadow-v0 @ e0f7bd1...`
+- systems branch: `research/rust-signal-plane-live-shadow-v0 @ 4bc5997...` (advanced from `e0f7bd1...` via PR #3 merge, 2026-10-02)
 - economic branch: `research/post-transition-pullback-reacceleration-v0 @ 730d32c3...`
 - comparison status: `diverged`
 - merge base: `319351ded652af29288552ef1f436fdb8149e81b`
