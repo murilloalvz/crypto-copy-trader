@@ -199,10 +199,13 @@ class MathTests(unittest.TestCase):
 
 class GateTests(unittest.TestCase):
     def test_refuses_unfrozen_protocol_and_partial_study(self):
-        with self.assertRaises(SystemExit):
-            an.run_analysis()  # PROTOCOL_SHA256 is None until freeze
         orig = collect.PROTOCOL_SHA256
         try:
+            collect.PROTOCOL_SHA256 = None
+            with self.assertRaises(SystemExit):
+                an.run_analysis()  # not frozen => refuses
+            collect.PROTOCOL_SHA256 = orig
+            collect.verify_protocol()  # real frozen file matches the recorded hash
             collect.PROTOCOL_SHA256 = "a" * 64
             with tempfile.TemporaryDirectory() as d:
                 valid, dates, starts, problem = an.check_reports(Path(d))
