@@ -17,7 +17,7 @@ from src.jupiter_research_exit_route import (
     JupiterResearchExitRouteConfig,
     JupiterResearchExitRouteProbe,
 )
-from src.jupiter_swap_v2 import JupiterOrder
+from src.jupiter_swap_v2 import JupiterOrder, JupiterOrderError
 from src.market_opportunity_episode_store import MarketOpportunityEpisode
 from src.opportunity_onchain_hazard import ONCHAIN_HAZARD_PROVIDER, ONCHAIN_HAZARD_PURPOSE
 from src.opportunity_provider_attempt_store import (
@@ -250,6 +250,82 @@ class RouteOnlyForwardResearchV40Tests(unittest.TestCase):
                 )
 
         self.assertEqual([item.horizon_seconds for item in due], [300])
+
+    def test_exit_route_retries_transient_provider_error_before_giving_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "research.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                hazard = _seed_hazard()
+                entry_client = Mock()
+                entry_client.order.return_value = _buy_order()
+                entry_probe = JupiterResearchEntryRouteProbe(
+                    JupiterResearchEntryRouteConfig(api_key="key")
+                )
+                with patch("src.jupiter_research_entry_route.time.time", return_value=1002), patch(
+                    "src.jupiter_research_entry_route.JupiterSwapV2Client", return_value=entry_client
+                ):
+                    entry = entry_probe.capture(_episode(), hazard_attempt=hazard)
+                freeze_route_research_decision(
+                    episode=_episode(), entry_attempt=entry.attempt, hazard_attempt=hazard
+                )
+                first = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+
+                exit_probe = JupiterResearchExitRouteProbe(
+                    JupiterResearchExitRouteConfig(api_key="key")
+                )
+                exit_client = Mock()
+                exit_client.order.side_effect = [
+                    JupiterOrderError("transient timeout"),
+                    JupiterOrderError("transient timeout"),
+                    _sell_order(observed_at=1303),
+                ]
+                with patch("src.jupiter_research_exit_route.time.time", return_value=1303), patch(
+                    "src.jupiter_research_exit_route.time.sleep"
+                ), patch(
+                    "src.jupiter_research_exit_route.JupiterSwapV2Client", return_value=exit_client
+                ):
+                    result = exit_probe.capture(first)
+                stored = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+
+        self.assertEqual(exit_client.order.call_count, 3)
+        self.assertEqual(result.attempt.status, "AVAILABLE")
+        self.assertEqual(stored.status, "AVAILABLE")
+
+    def test_exit_route_gives_up_after_max_attempts_still_exhausted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "research.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                hazard = _seed_hazard()
+                entry_client = Mock()
+                entry_client.order.return_value = _buy_order()
+                entry_probe = JupiterResearchEntryRouteProbe(
+                    JupiterResearchEntryRouteConfig(api_key="key")
+                )
+                with patch("src.jupiter_research_entry_route.time.time", return_value=1002), patch(
+                    "src.jupiter_research_entry_route.JupiterSwapV2Client", return_value=entry_client
+                ):
+                    entry = entry_probe.capture(_episode(), hazard_attempt=hazard)
+                freeze_route_research_decision(
+                    episode=_episode(), entry_attempt=entry.attempt, hazard_attempt=hazard
+                )
+                first = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+
+                exit_probe = JupiterResearchExitRouteProbe(
+                    JupiterResearchExitRouteConfig(api_key="key")
+                )
+                exit_client = Mock()
+                exit_client.order.side_effect = JupiterOrderError("persistent failure")
+                with patch("src.jupiter_research_exit_route.time.time", return_value=1303), patch(
+                    "src.jupiter_research_exit_route.time.sleep"
+                ), patch(
+                    "src.jupiter_research_exit_route.JupiterSwapV2Client", return_value=exit_client
+                ):
+                    result = exit_probe.capture(first)
+                stored = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+
+        self.assertEqual(exit_client.order.call_count, 3)
+        self.assertEqual(result.attempt.status, "PROVIDER_ERROR")
+        self.assertEqual(stored.status, "PROVIDER_ERROR")
 
 
 if __name__ == "__main__":

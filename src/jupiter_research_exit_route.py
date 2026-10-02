@@ -32,6 +32,13 @@ from src.opportunity_route_research_store import (
 JUPITER_RESEARCH_EXIT_PROVIDER = "jupiter_swap_v2_order"
 JUPITER_RESEARCH_EXIT_PURPOSE_PREFIX = "forward_exit_route_only_research"
 
+# A single transient Jupiter timeout/5xx otherwise permanently marks a forward-outcome
+# PROVIDER_ERROR (begin/complete_provider_attempt makes the attempt terminal on first try).
+# Retry the raw order() call a bounded number of times before giving up; this does not
+# touch route-only semantics, lineage, or any frozen threshold, only order-call reliability.
+JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS = 3
+JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS = 0.5
+
 
 @dataclass(frozen=True)
 class JupiterResearchExitRouteConfig:
@@ -205,18 +212,28 @@ class JupiterResearchExitRouteProbe:
             )
             return JupiterResearchExitRouteResult(attempt, None, completed, False)
 
-        try:
-            order = JupiterSwapV2Client(
-                api_key=api_key,
-                timeout=self.config.timeout_seconds,
-            ).order(
-                input_mint=outcome.token_mint,
-                output_mint=USDC_MINT,
-                amount_raw=amount_raw,
-                taker=None,
-                slippage_bps=self.config.slippage_bps,
-            )
-        except JupiterOrderError as exc:
+        last_exc: JupiterOrderError | None = None
+        order = None
+        for retry_index in range(JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS):
+            try:
+                order = JupiterSwapV2Client(
+                    api_key=api_key,
+                    timeout=self.config.timeout_seconds,
+                ).order(
+                    input_mint=outcome.token_mint,
+                    output_mint=USDC_MINT,
+                    amount_raw=amount_raw,
+                    taker=None,
+                    slippage_bps=self.config.slippage_bps,
+                )
+                last_exc = None
+                break
+            except JupiterOrderError as exc:
+                last_exc = exc
+                if retry_index + 1 < JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS:
+                    time.sleep(JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS)
+        if last_exc is not None:
+            exc = last_exc
             completed_at = max(started_at, int(time.time()))
             attempt = complete_provider_attempt(
                 attempt_key=self.attempt_key(outcome),
