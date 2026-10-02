@@ -48,3 +48,10 @@ execution or live money.
   read with it in mind. It changes no rule, gate, label or threshold, and the protocol file is untouched.
 - Cohort-level acquisition quality is still judged only by the frozen criteria (on-time label, technical
   share <= 20%); no result may be attributed to the provider without evidence.
+
+## Result recorded 2026-10-02
+
+H1..H5 acquired VALID with no replacement (UTC days 2026-10-01 and 2026-10-02); frozen-gate analysis returned
+`REPLICATED_REJECTION_FILTER_V2_TAIL_RISK`. Details and limits:
+`docs/rejection-filter-prospective-holdout-v2-result-2026-10-02.md`. REPLICATED authorizes only the filter as a
+research precondition and a separately preregistered selection study conditional on KEPT; it is not edge.
