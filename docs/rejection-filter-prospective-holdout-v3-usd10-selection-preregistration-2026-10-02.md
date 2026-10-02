@@ -1,9 +1,8 @@
-# Rejection Filter V3 — USD 10 Order Size + Buy-Pressure Selection within KEPT — Preregistration DRAFT — 2026-10-02
+# Rejection Filter V3 — USD 10 Order Size + Buy-Pressure Selection within KEPT — Preregistration — 2026-10-02
 
 Mode: PAPER / RESEARCH / PROSPECTIVE / NO LIVE MONEY
 
-**STATUS: DRAFT — NOT FROZEN. Authorizes no acquisition, provider call or run.** Items marked `[DECISION]` must
-be fixed by the project owner before freeze (section 16). Once frozen, nothing below may move.
+**STATUS: FROZEN by the project owner on 2026-10-02. Nothing below may move.**
 
 ## 1. Why V3 exists (lineage)
 
@@ -52,10 +51,10 @@ timing only. Pre-flight before any data is created: protocol hash, Jupiter key, 
 `ended_at` <= 24h, console guard, V3 day rules.
 
 - Cohorts: ten VALID cohorts `T1..T10`, plus three reserved replacements `T11..T13` for DEGRADED cohorts only; a
-  fourth degraded cohort ends the study `INCONCLUSIVE_..._ACQUISITION` `[DECISION: 10 valid + 3 replacements]`.
-- Run keys: `rejection-filter-v3-<base>-T1..T13`, base `rejection-filter-v3-<YYYYMMDD>-01` `[DECISION: date at freeze]`.
-- Independence: valid cohorts span at least three distinct UTC days; at most three cohorts may START on one UTC day
-  `[DECISION: >= 3 days, <= 3 per day]`. Each token counts once across V3 (first episode by decision time); any token
+  fourth degraded cohort ends the study `INCONCLUSIVE_..._ACQUISITION`.
+- Run keys: `rejection-filter-v3-<base>-T1..T13`, base `rejection-filter-v3-<YYYYMMDD>-01` (base date 20261002).
+- Independence: valid cohorts span at least three distinct UTC days; at most three cohorts may START on one UTC day.
+  Each token counts once across V3 (first episode by decision time); any token
   present in any V0, V1 or V2 run key is excluded (`SEEN_IN_PRIOR_STUDY`). Exclusions are reported, never silent.
 - A pre-freeze smoke caveat: quotes at USD 10 have not been collected before. A systematic quote failure at this size
   would show as DEGRADED cohorts and, after the allowed replacements, an `INCONCLUSIVE_..._ACQUISITION` result.
@@ -159,16 +158,15 @@ workflow does not exist yet; this protocol neither implements nor validates it.
 - Collection takes about 25 minutes per cohort (a 900s outcome horizon plus the acquisition window); ten cohorts are
   roughly four hours spread over at least three UTC days.
 
-## 16. Open decisions and freeze procedure
+## 16. Resolved decisions and freeze procedure
 
-Open: (1) USD 10 as the single arm; (2) ten valid cohorts plus three replacements; (3) alpha 0.025 per claim;
-(4) P1 direction in >= 70% of evaluable cohorts; (5) P2 feature `flow60_wallet_direction_balance`, positive direction,
-study-median cutoff computed outcome-blind; (6) >= 3 UTC days, <= 3 per day; (7) exclusion of tokens seen in V0-V2;
-(8) base run key date.
+Resolved by the project owner: (1) USD 10 as the single arm; (2) ten valid cohorts plus three replacements;
+(3) alpha 0.025 per claim; (4) P1 direction in >= 70% of evaluable cohorts; (5) P2 feature
+`flow60_wallet_direction_balance`, positive direction, study-median cutoff computed outcome-blind; (6) >= 3 UTC days,
+<= 3 per day; (7) exclusion of tokens seen in V0-V2; (8) base run key date 20261002.
 
-To build and test offline before freeze (no provider calls): V3 runner, V3 analysis, run helper script. Freeze
-sequence: (a) the owner commits this file renamed to
-`docs/rejection-filter-prospective-holdout-v3-usd10-selection-preregistration-2026-10-02.md`, DRAFT wording removed,
-decisions resolved, nothing else changed, in its own commit; (b) in a following commit its SHA-256 (CRLF-normalized)
-is recorded in the V3 runner and run notes; (c) only then may the first V3 acquisition run. Any later edit voids the
-preregistration for affected runs. This draft releases no acquisition, funded BUY, shadow execution or live money.
+The V3 runner, analysis and run helper were built and tested offline before freeze (no provider calls). Freeze
+sequence: (a) this file is committed under its preregistration name in its own commit; (b) in a following commit its
+SHA-256 (CRLF-normalized) is recorded in the V3 runner and run notes; (c) only then may the first V3 acquisition run.
+Any later edit voids the preregistration for affected runs. This protocol releases no funded BUY, shadow execution or
+live money.
