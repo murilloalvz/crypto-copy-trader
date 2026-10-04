@@ -39,6 +39,14 @@ JUPITER_RESEARCH_EXIT_PURPOSE_PREFIX = "forward_exit_route_only_research"
 JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS = 3
 JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS = 0.5
 
+# v68-07 (2026-10-04) showed the 0.5s generic backoff is too short specifically against
+# Jupiter API Gateway HTTP 429 (confirmed via error_message on the stored PROVIDER_ERROR
+# outcomes: "[API Gateway] Too many requests", 57 of 59 errors that run). A 429 is rate
+# limiting, not a one-off transient fault, so it gets its own longer backoff before the
+# next of the same bounded MAX_ATTEMPTS retries -- still no new attempts, no threshold change.
+JUPITER_RESEARCH_EXIT_RATE_LIMIT_STATUS_CODE = 429
+JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS = 3.0
+
 
 @dataclass(frozen=True)
 class JupiterResearchExitRouteConfig:
@@ -231,7 +239,12 @@ class JupiterResearchExitRouteProbe:
             except JupiterOrderError as exc:
                 last_exc = exc
                 if retry_index + 1 < JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS:
-                    time.sleep(JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS)
+                    backoff = (
+                        JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS
+                        if exc.status_code == JUPITER_RESEARCH_EXIT_RATE_LIMIT_STATUS_CODE
+                        else JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS
+                    )
+                    time.sleep(backoff)
         if last_exc is not None:
             exc = last_exc
             completed_at = max(started_at, int(time.time()))

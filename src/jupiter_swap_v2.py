@@ -13,7 +13,9 @@ JUPITER_SWAP_V2_BASE_URL = "https://api.jup.ag/swap/v2"
 
 
 class JupiterOrderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,7 @@ class JupiterSwapV2Client:
             except Exception:
                 detail = str(exc)
             raise JupiterOrderError(
-                f"Jupiter /order HTTP {exc.code}: {detail[:300]}"
+                f"Jupiter /order HTTP {exc.code}: {detail[:300]}", status_code=exc.code
             ) from exc
         except (
             URLError,
