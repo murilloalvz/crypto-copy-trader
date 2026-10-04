@@ -120,6 +120,42 @@ Allowed in the hypothesis backlog but receives no engineering priority without s
 - What transfers: executable shadow must measure build/simulate/submit/land latency, priority fees, compute budget, failure probability and realized slippage rather than treating a quote as a fill.
 - Project action: execution becomes a modeled surface, not a constant fee assumption.
 
+### E10 — Solana rug pull taxonomy and public dataset
+
+- Grade: **C**.
+- Added: 2026-10-04 (Fase A / A5). Figures below were checked against the arXiv abstract on that date.
+- Source: Chen, Li, Jiang, He, Zhou, Wu, Zheng — arXiv 2603.24625 (v1 2026-03-25, v2 2026-05-31), "From Hype to Collapse: Investigating Rug Pull Scams on Solana".
+- Scope: 68 manually verified community-reported incidents → benchmark of 117 confirmed rug pull tokens; a behavior-guided identification + human-validation pipeline applied to 100,063 tokens newly issued on Orca, Raydium and Meteora in H1 2025, labeling 76,469 as rug pulls; a random audit of 382 samples estimates a 0.26% labeling false-positive rate. Dataset released.
+- Main result: three Solana-specific rug patterns — **Freeze Authority Abuse**, Liquidity Withdrawal, Pump-and-Dump — because Solana's unified SPL Token program moves fraud from contract logic to on-chain behavior; rugs show very short lifecycles and "highly organized group behaviors".
+- What transfers: Freeze Authority Abuse is a deterministic token-metadata fact (SPL mint freeze authority set or not), orthogonal to every flow/participation hypothesis in `src/opportunity_edge_hypotheses_v0.py`. Candidate hard-reject (tail-risk) check if a provider already exposes it causally.
+- What does **not** transfer automatically: venues are Orca/Raydium/Meteora, not the Pump.fun bonding curve or PumpSwap; the target is fraud labeling, not executable return; ~76% of new tokens labeled rug means base rates are extreme and any filter must be judged against that base rate.
+- Project action: check whether the mint's freeze authority is already captured with a causal `observed_at`; if so, register a rejection-filter hypothesis (not an alpha hypothesis) with its own preregistration. Not yet scheduled.
+
+### E11 — Bot detection inside a Pump.fun copy-trading system (peer-reviewed)
+
+- Grade: **A/B**.
+- Added: 2026-10-04 (Fase A / A5). Checked against the arXiv abstract and HTML v3 on that date.
+- Source: Luo, Feng, Xu, Liu — arXiv 2601.08641 (v3 2026-02-05), "Resisting Manipulative Bots in Meme Coin Copy Trading: A Multi-Agent Approach with Chain-of-Thought Reasoning", Proceedings of the ACM Web Conference 2026 (WWW'26).
+- Scope: 6,000 Pump.fun meme coin projects with complete historical trading records from Flipside; a multi-agent LLM copy-trading system that filters three bot types before deciding.
+- Bot definitions (Algorithms 1-3): **bundle bots** = non-creator wallets that buy within the meme coin's creation block; **sniper bots** = wallets buying within the first 1 to K blocks after creation (K=5 default); **bump bots** = flip-to-position ratio α = F/(ΔP+ε) above ξ=50.
+- Main result: smart-money trades average 14% return; estimated copier return 3% per investment "under realistic market frictions". The friction model (fees, slippage, latency) is not detailed in the abstract or the sections checked.
+- Why A/B and not A: peer-reviewed and directly on Pump.fun, but the economic result belongs to an LLM agent system with under-specified frictions and an evaluation split not checked here; only the bot-detection definitions are directly reusable.
+- What transfers: bundle-bot detection is a coordination primitive that needs **no funding link** — the gap confirmed in this repo (no such primitive exists; see `src/market_integrity.py` detection limits and `H_ORGANIC_VS_COORDINATED_V0`). It is computable from creation-block trades the project already observes.
+- What does **not** transfer automatically: the 3%/14% returns; and same-block buying may reflect popularity rather than coordination (see RED-COHORT-2026-v1 in `docs/external-evidence-reuse-map-v1.md`, where an activity-matched placebo showed a larger lift than the cohorts).
+- Project action: draft a Bundle Bot Detection V0 preregistration with an activity-matched placebo from the first discovery pass (Fase A / A6). No engineering priority before that preregistration.
+
+### E12 — Pine Analytics, "Exit Liquidity Machines" (practitioner report)
+
+- Grade: **E**.
+- Added: 2026-10-04 (Fase A / A5). Checked against the original post on that date.
+- Source: Pine Analytics, Substack, 2025-04-21, "Exit Liquidity Machines". Not peer-reviewed. Data from Flipside Crypto dashboards and Arkham Intelligence; about one month of data starting 2025-03-15.
+- Method: tokens sniped in the same block they were deployed, restricted to snipers with a direct pre-launch SOL transfer from the deployer.
+- Reported figures: over 15,000 tokens; 4,600+ sniper wallets; 10,400+ unique deployers; this pattern is "~1.75% of launch activity on pump.fun"; over 15,000 SOL realized profit; 87% of snipes profitable; over 55% fully exited in under one minute and nearly 85% within five minutes; activity concentrated 14:00-23:00 UTC; over 50% of tokens sniped in the exact launch block.
+- Stated limitations: only direct one-hop funding links; multi-hop chains (5-7 hops) are not linked, so the result is a subset of all sniping.
+- Correction recorded: an earlier internal summary (claude.ai Project notes, 2026-10-04) described the 1.75% figure as an "admitted ~98% false-negative rate". That is a misreading. 1.75% is the share of Pump.fun launches matching the narrow pattern; the authors acknowledge undercounting but give no false-negative rate.
+- What transfers: the mechanism (deployer pre-funds a same-block sniper, exit within minutes) is the same one `docs/direct-funding-link-v61-protocol-2026-09-08.md` formalizes, and the exit timing implies a 900s horizon sits after the typical extraction window.
+- Project action: none on its own. Use only as hypothesis background for v61; never as a quantitative prior.
+
 ## Current evidence-weighted ranking
 
 This ranking is provisional and can change as our own forward evidence accumulates.

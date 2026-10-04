@@ -183,6 +183,71 @@ Uso no CopyTrader:
 - verificar wallets on-chain;
 - medir se o comportamento sobrevive à nossa latência e custo.
 
+### 8. Rug pulls em Solana — taxonomia e dataset público (adicionado 2026-10-04)
+
+Fonte:
+
+- https://arxiv.org/abs/2603.24625 (registro E10 em `docs/research-evidence-registry-v1-2026-09-02.md`)
+
+Evidência pública relevante:
+
+- benchmark de 117 rug pulls confirmados, a partir de 68 incidentes verificados à mão;
+- pipeline aplicado a 100.063 tokens novos em Orca, Raydium e Meteora (1º semestre de 2025), com 76.469 rotulados como rug pull;
+- auditoria aleatória de 382 amostras estima 0,26% de falso-positivo na rotulagem;
+- três padrões específicos de Solana: Freeze Authority Abuse, Liquidity Withdrawal e Pump-and-Dump.
+
+**Reaproveitamento: MÉDIO para filtro de rejeição; BAIXO para alpha.**
+
+Uso no CopyTrader:
+
+- Freeze Authority Abuse é um fato de metadado do mint, ortogonal às hipóteses de fluxo; candidato a filtro de rejeição dura se já houver captura causal;
+- tratar a taxa-base extrema (~76% dos tokens novos rotulados como rug) como contexto para qualquer filtro.
+
+Não fazer:
+
+- transferir direto para a bonding curve do Pump.fun ou para o PumpSwap sem checar a população;
+- usar o rótulo de fraude como alvo de retorno.
+
+### 9. Detecção de bots em copy-trading de Pump.fun — WWW 2026 (adicionado 2026-10-04)
+
+Fonte:
+
+- https://arxiv.org/abs/2601.08641 (registro E11)
+
+Evidência pública relevante:
+
+- 6.000 projetos de memecoin do Pump.fun com histórico completo (dados Flipside);
+- três detectores determinísticos antes da decisão: bundle bots (wallets não-criadoras comprando no bloco de criação), sniper bots (compras nos primeiros 1 a 5 blocos) e bump bots (razão flip/posição acima de 50);
+- smart money com retorno médio de 14%; retorno estimado do copiador de 3% por investimento "sob fricções realistas", modelo de fricção não detalhado nas partes verificadas.
+
+**Reaproveitamento: ALTO para a definição de bundle sem link de funding; BAIXO para os números de retorno.**
+
+Uso no CopyTrader:
+
+- base para um Bundle Bot Detection V0, o primitivo de coordenação sem funding link que o repo não tem;
+- obrigatoriamente com o placebo pareado por atividade do item 2 (RED-COHORT-2026-v1) desde o primeiro discovery.
+
+Não fazer:
+
+- tratar compra no bloco de criação como prova de coordenação: num launch popular isso pode ser só popularidade;
+- citar os 3%/14% como evidência de edge.
+
+### 10. Pine Analytics, "Exit Liquidity Machines" — relato de praticante (adicionado 2026-10-04)
+
+Fonte:
+
+- https://pineanalytics.substack.com/p/exit-liquidity-machines (registro E12, grau E)
+
+Evidência pública relevante:
+
+- snipers no mesmo bloco do deploy, com transferência direta de SOL do deployer antes do lançamento: 4.600+ wallets, 10.400+ deployers, 15.000+ tokens, ~1,75% dos lançamentos do Pump.fun;
+- 87% das snipes lucrativas; mais de 55% saíram em menos de 1 minuto e quase 85% em até 5 minutos;
+- só links de funding de um salto; cadeias de 5 a 7 saltos ficam de fora.
+
+**Reaproveitamento: BAIXO como evidência quantitativa; MÉDIO como descrição do mecanismo que o v61 formaliza.**
+
+Correção registrada: o 1,75% é a fração dos lançamentos que bate com o padrão estreito, não uma "taxa de falso-negativo de ~98%" como foi resumido antes em notas internas.
+
 ## Separação por lifecycle
 
 Uma fonte pode estudar a fase de bonding curve e outra estudar pools pós-graduação. Misturar as duas populações gera conclusões erradas.
