@@ -369,6 +369,77 @@ class RouteOnlyForwardResearchV40Tests(unittest.TestCase):
         self.assertEqual(sleep_mock.call_count, 2)
         sleep_mock.assert_called_with(1.5)
 
+    def _capture_exit_with_order_side_effect(self, side_effect):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "research.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                hazard = _seed_hazard()
+                entry_client = Mock()
+                entry_client.order.return_value = _buy_order()
+                entry_probe = JupiterResearchEntryRouteProbe(
+                    JupiterResearchEntryRouteConfig(api_key="key")
+                )
+                with patch("src.jupiter_research_entry_route.time.time", return_value=1002), patch(
+                    "src.jupiter_research_entry_route.JupiterSwapV2Client", return_value=entry_client
+                ):
+                    entry = entry_probe.capture(_episode(), hazard_attempt=hazard)
+                freeze_route_research_decision(
+                    episode=_episode(), entry_attempt=entry.attempt, hazard_attempt=hazard
+                )
+                first = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+
+                exit_probe = JupiterResearchExitRouteProbe(
+                    JupiterResearchExitRouteConfig(api_key="key")
+                )
+                exit_client = Mock()
+                exit_client.order.side_effect = side_effect
+                with patch("src.jupiter_research_exit_route.time.time", return_value=1303), patch(
+                    "src.jupiter_research_exit_route.time.sleep"
+                ) as sleep_mock, patch(
+                    "src.jupiter_research_exit_route.JupiterSwapV2Client", return_value=exit_client
+                ):
+                    result = exit_probe.capture(first)
+                stored = load_route_research_outcomes(acquisition_run_key=RUN)[0]
+        return result, stored, sleep_mock
+
+    def test_exit_route_persists_per_try_telemetry_without_changing_outcome(self):
+        result, stored, sleep_mock = self._capture_exit_with_order_side_effect(
+            [
+                JupiterOrderError("Jupiter /order HTTP 429: too many requests", status_code=429),
+                JupiterOrderError("Jupiter /order HTTP 429: too many requests", status_code=429),
+                _sell_order(observed_at=1303),
+            ]
+        )
+
+        tries = result.attempt.details["order_tries"]
+        self.assertEqual([item["try"] for item in tries], [1, 2, 3])
+        self.assertEqual([item["result"] for item in tries], ["error", "error", "ok"])
+        self.assertEqual([item["status_code"] for item in tries], [429, 429, None])
+        self.assertEqual([item["backoff_seconds"] for item in tries], [1.5, 1.5, 0.0])
+        self.assertEqual(tries[0]["started_at"], 1303.0)
+        # Telemetry is observation-only: outcome, observed_at and sleeps are unchanged.
+        self.assertEqual(stored.status, "AVAILABLE")
+        self.assertEqual(stored.observed_at, 1303)
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_exit_route_persists_per_try_telemetry_on_exhausted_retries(self):
+        result, stored, sleep_mock = self._capture_exit_with_order_side_effect(
+            [
+                JupiterOrderError("Jupiter /order HTTP 429: too many requests", status_code=429),
+                JupiterOrderError("Jupiter /order timeout"),
+                JupiterOrderError("Jupiter /order HTTP 429: too many requests", status_code=429),
+            ]
+        )
+
+        tries = result.attempt.details["order_tries"]
+        self.assertEqual(result.attempt.status, "PROVIDER_ERROR")
+        self.assertEqual(stored.status, "PROVIDER_ERROR")
+        self.assertEqual([item["result"] for item in tries], ["error", "error", "error"])
+        self.assertEqual([item["status_code"] for item in tries], [429, None, 429])
+        # Last try never sleeps; 429 gets the rate-limit backoff, others the generic one.
+        self.assertEqual([item["backoff_seconds"] for item in tries], [1.5, 0.5, 0.0])
+        self.assertEqual(sleep_mock.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
