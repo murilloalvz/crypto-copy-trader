@@ -367,7 +367,7 @@ class RouteOnlyForwardResearchV40Tests(unittest.TestCase):
         self.assertEqual(result.attempt.status, "AVAILABLE")
         self.assertEqual(stored.status, "AVAILABLE")
         self.assertEqual(sleep_mock.call_count, 2)
-        sleep_mock.assert_called_with(3.0)
+        sleep_mock.assert_called_with(1.5)
 
 
 if __name__ == "__main__":

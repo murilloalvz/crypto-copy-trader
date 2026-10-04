@@ -44,8 +44,27 @@ JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS = 0.5
 # outcomes: "[API Gateway] Too many requests", 57 of 59 errors that run). A 429 is rate
 # limiting, not a one-off transient fault, so it gets its own longer backoff before the
 # next of the same bounded MAX_ATTEMPTS retries -- still no new attempts, no threshold change.
+#
+# v68-08 (same day, first attempt at 3.0s) then showed 3.0s itself is too LONG relative to
+# the frozen target_lateness_p95_max_seconds=2 gate: any outcome needing even one retry is
+# mathematically guaranteed to exceed it. Cohort B failed on lateness_p95=6s despite
+# ready_horizons=3 (105/120 available, well above the 30-per-horizon floor). Hand-reconstructed
+# per-outcome retry counts from the real run (exact multiples of the 3.0s backoff in each
+# outcome's observed_at-target_at gap): 76 needed 0 retries (p95 lateness of THIS group alone
+# is 0s, max 1s -- confirms the non-retry path barely touches the 2s budget), 16 needed exactly
+# 1 retry (real clear-time <=3.0s), 13 needed exactly 2 retries (real clear-time in (3.0, 6.0]s).
+# With MAX_ATTEMPTS=3 there are only 2 backoff windows, so total available wait = 2x this
+# constant. 1.5s (total 3.0s) is the largest value that still guarantees covering the full
+# 16-outcome "needs <=3.0s" group without any chance of losing it to the attempt budget, which
+# a shorter candidate (e.g. 1.0s, total 2.0s) cannot guarantee. The 13-outcome "needs >3.0s"
+# group is lost (becomes PROVIDER_ERROR) under any backoff this short regardless -- that is not
+# fixable by backoff alone and is not attempted here. Known residual risk, not claimed to be
+# fully solved: per-horizon availability after losing that group can land exactly at the 30
+# floor (300s projected to exactly 30/30 in the v68-08 data), and lateness_p95 could still
+# exceed 2s if a large share of the recovered 16 need the full second wait -- the code does not
+# persist a per-attempt timestamp, so this cannot be fully bounded from historical data alone.
 JUPITER_RESEARCH_EXIT_RATE_LIMIT_STATUS_CODE = 429
-JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS = 3.0
+JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
