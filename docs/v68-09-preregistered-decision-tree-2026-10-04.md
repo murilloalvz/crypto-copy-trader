@@ -8,7 +8,7 @@ O operador (Murillo) está rodando a tentativa `v68-09` (chaves `v68-09-A` / `v6
 
 - Escrito e commitado em 2026-10-04 ~22:05 UTC, a partir de `57275d1` (tip de `origin/research/rust-signal-plane-live-shadow-v0`), num branch separado (`research/v68-09-fase-a-prereg`) para não tocar no working tree onde o v68-09 roda.
 - Quem escreveu não viu nenhum dado do v68-09 (nem de sistema, nem econômico). O horário do push no GitHub é a evidência de anterioridade.
-- Fonte do conteúdo: Fase C da ordem de trabalho do operador, reproduzida em `docs/HANDOFF_COPILOT_2026-10-04.md` (commit `57275d1`).
+- Fonte do conteúdo: Fase C da ordem de trabalho do operador, reproduzida em `docs/migration/HANDOFF_COPILOT_2026-10-04.md` (commit `57275d1`).
 
 ## Contrato congelado que esta árvore NÃO altera
 
