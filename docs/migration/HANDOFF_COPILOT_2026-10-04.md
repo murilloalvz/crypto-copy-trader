@@ -159,8 +159,27 @@ A read-only diagnostic (reusing existing functions —
 `_cohort_schedule_audit`/`_descriptive_readiness` from
 `src/signal_plane_forward_cohort_v0.py`, `evaluate_route_research_run` from
 `src/route_research_evaluation.py` — no new Jupiter calls, no write) was handed to
-the operator to run against `v68-09-A` and `v68-09-B` and paste back. Root cause is
-**pending that output** — do not guess it from the partial stdout alone.
+the operator and run. **Result: a new, previously-unseen failure signature.**
+`v68-09-A`: `decision_count=40`, `scheduled_count=120` (bridge + decision-count gate
+both cleanly PASSed — the full `SUBCOHORT_CAP`), but all 120 outcomes across all 3
+horizons stayed `PENDING` — `available=0`, `unavailable_or_error=0` everywhere,
+`lateness_p95=None`, `ready_horizons=0`. `v68-09-B` never started (`decision_count=0`).
+Unlike every prior attempt (which always left a nonzero error count from
+Jupiter/429 attrition, or never scheduled anything at all), here collection
+genuinely started — the `[v43-forward] scheduled=120 ... derived_runtime_seconds=3573`
+header confirms a normal-looking ~59.5-minute deadline from real targets — yet zero
+outcomes ever resolved to AVAILABLE *or* PROVIDER_ERROR over that whole window. This
+points toward the collector's capture calls never resolving at all (hang) rather
+than a retry/backoff code defect. **Not fully root-caused**: the open question put
+to the operator is whether anything interrupted/froze the machine or process during
+that ~59.5-minute wait (sleep, lock screen, network/VPN drop, closed terminal,
+Ctrl+C), and whether the fuller stdout from that window is available. Full detail:
+`docs/migration/RESEARCH_STATE_LEDGER_2026-09-27.md`'s `v68-09` entry.
+
+**A4-merge condition not met.** A4's instrumentation lives inside `capture()`'s
+retry loop; this failure shows zero capture attempts ever resolving, so A4 would
+not have recorded anything useful here either. This is not the lateness repeat A4's
+merge condition (decision tree branch 1) was written for — **A4 stays unmerged.**
 
 ## Fase C — the decision tree (verbatim location, now applied)
 
@@ -209,16 +228,23 @@ under V68 — none of these changes may alter how any V68 attempt acquires episo
 
 ## Open questions awaiting the operator's answer (as of this revision)
 
-1. `v68-09`'s exact per-cohort root cause — pending the read-only diagnostic
-   output requested in Fase B.
-2. Whether `research/v68-a4-per-attempt-timestamps` merges into this lineage —
-   gated on (1), per the decision tree.
+1. Did anything interrupt or freeze the machine/process during `v68-09-A`'s
+   ~59.5-minute forward-collection wait (sleep, lock screen, network/VPN drop,
+   closed terminal, Ctrl+C)? Is the fuller stdout from that window (any
+   `[v43-forward] episode=...` or `[v43-forward-error]` lines) still available?
+2. Given A4's merge condition (decision tree branch 1) is not met by this
+   evidence (see above), `research/v68-a4-per-attempt-timestamps` stays
+   unmerged — confirm this reading, or correct it if the operator's answer to
+   (1) changes the picture.
 3. Whether to start Fase D now.
 
 ## Immediate next action for whoever continues this
 
-Wait for the operator's diagnostic output for `v68-09-A`/`v68-09-B` (system fields
-only). On receipt: complete the ledger entry's root-cause section with the real
-numbers, decide the A4-merge question per Fase C branch 1's exact condition, and
-report back before taking any other action. Do not start `v68-10`, any new Jupiter
-call, or Fase D's on-chain sync without the operator's explicit go-ahead.
+Wait for the operator's answer to open question 1. On receipt: if it points to an
+external interruption (sleep/network/manual kill) rather than a code defect, that
+is likely an operational fix (keep the machine awake/connected), not a code change
+— update the ledger accordingly and ask the operator whether a clean retry under
+`v68-10` is warranted per the decision tree's infra-budget rule. If it instead
+reveals something in-process, root-cause that specifically before proposing any
+fix. Do not start `v68-10`, any new Jupiter call, or Fase D's on-chain sync without
+the operator's explicit go-ahead.
