@@ -34,6 +34,30 @@ Current operating mode is:
 
 Execution automation is not required to prove signal value. Execution realism is still required before any execution claim.
 
+## Hypothesis registry discipline
+
+This program tests strategies until one works. That means multiple-comparisons risk
+is real and must be controlled, not ignored. Every economic hypothesis — alpha entry
+or rejection filter, discovery or confirmatory — is tracked in
+`docs/research-hypothesis-registry-v1-2026-10-04.md`, including the ones that fail.
+
+- a hypothesis is entered as `PRE-REGISTRADA` before the collection that judges it;
+- `VALIDADA` requires three steps in order: PASS on the preregistered test, PASS again
+  on a fresh replication under the exact same frozen rule, and a net-of-costs positive
+  result (Gate 2, `docs/live-readiness-gates-v1.md`) — never fewer;
+- FAIL/KILL closes the hypothesis; a derived idea is a new hypothesis with its own
+  preregistration, never a retune of the closed one;
+- discovery (many features/comparisons) is registered with its comparison count and
+  only produces candidates, never a validated edge directly;
+- a systems failure before the economic gate does not spend an attempt;
+- batch preregistrations (several hypotheses judged by the same collection) use
+  `docs/templates/batch-preregistration-template-v1.md` and must all be committed
+  before that collection starts.
+
+Any new economic-hypothesis attempt gets a line in that registry in the same commit
+that records its result, next to the matching `RESEARCH_STATE_LEDGER_2026-09-27.md`
+entry.
+
 ## Authority model
 
 ### Systems / Signal Plane / Research Plane integration

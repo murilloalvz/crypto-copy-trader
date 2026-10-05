@@ -12,6 +12,17 @@ This ledger is a compact index. Exact protocols/results remain authoritative.
 - `NOT_EVALUATED`: no valid economic verdict exists
 - `BLOCKED`: release/readiness condition not satisfied
 
+## Program-wide hypothesis discipline
+
+Every economic hypothesis this program tests is tracked in
+`docs/research-hypothesis-registry-v1-2026-10-04.md` (2026-10-04) — not just the ones
+that pass. This is the multiple-comparisons control for "test strategies until one
+works": no isolated PASS is treated as edge, an edge counts as `VALIDADA` only after
+PASS -> fresh replication under the same frozen rule -> net-of-costs positive (Gate 2),
+and batch preregistrations use `docs/templates/batch-preregistration-template-v1.md`.
+Entries in this ledger for a hypothesis-bearing attempt (V68, Participant Quality,
+Concentration Decay, etc.) should also get a line in that registry.
+
 ## Systems / architecture
 
 ### Historical V9 systems profile
