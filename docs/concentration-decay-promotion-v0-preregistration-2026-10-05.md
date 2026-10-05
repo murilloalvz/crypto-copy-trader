@@ -49,6 +49,17 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
   (não mergeada aqui) — nenhum arquivo `docs/concentration-decay-v0-*` foi
   encontrado nesta checkout. Por isso os critérios abaixo são definidos aqui,
   agora, de forma autocontida — não são cópia de um protocolo inacessível.
+- **Correção desta revisão, confirmada em código:** a seção 3 original deste
+  documento assumia o pipeline de aquisição A/B do V55/V68
+  (`route_research_forward_cohort_v46`/`v43`). Isso está errado para esta
+  feature específica. Lendo `src/market_first_feature_discovery_v1.py` e
+  `benchmarks/market_first_feature_discovery_v1/run.py`, o único lugar nesta
+  checkout que computa `mf_top_wallet_gross_share_delta_pct_points_late_minus_early`
+  de fato é o benchmark de discovery retrospectivo do Market-First, que
+  reconstrói a feature a partir de um run-dir já produzido pelo pipeline
+  **Launch Burst Sniper V1** (`benchmarks.launch_burst_control_taker_sim_v0.run_v4_sniper_v1`)
+  — uma terceira linha de aquisição, distinta tanto do V55/V68 quanto do
+  Post-Transition. Corrigido abaixo (seção 3).
 
 ## 2. Regra congelada (sem mudança, idêntica à CD-V0)
 
@@ -59,20 +70,34 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 - Corte: `<= 0` é favorável (concentração do top wallet caindo da metade
   inicial pra metade final da janela).
 - Track: `market_first`.
-- Instrumento de medida: route-shadow Jupiter, sem capital — Fixed+60 como
-  horizonte primário, Fixed+900 como diagnóstico (padrão já usado por
-  V48/V55/V68/PQ-V1 neste repositório; trocar de instrumento exige pré-registro
-  novo).
+- Instrumento de medida: route-paper fixo **+60s** (`fixed_return_pct`), sem
+  capital — único horizonte que este pipeline produz; **não há diagnóstico em
+  +900s disponível aqui** (corrigido nesta revisão — a seção original citava
+  Fixed+900 por analogia com V48/V55/V68, que não se aplica a este pipeline).
+  Trocar de instrumento exige pré-registro novo.
 
 ## 3. Amostra e suporte mínimo (decidido agora, antes de qualquer coleta)
 
-- Amostra: fresca, nunca usada em CD-V0 nem em nenhuma outra hipótese deste
-  registro. População-base: episódios `market_first` com o mesmo enriquecimento
-  causal de 5s do V55/V68 (`src/opportunity_feature_matrix_v0.py` /
-  `src/route_research_early_opportunity_v55.py`) — sem depender do pipeline
-  separado do Post-Transition branch.
-- Suporte mínimo: **n >= 10 pares route-usable**, igual ao mínimo congelado
-  já usado pela própria CD-V0.
+- **Pipeline de aquisição real (corrigido nesta revisão, confirmado em
+  código/doc operacional — `docs/launch-burst-sniper-v1-operator-runbook-2026-09-16.md`):**
+  cohort `baseline_admitted` de uma screening única e congelada de **900
+  segundos** do Launch Burst Sniper V1 (`run_v4_sniper_v1`), replayada pelo
+  benchmark `market_first_feature_discovery_v1` para computar
+  `mf_top_wallet_gross_share_delta_pct_points_late_minus_early` por episódio.
+  Não existem subcohorts A/B aqui — é uma única janela, e a duração de 900s é
+  congelada pelo próprio runner (recusa mudança in-place).
+  Usar o cohort `baseline` (admitido pela política Launch Burst base), não o
+  `sniper_selected` (subconjunto filtrado pelo seletor Sniper V1) — CD-PROMO-V0
+  pergunta sobre a feature em geral, não sobre a população já filtrada pelo
+  Sniper.
+- Amostra: fresca — um run-dir novo do Launch Burst Sniper V1, nunca antes
+  analisado por esta ou por nenhuma outra hipótese deste registro.
+- Suporte mínimo: **n >= 10 pares route-usable** (`baseline_admitted=True`
+  com `fixed_return_pct` e a feature ambos disponíveis), igual ao mínimo
+  congelado já usado pela própria CD-V0. **Consistente com a convenção já
+  documentada deste MESMO pipeline** (`docs/launch-burst-sniper-v1-operator-runbook-2026-09-16.md`,
+  "Frozen sample interpretation": <10 = `INSUFFICIENT_PRIMARY_SAMPLE`; 10–29 =
+  leitura direcional descritiva; >=30 = elegível para replicação independente).
   **Decisão do operador (2026-10-05), substituindo a escolha original deste
   documento (n>=30).** Esta troca é feita ANTES de qualquer coleta — nenhum
   dado foi visto, então não viola a seção 6 (que só proíbe mudar depois de
@@ -83,19 +108,22 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
   consistência com o corte já congelado da própria CD-V0 em vez de endurecer
   o suporte. A partir deste commit, **n>=10 é o número congelado** para
   CD-PROMO-V0 — depois de iniciar a coleta, não pode mais mudar.
-- Cobertura mínima da feature: **>= 80% por subcohort**, mesmo padrão de
-  elegibilidade já usado pela V55 (`docs/route-research-v55-causal-early-opportunity-discovery-result-2026-09-08.md`,
-  "pre-registered >=80% per-subcohort coverage requirement").
+- Cobertura mínima da feature: **>= 80%** dos episódios `baseline_admitted`
+  com `fixed_return_pct` disponível (não há subcohorts aqui — correção desta
+  revisão; o número 80% em si segue o mesmo padrão de elegibilidade já usado
+  pela V55, `docs/route-research-v55-causal-early-opportunity-discovery-result-2026-09-08.md`).
 
 ## 4. Critério de decisão (decidido agora)
 
 **PASS** exige todos:
-1. cobertura da feature >= 80% por subcohort;
+1. cobertura da feature >= 80% dos episódios `baseline_admitted` com outcome
+   disponível;
 2. n >= 10 pares route-usable total, com suporte não-trivial nos dois grupos
    (`<= 0` vs `> 0`);
 3. grupo favorável (`<= 0`) com retorno mediano Fixed+60 maior que o grupo
    `> 0`, mesma direção já observada descritivamente na CD-V0 (sem flip);
-4. grupo favorável com profit factor > 1 sob o instrumento route-only padrão.
+4. grupo favorável com profit factor > 1 sob o mesmo instrumento route-paper
+   fixo +60s.
 
 **FAIL**: suporte e cobertura atingidos, mas o critério 3 e/ou 4 não se
 sustenta. Fecha CD-PROMO-V0 como FAIL — feature permanece `diagnostic_only`,
@@ -148,3 +176,12 @@ Linha `PRE-REGISTRADA` adicionada em
 `docs/research-hypothesis-registry-v1-2026-10-04.md` referenciando este
 arquivo, no mesmo commit deste pré-registro. Nenhum veredito ainda — nenhuma
 coleta foi iniciada.
+
+## 9. Ferramentas prontas para a coleta (adicionadas nesta revisão)
+
+- Runbook com os comandos exatos, em ordem, para rodar a coleta e o veredito:
+  `docs/concentration-decay-promotion-v0-collection-runbook-2026-10-05.md`.
+- Calculadora de veredito (aplica os critérios da seção 4 sem reinterpretação
+  manual): `benchmarks/market_first_feature_discovery_v1/cd_promo_v0_verdict.py`,
+  reusando `return_metrics_v47` já existente (`src/route_research_feature_review_v47.py`)
+  em vez de recalcular mediana/profit factor à mão.
