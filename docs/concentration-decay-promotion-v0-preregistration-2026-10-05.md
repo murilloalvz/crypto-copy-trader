@@ -71,18 +71,18 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
   causal de 5s do V55/V68 (`src/opportunity_feature_matrix_v0.py` /
   `src/route_research_early_opportunity_v55.py`) — sem depender do pipeline
   separado do Post-Transition branch.
-- Suporte mínimo: **n >= 30 pares route-usable** (não 10).
-  **Justificativa explícita da escolha:** a CD-V0 original usou mínimo
-  congelado de 10 e ficou INCONCLUSIVE na borda (n=9) — um suporte pequeno o
-  bastante pra não resolver nem a própria pergunta que tentou responder.
-  Herdar esse mesmo 10 para decidir uma promoção de catálogo (consequência
-  maior: a feature passa a estar disponível a qualquer seletor futuro, não só
-  mais um dado solto) repetiria o problema. n>=30 iguala o padrão já usado
-  neste mesmo registro para confirmação/replicação fresca de hipóteses
-  irmãs (EBPQ-REPL-V0, DEPLOYER-V0, CHURN-PROSP-V1).
-  **Esta é a escolha metodológica mais discutível deste documento — fica
-  explícita aqui justamente para o operador poder vetá-la ou ajustá-la agora;
-  depois de iniciar a coleta, a seção 6 proíbe mudar.**
+- Suporte mínimo: **n >= 10 pares route-usable**, igual ao mínimo congelado
+  já usado pela própria CD-V0.
+  **Decisão do operador (2026-10-05), substituindo a escolha original deste
+  documento (n>=30).** Esta troca é feita ANTES de qualquer coleta — nenhum
+  dado foi visto, então não viola a seção 6 (que só proíbe mudar depois de
+  ver dado). Registrado para transparência: a primeira versão deste
+  pré-registro propunha n>=30 (padrão de replicação fresca usado por
+  EBPQ-REPL-V0/DEPLOYER-V0/CHURN-PROSP-V1), justamente porque o 10 da CD-V0
+  ficou na borda (INCONCLUSIVE em n=9). O operador optou por manter
+  consistência com o corte já congelado da própria CD-V0 em vez de endurecer
+  o suporte. A partir deste commit, **n>=10 é o número congelado** para
+  CD-PROMO-V0 — depois de iniciar a coleta, não pode mais mudar.
 - Cobertura mínima da feature: **>= 80% por subcohort**, mesmo padrão de
   elegibilidade já usado pela V55 (`docs/route-research-v55-causal-early-opportunity-discovery-result-2026-09-08.md`,
   "pre-registered >=80% per-subcohort coverage requirement").
@@ -91,7 +91,7 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 **PASS** exige todos:
 1. cobertura da feature >= 80% por subcohort;
-2. n >= 30 pares route-usable total, com suporte não-trivial nos dois grupos
+2. n >= 10 pares route-usable total, com suporte não-trivial nos dois grupos
    (`<= 0` vs `> 0`);
 3. grupo favorável (`<= 0`) com retorno mediano Fixed+60 maior que o grupo
    `> 0`, mesma direção já observada descritivamente na CD-V0 (sem flip);
@@ -101,7 +101,7 @@ Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 sustenta. Fecha CD-PROMO-V0 como FAIL — feature permanece `diagnostic_only`,
 sem segunda tentativa, sem retune.
 
-**INCONCLUSIVE**: n < 30 route-usable e/ou cobertura < 80%. Permite **no
+**INCONCLUSIVE**: n < 10 route-usable e/ou cobertura < 80%. Permite **no
 máximo uma** extensão de coleta sob a mesma regra (mesmo limite que a própria
 CD-V0 já ensinou ser necessário vigiar). Se a extensão também não atingir o
 suporte mínimo, CD-PROMO-V0 fecha como INCONCLUSIVE permanente — mesmo
@@ -120,7 +120,7 @@ desfecho da CD-V0 original, sem terceira tentativa.
 
 ## 6. Proibido depois de ver dado
 
-Mudar corte, direção, horizonte, suporte mínimo (30) ou gate de cobertura
+Mudar corte, direção, horizonte, suporte mínimo (10) ou gate de cobertura
 (80%); trocar instrumento de medida; olhar só um subgrupo; combinar com outras
 features num score; usar qualquer amostra já queimada por outra hipótese deste
 registro.
