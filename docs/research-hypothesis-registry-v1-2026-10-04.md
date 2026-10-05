@@ -62,6 +62,7 @@ O programa vai testar estratégias até uma funcionar. Quanto mais estratégias 
 | V60 | RASCUNHO, aguarda sign-off | `docs/v60-wallet-convergence-discovery-v0-preregistration-DRAFT-2026-10-04.md` |
 | BUNDLE-V0 | RASCUNHO, aguarda sign-off; bloqueado por observabilidade (slot/creator) | `docs/bundle-bot-detection-v0-preregistration-DRAFT-2026-10-04.md` |
 | PQ-TR-SHADOW-V0 | RASCUNHO, aguarda sign-off | commit `52c9c21` |
+| CD-PROMO-V0 | PRE-REGISTRADA (aberta por instrução do operador, 2026-10-05); sem coleta iniciada | `docs/concentration-decay-promotion-v0-preregistration-2026-10-05.md` |
 
 ## A levantar (obrigatório para os contadores ficarem honestos)
 
