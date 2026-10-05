@@ -116,6 +116,20 @@ class MarketObservationStoreTests(unittest.TestCase):
                 self.assertTrue(record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=item))
                 self.assertFalse(record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=item))
 
+    def test_lifecycle_persists_creator_and_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.db"
+            with patch.object(database, "settings", SimpleNamespace(database_path=path)):
+                item = MarketLifecycleObservation(
+                    "T", 100, 105, "pump_bonding_curve", creator="CREATOR", slot=42,
+                )
+                self.assertTrue(record_market_lifecycle(acquisition_run_key="run", event_key="start", source_provider="native", observation=item))
+                loaded = load_latest_market_lifecycle(acquisition_run_key="run", token_mint="T")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.observation.creator, "CREATOR")
+        self.assertEqual(loaded.observation.slot, 42)
+
     def test_lifecycle_later_replay_preserves_first_seen_availability(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.db"

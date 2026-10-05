@@ -37,6 +37,8 @@ class MarketLifecycleObservation:
     market_started_at: int
     observed_at: int
     venue: str | None = None
+    creator: str | None = None
+    slot: int | None = None
 
 
 @dataclass(frozen=True)

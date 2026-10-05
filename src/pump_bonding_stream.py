@@ -311,6 +311,8 @@ def persist_pump_notification(
                 market_started_at=event.timestamp,
                 observed_at=notification.observed_at,
                 venue="pump_bonding_curve",
+                creator=event.creator,
+                slot=notification.slot,
             ),
         )
 

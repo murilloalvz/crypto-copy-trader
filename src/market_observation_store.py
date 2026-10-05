@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS market_lifecycle_observations (
     market_started_at INTEGER NOT NULL,
     observed_at INTEGER NOT NULL,
     venue TEXT,
+    creator TEXT,
+    slot INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(acquisition_run_key, event_key)
 );
@@ -109,6 +111,11 @@ def ensure_market_observation_schema() -> None:
             conn.executescript(base_schema)
             if "transaction_key" not in _column_names(conn, "market_trade_observations"):
                 conn.execute("ALTER TABLE market_trade_observations ADD COLUMN transaction_key TEXT")
+            lifecycle_columns = _column_names(conn, "market_lifecycle_observations")
+            if "creator" not in lifecycle_columns:
+                conn.execute("ALTER TABLE market_lifecycle_observations ADD COLUMN creator TEXT")
+            if "slot" not in lifecycle_columns:
+                conn.execute("ALTER TABLE market_lifecycle_observations ADD COLUMN slot INTEGER")
             conn.execute(
                 """CREATE INDEX IF NOT EXISTS idx_market_trade_observations_run_transaction
                 ON market_trade_observations(acquisition_run_key, transaction_key, id)"""
@@ -147,6 +154,10 @@ def _validate_lifecycle(item: MarketLifecycleObservation) -> None:
         raise ValueError("lifecycle timestamps must be non-negative")
     if item.venue is not None and not item.venue.strip():
         raise ValueError("venue cannot be blank")
+    if item.creator is not None and not item.creator.strip():
+        raise ValueError("creator cannot be blank")
+    if item.slot is not None and item.slot < 0:
+        raise ValueError("slot must be non-negative")
 
 
 def _identity_sort_key(identity: tuple) -> str:
@@ -277,17 +288,22 @@ def record_market_lifecycle(*, acquisition_run_key: str, event_key: str, source_
     provider = _required(source_provider, "source_provider")
     _validate_lifecycle(observation)
     ensure_market_observation_schema()
-    identity_values = (provider, observation.token_mint, observation.market_started_at, observation.venue)
+    identity_values = (
+        provider, observation.token_mint, observation.market_started_at,
+        observation.venue, observation.creator, observation.slot,
+    )
     with connection() as conn:
         existing = conn.execute(
-            """SELECT source_provider, token_mint, market_started_at, observed_at, venue
+            """SELECT source_provider, token_mint, market_started_at, observed_at,
+                venue, creator, slot
             FROM market_lifecycle_observations
             WHERE acquisition_run_key=? AND event_key=?""",
             (run_key, raw_key),
         ).fetchone()
         if existing is not None:
             existing_identity = tuple(existing[key] for key in (
-                "source_provider", "token_mint", "market_started_at", "venue"
+                "source_provider", "token_mint", "market_started_at",
+                "venue", "creator", "slot",
             ))
             stored_observed_at = int(existing["observed_at"])
             incoming_observed_at = int(observation.observed_at)
@@ -319,22 +335,25 @@ def record_market_lifecycle(*, acquisition_run_key: str, event_key: str, source_
             if incoming_wins:
                 conn.execute(
                     """UPDATE market_lifecycle_observations
-                    SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                    SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?,
+                        venue=?, creator=?, slot=?
                     WHERE acquisition_run_key=? AND event_key=?""",
                     (
                         provider, observation.token_mint, observation.market_started_at,
-                        incoming_observed_at, observation.venue, run_key, raw_key,
+                        incoming_observed_at, observation.venue, observation.creator,
+                        observation.slot, run_key, raw_key,
                     ),
                 )
             return False
         conn.execute(
             """INSERT INTO market_lifecycle_observations(
                 acquisition_run_key, event_key, source_provider, token_mint,
-                market_started_at, observed_at, venue
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                market_started_at, observed_at, venue, creator, slot
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_key, raw_key, provider, observation.token_mint,
                 observation.market_started_at, observation.observed_at, observation.venue,
+                observation.creator, observation.slot,
             ),
         )
         return True
@@ -392,7 +411,7 @@ def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, a
     normalized_venue = _required(venue, "venue") if venue is not None else None
     ensure_market_observation_schema()
     query = """SELECT acquisition_run_key, event_key, source_provider, token_mint,
-        market_started_at, observed_at, venue
+        market_started_at, observed_at, venue, creator, slot
         FROM market_lifecycle_observations
         WHERE acquisition_run_key=? AND token_mint=?"""
     params: list[object] = [run_key, mint]
@@ -416,6 +435,8 @@ def load_latest_market_lifecycle(*, acquisition_run_key: str, token_mint: str, a
             market_started_at=int(row["market_started_at"]),
             observed_at=int(row["observed_at"]),
             venue=(str(row["venue"]) if row["venue"] is not None else None),
+            creator=(str(row["creator"]) if row["creator"] is not None else None),
+            slot=(int(row["slot"]) if row["slot"] is not None else None),
         ),
     )
 
