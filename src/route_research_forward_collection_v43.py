@@ -15,6 +15,16 @@ from src.opportunity_route_research_store import (
 )
 
 
+# A normal poll/harvest/print iteration completes in well under a second. A gap this
+# large between consecutive monotonic checks means something external blocked the
+# collector's single thread (confirmed root cause for v68-09-A, 2026-10-04: Windows
+# console "QuickEdit" text-selection mode blocks a process's print() until released),
+# not real collection work. This only detects the stall and fails closed instead of
+# silently landing on INCONCLUSIVE_NO_AVAILABLE_ROUTE_OUTCOME, which looks identical to
+# a genuine zero-availability provider outage -- it cannot prevent the stall itself.
+FORWARD_COLLECTION_V43_STALL_GAP_SECONDS = 30.0
+
+
 @dataclass(frozen=True)
 class ForwardCollectionV43Summary:
     scheduled: int
@@ -26,6 +36,8 @@ class ForwardCollectionV43Summary:
     executable_semantic_violations: int
     target_lateness_seconds: tuple[int, ...]
     classification: str
+    stall_detected: bool = False
+    stall_gap_seconds: float | None = None
 
     @property
     def target_lateness_p95_seconds(self) -> int | None:
@@ -80,7 +92,9 @@ def collect_route_research_forward_v43(
     latest_target = max(item.target_at for item in initial)
     remaining = max(0, latest_target + target_grace_seconds - int(time.time()))
     runtime_seconds = min(hard_runtime_cap_seconds, remaining + jupiter_timeout_seconds + 2)
-    deadline = time.monotonic() + runtime_seconds
+    last_tick = time.monotonic()
+    deadline = last_tick + runtime_seconds
+    stall_gap_seconds: float | None = None
 
     print(
         f"[v43-forward] scheduled={len(initial)} latest_target={latest_target} "
@@ -127,7 +141,15 @@ def collect_route_research_forward_v43(
                 )
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="route-forward-v43") as executor:
-        while time.monotonic() < deadline:
+        while True:
+            tick = time.monotonic()
+            gap = tick - last_tick
+            if gap > FORWARD_COLLECTION_V43_STALL_GAP_SECONDS:
+                stall_gap_seconds = gap
+                break
+            last_tick = tick
+            if tick >= deadline:
+                break
             harvest_done()
             now = int(time.time())
             due = load_due_route_research_outcomes(
@@ -161,7 +183,9 @@ def collect_route_research_forward_v43(
     for item in final:
         by_horizon_counter.setdefault(item.horizon_seconds, Counter())[item.status] += 1
 
-    if counters["collector_errors"] or counters["executable_semantic_violations"]:
+    if stall_gap_seconds is not None:
+        classification = "FAIL_ROUTE_ONLY_FORWARD_COLLECTION_STALL_DETECTED"
+    elif counters["collector_errors"] or counters["executable_semantic_violations"]:
         classification = "FAIL_ROUTE_ONLY_FORWARD_COLLECTION"
     elif statuses.get("AVAILABLE", 0) == 0:
         classification = "INCONCLUSIVE_NO_AVAILABLE_ROUTE_OUTCOME"
@@ -180,4 +204,6 @@ def collect_route_research_forward_v43(
         executable_semantic_violations=counters["executable_semantic_violations"],
         target_lateness_seconds=tuple(lateness_seconds),
         classification=classification,
+        stall_detected=stall_gap_seconds is not None,
+        stall_gap_seconds=stall_gap_seconds,
     )

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import route_research_forward_cohort_v43 as v43
+from src.opportunity_route_research_store import RouteResearchForwardOutcome
 from src.route_research_forward_collection_v43 import collect_route_research_forward_v43
 
 
@@ -148,6 +149,48 @@ class ForwardCollectionV43Tests(unittest.TestCase):
         self.assertEqual(
             result.classification,
             "INCONCLUSIVE_NO_ROUTE_RESEARCH_SCHEDULE",
+        )
+
+    def test_stall_before_first_poll_fails_closed_not_inconclusive(self):
+        # Reproduces v68-09-A (2026-10-04): a schedule exists, nothing is ever
+        # submitted or captured, and the gap between the pre-loop monotonic reading
+        # and the first loop check is far larger than one poll interval -- as it was
+        # when the header print() blocked under Windows console QuickEdit mode.
+        outcome = RouteResearchForwardOutcome(
+            outcome_key="k1",
+            acquisition_run_key="run",
+            episode_key="episode-key-0000001",
+            token_mint="So11111111111111111111111111111111111111112",
+            research_decision_as_of=0,
+            horizon_seconds=300,
+            target_at=0,
+            status="PENDING",
+            observed_at=None,
+            quote_key=None,
+            error_type=None,
+            error_message=None,
+        )
+        with patch(
+            "src.route_research_forward_collection_v43.load_route_research_outcomes",
+            return_value=(outcome,),
+        ), patch(
+            "src.route_research_forward_collection_v43.time.monotonic",
+            side_effect=[0.0, 100.0],
+        ):
+            result = collect_route_research_forward_v43(
+                acquisition_run_key="run",
+                api_key=None,
+            )
+        self.assertTrue(result.stall_detected)
+        self.assertEqual(result.stall_gap_seconds, 100.0)
+        self.assertEqual(result.submitted, 0)
+        self.assertEqual(
+            result.classification,
+            "FAIL_ROUTE_ONLY_FORWARD_COLLECTION_STALL_DETECTED",
+        )
+        self.assertNotEqual(
+            result.classification,
+            "INCONCLUSIVE_NO_AVAILABLE_ROUTE_OUTCOME",
         )
 
 
