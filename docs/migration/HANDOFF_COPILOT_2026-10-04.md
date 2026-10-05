@@ -1,4 +1,4 @@
-# HANDOFF — V68 Flow60 Buy-Share Prospective Holdout — 2026-10-04 (rev. 3)
+# HANDOFF — V68 Flow60 Buy-Share Prospective Holdout — 2026-10-04 (rev. 4)
 
 ## Who this is for
 
@@ -6,12 +6,52 @@ Written for whoever (human or another AI assistant, e.g. GitHub Copilot) picks u
 this work next, with zero prior context from the Claude Code session that produced
 it. Read this file, then `docs/migration/START_HERE_CLAUDE_2026-09-27.md`,
 `BRANCH_AUTHORITY_MAP_2026-09-27.md`, `CODEBASE_MAP_2026-09-27.md`,
-`RESEARCH_STATE_LEDGER_2026-09-27.md`, and the root `CLAUDE.md` before touching
-anything. This project runs under strict scientific/process discipline (frozen
-thresholds, burn-once run-keys, no live money) — follow it exactly, do not
-improvise around it.
+`RESEARCH_STATE_LEDGER_2026-09-27.md`, the root `CLAUDE.md`, and now also
+`docs/research-hypothesis-registry-v1-2026-10-04.md` (new, see "rev. 4" below)
+before touching anything. This project runs under strict scientific/process
+discipline (frozen thresholds, burn-once run-keys, no live money) — follow it
+exactly, do not improvise around it.
 
-This is **rev. 3**. Rev. 1 (`57275d1`) was written while `v68-09` was still running.
+## Rev. 4 — program-wide hypothesis registry (new, separate from V68 itself)
+
+This revision adds work that is NOT about `v68-09`/`v68-10` directly, but is now a
+standing rule for every future hypothesis in the program (added to `CLAUDE.md`
+itself, see its new "Hypothesis registry discipline" section):
+
+- **`docs/research-hypothesis-registry-v1-2026-10-04.md`** (new, commits `bc00430`,
+  `d7d5678`, `c2fe126`) and **`docs/templates/batch-preregistration-template-v1.md`**
+  (new, `bc00430`): the multiple-comparisons control for "test strategies until one
+  works" — every economic hypothesis gets a line, including failures; an isolated
+  PASS is never edge; `VALIDADA` requires PASS -> fresh replication under the same
+  frozen rule -> net-of-costs positive (Gate 2).
+- A read-only git survey (`d7d5678`) of every `research/*` branch the registry's own
+  "A levantar" section named, plus Wallet Forward v2 and Wave v2/v3, found real
+  results for most of them (mostly FAIL/INCONCLUSIVE — early-buyer-churn,
+  early-buyer-prior-quality, deployer-prior-quality, early-balance-concentration,
+  buy-event-acceleration, the Sniper V1 screening, Wallet Forward v2), 3 systems-only
+  attempts in the holder-ownership GMGN->Helius-native->public-RPC chain (never
+  reached evaluation), and no economic verdict located at all for
+  `curve-capacity-replication-v0` or the 7-branch `market-first-*-discovery-*`
+  family (their recent doc commits are shared engineering ancestors, not results).
+  Full detail and per-branch sourcing is in the registry file itself.
+- Evaluated and rejected (`c2fe126`, confirmed by reading the actual code, not
+  assumed) piggybacking extra hypotheses onto `v68-10`'s capture: the Tail-Risk
+  Rejection replication needs its own separate wallet-memory acquisition
+  (`participant_quality_native_memory_v1.py`), confirmed absent from
+  `src/signal_plane_route_research_coordinator_v0.py` (V68's real admission path
+  computes only hazard risk + entry route, nothing participant-quality-related);
+  the other 11 features in V55's closed feature set ARE computed for free as a
+  byproduct of V68's own `build_early_opportunity_dataset_v55` call, but none has a
+  usable frozen cutoff and the V55 discovery doc's own "burned sample rule"
+  explicitly forbids deriving one from that sample for a different feature — doing
+  it from `v68-10`'s data instead would be the same same-sample-tuning mistake. No
+  batch was drafted; nothing was eligible.
+
+None of this touched the V68 lineage itself, any frozen threshold, or any closed
+result. No network calls were made beyond git reads already available locally.
+
+This is **rev. 3** (superseded in content by rev. 4 above, kept for its own
+history). Rev. 1 (`57275d1`) was written while `v68-09` was still running.
 Rev. 2 (`fb7091e`) recorded `v68-09`'s result as a new, not-yet-root-caused failure
 signature. **Rev. 3 closes that question**: the operator supplied real timing
 evidence and the root cause is now confirmed, not just hypothesized, and a
