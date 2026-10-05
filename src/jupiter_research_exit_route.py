@@ -67,6 +67,24 @@ JUPITER_RESEARCH_EXIT_RATE_LIMIT_STATUS_CODE = 429
 JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS = 1.5
 
 
+def _order_try_record(
+    retry_index: int,
+    started_at: float,
+    ended_at: float,
+    exc: JupiterOrderError | None,
+    backoff_seconds: float,
+) -> dict:
+    """One order() try as JSON-safe telemetry; never read by any gate or evaluator."""
+    return {
+        "try": retry_index + 1,
+        "started_at": round(float(started_at), 3),
+        "ended_at": round(float(ended_at), 3),
+        "result": "ok" if exc is None else "error",
+        "status_code": None if exc is None else getattr(exc, "status_code", None),
+        "backoff_seconds": float(backoff_seconds),
+    }
+
+
 @dataclass(frozen=True)
 class JupiterResearchExitRouteConfig:
     api_key: str
@@ -241,7 +259,12 @@ class JupiterResearchExitRouteProbe:
 
         last_exc: JupiterOrderError | None = None
         order = None
+        # Per-try wall-clock telemetry (A4, 2026-10-04): v68-08/f865745 could not bound
+        # lateness_p95 because only the final completion time was persisted. Recording each
+        # order() try here is observation-only: same tries, same backoff, same observed_at.
+        order_tries: list[dict] = []
         for retry_index in range(JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS):
+            try_started_at = time.time()
             try:
                 order = JupiterSwapV2Client(
                     api_key=api_key,
@@ -253,16 +276,25 @@ class JupiterResearchExitRouteProbe:
                     taker=None,
                     slippage_bps=self.config.slippage_bps,
                 )
+                order_tries.append(
+                    _order_try_record(retry_index, try_started_at, time.time(), None, 0.0)
+                )
                 last_exc = None
                 break
             except JupiterOrderError as exc:
                 last_exc = exc
+                try_ended_at = time.time()
+                backoff = 0.0
                 if retry_index + 1 < JUPITER_RESEARCH_EXIT_ORDER_MAX_ATTEMPTS:
                     backoff = (
                         JUPITER_RESEARCH_EXIT_RATE_LIMIT_BACKOFF_SECONDS
                         if exc.status_code == JUPITER_RESEARCH_EXIT_RATE_LIMIT_STATUS_CODE
                         else JUPITER_RESEARCH_EXIT_ORDER_RETRY_BACKOFF_SECONDS
                     )
+                order_tries.append(
+                    _order_try_record(retry_index, try_started_at, try_ended_at, exc, backoff)
+                )
+                if backoff > 0:
                     time.sleep(backoff)
         if last_exc is not None:
             exc = last_exc
@@ -279,6 +311,7 @@ class JupiterResearchExitRouteProbe:
                     "official_forward_outcome_completed": False,
                     "entry_quote_key": decision.entry_quote_key,
                     "sell_amount_raw": str(amount_raw),
+                    "order_tries": order_tries,
                 },
             )
             completed = complete_route_research_outcome(
@@ -317,6 +350,7 @@ class JupiterResearchExitRouteProbe:
                     "official_forward_outcome_completed": False,
                     "entry_quote_key": decision.entry_quote_key,
                     "sell_amount_raw": str(amount_raw),
+                    "order_tries": order_tries,
                 },
             )
             completed = complete_route_research_outcome(
@@ -344,6 +378,7 @@ class JupiterResearchExitRouteProbe:
                 "entry_quote_key": decision.entry_quote_key,
                 "entry_attempt_key": entry_attempt.attempt_key,
                 "sell_amount_raw": str(amount_raw),
+                "order_tries": order_tries,
                 "token_decimals": decimals,
                 "target_at": outcome.target_at,
                 "quote_observed_at": quote.observed_at,
