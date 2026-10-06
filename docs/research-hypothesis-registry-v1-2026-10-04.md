@@ -49,6 +49,7 @@ O programa vai testar estratégias até uma funcionar. Quanto mais estratégias 
 | CD-V0 | concentração | `mf_top_wallet_gross_share_delta_pct_points_late_minus_early <= 0` | entrada (alpha) | discovery + confirmação fresh, 2026-09-25 | **INCONCLUSIVE** (n=9 vs mínimo 10; descritivamente pior que a base); estacionada | branch Post-Transition, `docs/concentration-decay-v0-*` |
 | PT-V0 | pós-transição | Post-Transition Fresh Economic Discovery V0 | discovery | 2026-09-25 | **CLOSED/BURNED** (n econômico condicional = 0) | branch Post-Transition, `fresh_economic_discovery_v0.closed.json` |
 | LB-V4 | launch burst | hipótese econômica oficial do Launch Burst V4 | entrada (alpha) | — | **INCONCLUSIVE**, congelada até um taker financiado controlado | `docs/launch-burst-sniper-v1-preregistration-2026-09-15.md` (contexto) |
+| CD-PROMO-V0 | concentração | `mf_top_wallet_gross_share_delta_pct_points_late_minus_early`, promoção de catálogo (critérios próprios da promoção, não o veredito econômico da CD-V0) | promoção de catálogo (não é teste de edge) | n=46 route-usable de 63 outcome-known (cobertura 73,0%), Launch Burst Sniper V1 900s, 2026-10-06 | **INCONCLUSIVE_CD_PROMO_V0_SUPPORT** — cobertura 73,0% < mínimo congelado 80% (suporte n=46 já atendia o mínimo de 10). Descritivo, não decide o veredito: direção saiu invertida nesta amostra (favorável mediana −32,3% vs desfavorável −17,2%; PF favorável 0,54 vs 0,20). 1ª tentativa consumida; pré-registro permite no máximo 1 extensão antes de fechar permanente | `docs/concentration-decay-promotion-v0-preregistration-2026-10-05.md`; artefato: `artifacts/launch_burst_control_taker_sim_v4_sniper_v1/launch_burst_prospective_route_live_v4-1791258299-7e0ea95439/market-first-feature-discovery-v1.json` |
 
 ## Pré-registradas sem resultado conhecido nesta branch
 
@@ -62,7 +63,6 @@ O programa vai testar estratégias até uma funcionar. Quanto mais estratégias 
 | V60 | RASCUNHO, aguarda sign-off | `docs/v60-wallet-convergence-discovery-v0-preregistration-DRAFT-2026-10-04.md` |
 | BUNDLE-V0 | RASCUNHO, aguarda sign-off; bloqueado por observabilidade (slot/creator) | `docs/bundle-bot-detection-v0-preregistration-DRAFT-2026-10-04.md` |
 | PQ-TR-SHADOW-V0 | RASCUNHO, aguarda sign-off | commit `52c9c21` |
-| CD-PROMO-V0 | PRE-REGISTRADA (aberta por instrução do operador, 2026-10-05); sem coleta iniciada | `docs/concentration-decay-promotion-v0-preregistration-2026-10-05.md` |
 
 ## A levantar (obrigatório para os contadores ficarem honestos)
 
