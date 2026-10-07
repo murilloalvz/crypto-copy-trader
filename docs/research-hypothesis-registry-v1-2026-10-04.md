@@ -60,7 +60,7 @@ O programa vai testar estratégias até uma funcionar. Quanto mais estratégias 
 | LB-DISCOVERY-V0 | PREREGISTERED / NOT YET RUN | `docs/launch-burst-discovery-v0-preregistration-2026-09-10.md` |
 | MAD-V0 | PREREGISTERED / NO OUTCOMES INSPECTED | `docs/market-activity-dynamics-discovery-run-v0-2026-09-11.md` |
 | BPS-V0 | protocolo de discovery sobre amostra já queimada | `docs/burst-participation-structure-discovery-v0-protocol-2026-09-24.md` |
-| V60 | RASCUNHO, aguarda sign-off | `docs/v60-wallet-convergence-discovery-v0-preregistration-DRAFT-2026-10-04.md` |
+| V60 | **PRE-REGISTRADA** (2026-10-07; promovida do RASCUNHO sob autorização "pode meter marcha", parâmetros adotados sem alteração — ver proveniência no doc) — gate de viabilidade (convergência + cobertura causal), não é teste econômico; cohort freeze ainda não commitado nesta checkout | `docs/v60-wallet-convergence-discovery-v0-preregistration-2026-10-07.md`; runbook `docs/v60-opportunity-wallet-convergence-discovery-v0-collection-runbook-2026-10-07.md`; implementação `benchmarks/v60_opportunity_wallet_convergence_v0/freeze_cohort.py` (`--self-check` OK) |
 | BUNDLE-V0 | RASCUNHO, aguarda sign-off; bloqueado por observabilidade (slot/creator) | `docs/bundle-bot-detection-v0-preregistration-DRAFT-2026-10-04.md` |
 | PQ-TR-SHADOW-V0 | RASCUNHO, aguarda sign-off | commit `52c9c21` |
 
