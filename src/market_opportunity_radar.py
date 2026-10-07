@@ -29,6 +29,7 @@ class MarketTradeObservation:
     price_usd: float | None = None
     venue: str | None = None
     transaction_key: str | None = None
+    slot: int | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class MarketLifecycleObservation:
     market_started_at: int
     observed_at: int
     venue: str | None = None
+    creator: str | None = None
+    creation_slot: int | None = None
 
 
 @dataclass(frozen=True)

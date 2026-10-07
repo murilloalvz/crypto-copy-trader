@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import base64
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace as _dataclass_replace
 import json
 import math
 import os
@@ -1546,6 +1546,22 @@ async def run_live_shadow_v0(
                     ] += 1
                 else:
                     continue
+
+                # Bundle Bot Detection V0 plumbing (docs/bundle-bot-detection-v0-plumbing-scope-2026-10-07.md):
+                # manifest["slot"] is the slot of this event's own containing transaction,
+                # already staged for every event_key (see the "carbon_decoder_input"
+                # manifest construction above) -- just not threaded into the observation
+                # dataclasses until now. `creator` is deliberately left unset here: this
+                # Carbon-decoded `row` never surfaces a creator field for pump_create
+                # anywhere in this file (confirmed by inspection, not assumed) -- getting
+                # it would mean touching the Carbon decoder itself, out of scope for this
+                # plumbing-only change.
+                manifest_slot = manifest.get("slot")
+                if isinstance(manifest_slot, int) and not isinstance(manifest_slot, bool):
+                    if kind == "trade":
+                        observation = _dataclass_replace(observation, slot=manifest_slot)
+                    elif kind == "lifecycle":
+                        observation = _dataclass_replace(observation, creation_slot=manifest_slot)
 
                 assert observation is not None and kind is not None
                 sequence = signal_sequence

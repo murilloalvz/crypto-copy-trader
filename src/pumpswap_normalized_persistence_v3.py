@@ -104,6 +104,8 @@ async def prepare_pumpswap_notification_normalized_v3(
                     market_started_at=event.timestamp,
                     observed_at=notification.observed_at,
                     venue="pumpswap",
+                    creator=event.creator,
+                    creation_slot=notification.slot,
                 ),
             )
         )
@@ -142,6 +144,7 @@ async def prepare_pumpswap_notification_normalized_v3(
                     price_usd=None,
                     venue="pumpswap",
                     transaction_key=notification.signature,
+                    slot=notification.slot,
                 ),
             )
         )
@@ -167,9 +170,12 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
         observation.token_mint,
         observation.market_started_at,
         observation.venue,
+        observation.creator,
+        observation.creation_slot,
     )
     existing = conn.execute(
-        """SELECT source_provider, token_mint, market_started_at, observed_at, venue
+        """SELECT source_provider, token_mint, market_started_at, observed_at, venue,
+            creator, creation_slot
         FROM market_lifecycle_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
@@ -177,7 +183,10 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
     if existing is not None:
         existing_identity = tuple(
             existing[key]
-            for key in ("source_provider", "token_mint", "market_started_at", "venue")
+            for key in (
+                "source_provider", "token_mint", "market_started_at", "venue",
+                "creator", "creation_slot",
+            )
         )
         stored_observed_at = int(existing["observed_at"])
         incoming_observed_at = int(observation.observed_at)
@@ -211,7 +220,8 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
         if incoming_wins:
             conn.execute(
                 """UPDATE market_lifecycle_observations
-                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?,
+                    creator=?, creation_slot=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     _SOURCE_PROVIDER,
@@ -219,6 +229,8 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
                     observation.market_started_at,
                     incoming_observed_at,
                     observation.venue,
+                    observation.creator,
+                    observation.creation_slot,
                     run_key,
                     raw_key,
                 ),
@@ -228,8 +240,8 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
     conn.execute(
         """INSERT INTO market_lifecycle_observations(
             acquisition_run_key, event_key, source_provider, token_mint,
-            market_started_at, observed_at, venue
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            market_started_at, observed_at, venue, creator, creation_slot
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key,
             raw_key,
@@ -238,6 +250,8 @@ def _record_lifecycle_with_connection(conn, *, run_key: str, item: _LifecycleWri
             observation.market_started_at,
             observation.observed_at,
             observation.venue,
+            observation.creator,
+            observation.creation_slot,
         ),
     )
     return True
@@ -257,10 +271,11 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
         observation.price_usd,
         observation.venue,
         observation.transaction_key,
+        observation.slot,
     )
     existing = conn.execute(
         """SELECT source_provider, token_mint, side, chain_time, observed_at,
-            wallet_address, notional_usd, price_usd, venue, transaction_key
+            wallet_address, notional_usd, price_usd, venue, transaction_key, slot
         FROM market_trade_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
@@ -278,6 +293,7 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
                 "price_usd",
                 "venue",
                 "transaction_key",
+                "slot",
             )
         )
         stored_observed_at = int(existing["observed_at"])
@@ -313,7 +329,8 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
             conn.execute(
                 """UPDATE market_trade_observations
                 SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
-                    wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?
+                    wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?,
+                    slot=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     _SOURCE_PROVIDER,
@@ -326,6 +343,7 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
                     observation.price_usd,
                     observation.venue,
                     observation.transaction_key,
+                    observation.slot,
                     run_key,
                     raw_key,
                 ),
@@ -336,8 +354,8 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
         """INSERT INTO market_trade_observations(
             acquisition_run_key, event_key, source_provider, token_mint, side,
             chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
-            transaction_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            transaction_key, slot
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key,
             raw_key,
@@ -351,6 +369,7 @@ def _record_trade_with_connection(conn, *, run_key: str, item: _TradeWrite) -> b
             observation.price_usd,
             observation.venue,
             observation.transaction_key,
+            observation.slot,
         ),
     )
     return True

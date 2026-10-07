@@ -213,7 +213,15 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             source_received_wall_ns=12_000_000_000,
             canonical_ready_wall_ns=12_100_000_000,
         )
-        self.assertEqual(row["observation"], asdict(observation))
+        # _build_signal_record's payload is a deliberately curated field
+        # projection (parity-sensitive wire shape toward the Rust side), not
+        # an automatic mirror of every MarketTradeObservation field. `slot`
+        # (docs/bundle-bot-detection-v0-plumbing-scope-2026-10-07.md) is
+        # intentionally not part of this shape yet -- excluded here rather
+        # than silently asserting it's absent.
+        expected = asdict(observation)
+        expected.pop("slot", None)
+        self.assertEqual(row["observation"], expected)
         self.assertEqual(row["sequence"], 7)
         self.assertEqual(row["kind"], "trade")
 

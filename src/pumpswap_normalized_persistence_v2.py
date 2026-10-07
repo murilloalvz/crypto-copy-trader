@@ -137,6 +137,8 @@ async def persist_pumpswap_notification_normalized_v2(
                     market_started_at=event.timestamp,
                     observed_at=notification.observed_at,
                     venue="pumpswap",
+                    creator=event.creator,
+                    creation_slot=notification.slot,
                 ),
             )
         )
@@ -173,6 +175,7 @@ async def persist_pumpswap_notification_normalized_v2(
                     price_usd=None,
                     venue="pumpswap",
                     transaction_key=notification.signature,
+                    slot=notification.slot,
                 ),
             )
         )

@@ -311,6 +311,8 @@ def persist_pump_notification(
                 market_started_at=event.timestamp,
                 observed_at=notification.observed_at,
                 venue="pump_bonding_curve",
+                creator=event.creator,
+                creation_slot=notification.slot,
             ),
         )
 
@@ -328,6 +330,7 @@ def persist_pump_notification(
             price_usd=None,
             venue="pump_bonding_curve",
             transaction_key=notification.signature,
+            slot=notification.slot,
         )
         if record_market_trade(
             acquisition_run_key=run_key,

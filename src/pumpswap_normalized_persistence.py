@@ -64,6 +64,8 @@ async def persist_pumpswap_notification_normalized(
                 market_started_at=event.timestamp,
                 observed_at=notification.observed_at,
                 venue="pumpswap",
+                creator=event.creator,
+                creation_slot=notification.slot,
             ),
         ):
             newly_persisted_lifecycle += 1
@@ -98,6 +100,7 @@ async def persist_pumpswap_notification_normalized(
             price_usd=None,
             venue="pumpswap",
             transaction_key=notification.signature,
+            slot=notification.slot,
         )
         if record_market_trade(
             acquisition_run_key=run_key,
