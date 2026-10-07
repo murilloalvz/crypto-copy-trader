@@ -100,7 +100,11 @@ nenhuma chance de colidir com o V0 ou com qualquer outra hipótese.
 - falha de sistema (bridge/memory/900s-maturity não `PASS`) não conta como tentativa — registrar e
   não contar;
 - `PASS`: feature vira candidata oficial a `VALIDADA`, mas só depois do Gate 2 de custo
-  (`docs/live-readiness-gates-v1.md`) — esta replicação por si só não autoriza isso;
+  (`docs/live-readiness-gates-v1.md`) — esta replicação por si só não autoriza isso. O Gate 2
+  específico deste filtro já está rascunhado e aguardando seu sign-off, escrito antes deste
+  veredito existir:
+  `docs/participant-quality-tail-risk-gate2-cost-preregistration-DRAFT-2026-10-07.md`. Só se aplica
+  se este veredito for `PASS`;
 - `FAIL`: a linha fecha e **o filtro sai da pilha** — não se tenta outro horizonte, outro contraste,
   ou uma 2ª replicação;
 - `INCONCLUSIVE` (suporte insuficiente): mesma disciplina de extensão única já usada em
