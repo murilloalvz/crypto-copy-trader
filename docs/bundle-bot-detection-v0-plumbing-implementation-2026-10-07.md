@@ -49,22 +49,54 @@ começar num branch separado" + autorização ampla de execução autônoma na m
   (`chain_time=119`, `transaction_key="pump-signature"`) pra teste de prontidão do pipeline, não é
   captura real. Sem slot real pra propagar; `None` já é o valor correto.
 
-## O que ficou fora desta rodada (não auditado individualmente)
+## Auditoria dos 10 call sites restantes (2026-10-07, segunda passada — só leitura, nada implementado)
 
-`adapt_carbon_matched_unit_to_market_trade_v0`/`adapt_carbon_pump_trade_v0`
-(`src/carbon_matched_unit_adapter.py`, `src/carbon_market_trade_adapter.py`) são chamados por mais de
-10 outros arquivos além do `live_shadow.py` (vários benchmarks: `market_first_signal_plane_v0`,
-`market_first_live_smoke_v0`, `market_first_live_discovery_v0`,
-`market_first_capacity_harness_v0`, `launch_burst_shadow_v0`,
-`launch_burst_prospective_route_paper_v2`, `launch_burst_matched_unit_coverage_v0`,
-`helius_standard_wss_shadow_v0`, `carbon_kernel_ingress_v0`/`v1`). A correção aplicada no
-`live_shadow.py` foi feita **no ponto de chamada** (`dataclasses.replace` depois do retorno do
-adapter), não dentro do adapter compartilhado — então ela não se propaga automaticamente pros outros
-chamadores. Threading isso universalmente exigiria mudar a assinatura da função compartilhada
-(aceitar um `slot` explícito), o que é uma decisão maior, não feita aqui. Pela nomenclatura
-(`_smoke_`, `_capacity_harness_`, `_shadow_`), a maioria parece ser harness de benchmark/diagnóstico,
-não o caminho de produção real — mas isso não foi confirmado arquivo por arquivo. Fica como próximo
-passo explícito, não como "concluído".
+Os 10 arquivos que chamam `adapt_carbon_pump_trade_v0`/`adapt_carbon_matched_unit_to_market_trade_v0`
+sem passar por `live_shadow.py`:
+
+| Arquivo | Constrói lifecycle direto? | `slot` disponível no escopo encontrado? | Classificação (evidência, não suposição) |
+|---|---|---|---|
+| `benchmarks/market_first_signal_plane_v0/pipeline.py` | Sim, via helper `_defer_lifecycle(*, ..., venue)` (linha 120-138) — **a assinatura do helper nem recebe slot/creator como parâmetro**, então mesmo achando o valor na chamada seria preciso estender o helper também. | Não achado no escopo imediato (1 menção incidental de "slot" no arquivo todo). | Importa de `market_first_live_discovery_v0` e `helius_standard_wss_shadow_v0.collect` — parece orquestrar captura real, não é synthetic por si, mas não confirmado. |
+| `benchmarks/market_first_live_smoke_v0/run.py` | Sim, 2 pontos diretos (`pump_create` linha ~402, outro em ~448), mesmo padrão `_text(row, ...)`/`_nonnegative_int(row, ...)` do `live_shadow.py` antes da correção. | Não achado no escopo imediato dos dois pontos lidos. | Nome diz "live" — provavelmente WSS real de curta duração pra smoke test, não synthetic. |
+| `benchmarks/market_first_live_discovery_v0/pipeline.py` | Sim, 1 ponto direto (linha ~187). | Não achado no escopo imediato. | Nome diz "live_discovery" — capture real. |
+| `benchmarks/market_first_capacity_harness_v0/shadow_signal_plane.py` | Sim, 1 ponto direto (linha ~122). | Não achado no escopo imediato. | Importa `unittest.mock.patch` — forte indício de harness de capacidade/teste, não produção real. |
+| `benchmarks/launch_burst_shadow_v0/run.py` | Não — só trade. | Não achado. | "shadow" no sentido do Gate 4 (decide em tempo real, sem assinar) — provavelmente real, não synthetic. |
+| `benchmarks/launch_burst_prospective_route_paper_v2/live.py` | Não — só trade. | Zero menções de "slot" no arquivo. | Nome do arquivo é literalmente `live.py` — captura real. |
+| `benchmarks/launch_burst_matched_unit_coverage_v0/run.py` | Não — só trade. | Não achado. | "coverage" — auditoria, não confirmado se roda sobre captura viva ou sobre dado já persistido. |
+| `benchmarks/helius_standard_wss_shadow_v0/adapt.py` | Não — só trade. | Zero menções de "slot". | WSS no nome — bem provável que seja real. |
+| `benchmarks/carbon_kernel_ingress_v0/replay.py` | Não — só trade. | Não achado. | Nome do arquivo é literalmente `replay.py` — **provavelmente reprocessa dado histórico, não captura nova**. Se for isso, `slot=None` já é o valor certo, igual ao `route_research_v68_release.py` — mas não confirmei se o replay tem acesso ao slot original gravado. |
+| `benchmarks/carbon_kernel_ingress_v1/benchmark.py` | Não — só trade. | Zero menções de "slot". | "benchmark" + `threading`/`queue` — forte indício de teste de throughput, não produção real. |
+
+### O que falta pra cobertura completa (preciso, não genérico)
+
+1. **O ponto de alavanca único**: `adapt_carbon_matched_unit_to_market_trade_v0`
+   (`src/carbon_market_trade_adapter.py`) não aceita `slot` como parâmetro — é por isso que o fix do
+   `live_shadow.py` teve que ser feito *depois* da chamada (`dataclasses.replace`), não dentro dela.
+   Adicionar um parâmetro opcional `slot: int | None = None` nessa função (e em
+   `adapt_carbon_pump_trade_v0`, se o valor precisar vir de lá) seria aditivo — default `None`,
+   nenhum dos 10 chamadores quebra — e resolveria o lado trade pra todos de uma vez, **mas só se cada
+   chamador também passar o valor** (ver item 2). Não fiz essa mudança agora porque é uma decisão de
+   assinatura de função compartilhada, e o item 2 é o que realmente trava a cobertura.
+2. **Diferente do `live_shadow.py`, nenhum destes 10 mostrou um valor de slot já parado em escopo
+   esperando ser usado** (lá, era `manifest["slot"]`, computado e simplesmente não lido). Aqui, a
+   busca não achou o equivalente — ou está mais abaixo na pilha de decodificação de cada arquivo
+   (não rastreado até a origem, por tempo), ou genuinamente não existe ainda nesse nível pra alguns
+   desses arquivos. Isso é trabalho de rastreamento por arquivo, não uma mudança mecânica — a mesma
+   profundidade de investigação que o `live_shadow.py` exigiu (achar onde "slot" sai do dict de
+   contexto RPC e sobrevive até o ponto de construção), repetida até 9 vezes (excluindo o provável
+   `replay.py`).
+3. **Os 4 arquivos com lifecycle direto** (`market_first_signal_plane_v0`, `market_first_live_smoke_v0`
+   ×2, `market_first_live_discovery_v0`, `market_first_capacity_harness_v0`) também precisam de
+   `creator`/`creation_slot` nos próprios construtores — e pelo menos um (`_defer_lifecycle` em
+   `market_first_signal_plane_v0`) exige estender a assinatura de uma função helper própria, não só
+   adicionar argumentos no construtor.
+4. **Priorização recomendada** (não decidida aqui, é pra sua revisão): `carbon_kernel_ingress_v0/replay.py`
+   e `carbon_kernel_ingress_v1/benchmark.py` são os candidatos mais fortes a "não precisa de mudança
+   nenhuma" (replay/benchmark, não captura real) — confirmar isso primeiro eliminaria 2 dos 10 sem
+   nenhum código. Os 2 com `market_first_live_` no nome são os candidatos mais fortes a merecerem o
+   trabalho de rastreamento, porque são nomeadamente captura viva.
+
+Nada disso foi implementado nesta passada — só leitura e relatório, conforme pedido.
 
 ## Um achado que exigiu decisão explícita, não correção silenciosa
 
