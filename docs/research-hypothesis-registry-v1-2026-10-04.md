@@ -24,6 +24,10 @@ O programa vai testar estratégias até uma funcionar. Quanto mais estratégias 
 6. **Pré-registro em lote é permitido e recomendado.** Várias hipóteses podem ser julgadas na mesma coleta, desde que todas estejam pré-registradas antes dela (modelo: `docs/templates/batch-preregistration-template-v1.md`). O lote registra quantas hipóteses havia (K). Qualquer PASS dentro do lote vai sozinho para replicação.
 7. **Revisão periódica (sugestão — decisão do operador):** a cada 10 veredictos econômicos sem nenhuma hipótese `VALIDADA`, uma revisão do programa: famílias de sinal, instrumento de medida, custo por teste. Não é critério de parada, é ponto de checagem.
 
+## Regra de parada do programa — memo "move first" (2026-10-07)
+
+A partir de `docs/strategy-options-move-first-2026-10-07.md`: só entra na recomendação a opção que responder, com evidência, às 5 perguntas (de quem vem o dinheiro; por que read-only/segundos atrasado/~US$25/sem MEV ainda captura; qual evidência própria ou externa séria mostra a sobra; qual o teste mais barato e decisivo; qual o critério de morte escrito antes). Opção que não responde fica **DESCARTADA**, com motivo registrado no memo. No máximo 2 caminhos são recomendados por vez; cada um recebe exatamente 1 discovery + 1 confirmação. **Se nenhum caminho recomendado fechar com resultado positivo líquido de custos (Gate 2), o programa de memecoin é encerrado.** Resultado da avaliação de 2026-10-07: único caminho sobrevivente = Opção B ("movement first" em horizontes 1h/4h/24h); A (Post-Transition V1), C (filtro como camada) e D (Robinhood/Pons) ficaram DESCARTADAS — detalhe e motivo de cada uma no memo.
+
 ## Vocabulário de status
 
 `PRE-REGISTRADA` · `EM COLETA` · `SEM VEREDITO (sistema)` · `PASS (aguarda replicação)` · `VALIDADA` · `FAIL` · `KILL` · `INCONCLUSIVE` · `DISCOVERY (gera candidatos)` · `CLOSED/BURNED` · `RASCUNHO`
