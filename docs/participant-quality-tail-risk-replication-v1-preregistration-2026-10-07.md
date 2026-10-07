@@ -77,7 +77,9 @@ nenhuma chance de colidir com o V0 ou com qualquer outra hipótese.
 
 ## Regras operacionais (congeladas agora, não depois de ver problema)
 
-1. Saída de todo comando "live" redirecionada para arquivo (`Tee-Object`/`tee`) — nunca só console.
+1. Saída de todo comando "live" redirecionada só para arquivo (`*> arquivo.log`) — nunca só
+   console, e nunca `Tee-Object`/`tee` (ver seção "Correções de sistema" abaixo: `Tee-Object`
+   continua ecoando no console e pode travar o processo junto com ele).
 2. Sem suspensão de energia durante qualquer passo live.
 3. RPC dedicado Helius (pago) — o free tier já falhou 3x nesta linha de pesquisa (CD-PROMO-V0,
    2026-10-06/07: HTTP 429/timeout). Nenhuma outra chave além da do Helius dedicado.
