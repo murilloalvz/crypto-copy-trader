@@ -17,6 +17,10 @@ falhou 3x nesta linha de pesquisa.
   git log --oneline -3
   ```
   Espera-se `research/rust-signal-plane-live-shadow-v0` com o commit deste runbook no topo.
+- Garanta que a pasta de logs existe (idempotente, não apaga nada se já existir):
+  ```powershell
+  New-Item -ItemType Directory -Force logs | Out-Null
+  ```
 - Desative suspensão de energia durante toda a sessão abaixo:
   ```powershell
   powercfg /change standby-timeout-ac 0
