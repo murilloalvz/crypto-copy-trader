@@ -105,6 +105,50 @@ nenhuma chance de colidir com o V0 ou com qualquer outra hipótese.
   CD-PROMO-V0 — no máximo 1 extensão de coleta, run key novo, sem mudar nenhum parâmetro desta
   tabela.
 
+## Correções de sistema aplicadas antes da coleta (2026-10-07, mesmo dia, antes de qualquer run)
+
+Nenhuma delas toca a regra congelada (feature, cutoff, contraste, horizonte, suporte mínimo, gates
+de PASS). Registradas aqui porque o CLAUDE.md exige que toda mudança de código seja relatada junto
+do contrato que ela protege.
+
+1. **Runbook: `Tee-Object` → redirecionamento só para arquivo.** `Tee-Object` continua escrevendo no
+   console além do arquivo; se o console travar (modo QuickEdit do PowerShell, o mesmo mecanismo que
+   causou a falha de sistema do v68-09 — ver `RESEARCH_STATE_LEDGER_2026-09-27.md`), o `Tee-Object`
+   trava esperando o console, o pipe enche, e o processo Python trava junto, sem erro. Todo comando
+   "live" do runbook agora usa `*> arquivo.log` (todos os streams só pro arquivo, sem eco). Acompanhar
+   progresso passou a ser uma segunda janela com `Get-Content -Wait -Tail`, que só lê o arquivo e não
+   pode travar quem escreve nele. `powercfg /change standby-timeout-ac 0` também virou comando
+   explícito na seção 0 do runbook, não só uma instrução em prosa.
+
+2. **Stall guard portado de `src/route_research_forward_collection_v43.py` (commit `e4e95e8`,
+   2026-10-05) para `src/route_research_forward_collection_900_v0.py`** — o coletor usado por
+   `participant_quality_native_holdout_v1.py` e `participant_quality_native_memory_v1.py`, e portanto
+   por esta replicação. Mesmo padrão exato do v43: `deadline`/`last_tick` monotônico calculado antes
+   do loop (antes linha 101), e o loop (antes linha 154) agora mede o intervalo desde a última volta
+   a cada iteração; se passar de `FORWARD_COLLECTION_900_STALL_GAP_SECONDS = 30.0`, falha explícito
+   como `FAIL_MEMORY_FORWARD_900_STALL_DETECTED` em vez de cair silenciosamente em
+   `INCONCLUSIVE_MEMORY_NO_AVAILABLE_300_900_OUTCOME` (que pareceria uma falta de disponibilidade de
+   provider, não um travamento externo). Dois campos novos em `ForwardCollection900Summary`
+   (`stall_detected`, `stall_gap_seconds`), ambos com default que preserva o comportamento anterior —
+   nenhum ponto de construção existente foi afetado. Detector apenas; não evita o travamento, só
+   recusa aceitar o resultado como se fosse um dado real. Testes:
+   `python -m unittest tests.test_route_research_forward_collection_900_v0
+   tests.test_participant_quality_native_holdout_v1 tests.test_participant_quality_native_memory_v1
+   tests.test_participant_quality_native_memory_resume_v0
+   tests.test_route_research_forward_cohort_v43 -v` → 23/23 OK, sem regressão.
+
+3. **Auditoria pedida: `participant_quality_native_memory_v1.py` tem algum outro loop longo com o
+   mesmo risco?** Não — `grep` por `while `/`time.monotonic()`/`time.sleep(`/`deadline` nesse arquivo
+   não retornou nenhuma ocorrência própria; o único loop de risco que ele aciona é dentro do coletor
+   900 corrigido no item 2. `route_research_signal_plane_bridge_v0.py` (o outro módulo que tanto o
+   memory build quanto o holdout chamam) também não tem loop de poll próprio — usa `time.monotonic()`
+   só para medir `elapsed_seconds` depois do fato. O polling de duração ao vivo em si acontece dentro
+   de `benchmarks/integrated_market_signal_plane_v1/live_shadow.py` (`run_live_shadow_v0`), que é
+   território do Signal Plane promovido — fora do escopo desta correção pela regra do CLAUDE.md sobre
+   o hot path Rust ("prove que o problema está no Signal Plane antes de tocar"); não foi auditado nem
+   alterado aqui. Se um travamento acontecer exatamente nessa camada durante esta replicação, isso é
+   evidência nova e separada, não algo que esta correção já cobre.
+
 ## Execução
 
 Runbook: `docs/participant-quality-tail-risk-replication-v1-collection-runbook-2026-10-07.md`.

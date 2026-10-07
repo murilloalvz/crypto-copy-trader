@@ -19,6 +19,16 @@ from src.provider_start_pacer_v44 import ProviderStartPacerV44
 VERSION = "route_research_forward_collection_900_v0"
 TARGET_HORIZONS = (300, 900)
 
+# Ported from src/route_research_forward_collection_v43.py (commit e4e95e8,
+# 2026-10-05): a normal poll/harvest/print iteration completes in well under a
+# second. A gap this large between consecutive monotonic checks means something
+# external blocked the collector's single thread (confirmed root cause for
+# v68-09-A: Windows console "QuickEdit" text-selection mode blocking print()),
+# not real collection work -- this only detects the stall and fails closed
+# instead of silently landing on INCONCLUSIVE_MEMORY_NO_AVAILABLE_300_900_OUTCOME,
+# which looks identical to a genuine zero-availability provider outage.
+FORWARD_COLLECTION_900_STALL_GAP_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class ForwardCollection900Summary:
@@ -30,6 +40,8 @@ class ForwardCollection900Summary:
     executable_semantic_violations: int
     target_lateness_seconds: tuple[int, ...]
     classification: str
+    stall_detected: bool = False
+    stall_gap_seconds: float | None = None
 
     @property
     def target_lateness_p95_seconds(self) -> int | None:
@@ -98,7 +110,9 @@ def collect_route_research_forward_through_900_v0(
         hard_runtime_cap_seconds,
         remaining + jupiter_timeout_seconds + 2,
     )
-    deadline = time.monotonic() + runtime_seconds
+    last_tick = time.monotonic()
+    deadline = last_tick + runtime_seconds
+    stall_gap_seconds: float | None = None
 
     probe = JupiterResearchExitRouteProbe(
         JupiterResearchExitRouteConfig(
@@ -151,7 +165,15 @@ def collect_route_research_forward_through_900_v0(
         max_workers=workers,
         thread_name_prefix="memory-forward-900",
     ) as executor:
-        while time.monotonic() < deadline:
+        while True:
+            tick = time.monotonic()
+            gap = tick - last_tick
+            if gap > FORWARD_COLLECTION_900_STALL_GAP_SECONDS:
+                stall_gap_seconds = gap
+                break
+            last_tick = tick
+            if tick >= deadline:
+                break
             harvest_done()
             now = int(time.time())
             due = load_due_route_research_outcomes(
@@ -206,7 +228,9 @@ def collect_route_research_forward_through_900_v0(
             Counter(),
         )[item.status] += 1
 
-    if (
+    if stall_gap_seconds is not None:
+        classification = "FAIL_MEMORY_FORWARD_900_STALL_DETECTED"
+    elif (
         counters["collector_errors"]
         or counters["executable_semantic_violations"]
     ):
@@ -232,4 +256,6 @@ def collect_route_research_forward_through_900_v0(
         ),
         target_lateness_seconds=tuple(lateness_seconds),
         classification=classification,
+        stall_detected=stall_gap_seconds is not None,
+        stall_gap_seconds=stall_gap_seconds,
     )
