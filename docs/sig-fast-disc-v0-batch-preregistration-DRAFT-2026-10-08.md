@@ -587,21 +587,29 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 5. Os 2 blocos de calendário fixados (regra 2) rendem n>=30 sinais H2
    elegíveis no treino? Não assumido — é exatamente o que o piloto (passo A)
    mede antes do download dos blocos (passo B).
-6. **Bloqueador de execução — resolvido nesta revisão (terceira rodada,
-   Fase E).** Diagnóstico do 429: confirmado que vinha da própria Helius
-   (headers `Server: cloudflare`/`CF-Ray` genuínos tanto na falha quanto no
-   sucesso seguinte) e não do proxy do sandbox (`status` do proxy limpo,
-   sem `recentRelayFailures`) — era rate-limit transitório do lado da
-   Helius, não um bloqueio permanente de conta nem um problema de rede
-   daqui. Já havia voltado a responder 200 antes desta revisão. QuickNode
-   (`H2_BACKFILL_RPC_URLS`) e o endpoint público também testados e saudáveis
-   (sem 403 "CONNECT tunnel failed" — não era bloqueio de rede do
-   ambiente). Em resposta, implementado o método de 2 estágios com rodízio
-   de endpoints (ver "Addendum Fase E" acima, `EndpointRotator` em
-   `h2_historical_backfill_v0.py`) pra reduzir a dependência de um único
-   provedor daqui pra frente, mesmo com a Helius saudável de novo. **N
-   fica fixado nesta revisão com o resultado real do piloto rodado com o
-   novo método — ver abaixo.**
+6. **Bloqueador de execução — diagnosticado nesta revisão (terceira rodada,
+   Fase E), mas ainda sem N fixado.** Diagnóstico do 429 pedido pelo
+   operador: confirmado que vinha da própria Helius (headers `Server:
+   cloudflare`/`CF-Ray` genuínos tanto na falha quanto no sucesso seguinte)
+   e não do proxy do sandbox (`status` do proxy limpo, sem
+   `recentRelayFailures`) — não um bloqueio de rede do ambiente. QuickNode
+   (`H2_BACKFILL_RPC_URLS`) e o endpoint público testados e saudáveis nesse
+   momento (sem 403 "CONNECT tunnel failed"). Em resposta, implementado o
+   método de 2 estágios com rodízio de endpoints (ver "Addendum Fase E"
+   acima, `EndpointRotator` em `h2_historical_backfill_v0.py`). **Mas o
+   piloto de verdade rodado com o rodízio (mesmo a 5 req/s) ainda bateu 429
+   na Estágio 1 (Helius, `getTransactionsForAddress`) logo na segunda
+   chamada** — a primeira chamada (dia 1 do lookback) teve sucesso (~901-
+   1000 tx, 100 créditos; coerente com "alto volume" já achado em
+   MOVE-FIRST-H-DISC-V0 pra esta conta), a seguinte voltou 429 e interrompeu
+   a enumeração (sem ponto de retomada parcial — limitação já documentada).
+   Não insisti de novo na mesma sessão (CLAUDE.md: não martelar uma chamada
+   externa que já falhou) — Estágio 1 continua restrito à Helius (rodízio
+   não ajuda aqui, é só pra Estágio 2) e parece ter um teto de taxa mais
+   baixo que 5 req/s pra esta conta/plano, mesmo com rajadas curtas. **N
+   continua não fixado** — ainda não há um piloto completo com dado real
+   pra basear o número; próxima tentativa recomendada com `--max-rps` bem
+   mais baixo (ex. 1) e/ou em outro horário.
 7. **H1 no histórico (step C): respondido, achado NEGATIVO.** Não existe
    hoje um atalho barato equivalente ao `MIGRATION_AUTHORITY` das
    migrações. A conta `global` (PDA fixo, seed `"global"`) é só config
