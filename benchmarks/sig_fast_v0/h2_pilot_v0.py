@@ -1,6 +1,7 @@
-"""SIG-FAST H2 piloto -- step A (rev. 4, 2026-10-08 operator review).
+"""SIG-FAST H2 piloto -- step A (rev. 4, 2026-10-08 operator review; Phase E
+rotation addendum same day).
 
-Pure systems check: measures Helius cost and decode coverage on migrations
+Pure systems check: measures RPC cost and decode coverage on migrations
 SAMPLED OUTSIDE the frozen discovery/confirmation calendar blocks. Never
 reads a return, never touches the sealed blocks, never spends a hypothesis
 attempt (registry rule 5). The one price-derived number this script computes
@@ -9,6 +10,17 @@ authorized by the operator for N-sizing only -- "a taxa de sobrevivencia do
 piloto e contagem de sistema, nao retorno" -- and is never used to judge H2
 itself; step B (real download) and any EV/PF/edge computation stay gated
 behind the operator's separate OK on the coverage report.
+
+Phase E split (deliberate, see handoff): Stage 1 (migration ENUMERATION over
+the lookback window) stays on Helius's exclusive getTransactionsForAddress
+with a blockTime jump -- MOVE-FIRST-H-DISC-V0 already found that walking
+MIGRATION_AUTHORITY's signatures sequentially hits ~1.5M signatures without
+leaving the last ~2 months, so pure getSignaturesForAddress is not practical
+for this account specifically. Stage 2 (per-pool TRADE fetch, one pool's own
+much smaller history) uses the operator-requested 2-stage method
+(getSignaturesForAddress + getTransaction) with endpoint rotation
+(EndpointRotator / load_rotation_rpc_urls in h2_historical_backfill_v0),
+where it is genuinely practical and matches the explicit instruction.
 
 See docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md (rev. 4,
 "Regras anti-vies do discovery historico de H2") for the frozen protocol.
@@ -28,13 +40,15 @@ from typing import Any
 from benchmarks.move_first_h_coverage_audit_v0 import sample_migration_account as _mfh
 from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     CarbonDecoderProcess,
+    EndpointRotator,
     MigrationCandidate,
     POOL_TRADE_WINDOW_SECONDS,
     SIGNAL_MARKER_SECONDS,
     _load_rpc_url,
     decode_historical_trades,
     fetch_migrations_in_range,
-    fetch_pool_trades_raw,
+    fetch_pool_trades_raw_rotation,
+    load_rotation_rpc_urls,
     sample_migrations_excluding_blocks,
 )
 from src.opportunity_path_metrics_v0 import PathTrade, mid_price_sol
@@ -204,12 +218,12 @@ def install_rate_limited_rpc(
     return restore
 
 
-def resolve_migration_block_time(rpc_url: str, signature: str) -> int:
+def resolve_migration_block_time(rotator: EndpointRotator, signature: str) -> int:
     """The real on-chain instant of the migration tx -- fetch_day_classified
     only gives a day-granularity placeholder (see h2_historical_backfill_v0.
-    _day_start_epoch); the piloto/real fetch need the exact second."""
-    result = _mfh._rpc(
-        rpc_url,
+    _day_start_epoch); the piloto/real fetch need the exact second. A plain
+    getTransaction call, so it runs fine through the rotation pool."""
+    result = rotator.call(
         "getTransaction",
         [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
     )
@@ -289,11 +303,23 @@ def _survival_system_count(
 
 
 def run_pilot_token(
-    rpc_url: str, carbon: CarbonDecoderProcess, candidate: MigrationCandidate
+    carbon: CarbonDecoderProcess,
+    candidate: MigrationCandidate,
+    *,
+    rotator: EndpointRotator,
+    tracker: RpcUsageTracker,
 ) -> PilotTokenResult:
-    migration_block_time = resolve_migration_block_time(rpc_url, candidate.migration_signature)
-    raw_rows = fetch_pool_trades_raw(
-        rpc_url,
+    """Stage 2 (per-pool trade fetch) now goes through the rotation 2-stage
+    method (getSignaturesForAddress + getTransaction), per operator
+    instruction -- see module docstring for why Stage 1 enumeration stays on
+    Helius. `estimated_credits` is the real tracker delta for this token
+    (works for either method, since it just reads total_credits before/after),
+    not the old Helius-batch-pricing formula, which no longer applies once
+    calls are split across providers."""
+    credits_before = tracker.total_credits
+    migration_block_time = resolve_migration_block_time(rotator, candidate.migration_signature)
+    raw_rows = fetch_pool_trades_raw_rotation(
+        rotator,
         pool_mint=candidate.pool_mint,
         window_start=migration_block_time,
         window_end=migration_block_time + POOL_TRADE_WINDOW_SECONDS,
@@ -320,7 +346,7 @@ def run_pilot_token(
         n_events_decoded=n_decoded,
         n_events_with_reserves_and_fee=n_with_both,
         pct_decoded_with_reserves_and_fee=pct,
-        estimated_credits=_credits_for_tx_count(len(raw_rows)),
+        estimated_credits=tracker.total_credits - credits_before,
         survived_20min_system_count=_survival_system_count(
             decoded, signature_to_block_time, migration_block_time=migration_block_time
         ),
@@ -527,11 +553,12 @@ def _self_check_run_pilot_token_wiring() -> None:
     trade_sig = "SIGTRADE1"
 
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
-        if method == "getTransaction":
-            assert params[0] == migration_sig
+        if method == "getTransaction" and params[0] == migration_sig:
             return {"result": {"blockTime": migration_block_time}}
-        if method == "getTransactionsForAddress":
+        if method == "getSignaturesForAddress":
             assert params[0] == pool_mint
+            return {"result": [{"signature": trade_sig, "blockTime": migration_block_time + 10}]}
+        if method == "getTransaction" and params[0] == trade_sig:
             from benchmarks.carbon_decoder_parity_v1.parity import (
                 PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
                 PUMPSWAP_PROGRAM_ID,
@@ -539,20 +566,24 @@ def _self_check_run_pilot_token_wiring() -> None:
             import base64 as _b64
 
             payload = _b64.b64encode(PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"\x00" * 16).decode("ascii")
-            row = {
-                "transaction": {"signatures": [trade_sig], "message": {"accountKeys": [PUMPSWAP_PROGRAM_ID]}},
-                "slot": 42,
-                "blockTime": migration_block_time + 10,
-                "meta": {
-                    "logMessages": [
-                        f"Program {PUMPSWAP_PROGRAM_ID} invoke [1]",
-                        f"Program data: {payload}",
-                        f"Program {PUMPSWAP_PROGRAM_ID} success",
-                    ]
-                },
+            return {
+                "result": {
+                    "slot": 42,
+                    "blockTime": migration_block_time + 10,
+                    "transaction": {
+                        "signatures": [trade_sig],
+                        "message": {"accountKeys": [PUMPSWAP_PROGRAM_ID]},
+                    },
+                    "meta": {
+                        "logMessages": [
+                            f"Program {PUMPSWAP_PROGRAM_ID} invoke [1]",
+                            f"Program data: {payload}",
+                            f"Program {PUMPSWAP_PROGRAM_ID} success",
+                        ]
+                    },
+                }
             }
-            return {"result": {"data": [row], "paginationToken": None}}
-        raise AssertionError(f"unexpected RPC method in self-check: {method}")
+        raise AssertionError(f"unexpected RPC call in self-check: {method} {params}")
 
     class _FakeCarbon:
         def request(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -577,19 +608,29 @@ def _self_check_run_pilot_token_wiring() -> None:
         "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
         side_effect=fake_rpc,
     ):
-        result = run_pilot_token(
-            "fake://rpc",
-            _FakeCarbon(),
-            MigrationCandidate(
-                pool_mint=pool_mint, migration_signature=migration_sig, migration_block_time=0
-            ),
-        )
+        tracker = RpcUsageTracker()
+        restore = install_rate_limited_rpc(max_rps=1000.0, max_consecutive_failures=99, tracker=tracker)
+        try:
+            rotator = EndpointRotator(["fake://rpc"])
+            result = run_pilot_token(
+                _FakeCarbon(),
+                MigrationCandidate(
+                    pool_mint=pool_mint, migration_signature=migration_sig, migration_block_time=0
+                ),
+                rotator=rotator,
+                tracker=tracker,
+            )
+        finally:
+            restore()
     assert result.migration_block_time == migration_block_time, result
     assert result.n_tx_in_window == 1, result
     assert result.n_events_decoded == 1, result
     assert result.n_events_with_reserves_and_fee == 1, result
     assert result.pct_decoded_with_reserves_and_fee == 100.0, result
-    assert result.estimated_credits == 10, result
+    # 2-stage credits: 1 getTransaction (resolve migration instant) +
+    # 1 getSignaturesForAddress + 1 getTransaction (pool fetch) = 3, all
+    # flat-rate under Helius pricing (helius.dev/docs/billing/credits).
+    assert result.estimated_credits == 3, result
 
 
 def _self_check() -> None:
@@ -646,6 +687,7 @@ def main() -> int:
     print(f"[piloto] rate limit efetivo: {max_rps:.2f} req/s "
           f"(--max-rps={args.max_rps}, --plan-rps={args.plan_rps})")
 
+    # Stage 1 (enumeration) stays pinned to Helius -- see module docstring.
     rpc_url = _load_rpc_url()
     tracker = RpcUsageTracker()
     restore_rpc = install_rate_limited_rpc(
@@ -653,6 +695,12 @@ def main() -> int:
         max_consecutive_failures=args.max_consecutive_failures,
         tracker=tracker,
     )
+    # Stage 2 (per-pool trade fetch) rotates across Helius + H2_BACKFILL_RPC_URLS
+    # (e.g. QuickNode free tier) + the public cluster endpoint. Goes through
+    # the same _mfh._rpc the line above just wrapped, so the rate limiter /
+    # breaker / credit tracker apply uniformly regardless of which endpoint a
+    # given call lands on.
+    rotator = EndpointRotator(load_rotation_rpc_urls())
 
     results: list[PilotTokenResult] = []
     aborted = False
@@ -688,7 +736,7 @@ def main() -> int:
         try:
             for candidate in sample:
                 try:
-                    result = run_pilot_token(rpc_url, carbon, candidate)
+                    result = run_pilot_token(carbon, candidate, rotator=rotator, tracker=tracker)
                 except PilotAbortedRateLimited as exc:
                     aborted = True
                     abort_reason = str(exc)

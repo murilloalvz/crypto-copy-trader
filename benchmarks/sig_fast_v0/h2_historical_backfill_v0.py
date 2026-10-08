@@ -23,6 +23,7 @@ this implements.
 from __future__ import annotations
 
 import base64
+import os
 import random
 import re
 import sqlite3
@@ -50,12 +51,124 @@ POOL_TRADE_WINDOW_SECONDS = SIGNAL_MARKER_SECONDS + MAX_WINDOW_SECONDS
 
 CARBON_MANIFEST = "benchmarks/carbon_decoder_parity_v1/rust_runner/Cargo.toml"
 
+# Public cluster endpoint, not a secret -- fine to keep as a literal constant.
+PUBLIC_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+
 
 def _load_rpc_url() -> str:
     match = re.search(r"^SOLANA_RPC_URL=(.*)$", open(".env").read(), re.MULTILINE)
     if not match or not match.group(1).strip():
         raise RuntimeError("SOLANA_RPC_URL not configured in .env")
     return match.group(1).strip()
+
+
+def load_rotation_rpc_urls() -> list[str]:
+    """Rotation pool for the 2-stage (getSignaturesForAddress + getTransaction)
+    method (operator instruction, 2026-10-08 Phase E): Helius (.env) first,
+    then whatever H2_BACKFILL_RPC_URLS (comma-separated env var, e.g. a free
+    QuickNode endpoint) holds, then the public cluster endpoint. Returns the
+    raw URLs for EndpointRotator's own use -- callers must never print or log
+    an entry of this list (operator instruction: never print/commit a URL)."""
+    urls = [_load_rpc_url()]
+    extra = os.environ.get("H2_BACKFILL_RPC_URLS", "")
+    urls.extend(u.strip() for u in extra.split(",") if u.strip())
+    urls.append(PUBLIC_SOLANA_RPC_URL)
+    return urls
+
+
+def _sanitize_rpc_error(error: Exception, rpc_url: str) -> Exception:
+    """Strip the raw endpoint URL out of an exception before it is allowed to
+    propagate into a log/print/report -- urllib errors sometimes embed the
+    request URL verbatim in their message."""
+    text = str(error)
+    if rpc_url in text:
+        text = text.replace(rpc_url, "<redacted-rpc-url>")
+    if text == str(error):
+        return error
+    sanitized = type(error)(text)
+    return sanitized
+
+
+class EndpointRotator:
+    """Round-robins RPC calls across several endpoints (Helius, QuickNode
+    free tier, public cluster). A single endpoint's failure falls through to
+    the next endpoint rather than aborting the whole fetch; only raises once
+    every endpoint has failed within one rotation cycle. Identifies a failing
+    endpoint by its index only -- never logs a URL. Calls through
+    `_mfh._rpc` (not a separate HTTP client) so the same rate limiter /
+    circuit breaker that `install_rate_limited_rpc` installs on it (see
+    h2_pilot_v0.py) still throttles every rotation call globally."""
+
+    def __init__(self, rpc_urls: list[str]):
+        if not rpc_urls:
+            raise ValueError("EndpointRotator needs at least one RPC URL")
+        self._urls = list(rpc_urls)
+        self._next = 0
+
+    def call(self, method: str, params: list, *, retries: int = 2) -> dict[str, Any]:
+        errors: list[str] = []
+        for _ in range(len(self._urls)):
+            index = self._next
+            url = self._urls[index]
+            self._next = (self._next + 1) % len(self._urls)
+            try:
+                return _mfh._rpc(url, method, params, retries=retries)
+            except Exception as exc:  # noqa: BLE001 -- must try every endpoint before giving up
+                errors.append(f"endpoint[{index}]: {_sanitize_rpc_error(exc, url)}")
+        raise RuntimeError(f"all {len(self._urls)} rotation endpoints failed for {method}: {errors}")
+
+
+def fetch_pool_trades_raw_rotation(
+    rotator: "EndpointRotator", *, pool_mint: str, window_start: int, window_end: int
+) -> list[dict[str, Any]]:
+    """Stage 1+2 rotation method (rev. 4 addendum, Phase E): the same trades
+    as fetch_pool_trades_raw, but via the standard two-call method
+    (getSignaturesForAddress + getTransaction) instead of Helius's exclusive
+    getTransactionsForAddress, so it runs against any standard RPC endpoint
+    and can rotate across them. getSignaturesForAddress only walks backward
+    (newest first) via the `before` cursor, so this pages back from "now"
+    until a page's oldest blockTime is at or before window_start, keeps
+    entries inside [window_start, window_end), then resolves each kept
+    signature with getTransaction. This necessarily also pages through every
+    pool signature between "now" and window_end even though only the first
+    ~80min are wanted -- a real cost the piloto measures empirically rather
+    than assumes."""
+    kept: list[dict[str, Any]] = []
+    before: str | None = None
+    while True:
+        params: list = [pool_mint, {"limit": 1000}]
+        if before is not None:
+            params[1]["before"] = before
+        result = rotator.call("getSignaturesForAddress", params)
+        page = result.get("result") or []
+        if not page:
+            break
+        for entry in page:
+            bt = entry.get("blockTime")
+            if bt is not None and window_start <= bt < window_end:
+                kept.append(entry)
+        before = page[-1]["signature"]
+        oldest_bt = page[-1].get("blockTime")
+        if len(page) < 1000:
+            break
+        if oldest_bt is not None and oldest_bt <= window_start:
+            break
+
+    rows: list[dict[str, Any]] = []
+    for entry in kept:
+        result = rotator.call(
+            "getTransaction",
+            [entry["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+        )
+        tx = result.get("result")
+        if tx is None:
+            continue
+        rows.append(tx)
+    # Rule 3 ordering (slot + in-tx index) -- getTransaction gives no literal
+    # in-block index either, so slot + signature is the best available stable
+    # tiebreaker here, same limitation already documented on record_backfill_rows.
+    rows.sort(key=lambda r: (r.get("slot") or 0, r["transaction"]["signatures"][0]))
+    return rows
 
 
 @dataclass(frozen=True)
@@ -485,10 +598,78 @@ def _self_check_decode_and_persist() -> None:
         conn.close()
 
 
+def _self_check_rotation() -> None:
+    from unittest.mock import patch
+
+    calls: list[str] = []
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        calls.append(rpc_url)
+        if rpc_url == "fake://bad":
+            raise RuntimeError(f"boom at {rpc_url}")
+        return {"result": "ok-from-good"}
+
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc,
+    ):
+        rotator = EndpointRotator(["fake://bad", "fake://good"])
+        result = rotator.call("getSlot", [])
+        assert result["result"] == "ok-from-good", result
+        assert calls == ["fake://bad", "fake://good"], calls
+
+        all_bad = EndpointRotator(["fake://bad", "fake://bad"])
+        try:
+            all_bad.call("getSlot", [])
+            raise AssertionError("expected RuntimeError when every endpoint fails")
+        except RuntimeError as exc:
+            assert "fake://bad" not in str(exc), exc
+            assert "<redacted-rpc-url>" in str(exc), exc
+
+    window_start, window_end = 1_000_000, 1_000_100
+
+    def fake_rpc_pool(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            return {
+                "result": [
+                    {"signature": "SIG_NEW", "blockTime": 1_000_200},
+                    {"signature": "SIG_IN_WINDOW", "blockTime": 1_000_050},
+                    {"signature": "SIG_OLD", "blockTime": 900_000},
+                ]
+            }
+        if method == "getTransaction":
+            signature = params[0]
+            return {
+                "result": {
+                    "slot": 42,
+                    "blockTime": 1_000_050,
+                    "transaction": {"signatures": [signature], "message": {}},
+                    "meta": {"logMessages": []},
+                }
+            }
+        raise AssertionError(f"unexpected method: {method}")
+
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc_pool,
+    ):
+        rotator = EndpointRotator(["fake://only"])
+        rows = fetch_pool_trades_raw_rotation(
+            rotator, pool_mint="POOLpump", window_start=window_start, window_end=window_end
+        )
+    assert len(rows) == 1, rows
+    assert rows[0]["transaction"]["signatures"] == ["SIG_IN_WINDOW"], rows
+
+
 def _self_check() -> None:
     _self_check_sampling()
     _self_check_decode_and_persist()
-    print("self-check OK: sampling (dedup/exclusion/deterministic seed) + decode/persist (wiring + idempotent replay)")
+    _self_check_rotation()
+    print(
+        "self-check OK: sampling (dedup/exclusion/deterministic seed) + decode/persist "
+        "(wiring + idempotent replay) + rotation (fallback-not-abort + sanitized errors + "
+        "2-stage window filter)"
+    )
 
 
 def main() -> int:

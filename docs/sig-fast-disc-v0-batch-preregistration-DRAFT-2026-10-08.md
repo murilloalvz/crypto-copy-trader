@@ -122,6 +122,41 @@ sobrevivência pra H1 no histórico — não autoriza coleta de H1 ainda.
    `docs/research-hypothesis-registry-v1-2026-10-04.md` (linha
    `SIG-FAST-DISC-V0`, mesmo commit desta atualização).
 
+**Addendum Fase E (2026-10-08): fonte de RPC do backfill, congelado antes de
+rodar o piloto de novo.** O operador configurou um segundo provedor
+(QuickNode grátis, `H2_BACKFILL_RPC_URLS`) e pediu que o backfill passe a
+usar só `getSignaturesForAddress` + `getTransaction` (não o método exclusivo
+da Helius) em rodízio de endpoints, pra reduzir a dependência de um único
+provedor. Decisão registrada aqui, não decidida em silêncio:
+
+- **Estágio 1 (enumeração das migrações no período de lookback)** continua
+  na Helius via `getTransactionsForAddress` com filtro `blockTime` (mesmo
+  mecanismo de `fetch_day_classified`). Motivo: MOVE-FIRST-H-DISC-V0 já achou
+  que caminhar `getSignaturesForAddress` sequencialmente na conta de migração
+  (`MIGRATION_AUTHORITY`, alto volume compartilhado) bate ~1.500.000
+  assinaturas sem saído dos últimos ~2 meses — inviável pro lookback de 7-11
+  semanas do piloto/discovery. Isso não muda a regra 1 (universo/sorteio),
+  só o transporte.
+- **Estágio 2 (trades de cada pool sorteado)** passa a usar o método de 2
+  chamadas (`getSignaturesForAddress` paginado por `before`, parando quando a
+  página mais antiga já está no ou antes de `window_start`, seguido de
+  `getTransaction` por assinatura mantida) em rodízio round-robin entre
+  Helius + `H2_BACKFILL_RPC_URLS` + o endpoint público
+  (`https://api.mainnet-beta.solana.com`) — `EndpointRotator` em
+  `benchmarks/sig_fast_v0/h2_historical_backfill_v0.py`. Uma falha de um
+  endpoint cai pro próximo (não aborta); só levanta erro se todos falharem no
+  mesmo ciclo. Prático aqui porque o histórico é de um pool só (muito menor
+  que a conta de migração inteira) — custo real medido pelo piloto, não
+  assumido.
+- Diagnóstico do 429 da Helius (pedido do operador): confirmado que vinha da
+  própria Helius (headers `Server: cloudflare`/`CF-Ray` genuínos tanto na
+  falha quanto no sucesso seguinte), não do proxy do sandbox (`status` do
+  proxy sem `recentRelayFailures`). Era rate-limit transitório — já havia
+  voltado a responder 200 antes deste addendum ser escrito.
+- Nenhuma URL de RPC (Helius ou QuickNode) é impressa, logada ou commitada em
+  nenhum lugar deste pipeline — só host/índice quando algo precisa ser
+  identificado.
+
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 Instrumento de medida (congelado para este lote, trocar exige lote novo):
@@ -552,24 +587,21 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 5. Os 2 blocos de calendário fixados (regra 2) rendem n>=30 sinais H2
    elegíveis no treino? Não assumido — é exatamente o que o piloto (passo A)
    mede antes do download dos blocos (passo B).
-6. **Bloqueador de execução, atualizado de novo nesta revisão (segunda
-   tentativa real).** O operador verificou o plano/créditos da chave e
-   confirmou que nada mais a estava usando. Implementei as proteções
-   pedidas (limitador 5 req/s, circuit breaker de 3 falhas consecutivas,
-   log de crédito por chamada — `benchmarks/sig_fast_v0/h2_pilot_v0.py`,
-   commits `ac7f7f3`/`d9029a3`) e roda com elas ativas. **Mesmo assim, a
-   primeira chamada real (dia 1 da enumeração) voltou HTTP 429** — não é
-   mais rajada/limite de taxa dos meus próprios testes: 3 retestes
-   isolados, espaçados no tempo, confirmaram que até `getHealth` (que
-   tinha respondido OK antes) agora falha com 429. Não insisti mais depois
-   de confirmar o padrão (CLAUDE.md: não martelar uma chamada externa que
-   já falhou). **N não foi fixado** — não há dado do piloto pra basear
-   nenhum número; fixar um N agora seria inventar, não medir. Pendente:
-   isso parece um problema no lado da Helius (conta/chave em estado de
-   bloqueio sustentado, não um limite de taxa normal) — precisa de
-   investigação direta no painel da Helius pelo operador antes de uma
-   nova tentativa. Todo o código fica pronto e testado (self-check PASS),
-   só esperando uma chave que responda.
+6. **Bloqueador de execução — resolvido nesta revisão (terceira rodada,
+   Fase E).** Diagnóstico do 429: confirmado que vinha da própria Helius
+   (headers `Server: cloudflare`/`CF-Ray` genuínos tanto na falha quanto no
+   sucesso seguinte) e não do proxy do sandbox (`status` do proxy limpo,
+   sem `recentRelayFailures`) — era rate-limit transitório do lado da
+   Helius, não um bloqueio permanente de conta nem um problema de rede
+   daqui. Já havia voltado a responder 200 antes desta revisão. QuickNode
+   (`H2_BACKFILL_RPC_URLS`) e o endpoint público também testados e saudáveis
+   (sem 403 "CONNECT tunnel failed" — não era bloqueio de rede do
+   ambiente). Em resposta, implementado o método de 2 estágios com rodízio
+   de endpoints (ver "Addendum Fase E" acima, `EndpointRotator` em
+   `h2_historical_backfill_v0.py`) pra reduzir a dependência de um único
+   provedor daqui pra frente, mesmo com a Helius saudável de novo. **N
+   fica fixado nesta revisão com o resultado real do piloto rodado com o
+   novo método — ver abaixo.**
 7. **H1 no histórico (step C): respondido, achado NEGATIVO.** Não existe
    hoje um atalho barato equivalente ao `MIGRATION_AUTHORITY` das
    migrações. A conta `global` (PDA fixo, seed `"global"`) é só config
