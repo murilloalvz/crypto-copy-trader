@@ -552,15 +552,24 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 5. Os 2 blocos de calendário fixados (regra 2) rendem n>=30 sinais H2
    elegíveis no treino? Não assumido — é exatamente o que o piloto (passo A)
    mede antes do download dos blocos (passo B).
-6. ~~Bloqueador de execução: `SOLANA_RPC_URL` vazio.~~ **Atualizado nesta
-   mesma revisão**: o operador configurou a chave durante a sessão.
-   `getHealth` respondeu OK, mas toda chamada seguinte (`getSignaturesForAddress`,
-   `getTransactionsForAddress`, `getSlot`, `getVersion`) devolveu HTTP 429
-   mesmo com retry/backoff — indício de rate limit/plano muito restrito
-   nesta chave, esgotado já nos primeiros diagnósticos. Piloto real (passo
-   A) **não foi executado** -- rodar contra esse 429 só gastaria mais da
-   cota sem produzir dado. Pendente: operador confirmar o plano Helius
-   (RPS/créditos) antes de reautorizar uma tentativa.
+6. **Bloqueador de execução, atualizado de novo nesta revisão (segunda
+   tentativa real).** O operador verificou o plano/créditos da chave e
+   confirmou que nada mais a estava usando. Implementei as proteções
+   pedidas (limitador 5 req/s, circuit breaker de 3 falhas consecutivas,
+   log de crédito por chamada — `benchmarks/sig_fast_v0/h2_pilot_v0.py`,
+   commits `ac7f7f3`/`d9029a3`) e roda com elas ativas. **Mesmo assim, a
+   primeira chamada real (dia 1 da enumeração) voltou HTTP 429** — não é
+   mais rajada/limite de taxa dos meus próprios testes: 3 retestes
+   isolados, espaçados no tempo, confirmaram que até `getHealth` (que
+   tinha respondido OK antes) agora falha com 429. Não insisti mais depois
+   de confirmar o padrão (CLAUDE.md: não martelar uma chamada externa que
+   já falhou). **N não foi fixado** — não há dado do piloto pra basear
+   nenhum número; fixar um N agora seria inventar, não medir. Pendente:
+   isso parece um problema no lado da Helius (conta/chave em estado de
+   bloqueio sustentado, não um limite de taxa normal) — precisa de
+   investigação direta no painel da Helius pelo operador antes de uma
+   nova tentativa. Todo o código fica pronto e testado (self-check PASS),
+   só esperando uma chave que responda.
 7. **H1 no histórico (step C): respondido, achado NEGATIVO.** Não existe
    hoje um atalho barato equivalente ao `MIGRATION_AUTHORITY` das
    migrações. A conta `global` (PDA fixo, seed `"global"`) é só config
