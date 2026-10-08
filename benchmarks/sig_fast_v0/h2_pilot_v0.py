@@ -711,7 +711,15 @@ def main() -> int:
     except PilotAbortedRateLimited as exc:
         aborted = True
         abort_reason = str(exc)
-        print(f"[piloto] PAROU durante a enumeracao: {exc}")
+        print(f"[piloto] PAROU durante a enumeracao (rajada de falhas): {exc}")
+    except Exception as exc:
+        # Falha unica (ainda nao uma rajada de 3) durante a enumeracao --
+        # nao ha ponto de retomada parcial dentro de fetch_migrations_in_range,
+        # entao mesmo uma unica falha aqui interrompe o piloto. Reportado
+        # igual, nunca como traceback bruto.
+        aborted = True
+        abort_reason = f"falha na enumeracao (sem rajada de 3, mas sem retomada parcial): {type(exc).__name__}: {exc}"
+        print(f"[piloto] PAROU durante a enumeracao: {abort_reason}")
     finally:
         restore_rpc()
 
