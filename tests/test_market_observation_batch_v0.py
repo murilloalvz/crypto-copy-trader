@@ -33,6 +33,11 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 wallet_address="WALLET",
                 venue="pump",
                 transaction_key="SIG",
+                slot=42,
+                base_amount_raw=50_000_000,
+                quote_amount_raw=2_000_000_000,
+                base_reserves_raw=1_073_000_000_000_000,
+                quote_reserves_raw=30_000_000_000,
             )
             lifecycle = MarketLifecycleObservation(
                 token_mint="TOKEN",
@@ -75,6 +80,11 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 rows = load_market_trades(acquisition_run_key="RUN", token_mint="TOKEN")
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0].observation.side, "buy")
+                self.assertEqual(rows[0].observation.slot, 42)
+                self.assertEqual(rows[0].observation.base_amount_raw, 50_000_000)
+                self.assertEqual(rows[0].observation.quote_amount_raw, 2_000_000_000)
+                self.assertEqual(rows[0].observation.base_reserves_raw, 1_073_000_000_000_000)
+                self.assertEqual(rows[0].observation.quote_reserves_raw, 30_000_000_000)
                 latest = load_latest_market_lifecycle(
                     acquisition_run_key="RUN", token_mint="TOKEN"
                 )
