@@ -100,6 +100,7 @@ class TxClassification:
     completed_create_pool: bool
     has_boost_shaped_subinstructions: bool
     pool_mint: str | None
+    touches_pumpfun: bool = True
 
 
 @dataclass
@@ -120,8 +121,8 @@ class SampleReport:
         return {period: len(pools) for period, pools in sorted(pools_by_period.items())}
 
 
-def _extract_instruction_name(log_messages: list[str]) -> str:
-    for line in log_messages:
+def _extract_instruction_name(log_messages: list[str] | None) -> str:
+    for line in log_messages or []:
         if line.startswith("Program log: Instruction: "):
             return line[len("Program log: Instruction: ") :].strip()
     return "unknown"
@@ -133,6 +134,20 @@ def _extract_pool_mint(message: dict) -> str | None:
         if isinstance(pubkey, str) and pubkey.endswith("pump"):
             return pubkey
     return None
+
+
+def _touches_pumpfun_programs(message: dict) -> bool:
+    """True if the transaction's account list includes the bonding-curve or PumpSwap program.
+
+    Needed because the migration-authority account is also touched by unrelated third-party
+    programs (confirmed live: a failed transaction from program PEPPER3dYQpY2TTqHp3XinzRu519X7GswmVNb5tqK8L
+    with no connection to pump.fun) -- "any tx mentioning this account" is not a clean migration
+    signal on its own.
+    """
+    keys = {
+        (key["pubkey"] if isinstance(key, dict) else key) for key in message.get("accountKeys", [])
+    }
+    return BONDING_CURVE_PROGRAM in keys or PUMPSWAP_PROGRAM in keys
 
 
 def classify_transaction(rpc_url: str, signature: str, period: str) -> TxClassification | None:
@@ -161,6 +176,61 @@ def classify_transaction(rpc_url: str, signature: str, period: str) -> TxClassif
     )
 
 
+def fetch_day_classified(rpc_url: str, *, day: str) -> list[TxClassification]:
+    """Fetch and classify every transaction for the migration authority on one UTC calendar day.
+
+    Uses Helius's getTransactionsForAddress with a blockTime filter -- jumps directly to the
+    target day instead of walking signatures back from now, and returns full parsed transactions
+    (logs included) in the same call, so no second getTransaction round-trip per signature is
+    needed. filters.status is NOT used: "already migrated" no-op retries have err=null (verified
+    live), so a succeeded-only filter would not exclude them -- classification still has to look
+    at the actual instruction/log content.
+    """
+    start_dt = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start = int(start_dt.timestamp())
+    end = int((start_dt.replace(hour=23, minute=59, second=59)).timestamp()) + 1
+    period = _period_bucket(start)
+
+    results: list[TxClassification] = []
+    pagination_token: str | None = None
+    while True:
+        params: dict = {
+            "limit": 1000,
+            "sortOrder": "asc",
+            "transactionDetails": "full",
+            "encoding": "jsonParsed",
+            "maxSupportedTransactionVersion": 1,
+            "filters": {"blockTime": {"gte": start, "lt": end}},
+        }
+        if pagination_token is not None:
+            params["paginationToken"] = pagination_token
+        result = _rpc(rpc_url, "getTransactionsForAddress", [MIGRATION_AUTHORITY, params])
+        payload = result.get("result") or {}
+        rows = payload.get("data") or []
+        for row in rows:
+            logs = row.get("meta", {}).get("logMessages") or []
+            instruction = _extract_instruction_name(logs)
+            completed_create_pool = any("Instruction: CreatePool" in line for line in logs)
+            has_boost = any("InitBoost" in line for line in logs)
+            pool_mint = _extract_pool_mint(row["transaction"]["message"])
+            touches_pumpfun = _touches_pumpfun_programs(row["transaction"]["message"])
+            results.append(
+                TxClassification(
+                    signature=row["transaction"]["signatures"][0],
+                    period=period,
+                    instruction=instruction,
+                    completed_create_pool=completed_create_pool,
+                    has_boost_shaped_subinstructions=has_boost,
+                    pool_mint=pool_mint,
+                    touches_pumpfun=touches_pumpfun,
+                )
+            )
+        pagination_token = payload.get("paginationToken")
+        if not pagination_token or not rows:
+            break
+    return results
+
+
 def run_sample(
     *, max_pages: int, per_bucket: int, until_block_time: int | None = None, rpc_url: str | None = None
 ) -> SampleReport:
@@ -176,6 +246,38 @@ def run_sample(
     return report
 
 
+def enumerate_date_range(
+    rpc_url: str, *, start_date: str, end_date: str, output_path: str
+) -> None:
+    """Day-by-day enumeration via getTransactionsForAddress (blockTime filter), not a signature
+    walk. Writes one JSON line per day to output_path as it goes, so partial progress survives
+    an interruption. Only rows that touch the bonding-curve or PumpSwap program are kept.
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    day = start
+    with open(output_path, "a") as handle:
+        while day <= end:
+            day_str = day.strftime("%Y-%m-%d")
+            rows = [r for r in fetch_day_classified(rpc_url, day=day_str) if r.touches_pumpfun]
+            completed = [r for r in rows if r.completed_create_pool]
+            distinct_pools = sorted({r.pool_mint for r in completed if r.pool_mint})
+            instruction_counts: dict[str, int] = defaultdict(int)
+            for r in rows:
+                instruction_counts[r.instruction] += 1
+            record = {
+                "day": day_str,
+                "total_tx_touching_pumpfun": len(rows),
+                "instruction_counts": dict(instruction_counts),
+                "completed_create_pool": len(completed),
+                "distinct_pools": distinct_pools,
+            }
+            handle.write(json.dumps(record) + "\n")
+            handle.flush()
+            print(day_str, "total=", len(rows), "completed=", len(completed), "pools=", len(distinct_pools), flush=True)
+            day += __import__("datetime").timedelta(days=1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, default=2000, help="pages of 1000 signatures to walk backward")
@@ -186,11 +288,26 @@ def main() -> None:
         help="stop walking back once signatures are at or before this UTC date (YYYY-MM-DD)",
     )
     parser.add_argument("--self-check", action="store_true")
+    parser.add_argument(
+        "--enumerate-from",
+        help="day-by-day enumeration (getTransactionsForAddress, not a signature walk) from this date",
+    )
+    parser.add_argument("--enumerate-to", default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    parser.add_argument("--enumerate-output", default="migration_enumeration.jsonl")
     args = parser.parse_args()
 
     if args.self_check:
         _self_check()
         print("self-check OK")
+        return
+
+    if args.enumerate_from:
+        enumerate_date_range(
+            _load_rpc_url(),
+            start_date=args.enumerate_from,
+            end_date=args.enumerate_to,
+            output_path=args.enumerate_output,
+        )
         return
 
     until_block_time = int(datetime.strptime(args.until_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())

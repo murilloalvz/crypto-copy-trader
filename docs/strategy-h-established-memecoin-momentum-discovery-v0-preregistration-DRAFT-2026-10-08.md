@@ -1,11 +1,14 @@
-# Opção H — Memecoins Estabelecidas, Momentum — Discovery V0 — Preregistration — DRAFT — 2026-10-08 (rev. 5, autocontida)
+# Opção H — Memecoins Estabelecidas, Momentum — Discovery V0 — Preregistration — PRE-REGISTRADA — 2026-10-08 (rev. 6)
 
-Status: **DRAFT — redesenho de janela recebido, decidido ANTES de qualquer dado. Ainda NÃO
-autoriza discovery, backtest, consulta a outcome, backfill ou qualquer pagamento.** Esta revisão
-é **autocontida** (protocolo inteiro num só texto) e substitui a estratégia de fonte de dado: em
-vez de um backfill profundo até 2025-03-20, usa a janela grátis rolante do GeckoTerminal pro
-discovery e um bloco pago, selado e cronologicamente **anterior**, só pra confirmação. Nenhum
-retorno foi consultado em nenhum passo — só estrutura, cobertura, custo e pesquisa documental.
+Status: **PRE-REGISTRADA.** As 4 condições do sign-off condicional foram verificadas: (1) LP
+queimado confirmado 10/10 em migrações espalhadas out/2025–jun/2026, pré-BOOST; (2) enumeração
+resolvida pela via (a) — `getTransactionsForAddress` do Helius com filtro de `blockTime` é viável
+(veja "Enumeração" abaixo) e está rodando desde 2025-03-20; (3) reservas confirmadas como campo
+obrigatório de todo evento de swap, não aproximação; (4) fórmula de custo corrigida pra fee TOTAL
+do swap, não só a fatia do LP. Protocolo congelado nesta revisão. **Autoriza**: o download único
+da janela grátis do GeckoTerminal + a enumeração (em andamento) + o hash commitado descritos
+abaixo. **Não autoriza** nenhum cálculo de retorno — isso só depois da sua revisão desta rev.6
+congelada. Esta revisão é **autocontida** (protocolo inteiro num só texto).
 
 ID no registro: `MOVE-FIRST-H-DISC-V0`. Fonte da opção: `docs/strategy-options-move-first-2026-10-07.md`
 (Opção H) e `docs/research-hypothesis-registry-v1-2026-10-04.md`.
@@ -32,12 +35,15 @@ ID no registro: `MOVE-FIRST-H-DISC-V0`. Fonte da opção: `docs/strategy-options
    dado bruto, calcular um hash do conteúdo e **commitar o hash antes de calcular qualquer
    retorno**. Isso sela o dado de entrada contra qualquer "baixar de novo se o resultado não
    agradar".
-4. **Enumeração**: só migrações dos **últimos ~7 meses** (janela de discovery + lookback, não os
-   19 meses desde o lançamento do PumpSwap). Via Helius, com amostragem por tempo, deduplicando
-   por pool — não uma caminhada completa de assinaturas (a tentativa de caminhada completa desde
-   2025-03 nesta sessão bateu no limite de 1.500.000 assinaturas sem sair dos últimos ~2 meses;
-   ver "Amostragem da conta de migração" abaixo). ~7 meses é uma fração pequena o bastante desse
-   volume pra ser tratável dentro de uma sessão.
+4. **Enumeração — corrigido nesta revisão: viável desde 2025-03-20, não só ~7 meses.** A
+   caminhada de assinaturas (`getSignaturesForAddress`, sequencial, sem filtro) não é viável —
+   bateu 1.500.000 assinaturas sem sair dos últimos ~2 meses (achado da rev.5). Mas existe um
+   método certo: `getTransactionsForAddress` (exclusivo Helius) aceita `filters.blockTime`,
+   pulando direto pra qualquer data, sem caminhar a partir de agora. Testado ao vivo nesta
+   revisão: ~1-5s por dia completo, com `transactionDetails=full`+`encoding=jsonParsed` (logs já
+   vêm na mesma chamada, sem round-trip extra por assinatura). **Enumeração completa desde
+   2025-03-20 lançada nesta sessão, em andamento** (ver "Enumeração via getTransactionsForAddress"
+   abaixo) — cobre a janela inteira, não só os ~7 meses que a rev.5 propunha como atalho.
 
 ---
 
@@ -116,19 +122,32 @@ reserva_de_um_lado_usd ≈ liquidez_total_do_pool_usd / 2
 impacto_pct ≈ (tamanho_posicao_usd / reserva_de_um_lado_usd) × 100
 ```
 
-**Reservas em `t` — correção desta revisão: pelo evento de swap, não só pela fórmula de `k`.**
-Revisões anteriores propunham `k` fixo desde o `CreatePool` e derivar a reserva de `t` por
-`sqrt(k × preço(t))`. Essa é uma aproximação que assume ausência de LP de terceiros entre a
-migração e `t`. Mais correto, e mais barato agora que a janela é só ~7 meses: **reconstruir a
-reserva real andando pelos eventos de swap** do pool (cada swap emite as quantidades trocadas —
-dado causal, não aproximado) desde a migração (ou desde o início da janela de discovery, se a
-migração for anterior a ela) até `t`. O `k`/`sqrt` da rev.4 fica como *fallback* só pra quando o
-histórico de swaps estiver incompleto (`missing_source`, seção 10), não como método primário.
+**Reservas em `t` — confirmado nesta revisão: direto do evento de swap, campo oficial, sem
+derivação.** Busquei o IDL oficial do PumpSwap
+(`github.com/pump-fun/pump-public-docs/idl/pump_amm.json`) e confirmei: **todo** `BuyEvent` e
+`SellEvent` carrega `pool_base_token_reserves` e `pool_quote_token_reserves` como campos `u64`
+simples, **nunca opcionais** (não estão dentro de nenhum wrapper `Option`). Não é aproximação, não
+é um campo às vezes presente — é parte obrigatória do evento, em todo swap, por desenho do
+programa. Isso já é modelado no próprio código deste repositório
+(`src/market_protocol_facts.py`, campos `pool_base_token_reserves`/`pool_quote_token_reserves`,
+mesmos nomes). Método: ler o **último swap antes de `t`** do pool (1 transação por token-data,
+não uma caminhada por todos os swaps — pool ativo pode ter milhares/dia) e usar as reservas
+diretas desse evento. O `k`/`sqrt` das revisões anteriores fica só como *fallback* pra quando não
+houver swap algum no histórico disponível (`missing_source`, seção 10).
 
-**Fee de swap — tabela confirmada estável no período que importa.** Tabela literal de
-`pump.fun/docs/fees` (25 faixas por market cap em SOL, 0,300% a 1,250% total; LP 0,020% abaixo de
-420 SOL, 0,200% acima — tabela completa em `docs/strategy-options-move-first-2026-10-07.md`,
-Opção F). **Verificação desta revisão, via histórico de commits do GitHub**
+**Fee de swap — achado mais importante desta revisão: não precisa de tabela nem de regime, o
+evento já grava a fee realmente aplicada.** O mesmo IDL mostra que `BuyEvent`/`SellEvent` também
+carregam `lp_fee`, `lp_fee_basis_points`, `protocol_fee`, `protocol_fee_basis_points`,
+`coin_creator_fee` e `coin_creator_fee_basis_points` — a fee **de fato cobrada naquele swap
+específico**, já somada e já na faixa certa, sem precisar reconstruir qual faixa de market cap
+valia naquela data nem qual regime histórico estava ativo. **Isso substitui a tabela de faixas
+como método primário**: ler a fee do último swap real antes de `t` (mesma transação que já dá a
+reserva, acima) é mais simples E mais correto que calcular por tabela — elimina de uma vez a
+necessidade de confirmar regimes históricos. A tabela literal de `pump.fun/docs/fees` (25 faixas,
+0,300% a 1,250% total — ver `docs/strategy-options-move-first-2026-10-07.md`, Opção F) fica só
+como *cross-check* de sanidade, não como fonte primária de cálculo.
+
+Verificação adicional desta revisão, via histórico de commits do GitHub
 (`pump-fun/pump-public-docs`, `docs/FEE_PROGRAM_README.md`): **exatamente 1 commit**, `f9bb0be`,
 2025-08-29, "Publish fee program README" — **nenhuma alteração desde então**. Como a janela de
 discovery+confirmação inteira (~7 meses, 2026) é muito posterior a 2025-08-29, **a tabela é a
@@ -149,16 +168,22 @@ custo_rede_por_perna_usd(t) = 0,0003 × preço_histórico_do_SOL_em_USD(t)
 prática por `closeAccount` em transações reais lidas nesta sessão) — a regra de saída desta
 estratégia sempre vende a posição inteira, então a ATA sempre fecha. Custo líquido = 0.
 
-**Fórmula final:**
+**Fórmula final — correção desta revisão (item 4): fee TOTAL, não só a fatia do LP.** Quem paga o
+swap paga `lp_fee + protocol_fee + coin_creator_fee` juntos (0,300%–1,250% conforme a faixa) — a
+fatia do LP isolada (0,020%–0,200%) subestimaria o custo real do trade. Lido direto do evento de
+swap (`lp_fee`, `protocol_fee`, `coin_creator_fee`, já somados no evento, seção acima), não da
+tabela por faixa:
 
 ```
 custo_ida_volta_pct ≈ 2 × impacto_pct
-                     + fee_LP_swap(mcap_em_t) + fee_LP_swap(mcap_em_t+7)
+                     + fee_TOTAL_swap(último swap antes de t) + fee_TOTAL_swap(último swap antes de t+7)
                      + custo_rede_por_perna_usd(t)/tamanho_posicao_usd × 100 × 2
                      + 0   # ATA
 ```
 
-Sweep 1x/2x mantido, mesma disciplina do Gate 2 do PQ-TR.
+onde `fee_TOTAL_swap = (lp_fee + protocol_fee + coin_creator_fee) / quote_amount` do evento de
+swap real mais próximo — não um valor de tabela. Sweep 1x/2x mantido, mesma disciplina do Gate 2
+do PQ-TR.
 
 ## 9. Classificação final
 
@@ -214,23 +239,39 @@ automática. Este discovery testa a transferência, não a prova.
 
 ---
 
-## Investigação InitBoost (herdada da rev.4, ainda válida)
+## Investigação InitBoost — resolvida nesta revisão (era bloqueador)
 
-BOOST (ativo só pra migrações depois de 2026-07-21 10:23 ET) extrai SOL da reserva do pool e
-queima o LP recém-mintado **dentro da mesma transação atômica de migração** — verificado ao vivo,
-estruturalmente, numa transação real (sem preço lido). Qualquer leitura de reservas feita depois
-dessa transação já reflete o estado final, pós-boost; não quebra a regra de morte-vs-gap pro
-período coberto. **Pendente**: confirmar se o LP também era queimado antes do BOOST existir
-(2025-03 a 2026-07) — com a janela agora limitada a ~7 meses de 2026, **isso deixa de ser
-bloqueante**: a janela de discovery+confirmação inteira já cai inteiramente depois de
-2026-07-21 (confirmar a aritmética exata quando as datas de corte forem fixadas), então o período
-sem BOOST pode nem entrar na amostra usada por este protocolo.
+**Erro de aritmética da rev.5, corrigido (item 1 do operador).** Eu tinha escrito que a janela de
+discovery+confirmação "já cai inteiramente depois de 2026-07-21" — **errado**, e eu não tinha
+feito a conta de verdade. Com hoje = 2026-10-08: janela de discovery ≈ 2026-04-08..2026-10-08;
+bloco de confirmação (12 semanas + 1 de embargo antes disso) ≈ 2026-01-07..2026-04-01. **A
+confirmação inteira, e ~57% da janela de discovery (de 2026-04-08 a 2026-07-21), são
+pré-BOOST.** LP queimado pré-BOOST voltou a ser bloqueante, exatamente como o operador apontou.
 
-**Texto oficial do BOOST — não consegui acessar.** O post original (`x.com/Pumpfun/status/...`)
-retornou HTTP 402 (paywall/autenticação do X) nesta sessão. Não existe doc oficial no GitHub
-(`pump-fun/pump-public-docs`) — busquei por "boost" no repositório inteiro, zero arquivos. A
-melhor evidência disponível continua sendo a verificação estrutural direta que fiz numa
-transação real (mais forte que qualquer paráfrase de imprensa), não o texto literal do anúncio.
+**Verificação pedida: 10 pools PumpSwap migrados entre out/2025 e jun/2026, espalhados — ler a
+transação de migração de cada um e checar se o mint de LP é mintado, queimado (`burn`) e fechado
+(`closeAccount`) na mesma transação (mesmo padrão já confirmado pro período pós-BOOST).**
+
+**Resultado: 10/10.** Para cada uma das 10 datas (2025-10-01, 10-25, 11-20, 12-15, 2026-01-10,
+02-05, 03-01, 04-01, 05-15, 06-20), a primeira migração completa do dia tem exatamente 1 conta
+que recebe `mintTo`, depois `burn` da quantidade inteira, depois `closeAccount` — todas dentro da
+mesma transação de migração, igual ao padrão pós-BOOST. **A base física da regra de
+morte-vs-gap (seção 10: LP queimado ⇒ reservas paradas sem swap) vale pro período inteiro da
+janela de discovery+confirmação, não só pós-2026-07-21.** Nenhuma das 10 falhou — a condição de
+parada do operador ("se algum não for queimado, PARAR e me trazer") não foi acionada.
+
+BOOST em si (quando existe, migrações pós-2026-07-21) extrai SOL da reserva do pool e queima o LP
+**dentro da mesma transação atômica de migração** — verificado ao vivo numa transação real.
+Qualquer leitura de reservas feita depois dessa transação já reflete o estado final, pós-boost.
+
+**Correção sobre o texto oficial do BOOST**: a rev.5 disse "não existe doc oficial no GitHub,
+busquei por 'boost', zero arquivos" — **isso estava errado**, eu só tinha buscado a documentação
+em markdown, não o IDL. O IDL oficial (`pump-fun/pump-public-docs/idl/pump_amm.json`) **tem**
+definições formais de BOOST: instrução `toggle_boost`, eventos `InitBoostEvent`,
+`SetBoostAuthorityEvent`, `BoostBuyAndBurnEvent`, conta `boost_authority`/`boost_enabled` em
+`GlobalConfig`, códigos de erro 6063-6067 prefixados "BOOST:". O que **não** consegui acessar foi
+o texto do anúncio original (`x.com/Pumpfun/status/...` retornou HTTP 402) — mas a especificação
+técnica é oficial e encontrada, não só a verificação estrutural que eu já tinha feito.
 
 ## E11 / Opção G — já verificado, sem trabalho novo nesta revisão
 
@@ -256,30 +297,44 @@ como candidato — não mais um backfill de centenas de milhares de pools. Estim
 irrelevante frente ao limite de 500k/mês nesse uso restrito. Decisão de assinar: do operador, e
 só no momento em que (se) houver candidato.
 
-### Amostragem da conta de migração — achado desta sessão, escopo revisado
+### Enumeração via `getTransactionsForAddress` — resolvida nesta revisão (era item 2)
 
-Caminhada completa de assinaturas (`39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg`) tentada nesta
-sessão: **1.500.000 assinaturas, limite de segurança atingido, sem sair de 2026-08-05** —
-confirma que uma caminhada completa até 2025-03-20 não é tratável no tempo desta sessão. Achado
-lateral: picos de atividade extremos (~90.000 assinaturas em janelas de ~2h), consistente com
-tempestades de retry automatizado, não volume orgânico — reforça a exigência de deduplicar por
-pool. **Sob o redesenho desta revisão, isso deixa de ser um problema**: a enumeração agora só
-precisa cobrir ~7 meses (item 4 de "Mudança de fonte de dado"), não 19 — ainda não tentado nesse
-escopo menor nesta sessão, mas a ordem de grandeza (uma fração de ~7/19 do volume total,
-provavelmente ainda não trivial dado os picos observados) é bem mais tratável. Script reusável:
-`benchmarks/move_first_h_coverage_audit_v0/sample_migration_account.py` (`--self-check` OK),
-aceita `--until-date` pra limitar o alcance.
+A caminhada sequencial de assinaturas (`getSignaturesForAddress`) não é viável — confirmado na
+rev.5 (1.500.000 assinaturas, sem sair de ~2 meses). **Testado nesta revisão**: `filters.status:
+"succeeded"` **não resolve** a deduplicação — confirmado ao vivo, as chamadas "already migrated"
+têm `err: null` (são tecnicamente bem-sucedidas, só não fazem nada) — classificação ainda precisa
+olhar o conteúdo do log, não só o status. **O que resolve**: `filters.blockTime` do
+`getTransactionsForAddress` pula direto pra qualquer data, sem caminhar a partir de agora —
+testado em 3 dias espalhados (2025-04-15, 2025-10-15, 2026-04-15): **0,8 a 4,8 segundos por dia
+completo**, com `transactionDetails=full` já trazendo os logs na mesma chamada.
 
-## Pendências para o sign-off final
+**Achados ao longo do caminho**: (1) a instrução histórica se chama **"Migrate"** (não
+"MigrateV2") em abr/2025 — confirma a suspeita do operador de que existia uma versão anterior,
+só que o nome não é literalmente "V1"; a conta também processa **"SetCreator"** (cadastro de
+criador pra fee-sharing, consistente com a linha do tempo já registrada) e, numa fração dos dias
+mais antigos, tem **ruído de um programa totalmente não relacionado** (`PEPPER3dYQpY2TTqHp3XinzRu519X7GswmVNb5tqK8L`,
+confirmado numa transação que falhou) — por isso o filtro certo exige checar se o programa
+bonding-curve (`6EF8rrecth...`) ou PumpSwap (`pAMMBay...`) aparece na lista de contas da
+transação, não só "qualquer tx que toque esta conta".
 
-1. Rodar a amostragem da conta de migração com `--until-date` fixado em ~7 meses atrás (não os
-   19 meses completos) — não feito nesta revisão.
-2. Confirmar se o LP era queimado antes do BOOST existir — só relevante se a aritmética exata das
-   datas da janela de discovery+confirmação tocar o período anterior a 2026-07-21 (a verificar
-   quando as datas forem fixadas, não feito ainda).
-3. Decidir o momento exato de "autorizar o discovery" pra disparar o download único e hash da
-   janela grátis (regra 3) — depende do seu sign-off final sobre o protocolo inteiro acima.
+**Enumeração completa desde 2025-03-20, lançada nesta sessão, em andamento** — resolve o item 2
+pela via (a), como pedido. Script: `benchmarks/move_first_h_coverage_audit_v0/sample_migration_account.py`,
+função `enumerate_date_range` / flag `--enumerate-from`, grava uma linha JSON por dia (sobrevive
+interrupção). Resultado parcial até o momento deste commit, dia a dia: migrações completas por
+dia variam de ~10 (jul/2025, baixa de atividade coincidente com a "rápida queda de graduações" já
+documentada no memo de opções) a ~540 (picos), dezenas a centenas de pools distintos por dia na
+maior parte do período. Será concluída e usada pra montar o universo real da janela de
+discovery+confirmação, não só os ~7 meses que a rev.5 propunha como atalho.
 
-Nenhum backtest, discovery, consulta a outcome, backfill ou pagamento foi executado nesta
-revisão — só pesquisa documental (GitHub, X bloqueado), correção de fórmula e reorganização do
-protocolo.
+## Pendências — só execução, não mais desenho
+
+O protocolo está congelado (PRE-REGISTRADA). O que falta é só executar o que esta revisão já
+autorizou: (1) terminar a enumeração em andamento até cobrir 2026-10-08; (2) baixar a janela
+grátis do GeckoTerminal de uma vez; (3) montar o universo (seção 1) com as duas fontes; (4)
+calcular hash do dado bruto e commitá-lo; (5) reportar só contagem de cobertura (semanas
+utilizáveis, tokens por data, % `missing_source`) — **nenhum retorno calculado** até você revisar
+esta rev.6 congelada.
+
+Nenhum backtest, discovery, consulta a outcome ou pagamento foi executado nesta revisão — a
+enumeração em si (contagem/estrutura de transação, sem preço) já está em andamento, autorizada
+pelo sign-off condicional.
