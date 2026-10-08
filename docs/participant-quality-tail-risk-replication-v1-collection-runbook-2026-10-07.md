@@ -9,14 +9,44 @@ falhou 3x nesta linha de pesquisa.
 
 ## 0. Antes de começar
 
+- **Rode esta replicação a partir do commit exato do pré-registro, num git
+  worktree separado — não na ponta corrente da branch de autoridade.**
+  Motivo (2026-10-09): `sig-fast-price-path-persistence-v0` e
+  `bundle-bot-detection-v0-plumbing` estão prontas para merge na autoridade,
+  mas **nenhuma delas deve mudar o ambiente sob o qual esta replicação roda**
+  — o pré-registro congela a regra, não "a ponta da branch no dia em que
+  você rodar". Isolando num worktree fixo no commit exato, o merge das duas
+  branches acima pode acontecer em paralelo sem afetar esta replicação, e
+  vice-versa: a replicação pode rodar mesmo que o merge ainda não tenha sido
+  confirmado por você.
+
+  Commit exato do pré-registro (última revisão do arquivo, cross-referência
+  do Gate 2 incluída): **`d044304f679160f5de41107f3b34a618022d8bb5`**.
+
+  ```powershell
+  cd <pasta onde quer o worktree, fora do checkout principal>
+  git -C <checkout principal> worktree add ../pq-tr-repl-v1-worktree d044304f679160f5de41107f3b34a618022d8bb5
+  cd ../pq-tr-repl-v1-worktree
+  git log --oneline -1
+  ```
+  Espera-se o commit `d044304` sozinho, `HEAD` destacado (detached) — é
+  esperado e correto, não é um erro para corrigir com `git checkout -b`.
+  Rode todos os passos abaixo de dentro deste worktree, com um `.env` próprio
+  (copie o `.env` do checkout principal) e seu próprio `data/copytrader.db`
+  (ou copie o existente, se quiser preservar coleta já feita).
+
+  Depois que o veredito (passo 5) estiver registrado, o worktree pode ser
+  removido (`git worktree remove ../pq-tr-repl-v1-worktree`) — ele não
+  precisa ficar vivo além da replicação.
+
 - `.env` com `HELIUS_API_KEY`, `SOLANA_RPC_URL` (RPC dedicado), `JUPITER_API_KEY` válidos. Nenhuma
   outra tarefa deve usar essas chaves durante a janela de coleta abaixo.
-- Confirme a branch:
+- Confirme o commit (dentro do worktree, não do checkout principal):
   ```powershell
   git status
   git log --oneline -3
   ```
-  Espera-se `research/rust-signal-plane-live-shadow-v0` com o commit deste runbook no topo.
+  Espera-se `d044304` no topo, `HEAD` destacado, árvore limpa.
 - Garanta que a pasta de logs existe (idempotente, não apaga nada se já existir):
   ```powershell
   New-Item -ItemType Directory -Force logs | Out-Null
