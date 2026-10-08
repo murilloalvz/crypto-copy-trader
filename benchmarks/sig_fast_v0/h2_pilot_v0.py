@@ -19,7 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,137 @@ def _credits_for_tx_count(n_tx: int) -> int:
 
 def _date_epoch(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, int(round(p * (len(ordered) - 1))))
+    return ordered[index]
+
+
+# Operator review (2026-10-08, segunda rodada): "limitador global de taxa
+# conservador (comecar em 5 req/s; nunca acima de 50% do RPS do plano)".
+DEFAULT_MAX_RPS = 5.0
+# "se vier rajada de 429 (3 seguidos mesmo com backoff) -> PARAR e reportar,
+# sem insistir". Cada chamada que chega aqui ja esgotou o retry/backoff
+# interno de _mfh._rpc (ate 5 tentativas) -- "3 seguidos" e contado no nivel
+# de fora, chamada-a-chamada.
+DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+
+
+class RateLimiter:
+    """Pacer de intervalo minimo entre chamadas -- nunca mais rapido que
+    max_rps, aplicado a toda chamada RPC do piloto (enumeracao + busca de
+    trades + resolucao de migracao), nao so uma parte."""
+
+    def __init__(self, max_rps: float):
+        if max_rps <= 0:
+            raise ValueError("max_rps must be positive")
+        self.min_interval = 1.0 / max_rps
+        self._last_call_monotonic: float | None = None
+
+    def wait(self) -> None:
+        now = time.monotonic()
+        if self._last_call_monotonic is not None:
+            remaining = self.min_interval - (now - self._last_call_monotonic)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_call_monotonic = time.monotonic()
+
+
+class PilotAbortedRateLimited(RuntimeError):
+    """Rajada de falhas consecutivas (ja com retry/backoff esgotado em
+    cada uma) -- o piloto para e reporta o que ja tinha, sem insistir."""
+
+    def __init__(self, consecutive_failures: int, last_error: str):
+        super().__init__(
+            f"abortando apos {consecutive_failures} falhas de RPC consecutivas "
+            f"(cada uma ja com retry/backoff esgotado) -- ultimo erro: {last_error}"
+        )
+        self.consecutive_failures = consecutive_failures
+        self.last_error = last_error
+
+
+@dataclass(frozen=True)
+class RpcCallLogEntry:
+    method: str
+    credits: int
+    elapsed_seconds_since_start: float
+
+
+@dataclass
+class RpcUsageTracker:
+    """Credito por chamada e total -- 'registrar creditos consumidos por
+    chamada e no total' (instrucao verbatim do operador)."""
+
+    start_monotonic: float = field(default_factory=time.monotonic)
+    calls: list[RpcCallLogEntry] = field(default_factory=list)
+
+    @property
+    def total_credits(self) -> int:
+        return sum(entry.credits for entry in self.calls)
+
+    def record(self, method: str, result: dict[str, Any]) -> int:
+        credits = self._credits_for(method, result)
+        self.calls.append(
+            RpcCallLogEntry(
+                method=method,
+                credits=credits,
+                elapsed_seconds_since_start=round(time.monotonic() - self.start_monotonic, 3),
+            )
+        )
+        return credits
+
+    @staticmethod
+    def _credits_for(method: str, result: dict[str, Any]) -> int:
+        # Helius docs/billing/credits (lido via WebFetch 2026-10-08, sem
+        # data/versao visivel na pagina -- ver handoff pra a ressalva sobre
+        # fontes conflitantes encontradas em paginas de outros idiomas).
+        if method in ("getTransaction", "getSignaturesForAddress"):
+            return 1
+        if method == "getTransactionsForAddress":
+            n_tx = len((result.get("result") or {}).get("data") or [])
+            return _credits_for_tx_count(n_tx)
+        return 0
+
+
+def install_rate_limited_rpc(
+    *,
+    max_rps: float,
+    max_consecutive_failures: int,
+    tracker: RpcUsageTracker,
+):
+    """Troca _mfh._rpc (sample_migration_account, modulo singleton -- nunca
+    reimportado em __main__, ver commit 1b4da44 desta rodada) por uma versao
+    que: espera o rate limiter antes de cada chamada; registra credito por
+    chamada no tracker; conta falhas consecutivas (cada uma ja pos-retry) e
+    levanta PilotAbortedRateLimited ao bater o limite, sem tentar de novo.
+    Retorna a funcao de restauracao -- chamar sempre, mesmo em erro."""
+    original_rpc = _mfh._rpc
+    limiter = RateLimiter(max_rps)
+    state = {"consecutive_failures": 0}
+
+    def wrapped(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        limiter.wait()
+        try:
+            result = original_rpc(rpc_url, method, params, retries=retries)
+        except Exception as exc:
+            state["consecutive_failures"] += 1
+            if state["consecutive_failures"] >= max_consecutive_failures:
+                raise PilotAbortedRateLimited(state["consecutive_failures"], str(exc)) from exc
+            raise
+        state["consecutive_failures"] = 0
+        tracker.record(method, result)
+        return result
+
+    _mfh._rpc = wrapped
+
+    def restore() -> None:
+        _mfh._rpc = original_rpc
+
+    return restore
 
 
 def resolve_migration_block_time(rpc_url: str, signature: str) -> int:
@@ -200,6 +332,8 @@ class PilotSummary:
     n_sampled: int
     n_with_any_trade: int
     avg_tx_per_window: float
+    median_tx_per_window: float | None
+    p90_tx_per_window: float | None
     avg_credits_per_token: float
     avg_pct_decoded_with_reserves_and_fee: float
     n_survived_system_count: int
@@ -223,10 +357,13 @@ def summarize_pilot(results: list[PilotTokenResult]) -> PilotSummary:
         proposed_n = math.ceil(30 / survival_rate)
         estimated_credits_for_30 = math.ceil(proposed_n * avg_credits)
 
+    tx_counts = [float(r.n_tx_in_window) for r in results]
     return PilotSummary(
         n_sampled=n,
         n_with_any_trade=len(with_trade),
         avg_tx_per_window=(sum(r.n_tx_in_window for r in results) / n) if n else 0.0,
+        median_tx_per_window=_percentile(tx_counts, 0.50),
+        p90_tx_per_window=_percentile(tx_counts, 0.90),
         avg_credits_per_token=(sum(r.estimated_credits for r in results) / n) if n else 0.0,
         avg_pct_decoded_with_reserves_and_fee=(
             sum(r.pct_decoded_with_reserves_and_fee for r in with_trade) / len(with_trade)
@@ -239,6 +376,65 @@ def summarize_pilot(results: list[PilotTokenResult]) -> PilotSummary:
         estimated_credits_for_n_30_survivors=estimated_credits_for_30,
         proposed_n_migrations_to_sample=proposed_n,
     )
+
+
+def _self_check_rate_limiter_and_breaker() -> None:
+    limiter = RateLimiter(max_rps=20.0)  # min_interval = 0.05s
+    t0 = time.monotonic()
+    limiter.wait()
+    limiter.wait()
+    assert time.monotonic() - t0 >= 0.04, "RateLimiter did not pace the second call"
+
+    tracker = RpcUsageTracker()
+    assert tracker._credits_for("getTransaction", {}) == 1
+    assert tracker._credits_for("getSignaturesForAddress", {}) == 1
+    assert tracker._credits_for("getTransactionsForAddress", {"result": {"data": [{}] * 150}}) == 20
+    assert tracker._credits_for("unknownMethod", {}) == 0
+
+    # ok, fail, ok, fail, fail, fail -- breaker must only trip on the 3rd
+    # CONSECUTIVE failure (the "ok" in the middle resets the counter).
+    outcomes = iter(["ok", "fail", "ok", "fail", "fail", "fail"])
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if next(outcomes) == "fail":
+            raise RuntimeError("simulated 429")
+        return {"result": {"data": [{}] * 5}}
+
+    def call() -> tuple[str, Exception | None]:
+        try:
+            _mfh._rpc("fake://rpc", "getTransactionsForAddress", [], retries=1)
+            return "ok", None
+        except Exception as exc:  # noqa: BLE001 -- self-check needs the exact exception
+            return "failed", exc
+
+    original_rpc = _mfh._rpc
+    _mfh._rpc = fake_rpc
+    try:
+        tracker2 = RpcUsageTracker()
+        restore = install_rate_limited_rpc(max_rps=1000.0, max_consecutive_failures=3, tracker=tracker2)
+        try:
+            outcome, _ = call()
+            assert outcome == "ok", outcome
+            assert tracker2.total_credits == 10, tracker2.total_credits
+
+            outcome, exc = call()  # 1st consecutive failure
+            assert outcome == "failed" and not isinstance(exc, PilotAbortedRateLimited), (outcome, exc)
+
+            outcome, _ = call()  # success resets the counter
+            assert outcome == "ok", outcome
+            assert tracker2.total_credits == 20, tracker2.total_credits
+
+            outcome, exc = call()  # 1st consecutive failure again
+            assert outcome == "failed" and not isinstance(exc, PilotAbortedRateLimited), (outcome, exc)
+            outcome, exc = call()  # 2nd consecutive failure
+            assert outcome == "failed" and not isinstance(exc, PilotAbortedRateLimited), (outcome, exc)
+            outcome, exc = call()  # 3rd consecutive failure -> abort
+            assert outcome == "failed" and isinstance(exc, PilotAbortedRateLimited), (outcome, exc)
+            assert exc.consecutive_failures == 3, exc.consecutive_failures
+        finally:
+            restore()
+    finally:
+        _mfh._rpc = original_rpc
 
 
 def _self_check_credits_formula() -> None:
@@ -316,6 +512,10 @@ def _self_check_summary() -> None:
     # (10, 20) = 15; estimated = ceil(60 * 15) = 900.
     assert summary.proposed_n_migrations_to_sample == 60, summary
     assert summary.estimated_credits_for_n_30_survivors == 900, summary
+    # tx_counts = [50, 150, 0] -> sorted [0, 50, 150]; median (p50, nearest-
+    # rank index round(0.5*2)=1) = 50; p90 (index round(0.9*2)=2) = 150.
+    assert summary.median_tx_per_window == 50.0, summary
+    assert summary.p90_tx_per_window == 150.0, summary
 
 
 def _self_check_run_pilot_token_wiring() -> None:
@@ -393,11 +593,16 @@ def _self_check_run_pilot_token_wiring() -> None:
 
 
 def _self_check() -> None:
+    _self_check_rate_limiter_and_breaker()
     _self_check_credits_formula()
     _self_check_survival()
     _self_check_summary()
     _self_check_run_pilot_token_wiring()
-    print("self-check OK: credits formula + survival system-count + summary arithmetic + run_pilot_token wiring")
+    print(
+        "self-check OK: rate limiter + consecutive-failure breaker + credit tracker + "
+        "credits formula + survival system-count + summary arithmetic (median/p90) + "
+        "run_pilot_token wiring"
+    )
 
 
 def main() -> int:
@@ -409,6 +614,24 @@ def main() -> int:
     parser.add_argument("--lookback-end", default=PILOT_LOOKBACK_END)
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument(
+        "--max-rps",
+        type=float,
+        default=DEFAULT_MAX_RPS,
+        help="teto global de chamadas/segundo (operador: comecar em 5, nunca >50%% do RPS do plano)",
+    )
+    parser.add_argument(
+        "--plan-rps",
+        type=float,
+        default=None,
+        help="RPS medido do plano Helius -- se informado, --max-rps e limitado a 50%% disso",
+    )
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        help="falhas de RPC consecutivas (cada uma ja pos-backoff) antes de parar sem insistir",
+    )
+    parser.add_argument(
         "--out", type=Path, default=Path("artifacts/sig_fast_h2_pilot_v0/report.json")
     )
     args = parser.parse_args()
@@ -417,40 +640,89 @@ def main() -> int:
         _self_check()
         return 0
 
+    max_rps = args.max_rps
+    if args.plan_rps is not None:
+        max_rps = min(max_rps, args.plan_rps * 0.5)
+    print(f"[piloto] rate limit efetivo: {max_rps:.2f} req/s "
+          f"(--max-rps={args.max_rps}, --plan-rps={args.plan_rps})")
+
     rpc_url = _load_rpc_url()
-    candidates = fetch_migrations_in_range(
-        rpc_url, start_date=args.lookback_start, end_date=args.lookback_end
-    )
-    sample = sample_migrations_excluding_blocks(
-        candidates,
-        n=args.n,
-        seed=args.seed,
-        excluded_block_starts=(
-            _date_epoch(DISCOVERY_BLOCK_START),
-            _date_epoch(CONFIRMATION_BLOCK_START),
-        ),
-        excluded_block_ends=(
-            _date_epoch(DISCOVERY_BLOCK_END),
-            _date_epoch(CONFIRMATION_BLOCK_END),
-        ),
+    tracker = RpcUsageTracker()
+    restore_rpc = install_rate_limited_rpc(
+        max_rps=max_rps,
+        max_consecutive_failures=args.max_consecutive_failures,
+        tracker=tracker,
     )
 
-    from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
-        JsonLineProcess,
-        _carbon_command,
-    )
-
-    carbon = JsonLineProcess(_carbon_command(args.cargo), ready_type="carbon_stream_decoder_ready")
-    carbon.start()
+    results: list[PilotTokenResult] = []
+    aborted = False
+    abort_reason: str | None = None
+    sample: list[MigrationCandidate] = []
     try:
-        results = [run_pilot_token(rpc_url, carbon, candidate) for candidate in sample]
+        candidates = fetch_migrations_in_range(
+            rpc_url, start_date=args.lookback_start, end_date=args.lookback_end
+        )
+        sample = sample_migrations_excluding_blocks(
+            candidates,
+            n=args.n,
+            seed=args.seed,
+            excluded_block_starts=(
+                _date_epoch(DISCOVERY_BLOCK_START),
+                _date_epoch(CONFIRMATION_BLOCK_START),
+            ),
+            excluded_block_ends=(
+                _date_epoch(DISCOVERY_BLOCK_END),
+                _date_epoch(CONFIRMATION_BLOCK_END),
+            ),
+        )
+
+        from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
+            JsonLineProcess,
+            _carbon_command,
+        )
+
+        carbon = JsonLineProcess(
+            _carbon_command(args.cargo), ready_type="carbon_stream_decoder_ready"
+        )
+        carbon.start()
+        try:
+            for candidate in sample:
+                try:
+                    result = run_pilot_token(rpc_url, carbon, candidate)
+                except PilotAbortedRateLimited as exc:
+                    aborted = True
+                    abort_reason = str(exc)
+                    print(f"[piloto] PAROU: {exc}")
+                    break
+                except Exception as exc:  # token isolado, nao e rajada de 429
+                    print(
+                        f"[piloto] token {candidate.pool_mint} falhou "
+                        f"(nao abortou o piloto): {type(exc).__name__}: {exc}"
+                    )
+                    continue
+                results.append(result)
+                print(
+                    f"[piloto] token {result.pool_mint}: tx={result.n_tx_in_window} "
+                    f"decoded={result.n_events_decoded} creditos={result.estimated_credits} "
+                    f"total_creditos_acumulado={tracker.total_credits}"
+                )
+        finally:
+            carbon.close()
+    except PilotAbortedRateLimited as exc:
+        aborted = True
+        abort_reason = str(exc)
+        print(f"[piloto] PAROU durante a enumeracao: {exc}")
     finally:
-        carbon.close()
+        restore_rpc()
 
     summary = summarize_pilot(results)
     payload = {
         "version": VERSION,
         "classification": "SYSTEMS_COST_AND_COVERAGE_ONLY_NOT_AN_ECONOMIC_TEST",
+        "aborted_rate_limited": aborted,
+        "abort_reason": abort_reason,
+        "n_requested": args.n,
+        "n_sample_resolved_before_abort": len(sample),
         "seed": args.seed,
         "lookback_start": args.lookback_start,
         "lookback_end": args.lookback_end,
@@ -458,14 +730,23 @@ def main() -> int:
             "discovery": [DISCOVERY_BLOCK_START, DISCOVERY_BLOCK_END],
             "confirmation": [CONFIRMATION_BLOCK_START, CONFIRMATION_BLOCK_END],
         },
+        "rate_limit": {
+            "max_rps_effective": max_rps,
+            "max_consecutive_failures": args.max_consecutive_failures,
+        },
         "tokens": [asdict(r) for r in results],
         "summary": asdict(summary),
+        "rpc_usage": {
+            "total_credits": tracker.total_credits,
+            "n_calls": len(tracker.calls),
+            "calls": [asdict(entry) for entry in tracker.calls],
+        },
     }
     text = json.dumps(payload, indent=2, sort_keys=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(text, encoding="utf-8")
     print(text)
-    return 0
+    return 1 if aborted else 0
 
 
 if __name__ == "__main__":
