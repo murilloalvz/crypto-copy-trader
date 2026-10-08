@@ -74,6 +74,7 @@ Justificativa completa em `docs/strategy-options-move-first-2026-10-07.md` (seç
 
 | ID | Status declarado no próprio doc | Fonte |
 |---|---|---|
+| SIG-FAST-DISC-V0 | **RASCUNHO, aguarda sign-off do operador** — lote K=2 (H1 copy-trading filtrado/E11, H2 sobreviventes pós-migração/MemeTrans) sob a régua de caminho de preço do caminho SIG-FAST (ver "Revisão 4" acima). Vive na branch `sig-fast-price-path-persistence-v0` (não mergeada, aguarda replicação do PQ-TR), junto com o instrumento (F2 `src/opportunity_path_metrics_v0.py`, F3 `src/opportunity_path_baseline_v0.py`), o modelo de custo (F4) e o engine de discovery (F7, só `--self-check` até agora). Nenhuma coleta rodada; nenhum dado de outcome lido | branch `sig-fast-price-path-persistence-v0`: `docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md` |
 | LB-SNIPER-V1 | PREREGISTERED / NO OUTCOME-BEARING RUN YET | `docs/launch-burst-sniper-v1-preregistration-2026-09-15.md` |
 | LB-MOMENTUM-CONV-V0 | pré-registro; sem resultado localizado | `docs/launch-burst-momentum-convergence-v0-prereg-2026-09-16.md` |
 | LB-DISCOVERY-V0 | PREREGISTERED / NOT YET RUN | `docs/launch-burst-discovery-v0-preregistration-2026-09-10.md` |
