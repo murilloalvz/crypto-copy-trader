@@ -207,6 +207,40 @@ transporte:
 4. Estágio 2 (trades por pool) continua no rodízio de prioridade fixa
    (ver bullet acima), poupando a Helius pro Estágio 1.
 
+**Addendum Fase E parte 3 (2026-10-08, mesmo dia): achado de custo real do
+Estágio 2 — volume de trade na janela muito maior que o modelo assumia,
+piloto parado antes de gastar nenhuma chamada `getTransaction`.** Rodando o
+piloto com o método novo: Estágio 1 (janela sorteada) funcionou bem — janela
+1 achou as 7 migrações reais em 1 chamada, rápido. Testei o Estágio 2 pra 1
+dessas 7 migrações (diagnóstico isolado, só `getSignaturesForAddress`
+paginado, sem chamar `getTransaction` nenhuma vez): QuickNode/público
+responderam rápido e sem erro (21 páginas, ~0,25s/chamada, 5,5s no total) —
+mas a janela de 80min desse pool teve **16.473 transações**, não as
+dezenas/centenas assumidas implicitamente no modelo de custo (F4). O método
+de 2 chamadas pede 1 `getTransaction` por assinatura mantida — pra só esse
+1 pool, seriam ~16.500 chamadas, que a 5 req/s (não-Helius) levam ~55
+minutos **só de uma migração**, antes mesmo de decodificar. É isso que
+travou o piloto rodando em background por 30min sem terminar nem 1 token —
+não é 429, é volume real de trade pós-migração (atividade de bot/sniper
+intensa nos primeiros minutos é plausível e não deveria ter sido
+surpreendente, mas o modelo de custo não contava com isso). Parei aqui —
+nenhuma chamada `getTransaction` foi feita pra essas 16.473 assinaturas,
+sem martelar. **Isso é um problema de arquitetura, não de rede**: o método
+de 2 chamadas tem custo por-transação (1 chamada por trade), enquanto o
+método exclusivo da Helius (`getTransactionsForAddress`, usado no Estágio 1
+e no antigo `fetch_pool_trades_raw`, removido) batcha até 1000
+transações completas por chamada — ordens de magnitude mais barato pra
+pools de alto volume. Opções que não decidi sozinho, pendentes do operador:
+(a) usar JSON-RPC batch request (várias chamadas `getTransaction` num só
+POST HTTP) se QuickNode/público suportarem — reduziria round-trips, não
+necessariamente o número de chamadas cobradas; (b) usar o método em lote da
+Helius (`getTransactionsForAddress`) também no Estágio 2 quando ela estiver
+saudável, aceitando a dependência que o pedido desta rodada queria evitar;
+(c) outra estratégia de amostragem/cobertura dentro da janela, o que
+tensiona com a regra 5 (cobertura completa reportada antes do resultado).
+K/N continuam **não fixados** — faltam dados de Estágio 2 de qualquer
+migração ainda.
+
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 Instrumento de medida (congelado para este lote, trocar exige lote novo):
