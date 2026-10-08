@@ -552,12 +552,31 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 5. Os 2 blocos de calendário fixados (regra 2) rendem n>=30 sinais H2
    elegíveis no treino? Não assumido — é exatamente o que o piloto (passo A)
    mede antes do download dos blocos (passo B).
-6. **Bloqueador de execução**: `SOLANA_RPC_URL` está vazio neste sandbox —
-   nenhuma chamada RPC real é possível até o operador configurar o secret
-   nas configurações do ambiente. Piloto e fetcher ficam prontos (self-check
-   só com dado sintético) até isso ser resolvido.
-7. H1 no histórico (step C desta rodada): existe forma barata e sem viés de
-   enumerar TODAS as criações de token num período (não só graduadas)? Só
-   investigação nesta rodada, sem download — achado reportado no handoff
-   desta revisão, ainda não decide nada sobre autorizar coleta de H1
-   histórica.
+6. ~~Bloqueador de execução: `SOLANA_RPC_URL` vazio.~~ **Atualizado nesta
+   mesma revisão**: o operador configurou a chave durante a sessão.
+   `getHealth` respondeu OK, mas toda chamada seguinte (`getSignaturesForAddress`,
+   `getTransactionsForAddress`, `getSlot`, `getVersion`) devolveu HTTP 429
+   mesmo com retry/backoff — indício de rate limit/plano muito restrito
+   nesta chave, esgotado já nos primeiros diagnósticos. Piloto real (passo
+   A) **não foi executado** -- rodar contra esse 429 só gastaria mais da
+   cota sem produzir dado. Pendente: operador confirmar o plano Helius
+   (RPS/créditos) antes de reautorizar uma tentativa.
+7. **H1 no histórico (step C): respondido, achado NEGATIVO.** Não existe
+   hoje um atalho barato equivalente ao `MIGRATION_AUTHORITY` das
+   migrações. A conta `global` (PDA fixo, seed `"global"`) é só config
+   (authority/fee recipient/reservas-padrão/supply/fee rates) -- não é um
+   registro de tokens e, pelas fontes consultadas, é tocada também por
+   trades, não só por `create`, então não isola o volume. O único método
+   correto (sem viés) seria varrer o PROGRAMA bonding-curve inteiro
+   (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`) via
+   `getTransactionsForAddress`, filtrando pelo discriminador de
+   `create`/`create_v2` -- mas esse programa recebe TODA a atividade de
+   trade de TODOS os tokens (criados ou não, graduados ou não), um volume
+   muitas ordens de magnitude maior que o da conta de migração (terceiros
+   relatam >11 milhões de criações historicamente). Dado o 429 observado
+   nesta mesma sessão com uma chave que nem chegou a tentar esse volume,
+   este caminho não é praticamente viável com o plano atual. **Conclusão:
+   H1 histórico sem viés de sobrevivência NÃO está desbloqueado por esta
+   investigação** -- precisaria de uma fonte paga/indexador de terceiros
+   (Dune já descartado por exigir plano pago) ou de evidência nova. H1
+   continua só ao vivo (seção 1a, inalterada); isso não afeta H2.
