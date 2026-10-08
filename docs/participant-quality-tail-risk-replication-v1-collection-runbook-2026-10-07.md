@@ -7,6 +7,12 @@ Modo: PAPER / RESEARCH / READ ONLY. Nenhum passo assina ou submete transação, 
 funded. Rode isto na sua máquina (PowerShell), com RPC Helius dedicado (pago) — o free tier já
 falhou 3x nesta linha de pesquisa.
 
+**NUNCA rode esta replicação ao mesmo tempo que o Passo 0 do SIG-FAST**
+(`docs/sig-fast-passo-0-calibration-runbook-v0-2026-10-09.md`). Os dois disputam a mesma chave
+Helius e a mesma CPU/rede da sua máquina; rodar os dois juntos arrisca contaminar ambas as
+medições com latência artificial, sem gerar um erro visível que avise disso. Espere um terminar
+antes de começar o outro.
+
 ## 0. Antes de começar
 
 - **Rode esta replicação a partir do commit exato do pré-registro, num git
