@@ -9,9 +9,11 @@ from unittest.mock import patch
 
 from src import database
 from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
+    LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS,
     AsyncPumpSwapIdentityPlane,
     _add_identity,
     _build_signal_record,
+    _consumer_loop_stall_gap,
     _identity_source_for_evidence,
     _latency_summary_ns,
     _raw_ingress_prefilter,
@@ -322,6 +324,27 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             _raw_price_path_fields_from_row({"anything": 1}, event_type=None),
             {},
         )
+
+    def test_consumer_loop_stall_gap_detects_gap_over_threshold(self):
+        self.assertEqual(
+            _consumer_loop_stall_gap(last_tick=100.0, tick=131.0, threshold_seconds=30.0),
+            31.0,
+        )
+
+    def test_consumer_loop_stall_gap_is_none_within_threshold(self):
+        self.assertIsNone(
+            _consumer_loop_stall_gap(last_tick=100.0, tick=129.0, threshold_seconds=30.0)
+        )
+        self.assertIsNone(
+            _consumer_loop_stall_gap(last_tick=100.0, tick=130.0, threshold_seconds=30.0)
+        )
+
+    def test_live_shadow_consumer_stall_gap_constant_matches_v43_pattern(self):
+        # Same 30s threshold as FORWARD_COLLECTION_V43_STALL_GAP_SECONDS /
+        # FORWARD_COLLECTION_900_STALL_GAP_SECONDS (src/route_research_forward_
+        # collection_{v43,900_v0}.py) -- item (b) extends that pattern to
+        # run_live_shadow_v0's main consumer loop.
+        self.assertEqual(LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS, 30.0)
 
     def test_live_adapter_chain_threads_price_path_fields_into_persisted_observation(self):
         """End-to-end: a synthetic Carbon-decoded pump_trade row, through the exact

@@ -61,6 +61,16 @@ PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
+# Item (b) (2026-10-09): distinct from SURFACE_IDLE_TIMEOUT_SECONDS just above,
+# which fails a *reader task* when its own websocket goes quiet for 30s. This
+# constant guards the *main consumer loop* itself: if the gap between two
+# consecutive top-of-loop monotonic checks exceeds this, something external
+# blocked the process/event loop for a long-session run (same root-cause class
+# documented for FORWARD_COLLECTION_V43_STALL_GAP_SECONDS in
+# src/route_research_forward_collection_v43.py: e.g. OS sleep/suspend, a frozen
+# console, or a hang in a blocking call), independent of whether either reader
+# is still receiving data. Detects and fails closed; does not prevent the stall.
+LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
 WS_OPEN_TIMEOUT_SECONDS = 30.0
 WS_OPEN_BARRIER_TIMEOUT_SECONDS = 35.0
@@ -134,6 +144,18 @@ def _nonnegative_int(row: dict[str, Any], name: str) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         return None
     return value
+
+
+def _consumer_loop_stall_gap(
+    *, last_tick: float, tick: float, threshold_seconds: float
+) -> float | None:
+    """Item (b) (2026-10-09): pure gap check extracted from run_live_shadow_v0's
+    main consumer loop so the FORWARD_COLLECTION_V43-style stall detection
+    (src/route_research_forward_collection_v43.py) is unit-testable without
+    driving the whole async pipeline. Returns the gap if it exceeds the
+    threshold (a stall), else None."""
+    gap = tick - last_tick
+    return gap if gap > threshold_seconds else None
 
 
 def _raw_price_path_fields_from_row(
@@ -1279,7 +1301,20 @@ async def run_live_shadow_v0(
         counters["transport_subscription_barrier_passed"] += 1
         acquisition_event.set()
 
+        consumer_last_tick_monotonic = time.monotonic()
+        consumer_stall_gap_seconds: float | None = None
+
         while True:
+            consumer_tick_monotonic = time.monotonic()
+            consumer_stall_gap_seconds = _consumer_loop_stall_gap(
+                last_tick=consumer_last_tick_monotonic,
+                tick=consumer_tick_monotonic,
+                threshold_seconds=LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS,
+            )
+            if consumer_stall_gap_seconds is not None:
+                break
+            consumer_last_tick_monotonic = consumer_tick_monotonic
+
             source_open = time.monotonic() < deadline
             readers_done = all(task.done() for task in reader_tasks)
             if (
@@ -2006,6 +2041,7 @@ async def run_live_shadow_v0(
             identity_plane.counters["rpc_batch_failures"] == 0
         ),
         "no_fatal_or_signal_errors": not errors,
+        "no_consumer_loop_stall": consumer_stall_gap_seconds is None,
     }
     if bridge_run_key:
         gates.update(
@@ -2074,6 +2110,8 @@ async def run_live_shadow_v0(
         "commitment": "confirmed",
         "duration_seconds": duration_seconds,
         "max_log_notifications": max_log_notifications,
+        "consumer_stall_detected": consumer_stall_gap_seconds is not None,
+        "consumer_stall_gap_seconds": consumer_stall_gap_seconds,
         "bootstrap": {
             "report_path": str(bootstrap.report_path),
             "run_id": bootstrap.run_id,
