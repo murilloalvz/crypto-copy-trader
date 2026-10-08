@@ -1,4 +1,4 @@
-# Pré-registro em lote — SIG-FAST-DISC-V0 — 2026-10-08 (RASCUNHO, rev. 2 2026-10-09)
+# Pré-registro em lote — SIG-FAST-DISC-V0 — 2026-10-08 (RASCUNHO, rev. 3 2026-10-09)
 
 Status: **RASCUNHO, aguardando sign-off do operador.** Nenhuma coleta foi rodada
 para julgar este lote. Segue o formato de
@@ -15,6 +15,17 @@ multiplicidade recontada: 2 famílias × 6 saídas no treino = 12 comparações 
 decisão; (4) as 6 perguntas abertas da rev. 1 estão respondidas e aplicadas.
 Nada da rev. 1 foi apagado silenciosamente — este documento substitui a rev. 1
 por completo, autocontido.
+
+**Rev. 3 (2026-10-09): segunda revisão do operador aplicada, itens (a)/(a2)/
+(b)/(c)/(d).** Relevante a este documento: (d) o veto "histórico do criador"
+é **removido** de H1/H2 (não existia definição nem histórico implementado) —
+H1/H2 passam de 4 para 3 vetos; a contagem de 14 leituras decisórias não
+muda, vetos não participam dela (ver "Multiplicidade"). (b) o stall guard de
+`run_live_shadow_v0` (pendência da rev. 2) está implementado, e o Passo 0
+ganha uma terceira métrica de sistema (continuidade pós-graduação,
+`audit_graduation_continuity`). (a)/(a2) e (c) não alteram este documento
+diretamente — ver `docs/sig-fast-live-engine-wiring-v0-2026-10-09.md` e o
+runbook do Passo 0.
 
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
@@ -85,7 +96,17 @@ tentativa).** Sessão curta (2-4h) só para medir, com dado real, a taxa de
 sinais/hora de cada família e a cobertura de preço (`path_coverage_audit.py`)
 sob o motor corrigido. Isso não lê outcome (contagem de sinais e cobertura são
 métricas de sistema, não preço/retorno) e informa o dimensionamento real dos
-passos seguintes, em vez de travar nas estimativas abaixo.
+passos seguintes, em vez de travar nas estimativas abaixo. Rev. 3 (item (b)
+do operador) acrescenta uma terceira métrica de sistema ao mesmo Passo 0:
+`audit_graduation_continuity` (mesmo arquivo) reporta, por token graduado
+pra PumpSwap, se o motor continua persistindo trades por >=60min depois da
+graduação, com a distribuição da duração e uma classificação de corte
+(`meets_60min_floor` / `dropped_before_60min_floor` /
+`run_ended_before_60min_floor`) -- ainda contagem/duração, nunca preço ou
+retorno. H2 depende diretamente dessa continuidade (seu marco é aos 20min
+pós-graduação); se o motor "soltar" tokens antes de 60min no Passo 0 real,
+é bloqueador de sistema, não decisão de hipótese -- runbook
+`docs/sig-fast-passo-0-calibration-runbook-v0-2026-10-09.md`.
 
 **Estimativa de taxa de sinal (de systems data já coletado, não é outcome)**:
 o job de enumeração da conta de migração (parado, servia H, dado 100%
@@ -127,10 +148,15 @@ do discovery (regra+Δ+saída) estar congelada e commitada — sem overlap. Mesm
 ordem de grandeza de dias que o discovery, para ter suporte comparável.
 
 **Stall guard.** O motor de discovery (`benchmarks/sig_fast_v0/discovery_v0.py`,
-F7) já tem `StallGuard`. A **coleta em si** (`run_live_shadow_v0`) não foi
-auditada nesta revisão para um stall guard próprio de sessão longa (horas) —
-**pendência a verificar antes de uma sessão real de dias**, não assumida como
-já resolvida.
+F7) já tem `StallGuard`. A **coleta em si** (`run_live_shadow_v0`) **agora
+também tem** (rev. 3, item (b) do operador, 2026-10-09): gap > 30s entre
+ticks monotônicos consecutivos do loop consumidor principal → `break`
+explícito, reportado em `consumer_stall_detected`/`consumer_stall_gap_seconds`
+no relatório final e como gate `no_consumer_loop_stall` (falha fechada,
+mesmo padrão de `FORWARD_COLLECTION_V43_STALL_GAP_SECONDS`/
+`FORWARD_COLLECTION_900_STALL_GAP_SECONDS`). Distinto do
+`SURFACE_IDLE_TIMEOUT_SECONDS` já existente, que cobre "a conexão WS calou",
+não "o loop do processo travou".
 
 **Custo de créditos Helius da coleta contínua.** **Não confirmado nesta
 revisão** — o volume de trades Pump/PumpSwap observado no sandbox já mostrou
@@ -192,8 +218,6 @@ decidido aqui.
     — disponível hoje, sem custo.
   - Bundle/sniper/bump (E11 Algoritmos 1-3) — depende do merge do plumbing
     acima.
-  - Histórico do criador — a definir a métrica exata no sign-off (não
-    inventada aqui).
 - **Janela primária**: W=900s (15min), alvo +50%/stop −30% para a métrica (a),
   **Δ=30s fixo**. Outras janelas (60/300/3600s), barreiras (±20/100/200%) e
   Δ∈{5,15,60,120}s são diagnóstico.
@@ -252,10 +276,10 @@ decidido aqui.
   (F1b) pra medir volume/liquidez sustentada sem reconstruir o histórico de
   swap inteiro; `base_amount_raw`/`quote_amount_raw` pra contar os >=20 trades
   e derivar o preço no marco.
-- **Vetos (rejeição)**: os mesmos 4 de H1 (PQ-TR aguardando replicação, freeze
-  authority disponível, bundle/sniper/bump dependente do merge, histórico do
-  criador a definir) — pouco relevante numa moeda já sobrevivente 20min, mas
-  ainda computável se os campos existirem.
+- **Vetos (rejeição)**: os mesmos 3 de H1 (PQ-TR aguardando replicação, freeze
+  authority disponível, bundle/sniper/bump dependente do merge) — pouco
+  relevante numa moeda já sobrevivente 20min, mas ainda computável se os
+  campos existirem.
 - **Janela primária**: W=900s, alvo +50%/stop −30%, mesma métrica (a) de H1,
   **Δ=30s fixo**.
 - **Suporte mínimo**: n>=30 pares primários (Δ=30s fixo).
@@ -295,6 +319,14 @@ decidido aqui.
   (Δ∈{5,15,60,120}s, janelas 60/300/3600s, barreiras ±20/100/200%) é
   computada e reportada, mas **nenhuma delas conta para PASS/FAIL** — são só
   calibração para quando o operador souber a latência real dele.
+- **Recontagem pós-remoção do veto "histórico do criador" (rev. 3, item (d)
+  do operador)**: o veto removido **não participava** da contagem de 14
+  leituras acima — vetos (PQ-TR, freeze authority, bundle/sniper/bump) são
+  filtros de elegibilidade da amostra, não comparações de seleção de regra/Δ.
+  A contagem de **12 comparações + 2 leituras de métrica (a) = 14** permanece
+  exatamente a mesma. O que muda é só o número de vetos ativos: **3**, não 4
+  (PQ-TR aguardando replicação, freeze authority, bundle/sniper/bump
+  dependente do merge).
 - Hipótese com PASS → status `PASS (aguarda replicação)` no registro →
   replicação sozinha, regra congelada, chave nova, pré-registro próprio
   (nota: a confirmação prospectiva fresca exigida pelo item (c) **já cobre**
@@ -348,10 +380,13 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
    calibração, bloco 1 de 48-72h, janela de discovery de 5-7 dias) — são
    estimativas a partir de taxa de migração observada (dado de sistema já
    coletado), não medição direta de taxa de sinal.
-2. Métrica exata do veto "histórico do criador" (ainda não definida em
-   nenhuma revisão).
-3. Checar/implementar stall guard próprio pra sessões de coleta de
-   horas/dias em `run_live_shadow_v0` (distinto do stall guard do
-   `discovery_v0.py`, que já existe) antes da sessão real.
+2. ~~Métrica exata do veto "histórico do criador".~~ Resolvido (rev. 3, item
+   (d) do operador, 2026-10-09): veto **REMOVIDO** da V0, não "a definir" --
+   não existe definição nem histórico implementado nesta rodada. H1/H2 ficam
+   com 3 vetos (PQ-TR, freeze authority, bundle/sniper/bump), não 4; a
+   contagem de 14 leituras decisórias (seção "Multiplicidade") não muda.
+3. ~~Checar/implementar stall guard próprio pra sessões de coleta de
+   horas/dias em `run_live_shadow_v0`.~~ Resolvido (rev. 3, item (b) do
+   operador, 2026-10-09): implementado -- ver parágrafo "Stall guard" acima.
 4. Custo de créditos Helius da coleta contínua de dias — não confirmado,
    proposta é calibrar no Passo 0 antes de comprometer a janela de dias.
