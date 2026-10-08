@@ -240,6 +240,16 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             "quote_amount_raw",
             "base_reserves_raw",
             "quote_reserves_raw",
+            "fee_raw",
+            "fee_basis_points_raw",
+            "creator_fee_raw",
+            "creator_fee_basis_points_raw",
+            "lp_fee_raw",
+            "lp_fee_basis_points_raw",
+            "protocol_fee_raw",
+            "protocol_fee_basis_points_raw",
+            "coin_creator_fee_raw",
+            "coin_creator_fee_basis_points_raw",
         ):
             expected.pop(field_name, None)
         self.assertEqual(row["observation"], expected)
@@ -250,7 +260,12 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
         row = {
             "sol_amount_raw": 2_000_000_000,
             "token_amount_raw": 50_000_000,
+            "virtual_token_reserves_raw": 1_073_000_000_000_000,
             "virtual_quote_reserves_raw": 30_000_000_000,
+            "fee_raw": 20_000_000,
+            "fee_basis_points_raw": 95,
+            "creator_fee_raw": 10_000_000,
+            "creator_fee_basis_points_raw": 5,
         }
         fields = _raw_price_path_fields_from_row(row, event_type="pump_trade")
         self.assertEqual(
@@ -258,8 +273,12 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             {
                 "base_amount_raw": 50_000_000,
                 "quote_amount_raw": 2_000_000_000,
-                "base_reserves_raw": None,
+                "base_reserves_raw": 1_073_000_000_000_000,
                 "quote_reserves_raw": 30_000_000_000,
+                "fee_raw": 20_000_000,
+                "fee_basis_points_raw": 95,
+                "creator_fee_raw": 10_000_000,
+                "creator_fee_basis_points_raw": 5,
             },
         )
 
@@ -269,6 +288,12 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             "quote_amount_raw": 700,
             "pool_base_token_reserves_raw": 500,
             "pool_quote_token_reserves_raw": 600,
+            "lp_fee_raw": 7,
+            "lp_fee_basis_points_raw": 20,
+            "protocol_fee_raw": 3,
+            "protocol_fee_basis_points_raw": 10,
+            "coin_creator_fee_raw": 21,
+            "coin_creator_fee_basis_points_raw": 5,
         }
         for event_type in ("pumpswap_buy", "pumpswap_sell"):
             fields = _raw_price_path_fields_from_row(row, event_type=event_type)
@@ -279,6 +304,12 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
                     "quote_amount_raw": 700,
                     "base_reserves_raw": 500,
                     "quote_reserves_raw": 600,
+                    "lp_fee_raw": 7,
+                    "lp_fee_basis_points_raw": 20,
+                    "protocol_fee_raw": 3,
+                    "protocol_fee_basis_points_raw": 10,
+                    "coin_creator_fee_raw": 21,
+                    "coin_creator_fee_basis_points_raw": 5,
                 },
             )
 
@@ -316,8 +347,13 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
             "token_amount_raw": 50_000_000,
             "quote_mint": "So11111111111111111111111111111111111111112",
             "quote_amount_raw": 2_000_000_000,
+            "virtual_token_reserves_raw": 1_073_000_000_000_000,
             "virtual_quote_reserves_raw": 30_000_000_000,
             "real_quote_reserves_raw": 29_000_000_000,
+            "fee_raw": 20_000_000,
+            "fee_basis_points_raw": 95,
+            "creator_fee_raw": 10_000_000,
+            "creator_fee_basis_points_raw": 5,
             "mayhem_mode": False,
         }
 
@@ -347,8 +383,12 @@ class RustSignalPlaneLiveShadowV0Tests(unittest.TestCase):
         self.assertEqual(persisted.slot, 999)
         self.assertEqual(persisted.base_amount_raw, 50_000_000)
         self.assertEqual(persisted.quote_amount_raw, 2_000_000_000)
-        self.assertIsNone(persisted.base_reserves_raw)
+        self.assertEqual(persisted.base_reserves_raw, 1_073_000_000_000_000)
         self.assertEqual(persisted.quote_reserves_raw, 30_000_000_000)
+        self.assertEqual(persisted.fee_raw, 20_000_000)
+        self.assertEqual(persisted.fee_basis_points_raw, 95)
+        self.assertEqual(persisted.creator_fee_raw, 10_000_000)
+        self.assertEqual(persisted.creator_fee_basis_points_raw, 5)
 
     def test_failed_transaction_does_not_reach_decoder(self):
         items, manifests, stack_errors = _target_inputs_from_notification(

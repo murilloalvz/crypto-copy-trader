@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS market_trade_observations (
     quote_amount_raw INTEGER,
     base_reserves_raw INTEGER,
     quote_reserves_raw INTEGER,
+    fee_raw INTEGER,
+    fee_basis_points_raw INTEGER,
+    creator_fee_raw INTEGER,
+    creator_fee_basis_points_raw INTEGER,
+    lp_fee_raw INTEGER,
+    lp_fee_basis_points_raw INTEGER,
+    protocol_fee_raw INTEGER,
+    protocol_fee_basis_points_raw INTEGER,
+    coin_creator_fee_raw INTEGER,
+    coin_creator_fee_basis_points_raw INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(acquisition_run_key, event_key)
 );
@@ -123,6 +133,16 @@ def ensure_market_observation_schema() -> None:
                 "quote_amount_raw",
                 "base_reserves_raw",
                 "quote_reserves_raw",
+                "fee_raw",
+                "fee_basis_points_raw",
+                "creator_fee_raw",
+                "creator_fee_basis_points_raw",
+                "lp_fee_raw",
+                "lp_fee_basis_points_raw",
+                "protocol_fee_raw",
+                "protocol_fee_basis_points_raw",
+                "coin_creator_fee_raw",
+                "coin_creator_fee_basis_points_raw",
             ):
                 if column_name not in _column_names(conn, "market_trade_observations"):
                     conn.execute(
@@ -169,6 +189,16 @@ def _validate_trade(item: MarketTradeObservation) -> None:
         "quote_amount_raw",
         "base_reserves_raw",
         "quote_reserves_raw",
+        "fee_raw",
+        "fee_basis_points_raw",
+        "creator_fee_raw",
+        "creator_fee_basis_points_raw",
+        "lp_fee_raw",
+        "lp_fee_basis_points_raw",
+        "protocol_fee_raw",
+        "protocol_fee_basis_points_raw",
+        "coin_creator_fee_raw",
+        "coin_creator_fee_basis_points_raw",
     ):
         value = getattr(item, field_name)
         if value is not None and value < 0:
@@ -243,12 +273,25 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
         observation.quote_amount_raw,
         observation.base_reserves_raw,
         observation.quote_reserves_raw,
+        observation.fee_raw,
+        observation.fee_basis_points_raw,
+        observation.creator_fee_raw,
+        observation.creator_fee_basis_points_raw,
+        observation.lp_fee_raw,
+        observation.lp_fee_basis_points_raw,
+        observation.protocol_fee_raw,
+        observation.protocol_fee_basis_points_raw,
+        observation.coin_creator_fee_raw,
+        observation.coin_creator_fee_basis_points_raw,
     )
     with connection() as conn:
         existing = conn.execute(
             """SELECT source_provider, token_mint, side, chain_time, observed_at,
                 wallet_address, notional_usd, price_usd, venue, transaction_key, slot,
-                base_amount_raw, quote_amount_raw, base_reserves_raw, quote_reserves_raw
+                base_amount_raw, quote_amount_raw, base_reserves_raw, quote_reserves_raw,
+                fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+                lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+                coin_creator_fee_raw, coin_creator_fee_basis_points_raw
             FROM market_trade_observations
             WHERE acquisition_run_key=? AND event_key=?""",
             (run_key, raw_key),
@@ -258,6 +301,9 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
                 "source_provider", "token_mint", "side", "chain_time",
                 "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key", "slot",
                 "base_amount_raw", "quote_amount_raw", "base_reserves_raw", "quote_reserves_raw",
+                "fee_raw", "fee_basis_points_raw", "creator_fee_raw", "creator_fee_basis_points_raw",
+                "lp_fee_raw", "lp_fee_basis_points_raw", "protocol_fee_raw", "protocol_fee_basis_points_raw",
+                "coin_creator_fee_raw", "coin_creator_fee_basis_points_raw",
             ))
             stored_observed_at = int(existing["observed_at"])
             incoming_observed_at = int(observation.observed_at)
@@ -292,7 +338,10 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
                     SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
                         wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?,
                         slot=?, base_amount_raw=?, quote_amount_raw=?,
-                        base_reserves_raw=?, quote_reserves_raw=?
+                        base_reserves_raw=?, quote_reserves_raw=?,
+                        fee_raw=?, fee_basis_points_raw=?, creator_fee_raw=?, creator_fee_basis_points_raw=?,
+                        lp_fee_raw=?, lp_fee_basis_points_raw=?, protocol_fee_raw=?, protocol_fee_basis_points_raw=?,
+                        coin_creator_fee_raw=?, coin_creator_fee_basis_points_raw=?
                     WHERE acquisition_run_key=? AND event_key=?""",
                     (
                         provider, observation.token_mint, observation.side, observation.chain_time,
@@ -300,6 +349,11 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
                         observation.price_usd, observation.venue, observation.transaction_key,
                         observation.slot, observation.base_amount_raw, observation.quote_amount_raw,
                         observation.base_reserves_raw, observation.quote_reserves_raw,
+                        observation.fee_raw, observation.fee_basis_points_raw,
+                        observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+                        observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+                        observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+                        observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
                         run_key, raw_key,
                     ),
                 )
@@ -309,8 +363,11 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
                 acquisition_run_key, event_key, source_provider, token_mint, side,
                 chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
                 transaction_key, slot, base_amount_raw, quote_amount_raw,
-                base_reserves_raw, quote_reserves_raw
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                base_reserves_raw, quote_reserves_raw,
+                fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+                lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+                coin_creator_fee_raw, coin_creator_fee_basis_points_raw
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 run_key, raw_key, provider, observation.token_mint, observation.side,
                 observation.chain_time, observation.observed_at, observation.wallet_address,
@@ -318,6 +375,11 @@ def record_market_trade(*, acquisition_run_key: str, event_key: str, source_prov
                 observation.transaction_key, observation.slot, observation.base_amount_raw,
                 observation.quote_amount_raw, observation.base_reserves_raw,
                 observation.quote_reserves_raw,
+                observation.fee_raw, observation.fee_basis_points_raw,
+                observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+                observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+                observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+                observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
             ),
         )
         return True
@@ -411,7 +473,10 @@ def load_market_trades(*, acquisition_run_key: str, token_mint: str, as_of: int 
     query = """SELECT acquisition_run_key, event_key, source_provider, token_mint, side,
         chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
         transaction_key, slot, base_amount_raw, quote_amount_raw,
-        base_reserves_raw, quote_reserves_raw
+        base_reserves_raw, quote_reserves_raw,
+        fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+        lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+        coin_creator_fee_raw, coin_creator_fee_basis_points_raw
         FROM market_trade_observations
         WHERE acquisition_run_key=? AND token_mint=?"""
     params: list[object] = [run_key, mint]
@@ -444,6 +509,16 @@ def load_market_trades(*, acquisition_run_key: str, token_mint: str, as_of: int 
                 quote_amount_raw=(int(row["quote_amount_raw"]) if row["quote_amount_raw"] is not None else None),
                 base_reserves_raw=(int(row["base_reserves_raw"]) if row["base_reserves_raw"] is not None else None),
                 quote_reserves_raw=(int(row["quote_reserves_raw"]) if row["quote_reserves_raw"] is not None else None),
+                fee_raw=(int(row["fee_raw"]) if row["fee_raw"] is not None else None),
+                fee_basis_points_raw=(int(row["fee_basis_points_raw"]) if row["fee_basis_points_raw"] is not None else None),
+                creator_fee_raw=(int(row["creator_fee_raw"]) if row["creator_fee_raw"] is not None else None),
+                creator_fee_basis_points_raw=(int(row["creator_fee_basis_points_raw"]) if row["creator_fee_basis_points_raw"] is not None else None),
+                lp_fee_raw=(int(row["lp_fee_raw"]) if row["lp_fee_raw"] is not None else None),
+                lp_fee_basis_points_raw=(int(row["lp_fee_basis_points_raw"]) if row["lp_fee_basis_points_raw"] is not None else None),
+                protocol_fee_raw=(int(row["protocol_fee_raw"]) if row["protocol_fee_raw"] is not None else None),
+                protocol_fee_basis_points_raw=(int(row["protocol_fee_basis_points_raw"]) if row["protocol_fee_basis_points_raw"] is not None else None),
+                coin_creator_fee_raw=(int(row["coin_creator_fee_raw"]) if row["coin_creator_fee_raw"] is not None else None),
+                coin_creator_fee_basis_points_raw=(int(row["coin_creator_fee_basis_points_raw"]) if row["coin_creator_fee_basis_points_raw"] is not None else None),
             ),
         )
         for row in rows

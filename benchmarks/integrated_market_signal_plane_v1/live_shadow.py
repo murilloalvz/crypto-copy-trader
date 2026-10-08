@@ -139,23 +139,27 @@ def _nonnegative_int(row: dict[str, Any], name: str) -> int | None:
 def _raw_price_path_fields_from_row(
     row: dict[str, Any], *, event_type: str | None
 ) -> dict[str, int | None]:
-    """F1b raw amount/reserve fields already present in the Carbon-decoded row
+    """F1b raw amount/reserve fields, plus the item-(a) real per-trade fee
+    fields, already present in the Carbon-decoded row
     (benchmarks/carbon_decoder_parity_v1/rust_runner), for threading into
     MarketTradeObservation via dataclasses.replace -- same injection pattern
     already used for `slot` below (bundle-bot-detection-v0-plumbing).
 
-    pump_trade's base-side virtual reserve is NOT currently surfaced by that
-    Rust decoder's JSON output (confirmed by reading its source), so
-    base_reserves_raw stays None for pump_trade rather than being invented --
-    see docs/sig-fast-live-engine-wiring-v0-2026-10-09.md for the full audit
-    and why fixing that is a separate, deliberately out-of-scope Rust change.
+    pump_trade's base-side virtual reserve (virtual_token_reserves_raw) and
+    both venues' real fee fields were added to that Rust decoder's JSON
+    output by the operator-authorized item-(a) change (docs/sig-fast-live-
+    engine-wiring-v0-2026-10-09.md documents the prior gap; this closes it).
     """
     if event_type == "pump_trade":
         return {
             "base_amount_raw": _nonnegative_int(row, "token_amount_raw"),
             "quote_amount_raw": _nonnegative_int(row, "sol_amount_raw"),
-            "base_reserves_raw": None,
+            "base_reserves_raw": _nonnegative_int(row, "virtual_token_reserves_raw"),
             "quote_reserves_raw": _nonnegative_int(row, "virtual_quote_reserves_raw"),
+            "fee_raw": _nonnegative_int(row, "fee_raw"),
+            "fee_basis_points_raw": _nonnegative_int(row, "fee_basis_points_raw"),
+            "creator_fee_raw": _nonnegative_int(row, "creator_fee_raw"),
+            "creator_fee_basis_points_raw": _nonnegative_int(row, "creator_fee_basis_points_raw"),
         }
     if event_type in {"pumpswap_buy", "pumpswap_sell"}:
         return {
@@ -163,6 +167,12 @@ def _raw_price_path_fields_from_row(
             "quote_amount_raw": _nonnegative_int(row, "quote_amount_raw"),
             "base_reserves_raw": _nonnegative_int(row, "pool_base_token_reserves_raw"),
             "quote_reserves_raw": _nonnegative_int(row, "pool_quote_token_reserves_raw"),
+            "lp_fee_raw": _nonnegative_int(row, "lp_fee_raw"),
+            "lp_fee_basis_points_raw": _nonnegative_int(row, "lp_fee_basis_points_raw"),
+            "protocol_fee_raw": _nonnegative_int(row, "protocol_fee_raw"),
+            "protocol_fee_basis_points_raw": _nonnegative_int(row, "protocol_fee_basis_points_raw"),
+            "coin_creator_fee_raw": _nonnegative_int(row, "coin_creator_fee_raw"),
+            "coin_creator_fee_basis_points_raw": _nonnegative_int(row, "coin_creator_fee_basis_points_raw"),
         }
     return {}
 
@@ -1594,10 +1604,10 @@ async def run_live_shadow_v0(
                     elif kind == "lifecycle":
                         observation = _dataclass_replace(observation, creation_slot=manifest_slot)
 
-                # SIG-FAST F1b price-path plumbing (docs/sig-fast-live-engine-wiring-v0-2026-10-09.md):
-                # thread the raw amount/reserve fields already in `row` into the observation,
-                # same pattern as the slot injection just above. pump_trade's base_reserves_raw
-                # stays None (not surfaced by the Carbon decoder today, see that doc).
+                # SIG-FAST F1b price-path + item-(a) real-fee plumbing
+                # (docs/sig-fast-live-engine-wiring-v0-2026-10-09.md): thread the raw
+                # amount/reserve/fee fields already in `row` into the observation, same
+                # pattern as the slot injection just above.
                 if kind == "trade":
                     extra_fields = _raw_price_path_fields_from_row(row, event_type=event_type)
                     if any(value is not None for value in extra_fields.values()):

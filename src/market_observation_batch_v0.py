@@ -63,11 +63,24 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
         observation.quote_amount_raw,
         observation.base_reserves_raw,
         observation.quote_reserves_raw,
+        observation.fee_raw,
+        observation.fee_basis_points_raw,
+        observation.creator_fee_raw,
+        observation.creator_fee_basis_points_raw,
+        observation.lp_fee_raw,
+        observation.lp_fee_basis_points_raw,
+        observation.protocol_fee_raw,
+        observation.protocol_fee_basis_points_raw,
+        observation.coin_creator_fee_raw,
+        observation.coin_creator_fee_basis_points_raw,
     )
     existing = conn.execute(
         """SELECT source_provider, token_mint, side, chain_time, observed_at,
             wallet_address, notional_usd, price_usd, venue, transaction_key, slot,
-            base_amount_raw, quote_amount_raw, base_reserves_raw, quote_reserves_raw
+            base_amount_raw, quote_amount_raw, base_reserves_raw, quote_reserves_raw,
+            fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+            lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+            coin_creator_fee_raw, coin_creator_fee_basis_points_raw
         FROM market_trade_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
@@ -78,6 +91,9 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
             "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key",
             "slot", "base_amount_raw", "quote_amount_raw", "base_reserves_raw",
             "quote_reserves_raw",
+            "fee_raw", "fee_basis_points_raw", "creator_fee_raw", "creator_fee_basis_points_raw",
+            "lp_fee_raw", "lp_fee_basis_points_raw", "protocol_fee_raw", "protocol_fee_basis_points_raw",
+            "coin_creator_fee_raw", "coin_creator_fee_basis_points_raw",
         ))
         stored_observed_at = int(existing["observed_at"])
         incoming_observed_at = int(observation.observed_at)
@@ -112,7 +128,10 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
                 SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
                     wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?,
                     slot=?, base_amount_raw=?, quote_amount_raw=?, base_reserves_raw=?,
-                    quote_reserves_raw=?
+                    quote_reserves_raw=?,
+                    fee_raw=?, fee_basis_points_raw=?, creator_fee_raw=?, creator_fee_basis_points_raw=?,
+                    lp_fee_raw=?, lp_fee_basis_points_raw=?, protocol_fee_raw=?, protocol_fee_basis_points_raw=?,
+                    coin_creator_fee_raw=?, coin_creator_fee_basis_points_raw=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     provider, observation.token_mint, observation.side, observation.chain_time,
@@ -120,6 +139,11 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
                     observation.price_usd, observation.venue, observation.transaction_key,
                     observation.slot, observation.base_amount_raw, observation.quote_amount_raw,
                     observation.base_reserves_raw, observation.quote_reserves_raw,
+                    observation.fee_raw, observation.fee_basis_points_raw,
+                    observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+                    observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+                    observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+                    observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
                     run_key, raw_key,
                 ),
             )
@@ -129,8 +153,11 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
             acquisition_run_key, event_key, source_provider, token_mint, side,
             chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
             transaction_key, slot, base_amount_raw, quote_amount_raw,
-            base_reserves_raw, quote_reserves_raw
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            base_reserves_raw, quote_reserves_raw,
+            fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+            lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+            coin_creator_fee_raw, coin_creator_fee_basis_points_raw
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key, raw_key, provider, observation.token_mint, observation.side,
             observation.chain_time, observation.observed_at, observation.wallet_address,
@@ -138,6 +165,11 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
             observation.transaction_key, observation.slot, observation.base_amount_raw,
             observation.quote_amount_raw, observation.base_reserves_raw,
             observation.quote_reserves_raw,
+            observation.fee_raw, observation.fee_basis_points_raw,
+            observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+            observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+            observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+            observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
         ),
     )
     return True, False

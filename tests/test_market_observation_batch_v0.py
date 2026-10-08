@@ -38,6 +38,10 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 quote_amount_raw=2_000_000_000,
                 base_reserves_raw=1_073_000_000_000_000,
                 quote_reserves_raw=30_000_000_000,
+                fee_raw=20_000_000,
+                fee_basis_points_raw=95,
+                creator_fee_raw=10_000_000,
+                creator_fee_basis_points_raw=5,
             )
             lifecycle = MarketLifecycleObservation(
                 token_mint="TOKEN",
@@ -85,6 +89,10 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 self.assertEqual(rows[0].observation.quote_amount_raw, 2_000_000_000)
                 self.assertEqual(rows[0].observation.base_reserves_raw, 1_073_000_000_000_000)
                 self.assertEqual(rows[0].observation.quote_reserves_raw, 30_000_000_000)
+                self.assertEqual(rows[0].observation.fee_raw, 20_000_000)
+                self.assertEqual(rows[0].observation.fee_basis_points_raw, 95)
+                self.assertEqual(rows[0].observation.creator_fee_raw, 10_000_000)
+                self.assertEqual(rows[0].observation.creator_fee_basis_points_raw, 5)
                 latest = load_latest_market_lifecycle(
                     acquisition_run_key="RUN", token_mint="TOKEN"
                 )
