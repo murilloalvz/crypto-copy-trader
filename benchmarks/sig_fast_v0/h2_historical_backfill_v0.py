@@ -32,11 +32,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from benchmarks.carbon_decoder_parity_v1.parity import extract_contextual_target_payloads
+from benchmarks.move_first_h_coverage_audit_v0 import sample_migration_account as _mfh
 from benchmarks.move_first_h_coverage_audit_v0.sample_migration_account import (
     BONDING_CURVE_PROGRAM,
     MIGRATION_AUTHORITY,
     PUMPSWAP_PROGRAM,
-    _rpc,
     fetch_day_classified,
 )
 
@@ -153,7 +153,7 @@ def fetch_pool_trades_raw(
         }
         if pagination_token is not None:
             params["paginationToken"] = pagination_token
-        result = _rpc(rpc_url, "getTransactionsForAddress", [pool_mint, params])
+        result = _mfh._rpc(rpc_url, "getTransactionsForAddress", [pool_mint, params])
         payload = result.get("result") or {}
         rows = payload.get("data") or []
         results.extend(rows)
