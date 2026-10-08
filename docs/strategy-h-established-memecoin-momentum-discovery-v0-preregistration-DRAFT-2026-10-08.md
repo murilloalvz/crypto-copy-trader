@@ -1,298 +1,241 @@
-# Opção H — Memecoins Estabelecidas, Momentum — Discovery V0 — Preregistration — DRAFT — 2026-10-08 (rev. 2)
+# Opção H — Memecoins Estabelecidas, Momentum — Discovery V0 — Preregistration — DRAFT — 2026-10-08 (rev. 3)
 
-Status: **DRAFT — sign-off PARCIAL recebido (seção 11 da rev. 1 respondida). Ainda não autoriza
-backtest, consulta a outcome, ou coleta.** O operador pediu primeiro o Passo 0 (auditoria de
-cobertura local) e o Passo 1 (spike de fonte histórica) antes do sign-off final sobre o protocolo
-em si. Esta revisão reporta os dois passos e reescreve as seções afetadas. Nenhum backtest foi
-rodado; nenhum retorno/direção foi consultado em nenhum passo abaixo.
+Status: **DRAFT — sign-off da rev. 2 recebido, com 3 correções. Ainda NÃO autoriza discovery,
+backtest, consulta a outcome ou execução do backfill.** Esta revisão reescreve a regra de
+morte-vs-gap (pendência 1), fixa o tamanho exato do bloco selado (pendência 2) e corrige o modelo
+de custo (seção 8), além de reportar cobertura/custo da ordem de backfill da pendência 3. Nenhum
+retorno foi consultado em nenhum passo abaixo — só estrutura, cobertura e custo.
 
-ID no registro: `MOVE-FIRST-H-DISC-V0`. Fonte da opção: `docs/strategy-options-move-first-2026-10-07.md`,
-Opção H, revisão 3.
-
-## Sign-off recebido (respostas às pendências da rev. 1)
-
-1. Pisos de volume US$5k/US$20k ficam como estavam.
-2. **Backfill AUTORIZADO** como tarefa de engenharia separada, read-only, **antes** do discovery
-   (corrige a rev. 1, que tratava backfill como fora de escopo — ver seção 1 revisada).
-3. Tamanho de posição simulada: US$25.
-
-Erro da rev. 1, corrigido: "captura própria desde 2026-08-20" vinha da data do primeiro commit no
-`git log`, não de cobertura real de dado. Os coletores rodam em sessões limitadas, não 24/7. Isso
-foi auditado no Passo 0 abaixo, não só corrigido de palavra.
+ID no registro: `MOVE-FIRST-H-DISC-V0`. Fonte da opção: `docs/strategy-options-move-first-2026-10-07.md`
+(Opção H) e `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 ---
 
-## Passo 0 — Auditoria de cobertura local (read-only, SQLite, sem rede) — REPORTADO
+## Pendência 1 — regra de morte vs gap de fonte (substitui a nota operacional da rev. 2)
 
-Script: `benchmarks/move_first_h_coverage_audit_v0/audit.py` (`--self-check` cobre a lógica;
-reusável para auditar qualquer `data/copytrader.db`, inclusive o seu, fora desta sandbox).
-Resultado rodado contra o `data/copytrader.db` **desta sandbox** (não é a base de produção do
-operador — ver aviso abaixo):
+Base física: LP de pool migrado é **queimado** — sem swap novo, as reservas do pool não mudam, e
+portanto o preço também não muda (produto constante não se move sem troca). "Sem candle" não é
+"preço indeterminado"; é informação.
 
+**Regra, nessa ordem:**
+
+1. Sem candle de preço em `t+7` → checar assinaturas do **endereço do pool** via Helius no
+   intervalo entre o último candle conhecido e `t+7`.
+2. **Zero swaps nesse intervalo** → preço(t+7) = **último close conhecido**, exato (não
+   aproximação) — decorre direto da física do AMM, não de uma suposição.
+3. **Houve swaps, mas a fonte de preço não tem candle** → `missing_source` — contado
+   explicitamente, separado de qualquer retorno calculado (invariante 6, missingness explícita).
+4. `missing_source` acima de **5% das observações token-semana do quintil de topo** (numa
+   combinação) → essa combinação vira `INCONCLUSIVE_DATA`, não entra na escolha da seção 10.
+5. **-100% só quando o preço é de fato ~0** (confirmado por alguma fonte, não inferido da
+   ausência de candle).
+6. **Correção à rev. 2**: removida a frase "captura própria rebaixada a fonte auxiliar/cruzamento"
+   — **errada**. A captura causal própria desta repo (quando rodando) não cobre o período
+   histórico que este backfill precisa alcançar (2025-03-20 em diante); não serve de segunda
+   fonte pra nada aqui. As únicas fontes possíveis de cruzamento são a checagem de assinaturas do
+   próprio pool (passo 1 acima) e, se necessário, uma segunda fonte comercial (seção "Pendência 3b").
+
+## Pendência 2 — tamanho exato do bloco selado e mínimo utilizável
+
+- **Bloco de confirmação selado**: **12 semanas fixas**, as mais recentes disponíveis no backfill
+  no momento do selamento. Hash do conteúdo (lista de episódios + valores) commitado antes de
+  qualquer código de discovery rodar; o bloco nunca é lido pelo discovery.
+- **Embargo**: **1 semana**. O último `t` do discovery, mais o horizonte de 7 dias
+  (`t_último_discovery + 7d`), precisa terminar **antes** do primeiro `t` do bloco selado — sem
+  overlap entre o rótulo forward de uma observação de discovery e o início do bloco de confirmação.
+- **Mínimo total utilizável, antes de calcular qualquer retorno** (contagem só de cobertura):
+
+  ```
+  2 (lookback, pra ter N dias de momentum antes do 1º t)
+  + 15 (treino)
+  + 6 (retentor)
+  + 1 (embargo)
+  + 12 (bloco selado)
+  = 36 semanas
+  ```
+
+  **Abaixo de 36 semanas de histórico utilizável → `INCONCLUSIVE_SAMPLE` antes de qualquer cálculo
+  de retorno.** Esta contagem é feita primeiro, com os dados de cobertura do backfill (Pendência
+  3), antes de decidir se vale a pena sequer montar o pipeline de retorno.
+
+---
+
+## Pendência 3 — backfill, read-only, nesta ordem — reportado até onde esta sessão alcança
+
+### (a) Checagem no Dune — achado, não executado (sem conta Dune nesta sessão)
+
+**Bloqueio confirmado primeiro**: GeckoTerminal grátis só dá OHLCV diário dos **últimos ~6 meses**
+(~26 semanas) por chamada — não cobre as 36 semanas mínimas por si só, mesmo que o pool exista
+desde o início do PumpSwap.
+
+Dune tem a tabela curada `dex_solana.trades` (`docs.dune.com/data-catalog/curated/dex-trades/solana`),
+particionada por `block_month`, com coluna `project` que identifica a exchange, e `trade_source`
+que distingue troca direta de troca roteada (ex.: via Jupiter). **Não confirmei o literal exato**
+que o Dune usa pra PumpSwap na coluna `project` (candidato mais provável: `'pumpswap'`, minúsculo
+— não verificado). Se confirmado, esta tabela resolveria enumeração **e** OHLCV-equivalente
+(volume/contagem de trade por dia) juntos, de graça, exatamente como você propôs.
+
+**Não executei a query** — preciso de uma conta Dune (não tenho credencial nesta sandbox). Query
+pronta pra rodar, em duas etapas (a 1ª descobre o literal certo, a 2ª usa-o):
+
+```sql
+-- 1) descobrir o literal exato do project para PumpSwap
+SELECT project, version, version_name, COUNT(*) AS trades
+FROM dex_solana.trades
+WHERE block_month >= DATE_TRUNC('month', current_date - INTERVAL '30' day)
+  AND block_date >= current_date - INTERVAL '30' day
+  AND LOWER(project) LIKE '%pump%'
+GROUP BY 1, 2, 3
+ORDER BY 4 DESC;
+
+-- 2) volume/trade diário, usando o literal confirmado no passo 1
+SELECT block_date, COUNT(*) AS trades, SUM(amount_usd) AS volume_usd
+FROM dex_solana.trades
+WHERE project = '<literal confirmado>'
+  AND block_month >= DATE_TRUNC('month', '2025-03-20'::date)
+GROUP BY 1 ORDER BY 1;
 ```
-janela de captura observada: 2026-09-28 .. 2026-09-29   (≈ 25 horas, não 7 semanas)
-pools graduados (>=1 trade lifecycle venue=pumpswap): 84
-pools com graduação observada na própria janela (pump E pumpswap): 15
-linhas de trade pumpswap: 416.631 (com price_usd: 0, com notional_usd: 0)
-pools com pelo menos 1 dia com preço E volume: 0
-pools com série diária contínua (preço+volume): 0
-% contínuo sobre graduados: 0,0%
-```
 
-**Dois achados, não um:**
+**Comparação contra 20 pools conhecidos (pedida por você)**: não fiz ainda — precisaria rodar a
+query acima primeiro. Proponho usar os 84 tokens graduados já vistos no `data/copytrader.db` desta
+sandbox (recentes, 2026-09-28/29) como a amostra de verificação mais barata disponível — não são
+"antigos" (não testam profundidade histórica), mas testam se o Dune cobre pelo menos o que a gente
+já sabe que existiu. Pendente de conta Dune pra executar.
 
-1. **A janela real desta sandbox é ~1 dia, não 7 semanas.** Confirma exatamente o seu ponto: a
-   data do `git log` é a idade do *código*, não prova de cobertura de *dado*. Este `.db` local é
-   gitignored e específico desta sessão de container — não é a base de produção do operador, que
-   roda em sessões limitadas no computador dele. Esta auditoria precisa ser repetida lá para saber
-   a cobertura real.
-2. **Achado estrutural, mais sério que o tamanho da janela: `price_usd` e `notional_usd` são
-   `None` em 100% das linhas de `market_trade_observations` para `venue='pumpswap'` (e também
-   para `venue='pump'`), em qualquer janela.** Não é falta de dado por pouco tempo de captura — é
-   o pipeline de ingestão que grava assim por desenho: `src/pumpswap_stream.py:501` e
-   `src/pumpswap_normalized_persistence.py:98` escrevem `price_usd=None` explicitamente. Preço
-   causal hoje só existe em `causal_quote_observations` (1.049 linhas nesta sandbox), que é
-   disparado por episódio de rota de pesquisa (Jupiter quote), não é uma série diária contínua por
-   pool. **Conclusão honesta: mesmo com 7 semanas reais de captura rodando 24/7, a captura própria
-   deste repositório, como está hoje, não dá uma série diária de preço+volume por pool — dá só
-   identidade/timing de graduação.** Isso muda a seção 1 abaixo: captura própria nunca poderia ter
-   sido a fonte de preço/volume da seção 2-7; só pode ser (no melhor caso) fonte da *lista* de
-   quais tokens graduaram e quando, não dos seus preços diários.
+### (b) Custo CoinGecko Analyst (decisão sua) — pesquisado
 
----
+- **US$129/mês** (cobrança mensal) ou **US$103,20/mês** (cobrança anual, US$1.238,40/ano) —
+  fonte: página oficial de preços da CoinGecko API.
+- 500.000 créditos/mês, 500 requisições/min, overage US$250 por 500k chamadas extras.
+- Dados on-chain (pool OHLCV, o que precisamos) incluídos nesse plano, 1 crédito/requisição.
+- Profundidade histórica on-chain: confirmei (sessão anterior, changelog oficial da CoinGecko)
+  que o endpoint de OHLCV on-chain foi estendido pra cobrir **desde setembro de 2021**, dependendo
+  de quando aquele pool específico passou a ser rastreado — não é garantia de profundidade pra
+  todo pool, é o teto do que é possível.
+- Decisão de assinar ou não: **sua**, não decidida aqui.
 
-## Passo 1 — Spike de fonte histórica (desk research + 2 testes mecânicos ao vivo, sem olhar retorno)
+### (c) Enumeração via Helius — achado e **verificado ao vivo nesta sessão**, com ressalva honesta
 
-**Enumeração de migrações (universo "todas desde o lançamento do PumpSwap, incluindo mortas")**
+**Correção ao seu ponto**: você está certo — não dá pra varrer o programa PumpSwap inteiro (são
+todos os swaps, não só criações de pool). A pesquisa achou um candidato a "conta de migração do
+pump.fun": `39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg` (citado por um guia de terceiro, não por
+doc oficial — precisava de verificação antes de confiar).
 
-PumpSwap lançou em **2025-03-20** (The Block, data mais confiável encontrada; memo anterior tinha
-19/20 em conflito entre fontes — 20/03 é a data citada pela cobertura mais específica). Comparação
-de fontes para enumerar `create_pool` desde então:
+**Verifiquei ao vivo**, via o `SOLANA_RPC_URL` já configurado neste repo (`getSignaturesForAddress`
++ `getTransaction`, read-only, sem olhar preço nenhum): puxei 20 assinaturas recentes dessa conta
+e decodifiquei os logs de 5 transações completas. **Resultado: 5 de 5 (100% da amostra) são a
+instrução `MigrateV2`** do programa bonding-curve (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`):
 
-| Fonte | Completude | Custo | Observação |
-|---|---|---|---|
-| **Helius `getTransactionsForAddress`** no programa PumpSwap (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`), `sortOrder=asc` | Completa por construção (é o próprio ledger) | Credits Helius — fontes conflitam entre si sobre o preço exato (10 créditos/100 tx vs 100 créditos/request); ordem de grandeza: varrer ~1M tx custaria ~1-10% de um plano Developer (10M créditos/mês) | **Já temos `SOLANA_RPC_URL` configurado neste repo** (confirmei: não vazio). Precisa decodificar `create_pool` no client — **já temos o decoder Carbon-based de PumpSwap** usado em `benchmarks/carbon_decoder_parity_v1` e `live_shadow.py` — reuso direto, não é código novo do zero. Sem filtro server-side por nome de instrução; decodificação é client-side. |
-| **Solscan** (filtro de instrução `create_pool` na página do programa) | Provavelmente completa (indexador dedicado) | Não confirmado nesta sessão (não testado ao vivo) | Mais simples que Helius se a API pública permitir o mesmo filtro da UI — não verificado. |
-| **Bitquery** (API PumpSwap dedicada) | Marketing próprio diz servir "dado histórico de PumpSwap mais antigo que ~30 dias" — ou seja, se vende exatamente para este problema | Pago, valor não confirmado nesta sessão | Turnkey, mas terceiro pago; não testado. |
-| **Dune** | Incerta para a era PumpSwap — só confirmei uma query comunitária cobrindo a era pré-PumpSwap (graduação direto pra Raydium); tabelas/colunas exatas para `create_pool` do PumpSwap não confirmadas | Grátis (camada free) | Precisaria de engenharia de query própria e validação contra amostra conhecida antes de confiar. |
+- 3 de 5 terminam em `"Bonding curve already migrated"` — chamada redundante/retry, não chega a
+  criar pool (explica por que nem toda tx desta conta invoca o PumpSwap diretamente — não é uma
+  conta "suja" com outro uso, é a mesma instrução de migração batendo numa curva já migrada).
+- 2 de 5 completam a migração de verdade, com a sequência exata esperada nos logs: `MigrateV2` →
+  ... → **`Instruction: CreatePool`** (dentro do programa PumpSwap, confirma o discriminador de
+  `create_pool` que a pesquisa achou) → `MintTo` → `InitBoost` (o modo BOOST de reciclagem de
+  liquidez morta, achado lateral confirmando que o PumpSwap atual já embute essa feature na
+  própria migração).
 
-**Recomendação deste spike**: Helius via `SOLANA_RPC_URL` já configurado + decoder Carbon já
-existente é a opção que reusa mais infraestrutura já paga/construída (ladder de "reusar antes de
-construir"). Bitquery é o fallback turnkey se o custo de engenharia do decode client-side não
-valer a pena. Dune fica descartado para esta tarefa até alguém confirmar as tabelas certas.
+**Ressalva honesta**: n=5 é uma amostra pequena pra confirmar "100%" com confiança estatística — é
+suficiente pra validar que o candidato é a conta certa (consistente demais pra ser coincidência:
+mesma instrução 5/5 vezes), não suficiente pra garantir que não existe nenhum outro tipo de tx
+dessa conta em 19 meses de histórico (2025-03-20 até hoje). Antes do backfill rodar de verdade,
+puxar uma amostra maior (50-100, espalhada no tempo, não só as 20 mais recentes) é o passo certo —
+não feito aqui.
 
-**Preço/volume diário por pool (depois de ter a lista de pools)**
+### (d) Teste de sobrevivência com 50 migrações antigas — NÃO executado
 
-- **GeckoTerminal `/ohlcv/day`**: testado ao vivo nesta sessão (ver abaixo), sem chave. Limite
-  documentado: até 6 meses por chamada, mais que isso exige plano pago (Analyst+); profundidade
-  depende de quando o GeckoTerminal passou a rastrear aquele pool especificamente, não da idade do
-  pool.
-- **Birdeye / Solana Tracker** (já integrados em `src/discovery/`): **não testáveis nesta sandbox**
-  — `BIRDEYE_API_KEY` e `SOLANA_TRACKER_API_KEY` estão **vazios** no `.env` local. Pela
-  documentação (não testada ao vivo), os endpoints de listagem de ambos são só forward-looking
-  (~3 dias), não servem pra enumerar migrações antigas — mas o endpoint de OHLCV histórico do
-  Birdeye pode servir pra preço/volume uma vez que já se tenha o endereço do pool; não verificado
-  aqui por falta de chave.
-
-**Dois testes mecânicos reais, feitos nesta sessão (sem ler nenhum valor de preço/retorno, só
-estrutura):**
-
-1. Peguei um `token_mint` real do `data/copytrader.db` desta sandbox
-   (`MsV1fcepUo4xAN5jC6vv47X6dn1pkDwEaVbC25Upump`) e chamei
-   `GET /networks/solana/tokens/{mint}/pools` (API pública do GeckoTerminal, sem chave). **Resultado:
-   encontrou os 2 pools do token** (PumpSwap e pump.fun) — confirma que o GeckoTerminal indexa até
-   token pequeno/recente, não só os grandes.
-2. Chamei `GET /networks/solana/pools/{pool}/ohlcv/day` pro pool PumpSwap encontrado acima.
-   **Resultado: só 3 candles diários**, do dia seguinte à primeira observação nossa
-   (2026-09-29) até 2026-10-04 — **um gap de 4 dias até hoje (2026-10-08)**. Não sei, sem olhar o
-   valor, se o gap é o pool secando (sem trade = sem candle) ou um limite da API gratuita para
-   pool de baixo volume — **isso é uma lacuna real de completude, não resolvida por esta sessão**,
-   e é exatamente o tipo de coisa que o teste de sobrevivência da seção seguinte precisaria
-   diferenciar.
-
-**Teste de sobrevivência com amostra de 50 migrações antigas: NÃO EXECUTADO.** Motivo honesto, não
-contornado: pra testar 50 migrações *antigas* (~2025) preciso primeiro de uma lista de endereços
-de pool antigos — e esse é exatamente o problema de enumeração que este Passo 1 está avaliando
-(circular: não dá pra testar sobrevivência de retenção de dado antes de resolver a enumeração).
-Com Birdeye/SolanaTracker sem chave nesta sandbox e sem a enumeração via Helius ainda construída,
-o teste de 50 fica como **primeiro item da tarefa de engenharia do backfill** (autorizada no
-sign-off), não algo que esta sessão de pesquisa resolve sozinha.
-
-**Proveniência honesta (desenho para quando o backfill for implementado, não implementado ainda):**
-cada linha backfilled vai pra uma tabela própria, **nunca** para `market_trade_observations`/
-`market_lifecycle_observations` nem usando `observed_at` (invariante 11 — "historical data may not
-receive fake historical `observed_at`"). Campos mínimos: `source` (ex.: `helius_backfill_v0`),
-`fetched_at` (quando ESTE backfill realmente rodou, não uma data histórica), `as_of_date` (a data
-histórica que o dado descreve). Nenhum campo causal existente é reaproveitado para isso.
-
-**Fee de criador do PumpSwap — verificado contra doc oficial, não blog de terceiro.** Fonte:
-`pump.fun/docs/fees` (atualizado 2026-05-20) e `github.com/pump-fun/pump-public-docs` (`FEE_PROGRAM_README.md`)
-— confirmei que ambos existem e tratam disso. "Dynamic Fees V1"/"Project Ascend" aplica-se a
-**todos** os pools PumpSwap (novos e existentes), com taxa de criador por faixa de market cap em
-**SOL** (não USD). **O que está confirmado com confiança**: a parcela de 0,20% pros LPs não muda
-com o Dynamic Fees V1 (a doc oficial diz explicitamente que as alocações de protocolo/LP
-"continuam as mesmas" na migração para o novo esquema). **O que NÃO está confirmado com confiança
-suficiente pra virar número fixo**: os percentuais exatos de criador por faixa (fontes secundárias
-discordam entre si sobre os números — algumas reportam em USD, a doc oficial usa SOL, e uma delas
-tem uma inconsistência aritmética óbvia). Por isso, a seção 7 revisada abaixo trata a fee de
-criador como **regra** (ler a faixa atual da pool nas thresholds de `pump-public-docs` no momento
-de `t`), não como número fixo — mesmo padrão já usado pro preço do SOL/ATA no Gate 2 do PQ-TR.
+Depende de (a) ou (c) já estarem rodando de verdade (enumeração real de migrações antigas, não só
+a conta verificada). Próximo passo depois de (a)/(c) serem decididos e executados, não desta
+sessão.
 
 ---
 
-## 1. Fonte do universo (revisada — backfill autorizado, não mais "fora de escopo")
+## Seção 8 revisada — custo por perna (3 correções)
 
-Com o achado estrutural do Passo 0 (captura própria nunca teve preço/volume, em nenhuma janela) e
-a autorização do sign-off, a fonte fica assim:
-
-1. **Lista de migrações (enumeração)**: backfill via Helius `getTransactionsForAddress` sobre o
-   programa PumpSwap, decodificando `create_pool` com o decoder Carbon já existente no repo —
-   tarefa de engenharia separada, read-only, **a fazer antes do discovery rodar** (autorizada,
-   não executada ainda).
-2. **Preço/volume diário por pool**: GeckoTerminal `/ohlcv/day` (testado, funciona, sem chave) como
-   fonte primária; gaps de cobertura (como o de 4 dias encontrado no teste mecânico) tratados pela
-   regra (d) da seção 8 — mas só depois de confirmar que o gap é o pool secando, não a API
-   falhando (ver nota na seção 8).
-3. **Captura própria desta repo**: rebaixada a fonte auxiliar/cruzamento (pode confirmar que um
-   token realmente existiu e graduou numa data, já que tem `source_provider`/`event_key` causal
-   próprio), nunca fonte de preço.
-
-## 2. Universo ("estabelecida", critérios candidatos — inalterados do sign-off)
-
-Um token entra no universo de uma data de rebalanceamento `t` se, **usando só dado anterior a `t`**:
-
-1. já graduou da bonding curve para PumpSwap há **>= 7 dias de calendário** antes de `t`;
-2. teve volume 24h >= **US$5.000** (tier baixo) ou **US$20.000** (tier alto, comparação separada —
-   ver seção 5) em pelo menos 5 dos 7 dias de calendário imediatamente antes de `t`;
-3. tem preço resolvível em `t` **E** liquidez resolvível em `t+7` — se não tiver em `t+7`, não é
-   excluído, vira retorno -100% (regra (d) nova, seção 8).
-
-## 3. Sinal (inalterado — só momentum na V0)
-
-Feature única: retorno acumulado nos **N dias anteriores a `t`**, mesma lógica de
-Liu/Tsyvinski/Wu (JF 2022) — ordenação cruzada semanal, quintil de maior momentum. Long-only.
-
-## 4. Rótulo e horizonte (inalterado)
-
-Retorno forward de **7 dias de calendário** a partir de `t`.
-
-## 5. Comparações desta descoberta (inalterado — 4 combinações pré-registradas)
-
-| Lookback (N dias) | Piso de volume 24h |
-|---|---|
-| 7 | US$5.000 |
-| 7 | US$20.000 |
-| 14 | US$5.000 |
-| 14 | US$20.000 |
-
-## 6. Suporte mínimo em semanas (regra b — nova, substitui o critério antigo de só token-semana)
-
-- **Treino**: >= **15 datas de rebalanceamento** (semanas) com universo válido.
-- **Retentor**: >= **6 datas de rebalanceamento**.
-- **Além disso**, suporte mínimo em volume: **n >= 30 observações token-semana** no quintil de topo,
-  somando treino+retentor (mantido da rev. 1).
-- **Data pulada, regra fixada agora**: qualquer data de rebalanceamento cujo universo (seção 2)
-  tenha **menos de 25 tokens** é **pulada** inteira (não conta nem pro treino nem pro retentor) —
-  decidido antes de rodar, não depois de ver quantos tokens cada data teria.
-- Split treino/retentor permanece 70/30 por calendário (seção 7), mas agora medido em **datas de
-  rebalanceamento válidas** (pós-exclusão), não em dias corridos — correção direta do seu ponto: a
-  unidade independente é a semana, não o token-semana, e token-semanas da mesma semana não são
-  observações independentes entre si.
-
-## 7. Split temporal (mantido 70/30, unidade corrigida para semana — regra a, bloco de confirmação selado)
-
-Mesma disciplina do E11 (calendário, não aleatório), unidade agora é **data de rebalanceamento
-válida** (seção 6), não dia corrido. **Regra (a), nova**: antes do discovery rodar, as **~20
-semanas mais recentes** do backfill (contagem exata depende de quantas semanas o backfill cobrir —
-"mais recentes" fixado por data de calendário, não por contagem de observações) são **seladas como
-bloco de confirmação**: hash do conteúdo (lista de episódios + valores) commitado nesta revisão
-*antes* de qualquer código de discovery rodar, e esse bloco **nunca é lido pelo código do
-discovery** — só pelo código de `MOVE-FIRST-H-CONF-V0` (a escrever depois), usando a mesma regra
-congelada que o discovery escolher aqui. O split 70/30 do discovery em si acontece **dentro** do
-restante do backfill (a parte não selada), não sobre o bloco de confirmação.
-
-## 8. Custo por perna, escalado por liquidez (regra e — revisada)
+**Correção 1 — fórmula de impacto estava errada (dava a metade):**
 
 ```
 reserva_de_um_lado_usd ≈ liquidez_total_do_pool_usd / 2
-impacto_pct ≈ (tamanho_posicao_usd / (2 × reserva_de_um_lado_usd)) × 100
-custo_ida_volta_pct ≈ 2 × impacto_pct
-                     + 0,50%                         # 0,25% por perna × 2 pernas (fee de swap, LP 0,20% + protocolo, confirmado estável)
-                     + fee_de_criador(t)              # REGRA, não número: ler a faixa atual de pump-public-docs/FEE_PROGRAM_README.md pro market cap do pool em t
-                     + rede/priority                   # mesma leitura ao vivo já usada no Gate 2 do PQ-TR
-                     + ATA/SOL                          # mesma regra do Gate 2 do PQ-TR (SIMD-0437, preço do SOL via Jupiter Price API)
+impacto_pct ≈ (tamanho_posicao_usd / reserva_de_um_lado_usd) × 100      # = 2× tamanho / liquidez_total × 100
 ```
 
-Sweep 1x/2x mantido, mesma disciplina do Gate 2.
+(a versão da rev. 2 tinha um `× 2` extra no denominador, subestimando o impacto pela metade.)
 
-**Nota operacional sobre a regra (d)** (token sem preço/liquidez em `t+7` = -100%, nunca excluído):
-antes de aplicar -100%, o discovery precisa diferenciar "o pool realmente secou" de "a fonte de
-preço (GeckoTerminal) tem um gap que não é morte real" — o teste mecânico desta sessão (3 candles,
-gap de 4 dias) mostra que esse gap existe e sua causa não foi determinada aqui. Proposta (pendente
-de sign-off explícito, não decidida por mim): tratar como morte real (-100%) só se **nenhuma** das
-fontes disponíveis (GeckoTerminal **e** a captura/cruzamento próprio da seção 1.3) mostrar
-liquidez em `t+7`; se só uma fonte tiver gap e a outra confirmar liquidez viva, usar a que confirma
-liquidez. Se nenhuma fonte cobrir `t+7` de forma confiável, essa observação individual fica como
-`missing_source`, contada separadamente do -100% — mantém "missingness stays explicit" (invariante
-6) em vez de confundir ausência de dado com morte confirmada.
+**Correção 2 — liquidez em `t` não vem do OHLCV; precisa ser derivada:**
 
-## 9. Candidato exige lucro absoluto (regra c — nova, substitui "concorda em sinal" como critério único)
+```
+k ≈ reserva_SOL_inicial × reserva_token_inicial     # das reservas no instante do CreatePool (decodificável, confirmado seção (c))
+reserva_SOL(t) ≈ sqrt(k × preço_em_SOL_por_token(t))
+```
 
-Uma combinação (das 4 da seção 5) só é candidata se, **no treino**:
+`k` fixo desde o `CreatePool` (não atualizado por depósitos de LP de terceiros depois) é
+**conservador**: LP extra de terceiros só aumenta o `k` real, nunca diminui o `k` do piso
+queimado — usar o `k` inicial subestima a reserva real quando há LP extra, o que **sobre-estima**
+o impacto de preço (direção seguramente conservadora para um teste de custo).
 
-- retorno semanal líquido de custo (sweep 1x, seção 8) do **quintil de topo** tiver **média E
-  mediana > 0**.
+**Correção 3 — fee de criador por perna, e nada de "leitura ao vivo" num backtest histórico:**
 
-E, **no retentor**:
+```
+custo_ida_volta_pct ≈ 2 × impacto_pct
+                     + 0,25%(entrada, fee de swap) + 0,25%(saída, fee de swap)
+                     + fee_criador(mcap_em_t)       # entrada — faixa oficial pump-public-docs/FEE_PROGRAM_README.md pro market cap EM t
+                     + fee_criador(mcap_em_t+7)      # saída — faixa pro market cap EM t+7, pode ser outra faixa
+                     + rede_e_priority_constante      # fixada agora nesta revisão, não lida ao vivo — ver abaixo
+```
 
-- a **média líquida** do quintil de topo tem o **mesmo sinal** (positivo) da média do treino — não
-  precisa bater em magnitude.
+**Por que nada de "ler ao vivo"**: a disciplina "regra, não número" do Gate 2 do PQ-TR fazia
+sentido pra um contexto prospectivo (lê o valor real no momento da decisão real). Aqui é um
+**backtest histórico** — não existe "agora" na data `t` de 2025 ou 2026 que este backtest
+processa; o que existe é o registro histórico. Cada custo precisa vir de um dos dois lugares:
 
-**Spread topo-fundo e retorno do universo equal-weight são diagnóstico, não critério de escolha**
-— reportados no resultado, mas não decidem PASS/candidato.
+1. **O regime histórico vigente na data `t`** (não o regime de hoje). Já encontrei, sem fechar a
+   lista completa, pelo menos 2 cortes de regime conhecidos no período do backfill (2025-03-20 até
+   hoje): (i) lançamento do PumpSwap sem fee de criador — fee de criador introduzida só em
+   2025-05-13 (fonte: The Block, "PumpSwap revenue-tokens", já citada no memo); (ii) "Dynamic Fees
+   V1"/"Project Ascend" (faixas por market cap em SOL, 0,30% até 420 SOL, sobe conforme o mcap
+   cresce, piso de 0,05% acima de ~98.240 SOL) — doc oficial `pump.fun/docs/fees` datada
+   "Last Updated 2026-05-20", mas não confirmei a data exata de ativação (pode ter sido antes de
+   20/05, essa é só a data da doc). **Pendente**: fechar a lista completa de regimes e datas de
+   corte antes do backfill calcular custo de qualquer data — não resolvido nesta sessão, fica
+   como item de engenharia da própria tarefa de backfill.
+2. **Preço histórico do SOL em `t`**: usar o close diário do pool canônico SOL/USDC no
+   GeckoTerminal (mesmo endpoint já testado ao vivo nesta sessão) pra aquela data histórica
+   específica — não o preço de agora.
+3. **Rede/priority — constante conservadora, fixada agora, não decidida por mim sozinho**:
+   proposta (pendente de confirmação sua): **US$0,02 por perna** (US$0,04 ida+volta) — fee base
+   Solana (5.000 lamports/assinatura, ~US$0,001 ao preço atual do SOL, desprezível) mais uma
+   margem de priority fee deliberadamente alta pra ser conservadora em período de congestionamento.
+   Pra uma posição de US$25, isso é ~0,16% ida+volta — pequeno comparado ao impacto de preço
+   esperado pra pools pequenos, mas não zero. **Não decidido unilateralmente — fica para
+   confirmação no sign-off**, mesmo padrão dos outros números desta seção.
 
-## 10. Critério de escolha entre as 4 combinações (regra f — nova, fixada antes de rodar)
+Sweep 1x/2x mantido sobre o custo total, mesma disciplina do Gate 2.
 
-Entre as combinações que passam a regra 9 no treino: escolhe a de **maior média líquida do
-quintil de topo**. Empate: **lookback menor** (7 dias antes de 14). Zero combinações passando a
-regra 9 no treino → `INCONCLUSIVE_NO_CANDIDATE`, sem promover nenhuma.
+---
 
-## 11. Classificação final
+## Resumo do que mudou nesta revisão (demais seções do protocolo ficam como na rev. 2, exceto onde listado)
 
-- `INCONCLUSIVE_SAMPLE_NO_EXTENSION`: menos de 15 datas válidas no treino ou menos de 6 no
-  retentor, ou n<30 token-semanas — sem esticar a janela nem importar mais backfill no meio do
-  protocolo.
-- `DISCOVERY_MOVE_FIRST_H_V0_CANDIDATE`: exatamente 1 combinação passa a regra 9 no treino E no
-  retentor (escolhida pela regra 10 em caso de múltiplas) — vai para `MOVE-FIRST-H-CONF-V0` sobre
-  o bloco de confirmação selado (seção 7).
-- `INCONCLUSIVE_NO_CANDIDATE`: nenhuma combinação passa a regra 9 no treino, ou nenhuma mantém o
-  sinal no retentor.
+- Regra de morte-vs-gap: substituída pela física do AMM (Pendência 1 acima) — mais simples e mais
+  correta que a proposta da rev. 2, que exigia "duas fontes confirmando" sem necessidade.
+  `missing_source > 5%` numa combinação vira `INCONCLUSIVE_DATA` pra aquela combinação.
+- Bloco selado: exatamente 12 semanas + 1 semana de embargo (rev. 2 tinha "~20 semanas", não
+  fixado). Mínimo total utilizável: 36 semanas, checado antes de qualquer retorno.
+- Seção 8 (custo): 3 correções — fórmula de impacto, derivação de liquidez via `k` do
+  `CreatePool`, fee de criador por perna com regime histórico citado por fonte (não leitura ao
+  vivo), rede/priority como constante proposta e pendente de confirmação.
+- "Captura própria como cruzamento" removido — não cobre o período do backfill.
 
-## 12. Risco de transferência (inalterado)
+## Pendências para o sign-off final (atualizadas desta revisão)
 
-A evidência acadêmica mais forte citada no memo para H (Liu & Tsyvinski, RFS 2021; Liu/Tsyvinski/Wu,
-JF 2022) vem de BTC/XRP/ETH ou do top-1500 de criptomoedas por market cap, **2011-2018**, com
-rebalanceamento semanal — população, era de mercado e microestrutura diferentes de memecoins
-Solana "estabelecidas" em 2026. Mecanismo é o mesmo tipo de efeito; transferência não é automática.
+1. Confirmar (ou ajustar) a constante de rede/priority proposta (US$0,02/perna).
+2. Fechar a lista completa de regimes de fee históricos do PumpSwap (datas de corte + fonte por
+   regime) — trabalho de engenharia ainda não feito, não só uma confirmação rápida.
+3. Decidir entre (a) Dune [grátis, não confirmado se cobre PumpSwap] e (b) CoinGecko Analyst
+   [US$103-129/mês, confirmado que cobre, mas pago] como fonte de preço/volume histórico — ou
+   autorizar abrir uma conta Dune primeiro pra testar (a) antes de decidir sobre (b).
+4. Autorizar uma amostra maior (50-100 assinaturas, espalhada no tempo) da conta de migração
+   `39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg` antes de confiar nela como filtro único do
+   backfill.
 
-## 13. Proibições explícitas desta V0 (inalterado, mais uma)
-
-- não compara com nenhuma hipótese de minuto-inicial;
-- não troca lookback/piso de volume depois de ver a direção de nenhuma das 4 combinações;
-- não estende a janela de captura além do que o backfill autorizado trouxer, no meio do protocolo;
-- não promove mais de 1 combinação candidata;
-- não lê o bloco de confirmação selado (seção 7) com código de discovery;
-- não abre execução nem toca em capital.
-
-## 14. Pendências para o sign-off final (atualizadas)
-
-1. A nota operacional da seção 8 (diferenciar morte real de gap de fonte) — confirmar a proposta
-   ou decidir outra.
-2. Quantas semanas exatas selar como bloco de confirmação (seção 7 propõe "~20 semanas mais
-   recentes" — número exato depende do que o backfill trouxer).
-3. Autorização para a tarefa de engenharia do backfill em si rodar (ler histórico via Helius +
-   decoder Carbon existente) — read-only, sem tocar capital, mas é a primeira coisa a executar de
-   fato depois desta revisão.
-
-Nenhum backtest, nenhuma consulta a outcome, nenhum backfill foi executado nesta revisão — só a
-auditoria local (Passo 0) e os 2 testes mecânicos read-only do Passo 1 (estrutura, não retorno).
+Nenhum backtest, discovery, consulta a outcome ou backfill real foi executado nesta revisão — só
+a verificação ao vivo da conta de migração (passo (c), read-only, sem preço) e pesquisa/custo.
