@@ -129,33 +129,83 @@ usar só `getSignaturesForAddress` + `getTransaction` (não o método exclusivo
 da Helius) em rodízio de endpoints, pra reduzir a dependência de um único
 provedor. Decisão registrada aqui, não decidida em silêncio:
 
-- **Estágio 1 (enumeração das migrações no período de lookback)** continua
-  na Helius via `getTransactionsForAddress` com filtro `blockTime` (mesmo
-  mecanismo de `fetch_day_classified`). Motivo: MOVE-FIRST-H-DISC-V0 já achou
-  que caminhar `getSignaturesForAddress` sequencialmente na conta de migração
+- **Estágio 1 (enumeração das migrações)** continua na Helius via
+  `getTransactionsForAddress` com filtro `blockTime` (mesmo mecanismo de
+  `fetch_day_classified`, agora aplicado só à janela sorteada, não ao dia
+  inteiro — ver addendum Fase E parte 2 abaixo). Motivo de continuar na
+  Helius: MOVE-FIRST-H-DISC-V0 já achou que caminhar
+  `getSignaturesForAddress` sequencialmente na conta de migração
   (`MIGRATION_AUTHORITY`, alto volume compartilhado) bate ~1.500.000
   assinaturas sem saído dos últimos ~2 meses — inviável pro lookback de 7-11
   semanas do piloto/discovery. Isso não muda a regra 1 (universo/sorteio),
   só o transporte.
-- **Estágio 2 (trades de cada pool sorteado)** passa a usar o método de 2
-  chamadas (`getSignaturesForAddress` paginado por `before`, parando quando a
-  página mais antiga já está no ou antes de `window_start`, seguido de
-  `getTransaction` por assinatura mantida) em rodízio round-robin entre
-  Helius + `H2_BACKFILL_RPC_URLS` + o endpoint público
-  (`https://api.mainnet-beta.solana.com`) — `EndpointRotator` em
-  `benchmarks/sig_fast_v0/h2_historical_backfill_v0.py`. Uma falha de um
-  endpoint cai pro próximo (não aborta); só levanta erro se todos falharem no
-  mesmo ciclo. Prático aqui porque o histórico é de um pool só (muito menor
-  que a conta de migração inteira) — custo real medido pelo piloto, não
-  assumido.
+- **Estágio 2 (trades de cada pool sorteado)** usa o método de 2 chamadas
+  (`getSignaturesForAddress` paginado por `before`, parando quando a página
+  mais antiga já está no ou antes de `window_start`, seguido de
+  `getTransaction` por assinatura mantida) em **prioridade fixa** (não
+  round-robin) entre `H2_BACKFILL_RPC_URLS` + o endpoint público
+  (`https://api.mainnet-beta.solana.com`) + Helius **por último** —
+  `EndpointRotator` em `benchmarks/sig_fast_v0/h2_historical_backfill_v0.py`
+  sempre tenta na ordem dada, caindo pro próximo só numa falha; só levanta
+  erro se todos falharem na mesma chamada. Corrigido na Fase E parte 2
+  (abaixo): a ordem original desta revisão era round-robin (uso igual entre
+  os três); o operador pediu poupar a Helius pro Estágio 1 especificamente,
+  então a ordem agora é prioridade, com Helius por último.
 - Diagnóstico do 429 da Helius (pedido do operador): confirmado que vinha da
   própria Helius (headers `Server: cloudflare`/`CF-Ray` genuínos tanto na
   falha quanto no sucesso seguinte), não do proxy do sandbox (`status` do
   proxy sem `recentRelayFailures`). Era rate-limit transitório — já havia
-  voltado a responder 200 antes deste addendum ser escrito.
+  voltado a responder 200 antes deste addendum ser escrito (mas voltou a
+  aparecer na prática ao rodar o piloto de verdade, ver addendum Fase E
+  parte 2).
 - Nenhuma URL de RPC (Helius ou QuickNode) é impressa, logada ou commitada em
   nenhum lugar deste pipeline — só host/índice quando algo precisa ser
   identificado.
+
+**Addendum Fase E parte 2 (2026-10-08, mesmo dia): amostragem por janelas +
+429 tolerante, congelado antes de rodar o piloto de novo.** O piloto real
+(Fase E parte 1) bateu 429 de novo no Estágio 1 logo na segunda chamada
+(paginação do mesmo dia), mesmo a 5 req/s — caminhar o dia inteiro na conta
+de migração é caro demais pra essa conta mesmo com rate limit conservador.
+Duas mudanças, nenhuma delas afeta a régua de H2 (regras 1-8 acima), só o
+transporte:
+
+1. **Enumeração por janelas sorteadas, não por dia inteiro.** Por bloco
+   (piloto, discovery ou confirmação), sorteiam-se (seed `20261008`, mesma
+   seed de sempre) K janelas de 10 minutos, de um grid não-sobreposto sobre
+   o calendário do bloco, sem reposição
+   (`sample_calendar_windows` em `h2_historical_backfill_v0.py`). Pra cada
+   janela sorteada, busca-se **toda** migração bem-sucedida dentro dela
+   (`getTransactionsForAddress` com filtro `blockTime`, exige
+   `completed_create_pool=True` **e** `meta.err is None` —
+   `fetch_migrations_in_windows`). A **janela** é a unidade de amostra
+   (conglomerado): toda migração bem-sucedida dentro dela entra, nunca só
+   "a próxima depois de um horário sorteado" (isso enviesaria pra migrações
+   que vêm depois de períodos mais calmos — regra explícita do operador).
+   `migration_block_time` agora vem direto do próprio evento de enumeração
+   (`blockTime` real da resposta), não mais um placeholder por dia — então
+   `run_pilot_token` não precisa mais de uma chamada `getTransaction`
+   separada só pra resolver esse instante.
+   - Piloto: `K=3` janelas de 10min no lookback (`2026-07-21`..
+     `2026-08-20`), suficiente pra ~10 migrações esperadas à taxa observada
+     de ~40/h (2-3 janelas, conforme estimativa do operador). **K final por
+     bloco** (discovery/confirmação) fica pendente do resultado real do
+     piloto — ver "K proposto" abaixo.
+2. **429 desacelera, não aborta.** Helius a 1 req/s (limiter próprio,
+   independente do limiter dos outros endpoints); em 429, respeita
+   `Retry-After` quando presente, senão backoff exponencial dobrando a cada
+   tentativa até 60s; só aborta se passar ~10 minutos **sem nenhum sucesso**
+   — nunca na primeira falha isolada. O circuit breaker de 3 falhas
+   consecutivas continua existindo, mas só conta erros que **não** são 429
+   (5xx, timeout, resposta inválida) — um 429 nunca incrementa esse
+   contador. Implementado em `install_rate_limited_rpc`
+   (`benchmarks/sig_fast_v0/h2_pilot_v0.py`).
+3. **Checkpoint em disco por janela/pool**
+   (`artifacts/sig_fast_h2_pilot_v0/checkpoint.json`, fora do git): cada
+   janela enumerada e cada token processado são salvos assim que terminam;
+   um re-run do piloto pula o que já está no checkpoint em vez de refazer.
+4. Estágio 2 (trades por pool) continua no rodízio de prioridade fixa
+   (ver bullet acima), poupando a Helius pro Estágio 1.
 
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
@@ -606,10 +656,14 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
    Não insisti de novo na mesma sessão (CLAUDE.md: não martelar uma chamada
    externa que já falhou) — Estágio 1 continua restrito à Helius (rodízio
    não ajuda aqui, é só pra Estágio 2) e parece ter um teto de taxa mais
-   baixo que 5 req/s pra esta conta/plano, mesmo com rajadas curtas. **N
-   continua não fixado** — ainda não há um piloto completo com dado real
-   pra basear o número; próxima tentativa recomendada com `--max-rps` bem
-   mais baixo (ex. 1) e/ou em outro horário.
+   baixo que 5 req/s pra esta conta/plano, mesmo com rajadas curtas. Em
+   resposta (addendum Fase E parte 2, mesma revisão): enumeração passa a
+   ser por K janelas sorteadas de 10min (não mais o dia inteiro) e 429
+   passa a desacelerar em vez de abortar (Retry-After, backoff até 60s,
+   só aborta após ~10min sem nenhum sucesso). **N (agora K por janela)
+   continua não fixado** — ainda não há um piloto completo rodado com o
+   novo método; fixar K fica para a próxima tentativa, com seu resultado
+   real.
 7. **H1 no histórico (step C): respondido, achado NEGATIVO.** Não existe
    hoje um atalho barato equivalente ao `MIGRATION_AUTHORITY` das
    migrações. A conta `global` (PDA fixo, seed `"global"`) é só config

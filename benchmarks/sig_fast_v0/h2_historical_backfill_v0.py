@@ -1,7 +1,9 @@
-"""SIG-FAST H2 historical backfill (rev. 4, 2026-10-08 operator review).
+"""SIG-FAST H2 historical backfill (rev. 4, 2026-10-08 operator review; Fase
+E parte 2 addendum same day: windowed cluster sampling for enumeration).
 
 Fetches already-happened pump->PumpSwap migrations and their pool trades via
-RPC (Helius), decodes them with the same Carbon decoder extended in item (a)
+RPC (Helius for migration enumeration, rotated endpoints for pool trades),
+decodes them with the same Carbon decoder extended in item (a)
 (benchmarks/carbon_decoder_parity_v1/rust_runner, binary
 `stream_decode_batches` -- reuses `decode_event()` from main.rs unchanged,
 confirmed by reading src/bin/stream_decode_batches.rs), and persists raw +
@@ -29,7 +31,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from benchmarks.carbon_decoder_parity_v1.parity import extract_contextual_target_payloads
@@ -38,7 +40,6 @@ from benchmarks.move_first_h_coverage_audit_v0.sample_migration_account import (
     BONDING_CURVE_PROGRAM,
     MIGRATION_AUTHORITY,
     PUMPSWAP_PROGRAM,
-    fetch_day_classified,
 )
 
 VERSION = "sig_fast_h2_historical_backfill_v0"
@@ -63,16 +64,19 @@ def _load_rpc_url() -> str:
 
 
 def load_rotation_rpc_urls() -> list[str]:
-    """Rotation pool for the 2-stage (getSignaturesForAddress + getTransaction)
-    method (operator instruction, 2026-10-08 Phase E): Helius (.env) first,
-    then whatever H2_BACKFILL_RPC_URLS (comma-separated env var, e.g. a free
-    QuickNode endpoint) holds, then the public cluster endpoint. Returns the
-    raw URLs for EndpointRotator's own use -- callers must never print or log
-    an entry of this list (operator instruction: never print/commit a URL)."""
-    urls = [_load_rpc_url()]
+    """Rotation pool for Stage 2 (getSignaturesForAddress + getTransaction):
+    H2_BACKFILL_RPC_URLS (comma-separated env var, e.g. a free QuickNode
+    endpoint) first, then the public cluster endpoint, then Helius LAST --
+    operator instruction (Fase E parte 2): poupar a Helius pra Estagio 1
+    (enumeracao), que so ela consegue fazer de forma barata (filtro
+    blockTime exclusivo). Returns the raw URLs for EndpointRotator's own
+    use -- callers must never print or log an entry of this list (operator
+    instruction: never print/commit a URL)."""
+    urls: list[str] = []
     extra = os.environ.get("H2_BACKFILL_RPC_URLS", "")
     urls.extend(u.strip() for u in extra.split(",") if u.strip())
     urls.append(PUBLIC_SOLANA_RPC_URL)
+    urls.append(_load_rpc_url())
     return urls
 
 
@@ -90,11 +94,14 @@ def _sanitize_rpc_error(error: Exception, rpc_url: str) -> Exception:
 
 
 class EndpointRotator:
-    """Round-robins RPC calls across several endpoints (Helius, QuickNode
-    free tier, public cluster). A single endpoint's failure falls through to
-    the next endpoint rather than aborting the whole fetch; only raises once
-    every endpoint has failed within one rotation cycle. Identifies a failing
-    endpoint by its index only -- never logs a URL. Calls through
+    """Tries RPC endpoints in PRIORITY order (not round-robin): always
+    starts from index 0, falling through to the next endpoint on a single
+    endpoint's failure rather than aborting; only raises once every endpoint
+    has failed for one call. Pass the most-preferred endpoint first -- Stage
+    2 passes QuickNode/public first and Helius last (load_rotation_rpc_urls),
+    so a successful call never touches Helius unless the others are down,
+    sparing it for Stage 1 enumeration (operador, Fase E parte 2). Identifies
+    a failing endpoint by its index only -- never logs a URL. Calls through
     `_mfh._rpc` (not a separate HTTP client) so the same rate limiter /
     circuit breaker that `install_rate_limited_rpc` installs on it (see
     h2_pilot_v0.py) still throttles every rotation call globally."""
@@ -103,14 +110,10 @@ class EndpointRotator:
         if not rpc_urls:
             raise ValueError("EndpointRotator needs at least one RPC URL")
         self._urls = list(rpc_urls)
-        self._next = 0
 
     def call(self, method: str, params: list, *, retries: int = 2) -> dict[str, Any]:
         errors: list[str] = []
-        for _ in range(len(self._urls)):
-            index = self._next
-            url = self._urls[index]
-            self._next = (self._next + 1) % len(self._urls)
+        for index, url in enumerate(self._urls):
             try:
                 return _mfh._rpc(url, method, params, retries=retries)
             except Exception as exc:  # noqa: BLE001 -- must try every endpoint before giving up
@@ -178,82 +181,50 @@ class MigrationCandidate:
     migration_block_time: int
 
 
-def fetch_migrations_in_range(
-    rpc_url: str, *, start_date: str, end_date: str
+def sample_calendar_windows(
+    *, start_date: str, end_date: str, window_minutes: int, k: int, seed: int
+) -> list[tuple[int, int]]:
+    """Operador, 2026-10-08 (Fase E parte 2): sorteia k janelas de
+    window_minutes minutos sobre [start_date, end_date), seed fixa.
+    Substitui caminhar a conta de migracao inteira (fetch_migrations_in_range,
+    removido) -- enumeracao dia-a-dia cara, foi o que disparou o 429
+    sustentado na conta de alto volume (MIGRATION_AUTHORITY). As janelas
+    vem de um grid NAO-SOBREPOSTO de tamanho fixo e sao sorteadas sem
+    reposicao dentro dele (random.Random(seed).sample) -- isso garante
+    uniformidade e zero overlap por construcao, sem precisar de rejection
+    sampling."""
+    start_epoch = int(
+        datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    )
+    end_epoch = int(
+        datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    )
+    window_seconds = window_minutes * 60
+    n_slots = max(0, (end_epoch - start_epoch) // window_seconds)
+    if n_slots == 0:
+        return []
+    rng = random.Random(seed)
+    chosen = sorted(rng.sample(range(n_slots), k=min(k, n_slots)))
+    return [
+        (start_epoch + i * window_seconds, start_epoch + (i + 1) * window_seconds)
+        for i in chosen
+    ]
+
+
+def fetch_migrations_in_windows(
+    rpc_url: str, *, window_start: int, window_end: int
 ) -> list[MigrationCandidate]:
-    """Rule 1 (DRAFT rev. 4): completed pump->PumpSwap migrations in
-    [start_date, end_date), dedup by pool_mint. Reuses fetch_day_classified
-    (proven live in MOVE-FIRST-H-DISC-V0: ~1-5s/day via getTransactionsForAddress
-    with a blockTime filter) day by day; keeps only rows that actually
-    complete CreatePool (excludes "already migrated" no-ops, which have
-    err=null and would otherwise look successful)."""
-    start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    """Operador, 2026-10-08 (Fase E parte 2): todas as migracoes pump->PumpSwap
+    bem-sucedidas dentro de UMA janela sorteada (getTransactionsForAddress
+    com filtro blockTime), dedup por pool_mint. Unidade de amostra = a
+    janela (conglomerado) -- toda migracao bem-sucedida dentro dela entra,
+    nunca so "a proxima depois de um horario aleatorio" (enviesaria pra
+    migracoes apos hiatos calmos, regra explicita do operador). "Bem-
+    sucedida" exige as DUAS coisas: completed_create_pool=True E
+    meta.err is None -- um no-op de "ja migrado" tambem tem err=null (achado
+    ja confirmado em MOVE-FIRST-H-DISC-V0), entao err por si so nao basta."""
     seen_pools: set[str] = set()
     candidates: list[MigrationCandidate] = []
-    day = start
-    while day < end:
-        rows = fetch_day_classified(rpc_url, day=day.strftime("%Y-%m-%d"))
-        for row in rows:
-            if not row.touches_pumpfun or not row.completed_create_pool or not row.pool_mint:
-                continue
-            if row.pool_mint in seen_pools:
-                continue
-            seen_pools.add(row.pool_mint)
-            candidates.append(
-                MigrationCandidate(
-                    pool_mint=row.pool_mint,
-                    migration_signature=row.signature,
-                    migration_block_time=_day_start_epoch(day),
-                )
-            )
-        day += timedelta(days=1)
-    return candidates
-
-
-def _day_start_epoch(day: datetime) -> int:
-    # Placeholder until a real getTransaction call resolves the exact
-    # blockTime of the migration signature itself (TxClassification from
-    # fetch_day_classified does not carry blockTime today) -- callers that
-    # need the exact migration instant must resolve it via getTransaction(
-    # migration_signature) before computing the trade window (rule 3).
-    return int(day.timestamp())
-
-
-def sample_migrations_excluding_blocks(
-    candidates: list[MigrationCandidate],
-    *,
-    n: int,
-    seed: int,
-    excluded_block_starts: tuple[int, ...],
-    excluded_block_ends: tuple[int, ...],
-) -> list[MigrationCandidate]:
-    """Rule 1 + piloto (step A): random sample with a fixed, pre-committed
-    seed, excluding any candidate whose migration falls inside one of the
-    frozen discovery/confirmation blocks (so the piloto never touches the
-    sealed data)."""
-    if len(excluded_block_starts) != len(excluded_block_ends):
-        raise ValueError("excluded_block_starts/ends must be the same length")
-    eligible = [
-        c
-        for c in candidates
-        if not any(
-            start <= c.migration_block_time < end
-            for start, end in zip(excluded_block_starts, excluded_block_ends)
-        )
-    ]
-    rng = random.Random(seed)
-    return rng.sample(eligible, k=min(n, len(eligible)))
-
-
-def fetch_pool_trades_raw(
-    rpc_url: str, *, pool_mint: str, window_start: int, window_end: int
-) -> list[dict[str, Any]]:
-    """Every transaction touching the pool account in [window_start, window_end).
-    Same getTransactionsForAddress + blockTime-filter mechanism already proven
-    in sample_migration_account.py, pointed at the pool instead of the
-    migration-authority account."""
-    results: list[dict[str, Any]] = []
     pagination_token: str | None = None
     while True:
         params: dict[str, Any] = {
@@ -266,14 +237,33 @@ def fetch_pool_trades_raw(
         }
         if pagination_token is not None:
             params["paginationToken"] = pagination_token
-        result = _mfh._rpc(rpc_url, "getTransactionsForAddress", [pool_mint, params])
+        result = _mfh._rpc(rpc_url, "getTransactionsForAddress", [MIGRATION_AUTHORITY, params])
         payload = result.get("result") or {}
         rows = payload.get("data") or []
-        results.extend(rows)
+        for row in rows:
+            message = row["transaction"]["message"]
+            if not _mfh._touches_pumpfun_programs(message):
+                continue
+            logs = row.get("meta", {}).get("logMessages") or []
+            if not any("Instruction: CreatePool" in line for line in logs):
+                continue
+            if row.get("meta", {}).get("err") is not None:
+                continue
+            pool_mint = _mfh._extract_pool_mint(message)
+            if not pool_mint or pool_mint in seen_pools:
+                continue
+            seen_pools.add(pool_mint)
+            candidates.append(
+                MigrationCandidate(
+                    pool_mint=pool_mint,
+                    migration_signature=row["transaction"]["signatures"][0],
+                    migration_block_time=row.get("blockTime") or window_start,
+                )
+            )
         pagination_token = payload.get("paginationToken")
         if not pagination_token or not rows:
             break
-    return results
+    return candidates
 
 
 class CarbonDecoderProcess(Protocol):
@@ -473,31 +463,58 @@ def _fake_pumpswap_buy_raw_row(
 def _self_check_sampling() -> None:
     from unittest.mock import patch
 
+    # sample_calendar_windows: deterministic, non-overlapping, uniform grid.
+    windows = sample_calendar_windows(
+        start_date="2026-01-01", end_date="2026-01-02", window_minutes=10, k=3, seed=20261008
+    )
+    assert len(windows) == 3, windows
+    for start, end in windows:
+        assert end - start == 600, (start, end)
+    assert len(set(windows)) == 3, windows  # no duplicate/overlapping windows
+    windows_again = sample_calendar_windows(
+        start_date="2026-01-01", end_date="2026-01-02", window_minutes=10, k=3, seed=20261008
+    )
+    assert windows == windows_again, (windows, windows_again)
+
+    # fetch_migrations_in_windows: dedup by pool; "successful" requires BOTH
+    # completed_create_pool AND err is None -- an "already migrated" no-op
+    # also has err=null (real finding from sample_migration_account.py), and
+    # a failed CreatePool attempt on the same pool must stay excluded too.
+    window_start, window_end = windows[0]
+    pool = "POOLwindowpump"
+    sig_migrate, sig_noop, sig_failed = "SIGMIGRATE", "SIGNOOP", "SIGFAILED"
+
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
         assert method == "getTransactionsForAddress"
         assert params[0] == MIGRATION_AUTHORITY
-        day_start = params[1]["filters"]["blockTime"]["gte"]
-        # One completed migration (pool mint ends in "pump") plus one
-        # already-migrated no-op (completed_create_pool must stay False for
-        # it) per day, mirroring the real dedup finding from
-        # sample_migration_account.py.
-        pool = f"POOL{day_start}pump"
-        sig_migrate = f"SIGM{day_start}"
-        sig_noop = f"SIGN{day_start}"
+        assert params[1]["filters"]["blockTime"] == {"gte": window_start, "lt": window_end}
         rows = [
             {
                 "transaction": {
                     "signatures": [sig_migrate],
                     "message": {"accountKeys": [BONDING_CURVE_PROGRAM, PUMPSWAP_PROGRAM, pool]},
                 },
-                "meta": {"logMessages": ["Program log: Instruction: CreatePool"]},
+                "blockTime": window_start + 5,
+                "meta": {"logMessages": ["Program log: Instruction: CreatePool"], "err": None},
             },
             {
                 "transaction": {
                     "signatures": [sig_noop],
                     "message": {"accountKeys": [BONDING_CURVE_PROGRAM]},
                 },
-                "meta": {"logMessages": ["Program log: Instruction: Migrate"]},
+                "blockTime": window_start + 6,
+                "meta": {"logMessages": ["Program log: Instruction: Migrate"], "err": None},
+            },
+            {
+                "transaction": {
+                    "signatures": [sig_failed],
+                    "message": {"accountKeys": [BONDING_CURVE_PROGRAM, PUMPSWAP_PROGRAM, pool]},
+                },
+                "blockTime": window_start + 7,
+                "meta": {
+                    "logMessages": ["Program log: Instruction: CreatePool"],
+                    "err": {"InstructionError": [0, "boom"]},
+                },
             },
         ]
         return {"result": {"data": rows, "paginationToken": None}}
@@ -506,32 +523,13 @@ def _self_check_sampling() -> None:
         "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
         side_effect=fake_rpc,
     ):
-        candidates = fetch_migrations_in_range(
-            "fake://rpc", start_date="2026-01-01", end_date="2026-01-04"
+        candidates = fetch_migrations_in_windows(
+            "fake://rpc", window_start=window_start, window_end=window_end
         )
-    assert len(candidates) == 3, candidates
-    assert all(c.pool_mint.endswith("pump") for c in candidates), candidates
-
-    day1_epoch = candidates[0].migration_block_time
-    sample = sample_migrations_excluding_blocks(
-        candidates,
-        n=2,
-        seed=20261008,
-        excluded_block_starts=(day1_epoch,),
-        excluded_block_ends=(day1_epoch + 1,),
-    )
-    assert len(sample) == 2, sample
-    assert all(c.migration_block_time != day1_epoch for c in sample), sample
-
-    # Fixed seed is deterministic given the same eligible pool.
-    sample_again = sample_migrations_excluding_blocks(
-        candidates,
-        n=2,
-        seed=20261008,
-        excluded_block_starts=(day1_epoch,),
-        excluded_block_ends=(day1_epoch + 1,),
-    )
-    assert sample == sample_again, (sample, sample_again)
+    assert len(candidates) == 1, candidates
+    assert candidates[0].pool_mint == pool, candidates
+    assert candidates[0].migration_signature == sig_migrate, candidates
+    assert candidates[0].migration_block_time == window_start + 5, candidates
 
 
 def _self_check_decode_and_persist() -> None:

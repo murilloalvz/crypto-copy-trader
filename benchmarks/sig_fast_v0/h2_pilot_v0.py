@@ -1,26 +1,40 @@
-"""SIG-FAST H2 piloto -- step A (rev. 4, 2026-10-08 operator review; Phase E
-rotation addendum same day).
+"""SIG-FAST H2 piloto -- step A (rev. 4, 2026-10-08 operator review; Fase E
+partes 1 e 2 addenda same day: endpoint rotation, windowed sampling, 429
+desacelera-nao-aborta).
 
 Pure systems check: measures RPC cost and decode coverage on migrations
 SAMPLED OUTSIDE the frozen discovery/confirmation calendar blocks. Never
 reads a return, never touches the sealed blocks, never spends a hypothesis
 attempt (registry rule 5). The one price-derived number this script computes
 (20-minute MemeTrans survival, as a 0/1 system count) was explicitly
-authorized by the operator for N-sizing only -- "a taxa de sobrevivencia do
+authorized by the operator for K-sizing only -- "a taxa de sobrevivencia do
 piloto e contagem de sistema, nao retorno" -- and is never used to judge H2
 itself; step B (real download) and any EV/PF/edge computation stay gated
 behind the operator's separate OK on the coverage report.
 
-Phase E split (deliberate, see handoff): Stage 1 (migration ENUMERATION over
-the lookback window) stays on Helius's exclusive getTransactionsForAddress
-with a blockTime jump -- MOVE-FIRST-H-DISC-V0 already found that walking
+Fase E parte 1 split (deliberate, see handoff): Stage 1 (migration
+ENUMERATION) stays on Helius's exclusive getTransactionsForAddress with a
+blockTime jump -- MOVE-FIRST-H-DISC-V0 already found that walking
 MIGRATION_AUTHORITY's signatures sequentially hits ~1.5M signatures without
 leaving the last ~2 months, so pure getSignaturesForAddress is not practical
 for this account specifically. Stage 2 (per-pool TRADE fetch, one pool's own
 much smaller history) uses the operator-requested 2-stage method
 (getSignaturesForAddress + getTransaction) with endpoint rotation
 (EndpointRotator / load_rotation_rpc_urls in h2_historical_backfill_v0),
-where it is genuinely practical and matches the explicit instruction.
+priced QuickNode/public first and Helius last to spare it for Stage 1.
+
+Fase E parte 2 addenda (operator, 2026-10-08, same day): (1) enumeration no
+longer walks a whole calendar day -- it samples K random non-overlapping
+10-minute windows per block (sample_calendar_windows) and fetches ALL
+successful migrations inside each one (fetch_migrations_in_windows), the
+window being the sampling unit (cluster sampling, every migration in it
+included -- never "next migration after a random instant", which would bias
+toward migrations following quiet periods); (2) a 429 now SLOWS DOWN instead
+of aborting (Retry-After honored, exponential backoff capped at 60s, abort
+only after ~10min with zero success) and never counts toward the
+consecutive-failure breaker (that breaker still exists, but only for
+non-429 errors); (3) progress checkpoints to disk per window/pool so a
+re-run does not redo already-fetched work.
 
 See docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md (rev. 4,
 "Regras anti-vies do discovery historico de H2") for the frozen protocol.
@@ -32,8 +46,8 @@ import argparse
 import json
 import math
 import time
+import urllib.error
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,22 +60,27 @@ from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     SIGNAL_MARKER_SECONDS,
     _load_rpc_url,
     decode_historical_trades,
-    fetch_migrations_in_range,
+    fetch_migrations_in_windows,
     fetch_pool_trades_raw_rotation,
     load_rotation_rpc_urls,
-    sample_migrations_excluding_blocks,
+    sample_calendar_windows,
 )
 from src.opportunity_path_metrics_v0 import PathTrade, mid_price_sol
 
 VERSION = "sig_fast_h2_pilot_v0"
 
-# DRAFT rev. 4, regra 2 -- blocos congelados, o piloto nunca os toca.
+# DRAFT rev. 4, regra 2 -- blocos congelados, o piloto nunca os toca (as
+# janelas sao sorteadas so dentro do lookback abaixo, que termina exatamente
+# onde o discovery comeca -- sem overlap por construcao da data).
 DISCOVERY_BLOCK_START = "2026-08-20"
 DISCOVERY_BLOCK_END = "2026-09-17"
 CONFIRMATION_BLOCK_START = "2026-09-24"
 CONFIRMATION_BLOCK_END = "2026-10-08"
 PILOT_SEED = 20261008
-PILOT_N_DEFAULT = 10
+# Operador (Fase E parte 2): "K do piloto = o suficiente pra ~10 migracoes
+# (estimar pela taxa ~40/h: 2-3 janelas)".
+PILOT_K_DEFAULT = 3
+PILOT_WINDOW_MINUTES_DEFAULT = 10
 # Lookback pro universo de ONDE sortear o piloto: janela ampla e anterior ao
 # embargo, deliberadamente sem overlap mesmo por acidente (ver regra 2).
 PILOT_LOOKBACK_START = "2026-07-21"  # pos-BOOST, mesmo piso do resto da rodada
@@ -83,10 +102,6 @@ def _credits_for_tx_count(n_tx: int) -> int:
     return HELIUS_CREDITS_PER_BLOCK * math.ceil(n_tx / HELIUS_BLOCK_SIZE)
 
 
-def _date_epoch(date_str: str) -> int:
-    return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-
-
 def _percentile(values: list[float], p: float) -> float | None:
     if not values:
         return None
@@ -95,14 +110,50 @@ def _percentile(values: list[float], p: float) -> float | None:
     return ordered[index]
 
 
-# Operator review (2026-10-08, segunda rodada): "limitador global de taxa
-# conservador (comecar em 5 req/s; nunca acima de 50% do RPS do plano)".
+def _load_checkpoint(path: Path) -> dict[str, Any]:
+    """Operador (Fase E parte 2): "checkpoint por janela/pool (retomar sem
+    refazer o que ja baixou)". Formato simples: janelas de enumeracao ja
+    processadas, as candidatas (migracoes) ja encontradas, e os resultados
+    por pool_mint ja calculados -- um re-run pula tudo que ja esta aqui."""
+    if not path.exists():
+        return {"windows_done": [], "candidates": [], "tokens": {}}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_checkpoint(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+
+
+# Operator review (2026-10-08, segunda rodada): limitador global conservador
+# pra endpoints NAO-Helius (QuickNode/publico no rodizio do Estagio 2).
 DEFAULT_MAX_RPS = 5.0
-# "se vier rajada de 429 (3 seguidos mesmo com backoff) -> PARAR e reportar,
-# sem insistir". Cada chamada que chega aqui ja esgotou o retry/backoff
-# interno de _mfh._rpc (ate 5 tentativas) -- "3 seguidos" e contado no nivel
-# de fora, chamada-a-chamada.
+# Operador (Fase E parte 2): "Helius a 1 req/s" -- limiter proprio, mais
+# conservador, so pra chamadas que vao pra Helius (Estagio 1 inteiro +
+# qualquer chamada do Estagio 2 que caia nela como ultimo recurso).
+HELIUS_MAX_RPS_DEFAULT = 1.0
+# Operador (Fase E parte 2): "429 = desacelerar, nao abortar (...) so
+# abortar apos ~10 min sem nenhum sucesso". Backoff exponencial capado em
+# 60s, Retry-After respeitado quando presente.
+MAX_429_BACKOFF_SECONDS = 60.0
+MAX_429_STALL_SECONDS = 10 * 60.0
+# "o circuit breaker de 3 falhas continua so para erros que NAO sao 429"
+# (5xx, timeout, resposta invalida) -- 429 nunca incrementa este contador,
+# so o stall de ~10min acima decide quando abortar por 429.
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class RateLimiter:
@@ -184,31 +235,64 @@ class RpcUsageTracker:
 def install_rate_limited_rpc(
     *,
     max_rps: float,
+    helius_url: str,
     max_consecutive_failures: int,
     tracker: RpcUsageTracker,
+    helius_max_rps: float = HELIUS_MAX_RPS_DEFAULT,
+    max_429_stall_seconds: float = MAX_429_STALL_SECONDS,
 ):
     """Troca _mfh._rpc (sample_migration_account, modulo singleton -- nunca
     reimportado em __main__, ver commit 1b4da44 desta rodada) por uma versao
-    que: espera o rate limiter antes de cada chamada; registra credito por
-    chamada no tracker; conta falhas consecutivas (cada uma ja pos-retry) e
-    levanta PilotAbortedRateLimited ao bater o limite, sem tentar de novo.
-    Retorna a funcao de restauracao -- chamar sempre, mesmo em erro."""
+    que: espera um RateLimiter proprio por destino (Helius a helius_max_rps,
+    qualquer outro endpoint a max_rps); em 429, DESACELERA em vez de abortar
+    -- respeita Retry-After quando presente, senao backoff exponencial
+    dobrando ate MAX_429_BACKOFF_SECONDS, e so aborta se passar
+    max_429_stall_seconds (~10min) sem NENHUM sucesso (operador, Fase E
+    parte 2: "429 = desacelerar, nao abortar"); conta falhas consecutivas
+    SO para erros que NAO sao 429 e levanta PilotAbortedRateLimited ao bater
+    o limite. Retorna a funcao de restauracao -- chamar sempre, mesmo em
+    erro."""
     original_rpc = _mfh._rpc
-    limiter = RateLimiter(max_rps)
-    state = {"consecutive_failures": 0}
+    default_limiter = RateLimiter(max_rps)
+    helius_limiter = RateLimiter(helius_max_rps)
+    state = {"consecutive_failures": 0, "last_success_monotonic": time.monotonic()}
 
     def wrapped(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
-        limiter.wait()
-        try:
-            result = original_rpc(rpc_url, method, params, retries=retries)
-        except Exception as exc:
-            state["consecutive_failures"] += 1
-            if state["consecutive_failures"] >= max_consecutive_failures:
-                raise PilotAbortedRateLimited(state["consecutive_failures"], str(exc)) from exc
-            raise
-        state["consecutive_failures"] = 0
-        tracker.record(method, result)
-        return result
+        limiter = helius_limiter if rpc_url == helius_url else default_limiter
+        backoff = 1.0
+        while True:
+            limiter.wait()
+            try:
+                # retries=1: este wrapper e o unico controlador de retry/
+                # backoff a partir daqui -- deixar _mfh._rpc tentar de novo
+                # por conta propria so duplicaria/confundiria a politica de
+                # 429 abaixo.
+                result = original_rpc(rpc_url, method, params, retries=1)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    stalled_for = time.monotonic() - state["last_success_monotonic"]
+                    if stalled_for >= max_429_stall_seconds:
+                        raise PilotAbortedRateLimited(
+                            state["consecutive_failures"],
+                            f"429 sustentado por {stalled_for:.0f}s sem nenhum sucesso",
+                        ) from exc
+                    wait_s = min(_retry_after_seconds(exc) or backoff, MAX_429_BACKOFF_SECONDS)
+                    time.sleep(wait_s)
+                    backoff = min(backoff * 2, MAX_429_BACKOFF_SECONDS)
+                    continue  # 429 nunca conta pro breaker de falhas consecutivas
+                state["consecutive_failures"] += 1
+                if state["consecutive_failures"] >= max_consecutive_failures:
+                    raise PilotAbortedRateLimited(state["consecutive_failures"], str(exc)) from exc
+                raise
+            except Exception as exc:
+                state["consecutive_failures"] += 1
+                if state["consecutive_failures"] >= max_consecutive_failures:
+                    raise PilotAbortedRateLimited(state["consecutive_failures"], str(exc)) from exc
+                raise
+            state["consecutive_failures"] = 0
+            state["last_success_monotonic"] = time.monotonic()
+            tracker.record(method, result)
+            return result
 
     _mfh._rpc = wrapped
 
@@ -216,21 +300,6 @@ def install_rate_limited_rpc(
         _mfh._rpc = original_rpc
 
     return restore
-
-
-def resolve_migration_block_time(rotator: EndpointRotator, signature: str) -> int:
-    """The real on-chain instant of the migration tx -- fetch_day_classified
-    only gives a day-granularity placeholder (see h2_historical_backfill_v0.
-    _day_start_epoch); the piloto/real fetch need the exact second. A plain
-    getTransaction call, so it runs fine through the rotation pool."""
-    result = rotator.call(
-        "getTransaction",
-        [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
-    )
-    tx = result.get("result")
-    if tx is None or tx.get("blockTime") is None:
-        raise RuntimeError(f"could not resolve blockTime for migration signature {signature}")
-    return int(tx["blockTime"])
 
 
 @dataclass(frozen=True)
@@ -312,12 +381,16 @@ def run_pilot_token(
     """Stage 2 (per-pool trade fetch) now goes through the rotation 2-stage
     method (getSignaturesForAddress + getTransaction), per operator
     instruction -- see module docstring for why Stage 1 enumeration stays on
-    Helius. `estimated_credits` is the real tracker delta for this token
-    (works for either method, since it just reads total_credits before/after),
-    not the old Helius-batch-pricing formula, which no longer applies once
-    calls are split across providers."""
+    Helius. `candidate.migration_block_time` is already the real on-chain
+    instant (fetch_migrations_in_windows reads it straight from the
+    enumeration response's own blockTime, Fase E parte 2) -- no extra
+    getTransaction call needed to resolve it any more. `estimated_credits`
+    is the real tracker delta for this token (works for either method, since
+    it just reads total_credits before/after), not the old Helius-batch-
+    pricing formula, which no longer applies once calls are split across
+    providers."""
     credits_before = tracker.total_credits
-    migration_block_time = resolve_migration_block_time(rotator, candidate.migration_signature)
+    migration_block_time = candidate.migration_block_time
     raw_rows = fetch_pool_trades_raw_rotation(
         rotator,
         pool_mint=candidate.pool_mint,
@@ -357,39 +430,54 @@ def run_pilot_token(
 class PilotSummary:
     n_sampled: int
     n_with_any_trade: int
-    avg_tx_per_window: float
-    median_tx_per_window: float | None
-    p90_tx_per_window: float | None
+    avg_tx_per_pool_trade_window: float
+    median_tx_per_pool_trade_window: float | None
+    p90_tx_per_pool_trade_window: float | None
     avg_credits_per_token: float
     avg_pct_decoded_with_reserves_and_fee: float
     n_survived_system_count: int
     n_survival_determinable: int
     survival_rate_system_count: float | None
-    estimated_credits_for_n_30_survivors: int | None
-    proposed_n_migrations_to_sample: int | None
+    k_windows_used: int
+    avg_migrations_per_window: float | None
+    h2_signals_per_window_system_count: float | None
+    k_windows_proposed_for_n30_signals: int | None
+    estimated_credits_for_k_proposed: int | None
 
 
-def summarize_pilot(results: list[PilotTokenResult]) -> PilotSummary:
+def summarize_pilot(results: list[PilotTokenResult], *, k_windows_used: int) -> PilotSummary:
+    """k_windows_used e o numero de janelas de 10min REALMENTE enumeradas
+    (nao o K pedido) -- base real pra extrapolar quantas janelas por bloco
+    dariam n>=30 sinais H2 no treino (operador, Fase E parte 2). "Sinal H2"
+    aqui = migracao com sobrevivencia determinavel (survived_20min_system_
+    count is not None), ou seja, teve dado de preco suficiente pra calcular
+    o proxy -- contagem de sistema, nao julgamento economico."""
     n = len(results)
     with_trade = [r for r in results if r.n_tx_in_window > 0]
     determinable = [r for r in results if r.survived_20min_system_count is not None]
     survived = [r for r in determinable if r.survived_20min_system_count]
     survival_rate = (len(survived) / len(determinable)) if determinable else None
 
-    estimated_credits_for_30 = None
-    proposed_n = None
-    if survival_rate and survival_rate > 0 and with_trade:
-        avg_credits = sum(r.estimated_credits for r in with_trade) / len(with_trade)
-        proposed_n = math.ceil(30 / survival_rate)
-        estimated_credits_for_30 = math.ceil(proposed_n * avg_credits)
+    avg_migrations_per_window = (n / k_windows_used) if k_windows_used else None
+    signals_per_window = (len(determinable) / k_windows_used) if k_windows_used else None
+
+    k_proposed = None
+    estimated_credits_for_k_proposed = None
+    if signals_per_window and signals_per_window > 0:
+        k_proposed = math.ceil(30 / signals_per_window)
+        if with_trade and avg_migrations_per_window:
+            avg_credits = sum(r.estimated_credits for r in with_trade) / len(with_trade)
+            estimated_credits_for_k_proposed = math.ceil(
+                k_proposed * avg_migrations_per_window * avg_credits
+            )
 
     tx_counts = [float(r.n_tx_in_window) for r in results]
     return PilotSummary(
         n_sampled=n,
         n_with_any_trade=len(with_trade),
-        avg_tx_per_window=(sum(r.n_tx_in_window for r in results) / n) if n else 0.0,
-        median_tx_per_window=_percentile(tx_counts, 0.50),
-        p90_tx_per_window=_percentile(tx_counts, 0.90),
+        avg_tx_per_pool_trade_window=(sum(r.n_tx_in_window for r in results) / n) if n else 0.0,
+        median_tx_per_pool_trade_window=_percentile(tx_counts, 0.50),
+        p90_tx_per_pool_trade_window=_percentile(tx_counts, 0.90),
         avg_credits_per_token=(sum(r.estimated_credits for r in results) / n) if n else 0.0,
         avg_pct_decoded_with_reserves_and_fee=(
             sum(r.pct_decoded_with_reserves_and_fee for r in with_trade) / len(with_trade)
@@ -399,8 +487,11 @@ def summarize_pilot(results: list[PilotTokenResult]) -> PilotSummary:
         n_survived_system_count=len(survived),
         n_survival_determinable=len(determinable),
         survival_rate_system_count=survival_rate,
-        estimated_credits_for_n_30_survivors=estimated_credits_for_30,
-        proposed_n_migrations_to_sample=proposed_n,
+        k_windows_used=k_windows_used,
+        avg_migrations_per_window=avg_migrations_per_window,
+        h2_signals_per_window_system_count=signals_per_window,
+        k_windows_proposed_for_n30_signals=k_proposed,
+        estimated_credits_for_k_proposed=estimated_credits_for_k_proposed,
     )
 
 
@@ -418,12 +509,15 @@ def _self_check_rate_limiter_and_breaker() -> None:
     assert tracker._credits_for("unknownMethod", {}) == 0
 
     # ok, fail, ok, fail, fail, fail -- breaker must only trip on the 3rd
-    # CONSECUTIVE failure (the "ok" in the middle resets the counter).
+    # CONSECUTIVE non-429 failure (the "ok" in the middle resets the
+    # counter). Uses RuntimeError (not a 429 HTTPError) deliberately -- the
+    # 429-specific slow-down-not-abort path is covered separately in
+    # _self_check_429_policy.
     outcomes = iter(["ok", "fail", "ok", "fail", "fail", "fail"])
 
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
         if next(outcomes) == "fail":
-            raise RuntimeError("simulated 429")
+            raise RuntimeError("simulated 500")
         return {"result": {"data": [{}] * 5}}
 
     def call() -> tuple[str, Exception | None]:
@@ -437,7 +531,9 @@ def _self_check_rate_limiter_and_breaker() -> None:
     _mfh._rpc = fake_rpc
     try:
         tracker2 = RpcUsageTracker()
-        restore = install_rate_limited_rpc(max_rps=1000.0, max_consecutive_failures=3, tracker=tracker2)
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius-unused", max_consecutive_failures=3, tracker=tracker2
+        )
         try:
             outcome, _ = call()
             assert outcome == "ok", outcome
@@ -457,6 +553,157 @@ def _self_check_rate_limiter_and_breaker() -> None:
             outcome, exc = call()  # 3rd consecutive failure -> abort
             assert outcome == "failed" and isinstance(exc, PilotAbortedRateLimited), (outcome, exc)
             assert exc.consecutive_failures == 3, exc.consecutive_failures
+        finally:
+            restore()
+    finally:
+        _mfh._rpc = original_rpc
+
+
+def _self_check_429_policy() -> None:
+    import email.message
+
+    def make_429(retry_after: str | None) -> urllib.error.HTTPError:
+        hdrs = email.message.Message()
+        if retry_after is not None:
+            hdrs["Retry-After"] = retry_after
+        return urllib.error.HTTPError(
+            url="fake://rpc", code=429, msg="Too Many Requests", hdrs=hdrs, fp=None
+        )
+
+    assert _retry_after_seconds(make_429("7")) == 7.0
+    assert _retry_after_seconds(make_429(None)) is None
+
+    # 429 retries with backoff (sleep mocked -- no real wait): 1st failure
+    # honors Retry-After (0.01, overriding the internal backoff clock);
+    # 2nd failure has no Retry-After, so it falls back to the internal
+    # backoff clock, which had already doubled to 2.0 after the 1st retry.
+    # Never trips the 3-failure breaker; succeeds once the fake RPC stops
+    # failing.
+    attempts = {"n": 0}
+
+    def fake_429_then_ok(rpc_url: str, method: str, params: list, *, retries: int = 1) -> dict:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise make_429("0.01")
+        if attempts["n"] == 2:
+            raise make_429(None)
+        return {"result": {"data": []}}
+
+    sleep_calls: list[float] = []
+    original_rpc = _mfh._rpc
+    original_sleep = time.sleep
+    _mfh._rpc = fake_429_then_ok
+    time.sleep = lambda s: sleep_calls.append(s)
+    try:
+        tracker = RpcUsageTracker()
+        # helius_max_rps=1000 here on purpose -- this test isolates the
+        # 429-backoff sleeps from the RateLimiter's OWN pacing sleep (tested
+        # separately below), which would otherwise also land in sleep_calls.
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0,
+            helius_url="fake://helius",
+            helius_max_rps=1000.0,
+            max_consecutive_failures=3,
+            tracker=tracker,
+        )
+        try:
+            result = _mfh._rpc("fake://helius", "getSlot", [])
+        finally:
+            restore()
+    finally:
+        _mfh._rpc = original_rpc
+        time.sleep = original_sleep
+    assert result == {"result": {"data": []}}, result
+    assert attempts["n"] == 3, attempts
+    # Each retry also re-paces through limiter.wait() (tiny ~0.001s sleeps at
+    # helius_max_rps=1000) -- filter those out to isolate the 429-backoff
+    # sleeps specifically: Retry-After (0.01) honored on the 1st failure,
+    # then the internal backoff clock (already doubled to 2.0) on the 2nd.
+    backoff_sleeps = [s for s in sleep_calls if s >= 0.005]
+    assert backoff_sleeps == [0.01, 2.0], sleep_calls
+
+    # Sustained 429 (zero success window via max_429_stall_seconds=0.0)
+    # aborts citing the stall -- never the 3-failure breaker (429 never
+    # increments consecutive_failures).
+    def always_429(rpc_url: str, method: str, params: list, *, retries: int = 1) -> dict:
+        raise make_429(None)
+
+    _mfh._rpc = always_429
+    time.sleep = lambda s: None
+    try:
+        tracker2 = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0,
+            helius_url="fake://helius",
+            max_consecutive_failures=3,
+            tracker=tracker2,
+            max_429_stall_seconds=0.0,
+        )
+        try:
+            try:
+                _mfh._rpc("fake://helius", "getSlot", [])
+                raise AssertionError("expected PilotAbortedRateLimited")
+            except PilotAbortedRateLimited as exc:
+                assert exc.consecutive_failures == 0, exc
+                assert "429" in exc.last_error, exc
+        finally:
+            restore()
+    finally:
+        _mfh._rpc = original_rpc
+        time.sleep = original_sleep
+
+    # Non-429 error: breaker still trips after 3 CONSECUTIVE failures.
+    def fake_5xx(rpc_url: str, method: str, params: list, *, retries: int = 1) -> dict:
+        raise RuntimeError("simulated 500")
+
+    _mfh._rpc = fake_5xx
+    try:
+        tracker3 = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius", max_consecutive_failures=3, tracker=tracker3
+        )
+        try:
+            for _ in range(2):
+                try:
+                    _mfh._rpc("fake://helius", "getSlot", [])
+                    raise AssertionError("expected RuntimeError")
+                except PilotAbortedRateLimited:
+                    raise AssertionError("should not abort before the 3rd consecutive failure")
+                except RuntimeError:
+                    pass
+            try:
+                _mfh._rpc("fake://helius", "getSlot", [])
+                raise AssertionError("expected abort on 3rd consecutive failure")
+            except PilotAbortedRateLimited as exc:
+                assert exc.consecutive_failures == 3, exc
+        finally:
+            restore()
+    finally:
+        _mfh._rpc = original_rpc
+
+    # Helius gets its OWN (slower) limiter, independent of max_rps.
+    def fake_ok(rpc_url: str, method: str, params: list, *, retries: int = 1) -> dict:
+        return {"result": {"data": []}}
+
+    _mfh._rpc = fake_ok
+    try:
+        tracker4 = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0,
+            helius_url="fake://helius",
+            helius_max_rps=20.0,
+            max_consecutive_failures=3,
+            tracker=tracker4,
+        )
+        try:
+            t0 = time.monotonic()
+            _mfh._rpc("fake://helius", "getSlot", [])
+            _mfh._rpc("fake://helius", "getSlot", [])
+            assert time.monotonic() - t0 >= 0.04, "Helius limiter (20 req/s) did not pace the 2nd call"
+            t1 = time.monotonic()
+            _mfh._rpc("fake://quicknode", "getSlot", [])
+            _mfh._rpc("fake://quicknode", "getSlot", [])
+            assert time.monotonic() - t1 < 0.04, "non-Helius calls must not be paced by the Helius limiter"
         finally:
             restore()
     finally:
@@ -528,20 +775,24 @@ def _self_check_summary() -> None:
         PilotTokenResult("P2", "S2", 0, 150, 150, 150, 100.0, 20, False),
         PilotTokenResult("P3", "S3", 0, 0, 0, 0, 0.0, 0, None),
     ]
-    summary = summarize_pilot(results)
+    summary = summarize_pilot(results, k_windows_used=2)
     assert summary.n_sampled == 3, summary
     assert summary.n_with_any_trade == 2, summary
     assert summary.n_survival_determinable == 2, summary
     assert summary.n_survived_system_count == 1, summary
     assert summary.survival_rate_system_count == 0.5, summary
-    # proposed_n = ceil(30 / 0.5) = 60; avg credits over tokens WITH a trade
-    # (10, 20) = 15; estimated = ceil(60 * 15) = 900.
-    assert summary.proposed_n_migrations_to_sample == 60, summary
-    assert summary.estimated_credits_for_n_30_survivors == 900, summary
+    # k_windows_used=2 -> avg_migrations_per_window = 3/2 = 1.5;
+    # signals_per_window = 2/2 = 1.0; k_proposed = ceil(30/1.0) = 30; avg
+    # credits over tokens WITH a trade (10, 20) = 15; estimated = ceil(30 *
+    # 1.5 * 15) = 675.
+    assert summary.avg_migrations_per_window == 1.5, summary
+    assert summary.h2_signals_per_window_system_count == 1.0, summary
+    assert summary.k_windows_proposed_for_n30_signals == 30, summary
+    assert summary.estimated_credits_for_k_proposed == 675, summary
     # tx_counts = [50, 150, 0] -> sorted [0, 50, 150]; median (p50, nearest-
     # rank index round(0.5*2)=1) = 50; p90 (index round(0.9*2)=2) = 150.
-    assert summary.median_tx_per_window == 50.0, summary
-    assert summary.p90_tx_per_window == 150.0, summary
+    assert summary.median_tx_per_pool_trade_window == 50.0, summary
+    assert summary.p90_tx_per_pool_trade_window == 150.0, summary
 
 
 def _self_check_run_pilot_token_wiring() -> None:
@@ -553,8 +804,6 @@ def _self_check_run_pilot_token_wiring() -> None:
     trade_sig = "SIGTRADE1"
 
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
-        if method == "getTransaction" and params[0] == migration_sig:
-            return {"result": {"blockTime": migration_block_time}}
         if method == "getSignaturesForAddress":
             assert params[0] == pool_mint
             return {"result": [{"signature": trade_sig, "blockTime": migration_block_time + 10}]}
@@ -609,13 +858,17 @@ def _self_check_run_pilot_token_wiring() -> None:
         side_effect=fake_rpc,
     ):
         tracker = RpcUsageTracker()
-        restore = install_rate_limited_rpc(max_rps=1000.0, max_consecutive_failures=99, tracker=tracker)
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius-unused", max_consecutive_failures=99, tracker=tracker
+        )
         try:
             rotator = EndpointRotator(["fake://rpc"])
             result = run_pilot_token(
                 _FakeCarbon(),
                 MigrationCandidate(
-                    pool_mint=pool_mint, migration_signature=migration_sig, migration_block_time=0
+                    pool_mint=pool_mint,
+                    migration_signature=migration_sig,
+                    migration_block_time=migration_block_time,
                 ),
                 rotator=rotator,
                 tracker=tracker,
@@ -627,29 +880,52 @@ def _self_check_run_pilot_token_wiring() -> None:
     assert result.n_events_decoded == 1, result
     assert result.n_events_with_reserves_and_fee == 1, result
     assert result.pct_decoded_with_reserves_and_fee == 100.0, result
-    # 2-stage credits: 1 getTransaction (resolve migration instant) +
-    # 1 getSignaturesForAddress + 1 getTransaction (pool fetch) = 3, all
-    # flat-rate under Helius pricing (helius.dev/docs/billing/credits).
-    assert result.estimated_credits == 3, result
+    # 2-stage credits: 1 getSignaturesForAddress + 1 getTransaction (pool
+    # fetch) = 2, flat-rate under Helius pricing (helius.dev/docs/billing/
+    # credits). migration_block_time no longer needs its own resolve call --
+    # it comes straight from the (now real) enumeration candidate.
+    assert result.estimated_credits == 2, result
+
+
+def _self_check_checkpoint() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "checkpoint.json"
+        assert _load_checkpoint(path) == {"windows_done": [], "candidates": [], "tokens": {}}
+
+        data = _load_checkpoint(path)
+        data["windows_done"].append([1000, 1600])
+        data["tokens"]["POOLpump"] = {"pool_mint": "POOLpump"}
+        _save_checkpoint(path, data)
+
+        reloaded = _load_checkpoint(path)
+        assert reloaded["windows_done"] == [[1000, 1600]], reloaded
+        assert reloaded["tokens"]["POOLpump"]["pool_mint"] == "POOLpump", reloaded
 
 
 def _self_check() -> None:
     _self_check_rate_limiter_and_breaker()
+    _self_check_429_policy()
     _self_check_credits_formula()
     _self_check_survival()
     _self_check_summary()
     _self_check_run_pilot_token_wiring()
+    _self_check_checkpoint()
     print(
-        "self-check OK: rate limiter + consecutive-failure breaker + credit tracker + "
-        "credits formula + survival system-count + summary arithmetic (median/p90) + "
-        "run_pilot_token wiring"
+        "self-check OK: rate limiter + consecutive-failure breaker + 429 slow-down policy + "
+        "credit tracker + credits formula + survival system-count + summary arithmetic "
+        "(median/p90 + K-per-window) + run_pilot_token wiring + checkpoint round-trip"
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-check", action="store_true")
-    parser.add_argument("--n", type=int, default=PILOT_N_DEFAULT)
+    parser.add_argument(
+        "--k", type=int, default=PILOT_K_DEFAULT, help="numero de janelas sorteadas"
+    )
+    parser.add_argument("--window-minutes", type=int, default=PILOT_WINDOW_MINUTES_DEFAULT)
     parser.add_argument("--seed", type=int, default=PILOT_SEED)
     parser.add_argument("--lookback-start", default=PILOT_LOOKBACK_START)
     parser.add_argument("--lookback-end", default=PILOT_LOOKBACK_END)
@@ -658,19 +934,34 @@ def main() -> int:
         "--max-rps",
         type=float,
         default=DEFAULT_MAX_RPS,
-        help="teto global de chamadas/segundo (operador: comecar em 5, nunca >50%% do RPS do plano)",
+        help="teto pra endpoints NAO-Helius (QuickNode/publico no rodizio do Estagio 2)",
+    )
+    parser.add_argument(
+        "--helius-max-rps",
+        type=float,
+        default=HELIUS_MAX_RPS_DEFAULT,
+        help="teto pra Helius (operador, Fase E parte 2: 1 req/s)",
     )
     parser.add_argument(
         "--plan-rps",
         type=float,
         default=None,
-        help="RPS medido do plano Helius -- se informado, --max-rps e limitado a 50%% disso",
+        help="RPS medido do plano -- se informado, --max-rps (nao-Helius) e limitado a 50%% disso",
     )
     parser.add_argument(
         "--max-consecutive-failures",
         type=int,
         default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
-        help="falhas de RPC consecutivas (cada uma ja pos-backoff) antes de parar sem insistir",
+        help="falhas de RPC consecutivas NAO-429 (cada uma ja pos-backoff) antes de parar",
+    )
+    parser.add_argument(
+        "--max-429-stall-seconds",
+        type=float,
+        default=MAX_429_STALL_SECONDS,
+        help="aborta se passar este tempo em 429 sustentado sem nenhum sucesso (operador: ~10min)",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=Path("artifacts/sig_fast_h2_pilot_v0/checkpoint.json")
     )
     parser.add_argument(
         "--out", type=Path, default=Path("artifacts/sig_fast_h2_pilot_v0/report.json")
@@ -684,101 +975,129 @@ def main() -> int:
     max_rps = args.max_rps
     if args.plan_rps is not None:
         max_rps = min(max_rps, args.plan_rps * 0.5)
-    print(f"[piloto] rate limit efetivo: {max_rps:.2f} req/s "
-          f"(--max-rps={args.max_rps}, --plan-rps={args.plan_rps})")
+    print(
+        f"[piloto] rate limit efetivo: nao-Helius={max_rps:.2f} req/s "
+        f"(--max-rps={args.max_rps}, --plan-rps={args.plan_rps}), Helius={args.helius_max_rps:.2f} req/s"
+    )
 
     # Stage 1 (enumeration) stays pinned to Helius -- see module docstring.
     rpc_url = _load_rpc_url()
     tracker = RpcUsageTracker()
     restore_rpc = install_rate_limited_rpc(
         max_rps=max_rps,
+        helius_url=rpc_url,
+        helius_max_rps=args.helius_max_rps,
         max_consecutive_failures=args.max_consecutive_failures,
         tracker=tracker,
+        max_429_stall_seconds=args.max_429_stall_seconds,
     )
-    # Stage 2 (per-pool trade fetch) rotates across Helius + H2_BACKFILL_RPC_URLS
-    # (e.g. QuickNode free tier) + the public cluster endpoint. Goes through
-    # the same _mfh._rpc the line above just wrapped, so the rate limiter /
-    # breaker / credit tracker apply uniformly regardless of which endpoint a
-    # given call lands on.
+    # Stage 2 (per-pool trade fetch) rotates across H2_BACKFILL_RPC_URLS
+    # (e.g. QuickNode free tier) + the public cluster endpoint, Helius LAST
+    # (load_rotation_rpc_urls, Fase E parte 2 -- poupa a Helius pra Estagio
+    # 1). Goes through the same _mfh._rpc the line above just wrapped, so
+    # the rate limiter / breaker / credit tracker apply uniformly regardless
+    # of which endpoint a given call lands on.
     rotator = EndpointRotator(load_rotation_rpc_urls())
 
-    results: list[PilotTokenResult] = []
+    checkpoint = _load_checkpoint(args.checkpoint)
+    windows = sample_calendar_windows(
+        start_date=args.lookback_start,
+        end_date=args.lookback_end,
+        window_minutes=args.window_minutes,
+        k=args.k,
+        seed=args.seed,
+    )
+    windows_done = {tuple(w) for w in checkpoint["windows_done"]}
+    candidates_by_pool: dict[str, MigrationCandidate] = {
+        c["pool_mint"]: MigrationCandidate(**c) for c in checkpoint["candidates"]
+    }
+    tokens_done: dict[str, dict[str, Any]] = checkpoint["tokens"]
+
     aborted = False
     abort_reason: str | None = None
-    sample: list[MigrationCandidate] = []
+    k_windows_used = len(windows_done & set(windows))
     try:
-        candidates = fetch_migrations_in_range(
-            rpc_url, start_date=args.lookback_start, end_date=args.lookback_end
-        )
-        sample = sample_migrations_excluding_blocks(
-            candidates,
-            n=args.n,
-            seed=args.seed,
-            excluded_block_starts=(
-                _date_epoch(DISCOVERY_BLOCK_START),
-                _date_epoch(CONFIRMATION_BLOCK_START),
-            ),
-            excluded_block_ends=(
-                _date_epoch(DISCOVERY_BLOCK_END),
-                _date_epoch(CONFIRMATION_BLOCK_END),
-            ),
-        )
-
-        from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
-            JsonLineProcess,
-            _carbon_command,
-        )
-
-        carbon = JsonLineProcess(
-            _carbon_command(args.cargo), ready_type="carbon_stream_decoder_ready"
-        )
-        carbon.start()
-        try:
-            for candidate in sample:
-                try:
-                    result = run_pilot_token(carbon, candidate, rotator=rotator, tracker=tracker)
-                except PilotAbortedRateLimited as exc:
-                    aborted = True
-                    abort_reason = str(exc)
-                    print(f"[piloto] PAROU: {exc}")
-                    break
-                except Exception as exc:  # token isolado, nao e rajada de 429
-                    print(
-                        f"[piloto] token {candidate.pool_mint} falhou "
-                        f"(nao abortou o piloto): {type(exc).__name__}: {exc}"
-                    )
-                    continue
-                results.append(result)
-                print(
-                    f"[piloto] token {result.pool_mint}: tx={result.n_tx_in_window} "
-                    f"decoded={result.n_events_decoded} creditos={result.estimated_credits} "
-                    f"total_creditos_acumulado={tracker.total_credits}"
+        for window in windows:
+            if window in windows_done:
+                continue
+            try:
+                new_candidates = fetch_migrations_in_windows(
+                    rpc_url, window_start=window[0], window_end=window[1]
                 )
-        finally:
-            carbon.close()
-    except PilotAbortedRateLimited as exc:
-        aborted = True
-        abort_reason = str(exc)
-        print(f"[piloto] PAROU durante a enumeracao (rajada de falhas): {exc}")
-    except Exception as exc:
-        # Falha unica (ainda nao uma rajada de 3) durante a enumeracao --
-        # nao ha ponto de retomada parcial dentro de fetch_migrations_in_range,
-        # entao mesmo uma unica falha aqui interrompe o piloto. Reportado
-        # igual, nunca como traceback bruto.
-        aborted = True
-        abort_reason = f"falha na enumeracao (sem rajada de 3, mas sem retomada parcial): {type(exc).__name__}: {exc}"
-        print(f"[piloto] PAROU durante a enumeracao: {abort_reason}")
+            except PilotAbortedRateLimited as exc:
+                aborted = True
+                abort_reason = str(exc)
+                print(f"[piloto] PAROU durante a enumeracao (janela {window}): {exc}")
+                break
+            except Exception as exc:
+                aborted = True
+                abort_reason = f"falha na enumeracao da janela {window}: {type(exc).__name__}: {exc}"
+                print(f"[piloto] PAROU durante a enumeracao: {abort_reason}")
+                break
+            for candidate in new_candidates:
+                candidates_by_pool.setdefault(candidate.pool_mint, candidate)
+            windows_done.add(window)
+            k_windows_used = len(windows_done & set(windows))
+            checkpoint["windows_done"] = [list(w) for w in windows_done]
+            checkpoint["candidates"] = [asdict(c) for c in candidates_by_pool.values()]
+            _save_checkpoint(args.checkpoint, checkpoint)
+            print(
+                f"[piloto] janela {window}: {len(new_candidates)} migracoes novas, "
+                f"{len(candidates_by_pool)} candidatas no total"
+            )
+
+        if not aborted:
+            from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
+                JsonLineProcess,
+                _carbon_command,
+            )
+
+            carbon = JsonLineProcess(
+                _carbon_command(args.cargo), ready_type="carbon_stream_decoder_ready"
+            )
+            carbon.start()
+            try:
+                for pool_mint, candidate in candidates_by_pool.items():
+                    if pool_mint in tokens_done:
+                        continue
+                    try:
+                        result = run_pilot_token(carbon, candidate, rotator=rotator, tracker=tracker)
+                    except PilotAbortedRateLimited as exc:
+                        aborted = True
+                        abort_reason = str(exc)
+                        print(f"[piloto] PAROU: {exc}")
+                        break
+                    except Exception as exc:  # token isolado, nao e rajada de 429
+                        print(
+                            f"[piloto] token {pool_mint} falhou "
+                            f"(nao abortou o piloto): {type(exc).__name__}: {exc}"
+                        )
+                        continue
+                    tokens_done[pool_mint] = asdict(result)
+                    checkpoint["tokens"] = tokens_done
+                    _save_checkpoint(args.checkpoint, checkpoint)
+                    print(
+                        f"[piloto] token {result.pool_mint}: tx={result.n_tx_in_window} "
+                        f"decoded={result.n_events_decoded} creditos={result.estimated_credits} "
+                        f"total_creditos_acumulado={tracker.total_credits}"
+                    )
+            finally:
+                carbon.close()
     finally:
         restore_rpc()
 
-    summary = summarize_pilot(results)
+    results = [PilotTokenResult(**v) for v in tokens_done.values()]
+    summary = summarize_pilot(results, k_windows_used=k_windows_used)
     payload = {
         "version": VERSION,
         "classification": "SYSTEMS_COST_AND_COVERAGE_ONLY_NOT_AN_ECONOMIC_TEST",
         "aborted_rate_limited": aborted,
         "abort_reason": abort_reason,
-        "n_requested": args.n,
-        "n_sample_resolved_before_abort": len(sample),
+        "k_windows_requested": args.k,
+        "k_windows_used": k_windows_used,
+        "window_minutes": args.window_minutes,
+        "windows_sampled": [list(w) for w in windows],
+        "n_candidates_found": len(candidates_by_pool),
         "seed": args.seed,
         "lookback_start": args.lookback_start,
         "lookback_end": args.lookback_end,
@@ -787,9 +1106,12 @@ def main() -> int:
             "confirmation": [CONFIRMATION_BLOCK_START, CONFIRMATION_BLOCK_END],
         },
         "rate_limit": {
-            "max_rps_effective": max_rps,
+            "max_rps_effective_non_helius": max_rps,
+            "helius_max_rps": args.helius_max_rps,
             "max_consecutive_failures": args.max_consecutive_failures,
+            "max_429_stall_seconds": args.max_429_stall_seconds,
         },
+        "checkpoint_path": str(args.checkpoint),
         "tokens": [asdict(r) for r in results],
         "summary": asdict(summary),
         "rpc_usage": {
