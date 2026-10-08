@@ -1,4 +1,4 @@
-# Pré-registro em lote — SIG-FAST-DISC-V0 — 2026-10-08 (RASCUNHO, rev. 3 2026-10-09)
+# Pré-registro em lote — SIG-FAST-DISC-V0 — 2026-10-08 (RASCUNHO, rev. 4 2026-10-08)
 
 Status: **RASCUNHO, aguardando sign-off do operador.** Nenhuma coleta foi rodada
 para julgar este lote. Segue o formato de
@@ -27,6 +27,101 @@ ganha uma terceira métrica de sistema (continuidade pós-graduação,
 diretamente — ver `docs/sig-fast-live-engine-wiring-v0-2026-10-09.md` e o
 runbook do Passo 0.
 
+**Rev. 4 (2026-10-08): aceleração — H2 pivota de coleta ao vivo pra discovery
+histórico on-chain selado, antes de qualquer coleta ao vivo longa.** Decisão
+do operador: H1 (SIG-FAST-COPY-G) **não muda** — continua dependente de
+cohort formado ao vivo (seção 2, H1, inalterada). H2 (SIG-FAST-POSTMIG) muda
+de fonte de dado: em vez de esperar sessões de horas/dias do motor ao vivo,
+roda discovery+confirmação sobre migrações pump→PumpSwap **já aconteceram**,
+buscadas via RPC (Helius) e decodificadas pelo mesmo decoder Carbon já
+estendido no item (a) (`benchmarks/carbon_decoder_parity_v1/rust_runner`).
+Motivo: dado já existe on-chain, não precisa esperar nenhuma sessão rodar.
+Oito regras anti-viés (seção dedicada abaixo) entram no congelamento do
+protocolo **antes de qualquer download** — nenhuma foi violada ainda porque
+nenhum download aconteceu. Passo 0 ao vivo (runbook
+`docs/sig-fast-passo-0-calibration-runbook-v0-2026-10-09.md`) **deixa de ser
+fonte de teste de H2** e vira checagem final de sistema/latência do motor ao
+vivo (ainda relevante pra H1 e para a eventual automação futura, nunca pra
+julgar H2). Execução em 3 passos, cada um com seu próprio gate de OK do
+operador: (A) piloto de custo/cobertura (sem retorno); (B) download selado
+dos 2 blocos congelados (sem retorno até o operador aprovar a cobertura);
+(C) investigação (sem código, sem download) de uma fonte sem viés de
+sobrevivência pra H1 no histórico — não autoriza coleta de H1 ainda.
+
+## Regras anti-viés do discovery histórico de H2 (rev. 4, congeladas antes de qualquer download)
+
+1. **Universo**: migrações pump→PumpSwap **sorteadas ao acaso** (seed fixa
+   `20261008` — a data de hoje como inteiro, documentada aqui antes de ver
+   qualquer dado) da enumeração on-chain da conta de migração
+   (`39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg`, mesmo mecanismo de
+   `benchmarks/move_first_h_coverage_audit_v0/sample_migration_account.py`,
+   função `fetch_day_classified`). Só transações **bem-sucedidas** que de
+   fato completam `CreatePool` (`completed_create_pool=True` — "already
+   migrated" tem `err: null` e não conta, mesmo achado já confirmado em
+   MOVE-FIRST-H-DISC-V0), dedup por `pool_mint`. Inclui migrações que
+   morreram depois — nunca uma lista de tokens "conhecidos" ou vivos hoje
+   (isso seria viés de sobrevivência por construção).
+2. **Período — 2 blocos de calendário fixados agora (2026-10-08), sem olhar
+   nenhum dado**:
+   - **Discovery**: `2026-08-20` a `2026-09-17` (4 semanas = 28 dias), split
+     70/30 temporal fixo em dias de calendário (não por sorteio): treino
+     `2026-08-20`–`2026-09-09` (20 dias, ~71%), holdout `2026-09-09`–`2026-09-17`
+     (8 dias, ~29%).
+   - **Embargo**: `2026-09-17` a `2026-09-24` (1 semana), sem nenhuma migração
+     deste intervalo em discovery ou confirmação.
+   - **Confirmação selada**: `2026-09-24` a `2026-10-08` (2 semanas MAIS
+     RECENTES), baixada **em separado** do discovery, hash commitado antes de
+     qualquer cálculo, **nunca lida pelo código de discovery** (import/arquivo
+     separado, sem caminho de código compartilhado que leia os dois blocos ao
+     mesmo tempo).
+   - Todo o intervalo (`2026-08-20`..`2026-10-08`) é **pós-BOOST**
+     (`>=2026-07-21`, confirmado em `docs/strategy-h-established-memecoin-
+     momentum-discovery-v0-preregistration-DRAFT-2026-10-08.md`) — um único
+     regime de fee/BOOST em toda a janela, sem mistura de regimes.
+3. **Por token sorteado**: todos os trades do pool PumpSwap, da migração até
+   migração+20min (marco do sinal MemeTrans) + 60min (W máximo da métrica
+   primária). Reservas (`pool_base_token_reserves`/`pool_quote_token_reserves`)
+   e fee (`lp_fee`/`protocol_fee`/`coin_creator_fee` + basis points) lidas do
+   próprio evento `BuyEvent`/`SellEvent` (decoder Carbon, item (a) desta
+   sessão — já expõe esses campos). Tempo = `block_time` da transação; ordem
+   dentro do mesmo `block_time` = `slot` + índice da transação no bloco.
+4. **Causalidade**: o sinal (marco dos 20min, preço, contagem de trades) usa
+   só trades com `block_time <= T`. Entrada = 1º trade com
+   `block_time >= T + Δ`, **Δ primário = 30s + 2s de atraso de detecção
+   assumido = 32s** (grade diagnóstica de Δ continua só diagnóstico, igual
+   rev. 2/3). Nenhum trade depois de `T + Δ` influencia a decisão de entrar
+   — mesmo teste de causalidade já existente em
+   `tests/test_opportunity_path_metrics_v0.py` (`CausalEntryTests`) se aplica
+   aqui sem modificação, porque consome a mesma interface `PathTrade`/
+   `find_causal_entry` do F2 congelado.
+5. **Selagem**: baixar → gravar o dado bruto (resposta RPC completa, não só
+   os campos decodificados) → hash commitado → só então calcular qualquer
+   métrica. Cobertura (% de trades com reservas+fee decodificados, nº de
+   migrações sorteadas que renderam dado utilizável) é reportada **antes** de
+   qualquer resultado — mesmo padrão já usado em F1c/F7 desta linha de
+   trabalho.
+6. **Proveniência**: tabela própria de backfill, schema dedicado (ver item
+   (19) do work order desta rodada) com `source`, `fetched_at` real (quando
+   a chamada RPC de fato aconteceu, não um valor inventado) e `block_time`
+   (tempo on-chain real do trade). **Nunca** em `market_trade_observations`
+   (essa tabela é do caminho ao vivo/batch, schema já tem um contrato
+   diferente) e **nunca** com um `observed_at` falso — isso violaria o
+   invariante 11 de `CLAUDE.md` ("historical data may not receive fake
+   historical `observed_at`"). O backfill histórico não tem e não precisa de
+   `observed_at` no sentido do invariante (que é sobre o momento em que ESTE
+   repositório observou algo ao vivo); ele tem `fetched_at` (quando a chamada
+   RPC aconteceu, hoje) e `block_time` (quando o trade aconteceu on-chain,
+   no passado) — dois campos reais, nunca um substituindo o outro.
+7. **Baseline (F3)**: do mesmo universo sorteado (regra 1), mesma idade
+   pós-migração que o sinal — reusa `opportunity_path_baseline_v0.py` sem
+   modificação, só troca de onde vêm os `TokenCandidate` (histórico em vez de
+   live).
+8. **Status**: H2 passa a ser discovery histórico + confirmação histórica
+   selada (regras 1-7); Passo 0 ao vivo deixa de julgar H2, vira checagem de
+   sistema/latência (ver "Rev. 4" acima). Registrado em
+   `docs/research-hypothesis-registry-v1-2026-10-04.md` (linha
+   `SIG-FAST-DISC-V0`, mesmo commit desta atualização).
+
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 Instrumento de medida (congelado para este lote, trocar exige lote novo):
@@ -51,6 +146,14 @@ idêntica. As duas etapas são exigidas, em sequência — isso é a disciplina 
 Gate 2) aplicada à régua de caminho de preço.
 
 ## 1. Coleta que julga este lote
+
+**Rev. 4: as duas hipóteses não compartilham mais uma única coleta.** H1
+continua na coleta ao vivo (seção 1a, inalterada desde a rev. 3). H2 passa a
+usar um discovery+confirmação histórico selado, sem motor ao vivo (seção 1b,
+nova nesta revisão — ver também "Regras anti-viés do discovery histórico de
+H2" acima).
+
+### 1a. Coleta de H1 (ao vivo, inalterada)
 
 **Discovery NÃO é retrospectivo.** Os trades já capturados antes de
 2026-10-09 não têm reservas (`base_reserves_raw`/`quote_reserves_raw`
@@ -89,38 +192,61 @@ coleta nova**, rodando o motor corrigido, em sessões longas e contínuas — ve
   commitado antes de qualquer cálculo (ver F7), PC sem suspensão durante toda
   a coleta (sessões de horas, não minutos).
 
-### Plano de coleta
+### 1b. Coleta de H2 (histórica, selada, rev. 4)
 
-**Passo 0 — calibração, não julga nada (puro systems check, não gasta
-tentativa).** Sessão curta (2-4h) só para medir, com dado real, a taxa de
-sinais/hora de cada família e a cobertura de preço (`path_coverage_audit.py`)
-sob o motor corrigido. Isso não lê outcome (contagem de sinais e cobertura são
-métricas de sistema, não preço/retorno) e informa o dimensionamento real dos
-passos seguintes, em vez de travar nas estimativas abaixo. Rev. 3 (item (b)
-do operador) acrescenta uma terceira métrica de sistema ao mesmo Passo 0:
-`audit_graduation_continuity` (mesmo arquivo) reporta, por token graduado
-pra PumpSwap, se o motor continua persistindo trades por >=60min depois da
-graduação, com a distribuição da duração e uma classificação de corte
+- Run key(s): `<a definir no sign-off da rev. 4 — chaves frescas, nunca
+  usadas, uma por bloco (discovery/confirmação) pra manter a separação física
+  exigida pela regra 2>`.
+- Caminho de aquisição: enumeração da conta de migração (regra 1) → sorteio
+  (seed `20261008`) → busca de trades do pool via RPC (`getTransactionsForAddress`
+  filtrado por `blockTime`, mesma chamada já provada em
+  `sample_migration_account.py`) → decodificação pelo decoder Carbon (item
+  (a) desta sessão, `benchmarks/carbon_decoder_parity_v1/rust_runner`) →
+  tabela própria de backfill (regra 6) → `PathTrade` (F2) sem passar por
+  `market_trade_observations`.
+- Janela e cohorts: discovery = treino 70% + holdout 30% (datas fixas, regra
+  2); confirmação selada = bloco separado, 1 semana de embargo, nunca lida
+  pelo código de discovery (regra 2).
+- Instrumento de medida: o mesmo F2/F3/F4 de H1 — nenhuma mudança no
+  instrumento, só na fonte do `PathTrade`/`CostModel.venue_fee_pct` (agora
+  lido do evento histórico, não do live capture).
+- **Δ primário = 32s fixo** (30s + 2s de atraso de detecção assumido, regra
+  4) — distinto do Δ=30s de H1 porque H2 não tem motor ao vivo cujo atraso
+  real ele vá medir; os outros valores da grade continuam diagnóstico.
+- Gates de sistema antes de qualquer número econômico: cobertura de preço
+  derivável **>=95%** (mesmo piso de H1/F1c, agora medido sobre o backfill
+  histórico); piloto (passo A) aprovado antes do download dos blocos (passo
+  B); cobertura do download aprovada pelo operador antes de qualquer cálculo
+  de retorno (passo B, "NÃO calcular retorno até eu dar OK").
+- Condições operacionais: mesma disciplina de selagem da regra 5 — sem
+  suspensão de energia não é necessário aqui (chamadas RPC pontuais, não uma
+  sessão contínua de horas), mas hash commitado antes de qualquer cálculo é
+  obrigatório do mesmo jeito.
+
+### Plano de coleta (H1, ao vivo — rev. 4: Passo 0 deixa de julgar H2)
+
+**Passo 0 — rev. 4: deixa de julgar H2, vira checagem final de sistema/
+latência (nunca fonte do teste de nenhuma hipótese).** Sessão curta (2-4h)
+pra medir, com dado real, a cobertura de preço (`path_coverage_audit.py`) e
+a continuidade pós-graduação sob o motor corrigido, relevante pra H1 (que
+continua dependendo do motor ao vivo) e pra validar o motor antes de uma
+eventual automação futura. `audit_graduation_continuity` (mesmo arquivo,
+item (b)) reporta, por token graduado pra PumpSwap, se o motor continua
+persistindo trades por >=60min depois da graduação
 (`meets_60min_floor` / `dropped_before_60min_floor` /
-`run_ended_before_60min_floor`) -- ainda contagem/duração, nunca preço ou
-retorno. H2 depende diretamente dessa continuidade (seu marco é aos 20min
-pós-graduação); se o motor "soltar" tokens antes de 60min no Passo 0 real,
-é bloqueador de sistema, não decisão de hipótese -- runbook
+`run_ended_before_60min_floor`) -- contagem/duração, nunca preço ou retorno.
+**Essa métrica não decide mais nada sobre H2** (rev. 4): H2 agora lê
+continuidade do próprio backfill histórico (regra 3 das regras anti-viés),
+não do motor ao vivo -- runbook
 `docs/sig-fast-passo-0-calibration-runbook-v0-2026-10-09.md`.
 
-**Estimativa de taxa de sinal (de systems data já coletado, não é outcome)**:
-o job de enumeração da conta de migração (parado, servia H, dado 100%
-sistêmico) registrou, em dias recentes (jul/ago 2026), entre ~730 e ~1.220
-graduações pump→PumpSwap por dia (`pools=` no log de
-`benchmarks/move_first_h_coverage_audit_v0`), média aproximada **~950/dia
-(~40/hora)**. MemeTrans mede que ~72,96% dessas caem abaixo de 40% do preço
-de migração em 20min — ou seja, **no máximo ~27% (~10-11/hora) passam só essa
-condição** da definição de sobrevivente de H2; o filtro adicional de ">=20
-trades nos últimos 5min" reduz esse número mais, mas **não tenho dado medido
-de quanto** — fica como "não confirmado", a calibrar no Passo 0, não
-inventado aqui. Para H1, a taxa de sinal depende do cohort de carteiras, que
-só existe depois do bloco 1 (abaixo) — **não estimável antes da primeira
-sessão real**.
+**Estimativa de taxa de sinal de H1 (de systems data já coletado, não é
+outcome)**: a taxa de sinal de H1 depende do cohort de carteiras, que só
+existe depois do bloco 1 (abaixo) — **não estimável antes da primeira sessão
+real**. (A estimativa de taxa de graduação pump→PumpSwap que vivia aqui
+antes da rev. 4 -- ~950/dia, MemeTrans ~27% sobrevivente -- era sobre H2;
+H2 saiu deste plano ao vivo, ver "Regras anti-viés do discovery histórico de
+H2" acima, onde a taxa real agora é medida pelo piloto, não estimada.)
 
 **Bloco 1 — formação do cohort H1 (bloco temporal inicial, congelado depois).**
 Proposta: 48-72h contínuas de coleta antes de qualquer avaliação de sinal de
@@ -129,23 +255,23 @@ com preço (compra+venda, ambas com preço derivável nesta mesma coleta nova).
 **Não confirmado com dado real** quantas carteiras atingem round-trips
 suficientes nesse intervalo — o Passo 0 não mede isso (é outcome de lucro
 realizado, ainda que sem ser o veredito da hipótese); a calibração real desse
-bloco só acontece rodando-o. H2 **não depende** deste bloco — pode gerar
-sinais desde o primeiro minuto de coleta, pois seu gatilho é por token, não
-por cohort.
+bloco só acontece rodando-o.
 
-**Discovery (H2 desde o início; H1 só após o bloco 1).** Estimativa, com a
-taxa acima e suporte mínimo n>=30 por família: a ~10/hora (limite superior,
-H2, antes do filtro de volume), **n=30 é alcançável em poucas horas** de
-coleta contígua; o fator dominante de incerteza é o filtro de volume não
-medido e, para H1, o tamanho do cohort que emergir do bloco 1. **Proposta
-conservadora**: uma janela contínua única de **5-7 dias** (cobre o bloco 1 de
-H1 inteiro + folga para H2 e H1 atingirem n>=30 cada, considerando vetos que
-reduzem a amostra elegível — PQ-TR ainda fora, bundle/sniper ainda fora até o
-merge). Dividir em 70/30 por ordem temporal dentro dessa janela.
+**Discovery de H1 (rev. 4: só H1 — H2 saiu deste plano ao vivo).** O
+dimensionamento desta janela (quantos dias de coleta ao vivo) depende só do
+cohort que emergir do bloco 1 -- não há mais estimativa de taxa H2 puxando
+este número. **Proposta conservadora, ainda provisória**: uma janela
+contínua única de **5-7 dias** (cobre o bloco 1 inteiro + folga para H1
+atingir n>=30, considerando vetos que reduzem a amostra elegível — PQ-TR
+ainda fora, bundle/sniper já mergeado nesta revisão). Dividir em 70/30 por
+ordem temporal dentro dessa janela. Como H2 não depende mais desta coleta,
+este plano ao vivo passa a ser **secundário** no cronograma -- a prioridade
+imediata é o discovery histórico de H2 (regras anti-viés acima).
 
-**Confirmação prospectiva fresca.** Nova janela contínua, iniciada só depois
-do discovery (regra+Δ+saída) estar congelada e commitada — sem overlap. Mesma
-ordem de grandeza de dias que o discovery, para ter suporte comparável.
+**Confirmação prospectiva fresca (H1).** Nova janela contínua, iniciada só
+depois do discovery de H1 (regra+Δ+saída) estar congelada e commitada — sem
+overlap. Mesma ordem de grandeza de dias que o discovery, para ter suporte
+comparável.
 
 **Stall guard.** O motor de discovery (`benchmarks/sig_fast_v0/discovery_v0.py`,
 F7) já tem `StallGuard`. A **coleta em si** (`run_live_shadow_v0`) **agora
@@ -158,17 +284,16 @@ mesmo padrão de `FORWARD_COLLECTION_V43_STALL_GAP_SECONDS`/
 `SURFACE_IDLE_TIMEOUT_SECONDS` já existente, que cobre "a conexão WS calou",
 não "o loop do processo travou".
 
-**Custo de créditos Helius da coleta contínua.** **Não confirmado nesta
-revisão** — o volume de trades Pump/PumpSwap observado no sandbox já mostrou
-picos de >250k trades/dia só para a conta de migração (não é o volume de
-notificação WS, que é por evento, não por polling, mas ainda proporcional ao
-volume on-chain real). Recomendo o operador checar o uso do plano Helius dele
-depois do Passo 0 (2-4h), que já vai dar uma amostra real de consumo pra
-extrapolar pros 5-7 dias propostos — não estimado aqui sem dado de preço do
-plano, que eu não tenho.
+**Custo de créditos Helius da coleta contínua (H1, ao vivo).** **Não
+confirmado nesta revisão** — recomendo o operador checar o uso do plano
+Helius dele depois do Passo 0 (2-4h), que já vai dar uma amostra real de
+consumo pra extrapolar pros 5-7 dias propostos. (Distinto do custo de H2,
+que agora é RPC pontual por chamada, não uma sessão WS contínua — medido
+pelo piloto, não estimado aqui; ver "Regras anti-viés do discovery histórico
+de H2".)
 
 **Os números de duração acima (Passo 0, bloco 1 de 48-72h, janela de
-discovery de 5-7 dias) são estimativas derivadas de taxa de migração
+discovery de 5-7 dias, H1) são estimativas derivadas de taxa de migração
 observada, não medição direta de taxa de sinal — ainda não confirmados pelo
 operador.** Recomendo rodar o Passo 0 primeiro e só então fixar os números
 maiores; isso vai para as perguntas abertas no fim deste documento, não foi
@@ -264,35 +389,55 @@ decidido aqui.
      irrelevante por construção.
   3. Evidência: MemeTrans, mesma fonte já verificada diretamente na Tabela 6 do
      paper (citada em `docs/strategy-options-move-first-2026-10-07.md`, Opção F).
-  4. Teste mais barato: coleta nova (ver seção 1), mesma coleta de H1.
+  4. Teste mais barato (rev. 4): discovery+confirmação **histórico selado**
+     (ver seção 1b e "Regras anti-viés do discovery histórico de H2") — dado
+     já existe on-chain, não precisa esperar nenhuma sessão ao vivo rodar;
+     mais barato que a coleta ao vivo de H1 porque não depende de duração de
+     sessão nem de energia da máquina ligada.
   5. Critério de morte: ver "PASS exige" abaixo.
 - **Gatilho de entrada (sinal) — definição única, resolvida pelo operador (não
   é mais grade de X)**: `idade_pos_graduacao == 20 minutos` **e** preço no
   marco de 20min >= 40% do preço de migração (definição exata do MemeTrans)
   **e** >=20 trades nos últimos 5 minutos antes do marco (15-20min
   pós-graduação). `signal_time` = o instante do marco dos 20 minutos.
-- **Dependências de observabilidade**: `market_lifecycle_observations` com
-  venue="pumpswap" pra graduação; `base_reserves_raw`/`quote_reserves_raw`
-  (F1b) pra medir volume/liquidez sustentada sem reconstruir o histórico de
-  swap inteiro; `base_amount_raw`/`quote_amount_raw` pra contar os >=20 trades
-  e derivar o preço no marco.
+- **Fonte de dado (rev. 4)**: discovery+confirmação histórico selado sobre
+  migrações sorteadas, não coleta ao vivo — ver "1b. Coleta de H2" e "Regras
+  anti-viés do discovery histórico de H2" acima.
+- **Dependências de observabilidade (rev. 4: tabela de backfill histórico,
+  não mais `market_trade_observations`/`market_lifecycle_observations`)**:
+  migração detectada via `CreatePool` na enumeração (regra 1); reservas
+  (`pool_base_token_reserves`/`pool_quote_token_reserves`) e fee (`lp_fee`/
+  `protocol_fee`/`coin_creator_fee` + basis points) lidas do evento
+  `BuyEvent`/`SellEvent` decodificado pelo Carbon (regra 3); `base_amount_raw`/
+  `quote_amount_raw` do mesmo evento pra contar os >=20 trades e derivar o
+  preço no marco.
 - **Vetos (rejeição)**: os mesmos 3 de H1 (PQ-TR aguardando replicação, freeze
   authority disponível, bundle/sniper/bump dependente do merge) — pouco
   relevante numa moeda já sobrevivente 20min, mas ainda computável se os
-  campos existirem.
+  campos existirem **e** se a tabela de backfill histórico também carregar
+  `creator`/`creation_slot` (a confirmar quando o fetcher histórico for
+  implementado — ver item (19) do work order desta rodada).
 - **Janela primária**: W=900s, alvo +50%/stop −30%, mesma métrica (a) de H1,
-  **Δ=30s fixo**.
-- **Suporte mínimo**: n>=30 pares primários (Δ=30s fixo).
-- **PASS exige todos**: os mesmos 3 itens de H1 (edge >=10pp no Δ primário; EV
-  líquido>0 e PF>1 sob a melhor das 6 saídas; sustenta no holdout de 30% E na
-  confirmação fresca).
+  **Δ=32s fixo (rev. 4: 30s + 2s de atraso de detecção assumido — distinto
+  do Δ=30s de H1, que não tem esse componente porque mede atraso real do
+  motor ao vivo)**.
+- **Suporte mínimo**: n>=30 pares primários (Δ=32s fixo).
+- **PASS exige todos**: os mesmos 3 itens de H1 (edge >=10pp no Δ primário de
+  H2, 32s; EV líquido>0 e PF>1 sob a melhor das 6 saídas; sustenta no holdout
+  de 30% E na confirmação histórica selada — ver "Item (c)").
 - **FAIL**: mesmos critérios de H1.
 - **INCONCLUSIVE**: suporte insuficiente, ou cobertura de preço/graduação
   abaixo de 95%.
-- **Controles/placebo**: baseline pareado (F3), mesma venue="pumpswap", mesma
-  faixa de `idade_pos_graduacao` (20min ± tolerância), mesma atividade
-  mínima. MFE só descritivo.
-- **O que um PASS não prova**: o mesmo de H1.
+- **Controles/placebo**: baseline pareado (F3), mesmo universo sorteado da
+  regra 1 (nunca lista de tokens vivos hoje), mesma faixa de
+  `idade_pos_graduacao` (20min ± tolerância), mesma atividade mínima. MFE só
+  descritivo.
+- **O que um PASS não prova (rev. 4, acrescenta ao de H1)**: fill real,
+  latência além da simulada, execução automatizada, shadow, live (mesmo de
+  H1) **e, por ser histórico**: que o motor ao vivo (`run_live_shadow_v0`)
+  de fato captura este sinal em tempo real com latência <=32s — isso só o
+  Passo 0 ao vivo (agora checagem de sistema, não de hipótese) e uma eventual
+  coleta ao vivo futura de H2 poderiam mostrar.
 
 ## Candidatas consideradas e deixadas de fora (registro da triagem, não é descarte formal)
 
@@ -310,15 +455,20 @@ decidido aqui.
 
 ## 3. Multiplicidade e próximos passos
 
-- Este lote julga **K = 2** hipóteses na mesma coleta (discovery + holdout
-  70/30 + confirmação prospectiva fresca separada).
+- Este lote julga **K = 2** hipóteses, cada uma com discovery + holdout 70/30
+  + confirmação separada (rev. 4: **não mais a mesma coleta** — H1 ao vivo,
+  H2 histórico selado, ver seção 1).
 - **Comparações de decisão, recontadas (rev. 2)**: 2 famílias × 6 regras de
-  saída (seleção da melhor em treino, Δ=30s fixo) = **12 comparações**.
-  Métrica (a) é lida uma vez por família no Δ primário (+2), totalizando
-  **14 leituras que entram na decisão**. A grade diagnóstica
-  (Δ∈{5,15,60,120}s, janelas 60/300/3600s, barreiras ±20/100/200%) é
-  computada e reportada, mas **nenhuma delas conta para PASS/FAIL** — são só
-  calibração para quando o operador souber a latência real dele.
+  saída (seleção da melhor em treino, no Δ primário de cada família) =
+  **12 comparações**. Métrica (a) é lida uma vez por família no respectivo
+  Δ primário (+2), totalizando **14 leituras que entram na decisão**. A
+  grade diagnóstica (Δ∈{5,15,60,120}s, janelas 60/300/3600s, barreiras
+  ±20/100/200%) é computada e reportada, mas **nenhuma delas conta para
+  PASS/FAIL** — são só calibração. **Rev. 4**: a contagem de 12+2=14 não
+  muda com o pivô de fonte de dado de H2 — é sobre seleção de regra/Δ por
+  família, não sobre de onde vêm os trades; só o Δ primário de H2 mudou de
+  valor (30s→32s, regra 4 das regras anti-viés), não o número de
+  comparações.
 - **Recontagem pós-remoção do veto "histórico do criador" (rev. 3, item (d)
   do operador)**: o veto removido **não participava** da contagem de 14
   leituras acima — vetos (PQ-TR, freeze authority, bundle/sniper/bump) são
@@ -338,12 +488,12 @@ decidido aqui.
 - Falha de sistema da coleta → nenhuma hipótese recebe veredito; o lote pode
   ser reaproveitado numa coleta nova sem mudança de regra.
 - **Critério de morte do caminho inteiro (não só de uma família)**: se o edge
-  (métrica a) some no Δ primário (30s) para AMBAS as famílias, o caminho
-  manual SIG-FAST morre — automação continua bloqueada pelo modo atual de
-  qualquer forma, então isso não abre uma porta de automação, só encerra o
-  programa de memecoin pela regra de parada já registrada (nenhum caminho 2
-  reservado foi ocupado). A grade diagnóstica (incluindo Δ>=30s mais largo)
-  informa esse veredito mas não o decide isoladamente.
+  (métrica a) some no Δ primário de cada família (30s pra H1, 32s pra H2)
+  para AMBAS as famílias, o caminho manual SIG-FAST morre — automação
+  continua bloqueada pelo modo atual de qualquer forma, então isso não abre
+  uma porta de automação, só encerra o programa de memecoin pela regra de
+  parada já registrada (nenhum caminho 2 reservado foi ocupado). A grade
+  diagnóstica informa esse veredito mas não o decide isoladamente.
 
 ## 4. Proibido depois de ver dado
 
@@ -352,7 +502,11 @@ remover hipóteses do lote; olhar só um subgrupo; combinar as duas famílias nu
 score; trocar a regra de saída ou o Δ escolhidos no treino depois de ver o
 holdout ou a confirmação; reabrir `BUY-ACCEL` ou qualquer outra família
 fechada para "salvar" um resultado fraco; promover um valor da grade
-diagnóstica (Δ≠30s) a decisório depois de ver que ele teria passado.
+diagnóstica (Δ≠30s pra H1, Δ≠32s pra H2) a decisório depois de ver que ele
+teria passado; mudar as datas dos 2 blocos de calendário de H2 (regra 2) ou
+o universo sorteado (regra 1, seed `20261008`) depois de ver qualquer dado —
+inclusive depois do piloto (passo A), que só mede sistema/custo, nunca
+sinal ou retorno.
 
 ## 5. Atualização do registro
 
@@ -376,10 +530,11 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 
 ### Novas perguntas abertas (desta revisão, ainda sem resposta)
 
-1. Confirmar a duração/sessões do "Plano de coleta" acima (Passo 0 de
-   calibração, bloco 1 de 48-72h, janela de discovery de 5-7 dias) — são
-   estimativas a partir de taxa de migração observada (dado de sistema já
-   coletado), não medição direta de taxa de sinal.
+1. **(Rev. 4: escopo agora é só H1)** Confirmar a duração/sessões do "Plano
+   de coleta (H1, ao vivo)" acima (Passo 0 de calibração, bloco 1 de 48-72h,
+   janela de discovery de 5-7 dias) — são estimativas a partir de taxa de
+   migração observada (dado de sistema já coletado), não medição direta de
+   taxa de sinal. H2 não depende mais desta resposta.
 2. ~~Métrica exata do veto "histórico do criador".~~ Resolvido (rev. 3, item
    (d) do operador, 2026-10-09): veto **REMOVIDO** da V0, não "a definir" --
    não existe definição nem histórico implementado nesta rodada. H1/H2 ficam
@@ -388,5 +543,21 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
 3. ~~Checar/implementar stall guard próprio pra sessões de coleta de
    horas/dias em `run_live_shadow_v0`.~~ Resolvido (rev. 3, item (b) do
    operador, 2026-10-09): implementado -- ver parágrafo "Stall guard" acima.
-4. Custo de créditos Helius da coleta contínua de dias — não confirmado,
-   proposta é calibrar no Passo 0 antes de comprometer a janela de dias.
+4. Custo de créditos Helius da coleta contínua de dias **(H1)** — não
+   confirmado, proposta é calibrar no Passo 0 antes de comprometer a janela
+   de dias.
+
+### Novas perguntas abertas (rev. 4, ainda sem resposta)
+
+5. Os 2 blocos de calendário fixados (regra 2) rendem n>=30 sinais H2
+   elegíveis no treino? Não assumido — é exatamente o que o piloto (passo A)
+   mede antes do download dos blocos (passo B).
+6. **Bloqueador de execução**: `SOLANA_RPC_URL` está vazio neste sandbox —
+   nenhuma chamada RPC real é possível até o operador configurar o secret
+   nas configurações do ambiente. Piloto e fetcher ficam prontos (self-check
+   só com dado sintético) até isso ser resolvido.
+7. H1 no histórico (step C desta rodada): existe forma barata e sem viés de
+   enumerar TODAS as criações de token num período (não só graduadas)? Só
+   investigação nesta rodada, sem download — achado reportado no handoff
+   desta revisão, ainda não decide nada sobre autorizar coleta de H1
+   histórica.
