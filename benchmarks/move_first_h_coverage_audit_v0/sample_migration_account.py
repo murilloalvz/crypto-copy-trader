@@ -12,6 +12,7 @@ Does not open a PRE-REGISTRADA line and does not spend an attempt (registry rule
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import time
@@ -34,14 +35,14 @@ def _load_rpc_url() -> str:
     return match.group(1).strip()
 
 
-def _rpc(rpc_url: str, method: str, params: list, *, retries: int = 3) -> dict:
+def _rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     req = urllib.request.Request(rpc_url, data=body, headers={"Content-Type": "application/json"})
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, ConnectionError):
             if attempt == retries - 1:
                 raise
             time.sleep(1.5 * (attempt + 1))
