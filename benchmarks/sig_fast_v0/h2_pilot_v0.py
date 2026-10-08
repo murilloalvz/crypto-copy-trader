@@ -1013,8 +1013,16 @@ def main() -> int:
     }
     tokens_done: dict[str, dict[str, Any]] = checkpoint["tokens"]
 
-    aborted = False
-    abort_reason: str | None = None
+    # Enumeracao e Stage 2 abortam de forma independente -- se a enumeracao
+    # parar numa janela (ex. 429 sustentado na Helius), os candidatos JA
+    # encontrados em janelas anteriores ainda vao pro Stage 2 (que prioriza
+    # QuickNode/publico, nao a Helius), em vez de descartar esse trabalho.
+    # Isso serve o proprio pedido de checkpoint do operador: nao refazer (ou
+    # jogar fora) o que ja foi encontrado.
+    enumeration_aborted = False
+    enumeration_abort_reason: str | None = None
+    stage2_aborted = False
+    stage2_abort_reason: str | None = None
     k_windows_used = len(windows_done & set(windows))
     try:
         for window in windows:
@@ -1025,14 +1033,16 @@ def main() -> int:
                     rpc_url, window_start=window[0], window_end=window[1]
                 )
             except PilotAbortedRateLimited as exc:
-                aborted = True
-                abort_reason = str(exc)
+                enumeration_aborted = True
+                enumeration_abort_reason = str(exc)
                 print(f"[piloto] PAROU durante a enumeracao (janela {window}): {exc}")
                 break
             except Exception as exc:
-                aborted = True
-                abort_reason = f"falha na enumeracao da janela {window}: {type(exc).__name__}: {exc}"
-                print(f"[piloto] PAROU durante a enumeracao: {abort_reason}")
+                enumeration_aborted = True
+                enumeration_abort_reason = (
+                    f"falha na enumeracao da janela {window}: {type(exc).__name__}: {exc}"
+                )
+                print(f"[piloto] PAROU durante a enumeracao: {enumeration_abort_reason}")
                 break
             for candidate in new_candidates:
                 candidates_by_pool.setdefault(candidate.pool_mint, candidate)
@@ -1046,7 +1056,7 @@ def main() -> int:
                 f"{len(candidates_by_pool)} candidatas no total"
             )
 
-        if not aborted:
+        if candidates_by_pool:
             from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
                 JsonLineProcess,
                 _carbon_command,
@@ -1063,8 +1073,8 @@ def main() -> int:
                     try:
                         result = run_pilot_token(carbon, candidate, rotator=rotator, tracker=tracker)
                     except PilotAbortedRateLimited as exc:
-                        aborted = True
-                        abort_reason = str(exc)
+                        stage2_aborted = True
+                        stage2_abort_reason = str(exc)
                         print(f"[piloto] PAROU: {exc}")
                         break
                     except Exception as exc:  # token isolado, nao e rajada de 429
@@ -1086,6 +1096,9 @@ def main() -> int:
     finally:
         restore_rpc()
 
+    aborted = enumeration_aborted or stage2_aborted
+    abort_reason = stage2_abort_reason or enumeration_abort_reason
+
     results = [PilotTokenResult(**v) for v in tokens_done.values()]
     summary = summarize_pilot(results, k_windows_used=k_windows_used)
     payload = {
@@ -1093,6 +1106,10 @@ def main() -> int:
         "classification": "SYSTEMS_COST_AND_COVERAGE_ONLY_NOT_AN_ECONOMIC_TEST",
         "aborted_rate_limited": aborted,
         "abort_reason": abort_reason,
+        "enumeration_aborted": enumeration_aborted,
+        "enumeration_abort_reason": enumeration_abort_reason,
+        "stage2_aborted": stage2_aborted,
+        "stage2_abort_reason": stage2_abort_reason,
         "k_windows_requested": args.k,
         "k_windows_used": k_windows_used,
         "window_minutes": args.window_minutes,
