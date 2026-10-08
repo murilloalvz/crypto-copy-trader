@@ -164,6 +164,10 @@ class PumpSwapStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((sell.side, sell.pool, sell.user), ("sell", self.pool, self.user))
         self.assertEqual(buy.base_amount_raw, 100)
         self.assertEqual(buy.quote_amount_raw, 700)
+        self.assertEqual(buy.pool_base_token_reserves, 500)
+        self.assertEqual(buy.pool_quote_token_reserves, 600)
+        self.assertEqual(sell.pool_base_token_reserves, 500)
+        self.assertEqual(sell.pool_quote_token_reserves, 600)
 
     def test_create_pool_and_pool_account_decode_identity(self):
         create = decode_pumpswap_create_pool_event_payload(
@@ -234,6 +238,10 @@ class PumpSwapStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].observation.transaction_key, "sig-create-buy")
         self.assertEqual(rows[0].observation.observed_at, 1005)
         self.assertEqual(rows[0].observation.venue, "pumpswap")
+        self.assertEqual(rows[0].observation.base_amount_raw, 100)
+        self.assertEqual(rows[0].observation.quote_amount_raw, 700)
+        self.assertEqual(rows[0].observation.base_reserves_raw, 500)
+        self.assertEqual(rows[0].observation.quote_reserves_raw, 600)
         self.assertIsNotNone(lifecycle)
 
     async def test_hydration_delays_effective_trade_observed_at_and_cache_is_reused(self):

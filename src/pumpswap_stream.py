@@ -34,6 +34,8 @@ class PumpSwapTradeEvent:
     base_amount_raw: int
     quote_amount_raw: int
     event_index: int = 0
+    pool_base_token_reserves: int | None = None
+    pool_quote_token_reserves: int | None = None
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,8 @@ def _decode_trade_event_payload(payload: bytes, *, side: str) -> PumpSwapTradeEv
         timestamp=int(timestamp),
         base_amount_raw=int(amounts[0]),
         quote_amount_raw=int(amounts[6]),
+        pool_base_token_reserves=int(amounts[4]),
+        pool_quote_token_reserves=int(amounts[5]),
     )
 
 
@@ -504,6 +508,10 @@ async def persist_pumpswap_notification(
             venue="pumpswap",
             transaction_key=notification.signature,
             slot=notification.slot,
+            base_amount_raw=event.base_amount_raw,
+            quote_amount_raw=event.quote_amount_raw,
+            base_reserves_raw=event.pool_base_token_reserves,
+            quote_reserves_raw=event.pool_quote_token_reserves,
         )
         if record_market_trade(
             acquisition_run_key=run_key,

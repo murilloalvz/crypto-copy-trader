@@ -30,6 +30,10 @@ class MarketTradeObservation:
     venue: str | None = None
     transaction_key: str | None = None
     slot: int | None = None
+    base_amount_raw: int | None = None
+    quote_amount_raw: int | None = None
+    base_reserves_raw: int | None = None
+    quote_reserves_raw: int | None = None
 
 
 @dataclass(frozen=True)

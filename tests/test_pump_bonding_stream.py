@@ -30,7 +30,21 @@ def b58decode(value: str) -> bytes:
     return b"\x00" * zeros + raw
 
 
-def payload(*, mint: str, user: str, is_buy: bool = True, timestamp: int = 1000, sol_amount: int = 2_000_000_000, token_amount: int = 50_000_000) -> bytes:
+def payload(
+    *,
+    mint: str,
+    user: str,
+    is_buy: bool = True,
+    timestamp: int = 1000,
+    sol_amount: int = 2_000_000_000,
+    token_amount: int = 50_000_000,
+    virtual_sol_reserves: int | None = None,
+    virtual_token_reserves: int | None = None,
+) -> bytes:
+    if virtual_sol_reserves is not None and virtual_token_reserves is not None:
+        tail = struct.pack("<Q", virtual_sol_reserves) + struct.pack("<Q", virtual_token_reserves)
+    else:
+        tail = b"ignored-tail"
     return b"".join(
         [
             PUMP_TRADE_EVENT_DISCRIMINATOR,
@@ -40,7 +54,7 @@ def payload(*, mint: str, user: str, is_buy: bool = True, timestamp: int = 1000,
             bytes([1 if is_buy else 0]),
             b58decode(user).rjust(32, b"\x00"),
             struct.pack("<q", timestamp),
-            b"ignored-tail",
+            tail,
         ]
     )
 
@@ -83,6 +97,25 @@ class PumpBondingStreamTests(unittest.TestCase):
         self.assertEqual(item.timestamp, 1234)
         self.assertEqual(item.sol_amount, 2_000_000_000)
 
+    def test_decodes_virtual_reserves_when_present(self):
+        item = decode_pump_trade_event_payload(
+            payload(
+                mint=self.MINT,
+                user=self.USER,
+                virtual_sol_reserves=30_000_000_000,
+                virtual_token_reserves=1_073_000_000_000_000,
+            )
+        )
+        self.assertIsNotNone(item)
+        self.assertEqual(item.virtual_sol_reserves, 30_000_000_000)
+        self.assertEqual(item.virtual_token_reserves, 1_073_000_000_000_000)
+
+    def test_virtual_reserves_none_when_payload_too_short(self):
+        item = decode_pump_trade_event_payload(payload(mint=self.MINT, user=self.USER))
+        self.assertIsNotNone(item)
+        self.assertIsNone(item.virtual_sol_reserves)
+        self.assertIsNone(item.virtual_token_reserves)
+
     def test_other_anchor_event_is_ignored(self):
         self.assertIsNone(decode_pump_trade_event_payload(b"12345678" + b"x" * 100))
 
@@ -103,7 +136,14 @@ class PumpBondingStreamTests(unittest.TestCase):
         self.assertIsNone(parse_logs_notification(message, observed_at=1100))
 
     def test_parses_and_persists_trade_causally(self):
-        raw = payload(mint=self.MINT, user=self.USER, is_buy=True, timestamp=1000)
+        raw = payload(
+            mint=self.MINT,
+            user=self.USER,
+            is_buy=True,
+            timestamp=1000,
+            virtual_sol_reserves=30_000_000_000,
+            virtual_token_reserves=1_073_000_000_000_000,
+        )
         message = {
             "method": "logsNotification",
             "params": {
@@ -144,6 +184,10 @@ class PumpBondingStreamTests(unittest.TestCase):
                 self.assertEqual(obs.venue, "pump_bonding_curve")
                 self.assertIsNone(obs.notional_usd)
                 self.assertIsNone(obs.price_usd)
+                self.assertEqual(obs.base_amount_raw, 50_000_000)
+                self.assertEqual(obs.quote_amount_raw, 2_000_000_000)
+                self.assertEqual(obs.base_reserves_raw, 1_073_000_000_000_000)
+                self.assertEqual(obs.quote_reserves_raw, 30_000_000_000)
 
     def test_later_rpc_replay_of_same_signature_is_idempotent(self):
         raw = payload(mint=self.MINT, user=self.USER, is_buy=True, timestamp=1000)
