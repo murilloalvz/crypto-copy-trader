@@ -181,16 +181,21 @@ def _record_lifecycle_conn(conn, item: MarketLifecycleWriteV0) -> tuple[bool, bo
     provider = _required(item.source_provider, "source_provider")
     observation = item.observation
     _validate_lifecycle(observation)
-    identity_values = (provider, observation.token_mint, observation.market_started_at, observation.venue)
+    identity_values = (
+        provider, observation.token_mint, observation.market_started_at, observation.venue,
+        observation.creator, observation.creation_slot,
+    )
     existing = conn.execute(
-        """SELECT source_provider, token_mint, market_started_at, observed_at, venue
+        """SELECT source_provider, token_mint, market_started_at, observed_at, venue,
+            creator, creation_slot
         FROM market_lifecycle_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
     ).fetchone()
     if existing is not None:
         existing_identity = tuple(existing[key] for key in (
-            "source_provider", "token_mint", "market_started_at", "venue"
+            "source_provider", "token_mint", "market_started_at", "venue",
+            "creator", "creation_slot",
         ))
         stored_observed_at = int(existing["observed_at"])
         incoming_observed_at = int(observation.observed_at)
@@ -222,22 +227,25 @@ def _record_lifecycle_conn(conn, item: MarketLifecycleWriteV0) -> tuple[bool, bo
         if incoming_wins:
             conn.execute(
                 """UPDATE market_lifecycle_observations
-                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?,
+                    creator=?, creation_slot=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     provider, observation.token_mint, observation.market_started_at,
-                    incoming_observed_at, observation.venue, run_key, raw_key,
+                    incoming_observed_at, observation.venue, observation.creator,
+                    observation.creation_slot, run_key, raw_key,
                 ),
             )
         return False, True
     conn.execute(
         """INSERT INTO market_lifecycle_observations(
             acquisition_run_key, event_key, source_provider, token_mint,
-            market_started_at, observed_at, venue
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            market_started_at, observed_at, venue, creator, creation_slot
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key, raw_key, provider, observation.token_mint,
             observation.market_started_at, observation.observed_at, observation.venue,
+            observation.creator, observation.creation_slot,
         ),
     )
     return True, False

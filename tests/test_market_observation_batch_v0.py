@@ -48,6 +48,8 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 market_started_at=90,
                 observed_at=190,
                 venue="pump",
+                creator="CREATOR",
+                creation_slot=123,
             )
             with patch.object(database, "settings", isolated):
                 first = record_market_observations_batch_v0(
@@ -99,6 +101,8 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 self.assertIsNotNone(latest)
                 assert latest is not None
                 self.assertEqual(latest.event_key, "L1")
+                self.assertEqual(latest.observation.creator, "CREATOR")
+                self.assertEqual(latest.observation.creation_slot, 123)
 
     def test_empty_batch_is_noop(self) -> None:
         result = record_market_observations_batch_v0(())
