@@ -118,8 +118,11 @@ class PumpLifecycleCaptureTests(unittest.TestCase):
         self.assertIsNotNone(lifecycle)
         assert lifecycle is not None
         self.assertEqual(lifecycle.observation.market_started_at, 1000)
+        self.assertEqual(lifecycle.observation.creator, self.MINT)
+        self.assertEqual(lifecycle.observation.creation_slot, 9)
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0].observation.transaction_key, "signature-create-buy")
+        self.assertEqual(trades[0].observation.slot, 9)
 
     def test_future_create_event_is_rejected(self):
         encoded = base64.b64encode(create_payload(mint=self.MINT, timestamp=1002)).decode()

@@ -116,6 +116,24 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
                 json!(event.real_quote_reserves),
             );
             object.insert("mayhem_mode".into(), json!(event.mayhem_mode));
+
+            // SIG-FAST price-path + real-cost wiring (2026-10-09): base-side virtual
+            // reserve and real per-trade fees, decoded by Carbon but not previously
+            // surfaced in this JSON. Same "extra research field" status as the
+            // quote-side fields just above -- outside the frozen 150-event parity
+            // field set (EVENT_COMPARE_FIELDS in parity.py), so this cannot change
+            // the parity verdict.
+            object.insert(
+                "virtual_token_reserves_raw".into(),
+                json!(event.virtual_token_reserves),
+            );
+            object.insert("fee_raw".into(), json!(event.fee));
+            object.insert("fee_basis_points_raw".into(), json!(event.fee_basis_points));
+            object.insert("creator_fee_raw".into(), json!(event.creator_fee));
+            object.insert(
+                "creator_fee_basis_points_raw".into(),
+                json!(event.creator_fee_basis_points),
+            );
         }
         "pump_create" => {
             let Some(event) = CreateEventEvent::decode(payload) else {
@@ -152,6 +170,24 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
                 "pool_quote_token_reserves_raw".into(),
                 json!(event.pool_quote_token_reserves),
             );
+
+            // SIG-FAST real-cost wiring (2026-10-09): real per-trade fees, decoded by
+            // Carbon but not previously surfaced. Outside the frozen parity field set.
+            object.insert("lp_fee_raw".into(), json!(event.lp_fee));
+            object.insert(
+                "lp_fee_basis_points_raw".into(),
+                json!(event.lp_fee_basis_points),
+            );
+            object.insert("protocol_fee_raw".into(), json!(event.protocol_fee));
+            object.insert(
+                "protocol_fee_basis_points_raw".into(),
+                json!(event.protocol_fee_basis_points),
+            );
+            object.insert("coin_creator_fee_raw".into(), json!(event.coin_creator_fee));
+            object.insert(
+                "coin_creator_fee_basis_points_raw".into(),
+                json!(event.coin_creator_fee_basis_points),
+            );
         }
         "pumpswap_sell" => {
             let Some(event) = SellEventEvent::decode(payload) else {
@@ -172,6 +208,24 @@ fn decode_event(input: &InputEvent, payload: &[u8]) -> Value {
             object.insert(
                 "pool_quote_token_reserves_raw".into(),
                 json!(event.pool_quote_token_reserves),
+            );
+
+            // SIG-FAST real-cost wiring (2026-10-09): real per-trade fees, decoded by
+            // Carbon but not previously surfaced. Outside the frozen parity field set.
+            object.insert("lp_fee_raw".into(), json!(event.lp_fee));
+            object.insert(
+                "lp_fee_basis_points_raw".into(),
+                json!(event.lp_fee_basis_points),
+            );
+            object.insert("protocol_fee_raw".into(), json!(event.protocol_fee));
+            object.insert(
+                "protocol_fee_basis_points_raw".into(),
+                json!(event.protocol_fee_basis_points),
+            );
+            object.insert("coin_creator_fee_raw".into(), json!(event.coin_creator_fee));
+            object.insert(
+                "coin_creator_fee_basis_points_raw".into(),
+                json!(event.coin_creator_fee_basis_points),
             );
         }
         "pumpswap_create_pool" => {

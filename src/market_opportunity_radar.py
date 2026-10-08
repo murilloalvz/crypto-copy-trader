@@ -29,6 +29,21 @@ class MarketTradeObservation:
     price_usd: float | None = None
     venue: str | None = None
     transaction_key: str | None = None
+    slot: int | None = None
+    base_amount_raw: int | None = None
+    quote_amount_raw: int | None = None
+    base_reserves_raw: int | None = None
+    quote_reserves_raw: int | None = None
+    fee_raw: int | None = None
+    fee_basis_points_raw: int | None = None
+    creator_fee_raw: int | None = None
+    creator_fee_basis_points_raw: int | None = None
+    lp_fee_raw: int | None = None
+    lp_fee_basis_points_raw: int | None = None
+    protocol_fee_raw: int | None = None
+    protocol_fee_basis_points_raw: int | None = None
+    coin_creator_fee_raw: int | None = None
+    coin_creator_fee_basis_points_raw: int | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +52,8 @@ class MarketLifecycleObservation:
     market_started_at: int
     observed_at: int
     venue: str | None = None
+    creator: str | None = None
+    creation_slot: int | None = None
 
 
 @dataclass(frozen=True)

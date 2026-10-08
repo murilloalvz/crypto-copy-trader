@@ -33,12 +33,23 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 wallet_address="WALLET",
                 venue="pump",
                 transaction_key="SIG",
+                slot=42,
+                base_amount_raw=50_000_000,
+                quote_amount_raw=2_000_000_000,
+                base_reserves_raw=1_073_000_000_000_000,
+                quote_reserves_raw=30_000_000_000,
+                fee_raw=20_000_000,
+                fee_basis_points_raw=95,
+                creator_fee_raw=10_000_000,
+                creator_fee_basis_points_raw=5,
             )
             lifecycle = MarketLifecycleObservation(
                 token_mint="TOKEN",
                 market_started_at=90,
                 observed_at=190,
                 venue="pump",
+                creator="CREATOR",
+                creation_slot=123,
             )
             with patch.object(database, "settings", isolated):
                 first = record_market_observations_batch_v0(
@@ -75,12 +86,23 @@ class MarketObservationBatchV0Tests(unittest.TestCase):
                 rows = load_market_trades(acquisition_run_key="RUN", token_mint="TOKEN")
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0].observation.side, "buy")
+                self.assertEqual(rows[0].observation.slot, 42)
+                self.assertEqual(rows[0].observation.base_amount_raw, 50_000_000)
+                self.assertEqual(rows[0].observation.quote_amount_raw, 2_000_000_000)
+                self.assertEqual(rows[0].observation.base_reserves_raw, 1_073_000_000_000_000)
+                self.assertEqual(rows[0].observation.quote_reserves_raw, 30_000_000_000)
+                self.assertEqual(rows[0].observation.fee_raw, 20_000_000)
+                self.assertEqual(rows[0].observation.fee_basis_points_raw, 95)
+                self.assertEqual(rows[0].observation.creator_fee_raw, 10_000_000)
+                self.assertEqual(rows[0].observation.creator_fee_basis_points_raw, 5)
                 latest = load_latest_market_lifecycle(
                     acquisition_run_key="RUN", token_mint="TOKEN"
                 )
                 self.assertIsNotNone(latest)
                 assert latest is not None
                 self.assertEqual(latest.event_key, "L1")
+                self.assertEqual(latest.observation.creator, "CREATOR")
+                self.assertEqual(latest.observation.creation_slot, 123)
 
     def test_empty_batch_is_noop(self) -> None:
         result = record_market_observations_batch_v0(())

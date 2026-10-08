@@ -68,6 +68,8 @@ async def prepare_pumpswap_notification_causal_v5(
                     market_started_at=event.timestamp,
                     observed_at=notification.observed_at,
                     venue="pumpswap",
+                    creator=event.creator,
+                    creation_slot=notification.slot,
                 ),
             )
         )
@@ -114,6 +116,7 @@ async def prepare_pumpswap_notification_causal_v5(
                     price_usd=None,
                     venue="pumpswap",
                     transaction_key=notification.signature,
+                    slot=notification.slot,
                 ),
             )
         )

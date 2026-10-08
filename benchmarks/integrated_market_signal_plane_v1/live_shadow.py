@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import base64
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace as _dataclass_replace
 import json
 import math
 import os
@@ -61,6 +61,16 @@ PASS_CLASSIFICATION = "PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 FAIL_CLASSIFICATION = "FAIL_RUST_SIGNAL_PLANE_LIVE_SHADOW_V7_RUST_HOTPATH"
 INGRESS_QUEUE_SIZE = 8192
 SURFACE_IDLE_TIMEOUT_SECONDS = 30.0
+# Item (b) (2026-10-09): distinct from SURFACE_IDLE_TIMEOUT_SECONDS just above,
+# which fails a *reader task* when its own websocket goes quiet for 30s. This
+# constant guards the *main consumer loop* itself: if the gap between two
+# consecutive top-of-loop monotonic checks exceeds this, something external
+# blocked the process/event loop for a long-session run (same root-cause class
+# documented for FORWARD_COLLECTION_V43_STALL_GAP_SECONDS in
+# src/route_research_forward_collection_v43.py: e.g. OS sleep/suspend, a frozen
+# console, or a hang in a blocking call), independent of whether either reader
+# is still receiving data. Detects and fails closed; does not prevent the stall.
+LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS = 30.0
 INGRESS_MICROBATCH_MAX_NOTIFICATIONS = 32
 WS_OPEN_TIMEOUT_SECONDS = 30.0
 WS_OPEN_BARRIER_TIMEOUT_SECONDS = 35.0
@@ -134,6 +144,59 @@ def _nonnegative_int(row: dict[str, Any], name: str) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         return None
     return value
+
+
+def _consumer_loop_stall_gap(
+    *, last_tick: float, tick: float, threshold_seconds: float
+) -> float | None:
+    """Item (b) (2026-10-09): pure gap check extracted from run_live_shadow_v0's
+    main consumer loop so the FORWARD_COLLECTION_V43-style stall detection
+    (src/route_research_forward_collection_v43.py) is unit-testable without
+    driving the whole async pipeline. Returns the gap if it exceeds the
+    threshold (a stall), else None."""
+    gap = tick - last_tick
+    return gap if gap > threshold_seconds else None
+
+
+def _raw_price_path_fields_from_row(
+    row: dict[str, Any], *, event_type: str | None
+) -> dict[str, int | None]:
+    """F1b raw amount/reserve fields, plus the item-(a) real per-trade fee
+    fields, already present in the Carbon-decoded row
+    (benchmarks/carbon_decoder_parity_v1/rust_runner), for threading into
+    MarketTradeObservation via dataclasses.replace -- same injection pattern
+    already used for `slot` below (bundle-bot-detection-v0-plumbing).
+
+    pump_trade's base-side virtual reserve (virtual_token_reserves_raw) and
+    both venues' real fee fields were added to that Rust decoder's JSON
+    output by the operator-authorized item-(a) change (docs/sig-fast-live-
+    engine-wiring-v0-2026-10-09.md documents the prior gap; this closes it).
+    """
+    if event_type == "pump_trade":
+        return {
+            "base_amount_raw": _nonnegative_int(row, "token_amount_raw"),
+            "quote_amount_raw": _nonnegative_int(row, "sol_amount_raw"),
+            "base_reserves_raw": _nonnegative_int(row, "virtual_token_reserves_raw"),
+            "quote_reserves_raw": _nonnegative_int(row, "virtual_quote_reserves_raw"),
+            "fee_raw": _nonnegative_int(row, "fee_raw"),
+            "fee_basis_points_raw": _nonnegative_int(row, "fee_basis_points_raw"),
+            "creator_fee_raw": _nonnegative_int(row, "creator_fee_raw"),
+            "creator_fee_basis_points_raw": _nonnegative_int(row, "creator_fee_basis_points_raw"),
+        }
+    if event_type in {"pumpswap_buy", "pumpswap_sell"}:
+        return {
+            "base_amount_raw": _nonnegative_int(row, "base_amount_raw"),
+            "quote_amount_raw": _nonnegative_int(row, "quote_amount_raw"),
+            "base_reserves_raw": _nonnegative_int(row, "pool_base_token_reserves_raw"),
+            "quote_reserves_raw": _nonnegative_int(row, "pool_quote_token_reserves_raw"),
+            "lp_fee_raw": _nonnegative_int(row, "lp_fee_raw"),
+            "lp_fee_basis_points_raw": _nonnegative_int(row, "lp_fee_basis_points_raw"),
+            "protocol_fee_raw": _nonnegative_int(row, "protocol_fee_raw"),
+            "protocol_fee_basis_points_raw": _nonnegative_int(row, "protocol_fee_basis_points_raw"),
+            "coin_creator_fee_raw": _nonnegative_int(row, "coin_creator_fee_raw"),
+            "coin_creator_fee_basis_points_raw": _nonnegative_int(row, "coin_creator_fee_basis_points_raw"),
+        }
+    return {}
 
 
 def _first_truncation_index(logs: list[Any]) -> int | None:
@@ -1238,7 +1301,20 @@ async def run_live_shadow_v0(
         counters["transport_subscription_barrier_passed"] += 1
         acquisition_event.set()
 
+        consumer_last_tick_monotonic = time.monotonic()
+        consumer_stall_gap_seconds: float | None = None
+
         while True:
+            consumer_tick_monotonic = time.monotonic()
+            consumer_stall_gap_seconds = _consumer_loop_stall_gap(
+                last_tick=consumer_last_tick_monotonic,
+                tick=consumer_tick_monotonic,
+                threshold_seconds=LIVE_SHADOW_CONSUMER_STALL_GAP_SECONDS,
+            )
+            if consumer_stall_gap_seconds is not None:
+                break
+            consumer_last_tick_monotonic = consumer_tick_monotonic
+
             source_open = time.monotonic() < deadline
             readers_done = all(task.done() for task in reader_tasks)
             if (
@@ -1546,6 +1622,31 @@ async def run_live_shadow_v0(
                     ] += 1
                 else:
                     continue
+
+                # Bundle Bot Detection V0 plumbing (docs/bundle-bot-detection-v0-plumbing-scope-2026-10-07.md):
+                # manifest["slot"] is the slot of this event's own containing transaction,
+                # already staged for every event_key (see the "carbon_decoder_input"
+                # manifest construction above) -- just not threaded into the observation
+                # dataclasses until now. `creator` is deliberately left unset here: this
+                # Carbon-decoded `row` never surfaces a creator field for pump_create
+                # anywhere in this file (confirmed by inspection, not assumed) -- getting
+                # it would mean touching the Carbon decoder itself, out of scope for this
+                # plumbing-only change.
+                manifest_slot = manifest.get("slot")
+                if isinstance(manifest_slot, int) and not isinstance(manifest_slot, bool):
+                    if kind == "trade":
+                        observation = _dataclass_replace(observation, slot=manifest_slot)
+                    elif kind == "lifecycle":
+                        observation = _dataclass_replace(observation, creation_slot=manifest_slot)
+
+                # SIG-FAST F1b price-path + item-(a) real-fee plumbing
+                # (docs/sig-fast-live-engine-wiring-v0-2026-10-09.md): thread the raw
+                # amount/reserve/fee fields already in `row` into the observation, same
+                # pattern as the slot injection just above.
+                if kind == "trade":
+                    extra_fields = _raw_price_path_fields_from_row(row, event_type=event_type)
+                    if any(value is not None for value in extra_fields.values()):
+                        observation = _dataclass_replace(observation, **extra_fields)
 
                 assert observation is not None and kind is not None
                 sequence = signal_sequence
@@ -1940,6 +2041,7 @@ async def run_live_shadow_v0(
             identity_plane.counters["rpc_batch_failures"] == 0
         ),
         "no_fatal_or_signal_errors": not errors,
+        "no_consumer_loop_stall": consumer_stall_gap_seconds is None,
     }
     if bridge_run_key:
         gates.update(
@@ -2008,6 +2110,8 @@ async def run_live_shadow_v0(
         "commitment": "confirmed",
         "duration_seconds": duration_seconds,
         "max_log_notifications": max_log_notifications,
+        "consumer_stall_detected": consumer_stall_gap_seconds is not None,
+        "consumer_stall_gap_seconds": consumer_stall_gap_seconds,
         "bootstrap": {
             "report_path": str(bootstrap.report_path),
             "run_id": bootstrap.run_id,

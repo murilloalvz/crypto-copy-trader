@@ -58,10 +58,29 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
         observation.price_usd,
         observation.venue,
         observation.transaction_key,
+        observation.slot,
+        observation.base_amount_raw,
+        observation.quote_amount_raw,
+        observation.base_reserves_raw,
+        observation.quote_reserves_raw,
+        observation.fee_raw,
+        observation.fee_basis_points_raw,
+        observation.creator_fee_raw,
+        observation.creator_fee_basis_points_raw,
+        observation.lp_fee_raw,
+        observation.lp_fee_basis_points_raw,
+        observation.protocol_fee_raw,
+        observation.protocol_fee_basis_points_raw,
+        observation.coin_creator_fee_raw,
+        observation.coin_creator_fee_basis_points_raw,
     )
     existing = conn.execute(
         """SELECT source_provider, token_mint, side, chain_time, observed_at,
-            wallet_address, notional_usd, price_usd, venue, transaction_key
+            wallet_address, notional_usd, price_usd, venue, transaction_key, slot,
+            base_amount_raw, quote_amount_raw, base_reserves_raw, quote_reserves_raw,
+            fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+            lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+            coin_creator_fee_raw, coin_creator_fee_basis_points_raw
         FROM market_trade_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
@@ -69,7 +88,12 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
     if existing is not None:
         existing_identity = tuple(existing[key] for key in (
             "source_provider", "token_mint", "side", "chain_time",
-            "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key"
+            "wallet_address", "notional_usd", "price_usd", "venue", "transaction_key",
+            "slot", "base_amount_raw", "quote_amount_raw", "base_reserves_raw",
+            "quote_reserves_raw",
+            "fee_raw", "fee_basis_points_raw", "creator_fee_raw", "creator_fee_basis_points_raw",
+            "lp_fee_raw", "lp_fee_basis_points_raw", "protocol_fee_raw", "protocol_fee_basis_points_raw",
+            "coin_creator_fee_raw", "coin_creator_fee_basis_points_raw",
         ))
         stored_observed_at = int(existing["observed_at"])
         incoming_observed_at = int(observation.observed_at)
@@ -102,12 +126,24 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
             conn.execute(
                 """UPDATE market_trade_observations
                 SET source_provider=?, token_mint=?, side=?, chain_time=?, observed_at=?,
-                    wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?
+                    wallet_address=?, notional_usd=?, price_usd=?, venue=?, transaction_key=?,
+                    slot=?, base_amount_raw=?, quote_amount_raw=?, base_reserves_raw=?,
+                    quote_reserves_raw=?,
+                    fee_raw=?, fee_basis_points_raw=?, creator_fee_raw=?, creator_fee_basis_points_raw=?,
+                    lp_fee_raw=?, lp_fee_basis_points_raw=?, protocol_fee_raw=?, protocol_fee_basis_points_raw=?,
+                    coin_creator_fee_raw=?, coin_creator_fee_basis_points_raw=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     provider, observation.token_mint, observation.side, observation.chain_time,
                     incoming_observed_at, observation.wallet_address, observation.notional_usd,
                     observation.price_usd, observation.venue, observation.transaction_key,
+                    observation.slot, observation.base_amount_raw, observation.quote_amount_raw,
+                    observation.base_reserves_raw, observation.quote_reserves_raw,
+                    observation.fee_raw, observation.fee_basis_points_raw,
+                    observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+                    observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+                    observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+                    observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
                     run_key, raw_key,
                 ),
             )
@@ -116,13 +152,24 @@ def _record_trade_conn(conn, item: MarketTradeWriteV0) -> tuple[bool, bool]:
         """INSERT INTO market_trade_observations(
             acquisition_run_key, event_key, source_provider, token_mint, side,
             chain_time, observed_at, wallet_address, notional_usd, price_usd, venue,
-            transaction_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            transaction_key, slot, base_amount_raw, quote_amount_raw,
+            base_reserves_raw, quote_reserves_raw,
+            fee_raw, fee_basis_points_raw, creator_fee_raw, creator_fee_basis_points_raw,
+            lp_fee_raw, lp_fee_basis_points_raw, protocol_fee_raw, protocol_fee_basis_points_raw,
+            coin_creator_fee_raw, coin_creator_fee_basis_points_raw
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key, raw_key, provider, observation.token_mint, observation.side,
             observation.chain_time, observation.observed_at, observation.wallet_address,
             observation.notional_usd, observation.price_usd, observation.venue,
-            observation.transaction_key,
+            observation.transaction_key, observation.slot, observation.base_amount_raw,
+            observation.quote_amount_raw, observation.base_reserves_raw,
+            observation.quote_reserves_raw,
+            observation.fee_raw, observation.fee_basis_points_raw,
+            observation.creator_fee_raw, observation.creator_fee_basis_points_raw,
+            observation.lp_fee_raw, observation.lp_fee_basis_points_raw,
+            observation.protocol_fee_raw, observation.protocol_fee_basis_points_raw,
+            observation.coin_creator_fee_raw, observation.coin_creator_fee_basis_points_raw,
         ),
     )
     return True, False
@@ -134,16 +181,21 @@ def _record_lifecycle_conn(conn, item: MarketLifecycleWriteV0) -> tuple[bool, bo
     provider = _required(item.source_provider, "source_provider")
     observation = item.observation
     _validate_lifecycle(observation)
-    identity_values = (provider, observation.token_mint, observation.market_started_at, observation.venue)
+    identity_values = (
+        provider, observation.token_mint, observation.market_started_at, observation.venue,
+        observation.creator, observation.creation_slot,
+    )
     existing = conn.execute(
-        """SELECT source_provider, token_mint, market_started_at, observed_at, venue
+        """SELECT source_provider, token_mint, market_started_at, observed_at, venue,
+            creator, creation_slot
         FROM market_lifecycle_observations
         WHERE acquisition_run_key=? AND event_key=?""",
         (run_key, raw_key),
     ).fetchone()
     if existing is not None:
         existing_identity = tuple(existing[key] for key in (
-            "source_provider", "token_mint", "market_started_at", "venue"
+            "source_provider", "token_mint", "market_started_at", "venue",
+            "creator", "creation_slot",
         ))
         stored_observed_at = int(existing["observed_at"])
         incoming_observed_at = int(observation.observed_at)
@@ -175,22 +227,25 @@ def _record_lifecycle_conn(conn, item: MarketLifecycleWriteV0) -> tuple[bool, bo
         if incoming_wins:
             conn.execute(
                 """UPDATE market_lifecycle_observations
-                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?
+                SET source_provider=?, token_mint=?, market_started_at=?, observed_at=?, venue=?,
+                    creator=?, creation_slot=?
                 WHERE acquisition_run_key=? AND event_key=?""",
                 (
                     provider, observation.token_mint, observation.market_started_at,
-                    incoming_observed_at, observation.venue, run_key, raw_key,
+                    incoming_observed_at, observation.venue, observation.creator,
+                    observation.creation_slot, run_key, raw_key,
                 ),
             )
         return False, True
     conn.execute(
         """INSERT INTO market_lifecycle_observations(
             acquisition_run_key, event_key, source_provider, token_mint,
-            market_started_at, observed_at, venue
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            market_started_at, observed_at, venue, creator, creation_slot
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_key, raw_key, provider, observation.token_mint,
             observation.market_started_at, observation.observed_at, observation.venue,
+            observation.creator, observation.creation_slot,
         ),
     )
     return True, False

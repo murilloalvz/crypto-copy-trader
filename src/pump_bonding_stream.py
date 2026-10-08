@@ -26,6 +26,8 @@ class PumpTradeEvent:
     is_buy: bool
     user: str
     timestamp: int
+    virtual_sol_reserves: int | None = None
+    virtual_token_reserves: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,11 +127,18 @@ def build_logs_subscribe_request(
 
 
 def decode_pump_trade_event_payload(payload: bytes) -> PumpTradeEvent | None:
-    """Decode the stable causal prefix of Pump's Anchor TradeEvent.
+    """Decode the stable causal prefix of Pump's Anchor TradeEvent, plus the two
+    virtual-reserve fields immediately following it when present.
 
-    The public Pump IDL currently defines the event prefix as:
-    discriminator, mint(pubkey), sol_amount(u64), token_amount(u64), is_buy(bool),
-    user(pubkey), timestamp(i64). Later fields are intentionally ignored here.
+    The public Pump IDL (pump-fun/pump-public-docs, idl/pump.json, TradeEvent) defines
+    the event as: discriminator, mint(pubkey), sol_amount(u64), token_amount(u64),
+    is_buy(bool), user(pubkey), timestamp(i64), virtual_sol_reserves(u64),
+    virtual_token_reserves(u64), real_sol_reserves(u64), real_token_reserves(u64), ...
+    Only the prefix through timestamp is required; virtual_sol_reserves/
+    virtual_token_reserves are decoded opportunistically (None if the payload is
+    shorter, e.g. an older program version) -- real_sol_reserves/real_token_reserves
+    and everything after remain intentionally ignored (out of scope for sig-fast v0
+    price-path persistence).
 
     Events with a different discriminator are not Pump TradeEvents.
     """
@@ -160,6 +169,13 @@ def decode_pump_trade_event_payload(payload: bytes) -> PumpTradeEvent | None:
     if token_amount <= 0:
         raise ValueError("Pump TradeEvent token_amount must be positive")
 
+    offset += 8
+    virtual_sol_reserves: int | None = None
+    virtual_token_reserves: int | None = None
+    if len(payload) >= offset + 16:
+        virtual_sol_reserves = struct.unpack_from("<Q", payload, offset)[0]
+        virtual_token_reserves = struct.unpack_from("<Q", payload, offset + 8)[0]
+
     return PumpTradeEvent(
         mint=mint,
         sol_amount=int(sol_amount),
@@ -167,6 +183,10 @@ def decode_pump_trade_event_payload(payload: bytes) -> PumpTradeEvent | None:
         is_buy=bool(is_buy_raw),
         user=user,
         timestamp=int(timestamp),
+        virtual_sol_reserves=(int(virtual_sol_reserves) if virtual_sol_reserves is not None else None),
+        virtual_token_reserves=(
+            int(virtual_token_reserves) if virtual_token_reserves is not None else None
+        ),
     )
 
 
@@ -311,6 +331,8 @@ def persist_pump_notification(
                 market_started_at=event.timestamp,
                 observed_at=notification.observed_at,
                 venue="pump_bonding_curve",
+                creator=event.creator,
+                creation_slot=notification.slot,
             ),
         )
 
@@ -328,6 +350,11 @@ def persist_pump_notification(
             price_usd=None,
             venue="pump_bonding_curve",
             transaction_key=notification.signature,
+            slot=notification.slot,
+            base_amount_raw=event.token_amount,
+            quote_amount_raw=event.sol_amount,
+            base_reserves_raw=event.virtual_token_reserves,
+            quote_reserves_raw=event.virtual_sol_reserves,
         )
         if record_market_trade(
             acquisition_run_key=run_key,
