@@ -311,7 +311,9 @@ medida empiricamente abaixo antes de qualquer download dos 2 blocos. O
 Estágio 1 barato (regra 3) é independente do volume de trade do pool (só
 2+ chamadas por token), então escala bem pra qualquer K.
 
-**Resultado real do piloto (2026-10-09) — K fixado.** Rodado com a grade
+**Resultado real do piloto (2026-10-09) — SUPERADO por viés de
+sobrevivência, ver "Addendum Fase E parte 5" abaixo. Mantido aqui só como
+registro histórico — não usar o K=12 desta seção.** Rodado com a grade
 de 5s sobre 12 migrações reais (janelas 1 e 2 do lookback do piloto; a
 janela 3 bateu 429 na Helius de novo — 33s, abortou limpo sem travar o
 resto, Estágio 1 barato seguiu com as 12 já achadas):
@@ -354,6 +356,66 @@ resto, Estágio 1 barato seguiu com as 12 já achadas):
   não-vazios).
 - Nenhum retorno/EV calculado nesta rodada — só contagem de sistema e
   custo, como autorizado.
+
+**Addendum Fase E parte 5 (2026-10-09): correção de viés de sobrevivência
+— K final, congelado antes do Passo B.** A seção acima classificava pool
+de baixo volume como `None` (indeterminado) quando a grade não achava um
+swap resolvível perto do bucket 0 ou do marco, e excluía esses `None` do
+denominador da taxa de sobrevivência — **viés de sobrevivência clássico**
+(taxa medida de 80%, muito acima do ~27% esperado do MemeTrans). O
+operador corrigiu a régua:
+
+- **"Indeterminado por baixo volume" não existe na regra de H2.** Pool
+  com menos de 20 trades bem-sucedidos nos últimos 5 minutos antes do
+  marco de 20min é **NÃO-SOBREVIVENTE**, determinado só pela lista de
+  assinaturas (sem nenhuma chamada de preço). Preço no marco = último
+  swap até ali (sem swap o preço não muda — regra já existente, só
+  sem limite artificial de buckets agora). `None` só pode vir de uma
+  falha real na **lista de assinaturas** (erro de sistema) — isso entra
+  como missing explícito (`n_tokens_system_error` no `report.json`),
+  nunca descartado em silêncio e nunca confundido com não-sobrevivente.
+  Implementado em `run_pilot_token`
+  (`benchmarks/sig_fast_v0/h2_pilot_v0.py`,
+  `MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR = 20`).
+- **Reclassificação real dos 18 candidatos do piloto** (as 3 janelas do
+  lookback, incluindo a que antes tinha abortado em 429 — rodou limpo
+  nesta tentativa): **0 indeterminados** (`n_tokens_system_error=0`),
+  **6 sobreviventes, 12 não-sobreviventes** — **taxa de sobrevivência
+  real = 6/18 = 0,333** (contagem de sistema), consistente com a ordem
+  de grandeza do MemeTrans, ao contrário dos 0,80 anteriores (viés).
+  Custo também melhorou: pool de baixo volume agora não gasta nenhuma
+  chamada de preço (média geral desceu pra ~12,1 chamadas/pool porque
+  mais pools batem o atalho barato).
+- **K recalculado** pela régua do operador — "janelas suficientes pra
+  >=30 sobreviventes na parte de TREINO (70%) do bloco de discovery, com
+  folga de 20%, mesmo K por dia de calendário na confirmação":
+  - `S` (sobreviventes/janela, medido) = 6/3 = **2,0**
+  - `f_treino` = 20 dias / 28 dias do bloco de discovery ≈ **0,7143**
+  - sem folga: `K_bare = ceil(30 / (f_treino × S)) = ceil(21,0) = 21`
+  - com folga de 20%: `K_discovery = ceil(21 × 1,2) = 26` **janelas**
+    (sorteadas uniformemente nos 28 dias do bloco de discovery, seed
+    `20261008` — ~20/28 delas caem no treino por construção de data,
+    não por sorteio separado)
+  - esperado no treino: `26 × 0,7143 × 2,0 ≈ 37,1` sobreviventes (>= 30
+    com folga, >= 36 com a meta de 20% já embutida)
+  - `K_por_dia = 26 / 28 ≈ 0,929` janelas/dia
+  - **confirmação (14 dias, mesmo K/dia)**: `K_confirmation =
+    ceil(0,929 × 14) = 13` **janelas**
+  - tempo total estimado (Estágio 1 barato só, 3,04s/pool × 6,0
+    migrações/janela medidos): discovery `26×6×3,04s ≈ 474s (~7,9min)`;
+    confirmação `13×6×3,04s ≈ 237s (~4,0min)` — Estágio 1 completo pros
+    dois blocos em ~12 minutos, sem contar a enumeração (Helius, lenta,
+    com checkpoint, conforme já instruído).
+  - **K FIXADO: 26 janelas no bloco de discovery, 13 janelas no bloco de
+    confirmação** (mesma seed `20261008`, mesmo tamanho de janela 10min).
+- **Baseline (F3)**: confirmada a regra já congelada (rev. 4 addendum
+  parte 4, regra 4) — todos os sobreviventes + amostra aleatória (seed
+  `20261008`) de não-sobreviventes do mesmo tamanho, 1:1, proporção fixa
+  antes de ver qualquer resultado econômico.
+- Nenhum retorno/EV/MFE/barreira calculado nesta rodada — só contagem de
+  sistema, cobertura e custo, como autorizado. O Passo B (download dos 2
+  blocos) só começa depois do OK explícito do operador no relatório de
+  cobertura.
 
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
