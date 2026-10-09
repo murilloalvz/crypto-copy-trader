@@ -100,7 +100,18 @@ mandato).
   pós-entrada -- bug real encontrado e corrigido durante a escrita do
   teste). Nunca abre o bloco de confirmação. Ainda não rodado com dado
   real -- esperando Fase 2 terminar.
-- [ ] **Fase 5 — confirmação (só se CANDIDATE)**
+- [~] **Fase 5 — confirmação (só se CANDIDATE)**
+  Código pronto e testado (`benchmarks/sig_fast_v0/h2_confirmation_evaluation_v0.py`):
+  `freeze_evaluation_rule` grava um manifesto (hash do código de
+  avaliação + parâmetros + saída escolhida) ANTES de qualquer acesso ao
+  bloco de confirmação; `run_confirmation_evaluation` **recusa rodar**
+  (`ConfirmationNotFrozenError`) se esse manifesto não existir ainda --
+  fail-closed. PASS/FAIL só em (a) edge>=10pp e (b) EV>0 e PF>1 pra saída
+  JÁ escolhida (nunca reescolhe). Sensibilidade de custo 2x reportada
+  como diagnóstico, nunca decide o veredito. Só roda de verdade se Fase 4
+  (no dado real) produzir CANDIDATE -- e só depois do bloco de
+  confirmação ser baixado (K=13, ainda não disparado -- depende da
+  densidade final de Fase 2, que só se sabe quando discovery terminar).
 - [ ] **Fase 6 — relatório final**
 - [ ] Reserva 1 — spec/código paper ao vivo (self-check only)
 - [ ] Reserva 2 — plano H1 (copy) ao vivo

@@ -1194,3 +1194,23 @@ apontar pro banco de verdade.
 
 Nenhum dos dois módulos foi rodado contra dado real ainda -- esperando a
 Fase 2 (download em background) terminar.
+
+**Fase 5** (`benchmarks/sig_fast_v0/h2_confirmation_evaluation_v0.py`):
+reusa as mesmas funções de agregação da Fase 4 (`barrier_up_rate`,
+`compute_exit_ev`, `evaluate_token` -- este último ganhou um parâmetro
+`cost_multiplier`, default 1.0, só pra viabilizar o diagnóstico de custo
+2x sem duplicar a lógica de precificação). `freeze_evaluation_rule`
+grava hash sha256 do próprio arquivo `h2_discovery_evaluation_v0.py` +
+os parâmetros congelados + a saída escolhida ANTES de qualquer acesso ao
+banco de confirmação; recusa sobrescrever um manifesto já existente
+(congelamento é definitivo). `run_confirmation_evaluation` recusa rodar
+sem esse manifesto (`ConfirmationNotFrozenError`) -- impossível abrir o
+bloco de confirmação sem o commit do congelamento primeiro, por
+construção do código, não só por disciplina. Sensibilidade de custo 2x
+(fee/terminal/rede dobrados) reportada sempre como diagnóstico -- nunca
+entra no `classification`. Self-check prova os dois fail-closed
+(recusa sem manifesto; recusa sobrescrever) + um cenário calculável à
+mão onde o custo 2x derruba o PF abaixo de 1 sem mudar o PASS.
+
+Só roda de verdade se Fase 4 produzir CANDIDATE no dado real -- e só
+depois do bloco de confirmação ser baixado (ainda não disparado).

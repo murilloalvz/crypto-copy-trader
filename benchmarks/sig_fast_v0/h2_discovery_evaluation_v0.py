@@ -144,7 +144,13 @@ def evaluate_token(
     migration_block_time: int,
     group: str,
     window_seconds: int = PRIMARY_WINDOW_SECONDS,
+    cost_multiplier: float = 1.0,
 ) -> TokenEvaluation:
+    """`cost_multiplier` existe SO pro diagnostico de sensibilidade de
+    custo 2x da Fase 5 (`docs`, "sensibilidade de custo 2x") -- escala
+    fee/terminal/rede igualmente, nunca decisorio por si so (Fase 4/5
+    tratam isso como diagnostico, nunca como criterio de PASS/FAIL).
+    Default 1.0 preserva o comportamento exato de antes desta opcao."""
     signal_time = migration_block_time + SIGNAL_MARKER_SECONDS
     fee_pct = resolve_fee_pct_at(data.fee_events, at_time=signal_time)
     if fee_pct is None:
@@ -158,10 +164,10 @@ def evaluate_token(
             window_metrics_diagnostic=None,
         )
     cost_model = CostModel(
-        venue_fee_pct=fee_pct,
-        terminal_fee_pct=TERMINAL_FEE_PCT,
-        network_fee_sol=NETWORK_FEE_SOL,
-        ata_fee_sol=ATA_FEE_SOL,
+        venue_fee_pct=fee_pct * cost_multiplier,
+        terminal_fee_pct=TERMINAL_FEE_PCT * cost_multiplier,
+        network_fee_sol=NETWORK_FEE_SOL * cost_multiplier,
+        ata_fee_sol=ATA_FEE_SOL * cost_multiplier,
     )
     entry = find_causal_entry(
         data.trades,
