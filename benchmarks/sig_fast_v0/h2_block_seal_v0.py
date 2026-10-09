@@ -279,6 +279,7 @@ def seal_block(
     cobertura (NUNCA retorno/EV). `enumeration_rpc_call` e
     fetch_migrations_in_windows em producao; parametro injetavel so pra
     self-checks (evita rede)."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     ensure_h2_backfill_schema(conn)
 
