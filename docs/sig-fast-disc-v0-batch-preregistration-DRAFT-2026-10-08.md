@@ -311,6 +311,50 @@ medida empiricamente abaixo antes de qualquer download dos 2 blocos. O
 Estágio 1 barato (regra 3) é independente do volume de trade do pool (só
 2+ chamadas por token), então escala bem pra qualquer K.
 
+**Resultado real do piloto (2026-10-09) — K fixado.** Rodado com a grade
+de 5s sobre 12 migrações reais (janelas 1 e 2 do lookback do piloto; a
+janela 3 bateu 429 na Helius de novo — 33s, abortou limpo sem travar o
+resto, Estágio 1 barato seguiu com as 12 já achadas):
+
+- **Estágio 1 barato**: média de **9,58 chamadas/pool** (mediana 3, p90
+  23 — a variância vem do tamanho da lista de assinaturas, que ainda
+  precisa ser baixada inteira mesmo sendo barata), **2,80s/pool** em
+  média, **100% dos eventos decodificados vieram com reservas+fee**. %
+  de transações que falham variou de 0,2% a 55,4% entre os 12 pools
+  (média 15,7%) — real, não assumido, reportado por pool no `report.json`
+  (fora do git).
+- **Sobrevivência (contagem de sistema)**: de 12 migrações, só 5 tiveram
+  **os dois lados resolvidos** (preço em T0 e no marco de 20min) dentro
+  do limite de busca (20 buckets = 100s pra cada lado) — as outras 7 são
+  pools de baixo volume (96 a 970 assinaturas na janela inteira, contra
+  16.473-23.502 das de alto volume) onde a grade não achou um swap
+  resolvível perto o bastante do bucket 0 ou do marco. Isso é o
+  comportamento **correto e esperado** da régua ("None se um dos lados
+  não for resolvido — nunca inferido como 0"), não um bug — mas significa
+  que a taxa de "sinal determinável por janela" é mais baixa que "migrações
+  por janela". Das 5 determináveis, 4 sobreviveram — **taxa de
+  sobrevivência = 0,80** (contagem de sistema, não julgamento econômico).
+- **K proposto**: 6,0 migrações/janela observadas, 2,5 sinais H2
+  determináveis/janela. Pra n>=30 sinais determináveis no treino:
+  `K = ceil(30 / 2,5) = 12` **janelas de 10min por bloco**. Tempo total
+  estimado do Estágio 1 barato pra essas 12 janelas: `12 × 6,0 × 2,80s ≈
+  202s (~3,4min)` — desprezível. **K fixado em 12 janelas/bloco** (seed
+  `20261008`, mesma de sempre).
+- **Benchmark da grade completa (Estágio 2, regra 4)** rodado em 1 pool
+  real de alto volume (16.473 assinaturas): em 90s de orçamento, processou
+  341 das 960 buckets (35,5%), achando swap resolvível em 339 delas
+  (99,4% — confirma a suposição de "quase todo bucket tem um swap
+  resolvível na primeira tentativa" pra pools ativos), com 361 chamadas
+  RPC (≈1,06 chamada/bucket, muito próximo do caso otimista de 1/bucket).
+  Extrapolando pra janela inteira (960 buckets) no mesmo ritmo: **~254s
+  (~4,2min) e ~1.018 chamadas por pool de alto volume** — o Estágio 2
+  completo é só pra discovery/confirmação reais, nunca pro piloto (regra
+  4), mas este número já diz que é viável (minutos, não horas, por token).
+  Pools de baixo volume devem custar muito menos (menos buckets
+  não-vazios).
+- Nenhum retorno/EV calculado nesta rodada — só contagem de sistema e
+  custo, como autorizado.
+
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 Instrumento de medida (congelado para este lote, trocar exige lote novo):
