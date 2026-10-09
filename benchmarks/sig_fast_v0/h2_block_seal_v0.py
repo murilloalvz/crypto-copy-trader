@@ -51,6 +51,7 @@ from benchmarks.sig_fast_v0.h2_pilot_v0 import (
     FULL_WINDOW_BUCKETS,
     LAST_5MIN_SECONDS,
     MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR,
+    PilotAbortedRateLimited,
     RpcUsageTracker,
     _survival_system_count_from_resolved,
 )
@@ -294,33 +295,67 @@ def seal_block(
     stage1_done: dict[str, dict[str, Any]] = checkpoint["stage1"]
     system_error_pools: list[str] = checkpoint["system_error_pools"]
 
+    # Enumeracao e Estagio 1/2 abortam de forma independente -- um 429
+    # sustentado numa janela nao deve jogar fora os candidatos ja achados
+    # nas janelas anteriores (mesmo principio ja usado em h2_pilot_v0.py).
+    enumeration_aborted = False
+    enumeration_abort_reason: str | None = None
     for window in windows:
         if window in windows_done:
             continue
-        new_candidates = enumeration_rpc_call(rpc_url, window_start=window[0], window_end=window[1])
+        try:
+            new_candidates = enumeration_rpc_call(rpc_url, window_start=window[0], window_end=window[1])
+        except PilotAbortedRateLimited as exc:
+            enumeration_aborted = True
+            enumeration_abort_reason = str(exc)
+            print(f"[selagem {block_name}] PAROU durante a enumeracao (janela {window}): {exc}")
+            break
+        except Exception as exc:  # noqa: BLE001 -- sem rajada de 3, mas sem retomada parcial aqui
+            enumeration_aborted = True
+            enumeration_abort_reason = f"falha na enumeracao da janela {window}: {type(exc).__name__}: {exc}"
+            print(f"[selagem {block_name}] PAROU durante a enumeracao: {enumeration_abort_reason}")
+            break
         for candidate in new_candidates:
             candidates_by_pool.setdefault(candidate.pool_mint, candidate)
         windows_done.add(window)
         checkpoint["windows_done"] = [list(w) for w in windows_done]
         checkpoint["candidates"] = [asdict(c) for c in candidates_by_pool.values()]
         _save_checkpoint(checkpoint_path, checkpoint)
+        print(
+            f"[selagem {block_name}] janela {window}: {len(new_candidates)} migracoes novas, "
+            f"{len(candidates_by_pool)} candidatas no total"
+        )
 
-    for pool_mint, candidate in candidates_by_pool.items():
-        if pool_mint in stage1_done or pool_mint in system_error_pools:
-            continue
-        try:
-            result = seal_stage1_token(
-                conn, carbon, candidate, rotator=rotator, tracker=tracker, source=f"{block_name}_stage1"
-            )
-        except Exception as exc:  # noqa: BLE001 -- erro de sistema, missing explicito
-            system_error_pools.append(pool_mint)
-            checkpoint["system_error_pools"] = system_error_pools
+    stage1_aborted = False
+    stage1_abort_reason: str | None = None
+    if candidates_by_pool:
+        for pool_mint, candidate in candidates_by_pool.items():
+            if pool_mint in stage1_done or pool_mint in system_error_pools:
+                continue
+            try:
+                result = seal_stage1_token(
+                    conn, carbon, candidate, rotator=rotator, tracker=tracker, source=f"{block_name}_stage1"
+                )
+            except PilotAbortedRateLimited as exc:
+                # Rajada/429 sustentado e um problema de sistema, nao deste
+                # token especifico -- para o loop inteiro em vez de marcar
+                # cada candidato restante como "missing" um por um.
+                stage1_aborted = True
+                stage1_abort_reason = str(exc)
+                print(f"[selagem {block_name}] Estagio 1 PAROU: {exc}")
+                break
+            except Exception as exc:  # noqa: BLE001 -- erro de sistema deste token, missing explicito
+                system_error_pools.append(pool_mint)
+                checkpoint["system_error_pools"] = system_error_pools
+                _save_checkpoint(checkpoint_path, checkpoint)
+                print(
+                    f"[selagem {block_name}] token {pool_mint} erro de sistema (missing): "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            stage1_done[pool_mint] = asdict(result)
+            checkpoint["stage1"] = stage1_done
             _save_checkpoint(checkpoint_path, checkpoint)
-            print(f"[selagem {block_name}] token {pool_mint} erro de sistema (missing): {type(exc).__name__}: {exc}")
-            continue
-        stage1_done[pool_mint] = asdict(result)
-        checkpoint["stage1"] = stage1_done
-        _save_checkpoint(checkpoint_path, checkpoint)
 
     conn.commit()
     stage1_rows = conn.execute("SELECT COUNT(*) FROM sig_fast_h2_backfill_v0").fetchone()[0]
@@ -331,17 +366,32 @@ def seal_block(
     rng = random.Random(seed)
     baseline = rng.sample(non_survivors, k=min(len(survivors), len(non_survivors)))
 
+    stage2_aborted = False
+    stage2_abort_reason: str | None = None
     stage2_done: dict[str, dict[str, Any]] = checkpoint["stage2"]
-    for pool_mint in [*survivors, *baseline]:
-        if pool_mint in stage2_done:
-            continue
-        candidate = candidates_by_pool[pool_mint]
-        result2 = seal_stage2_grid_token(
-            conn, carbon, candidate, rotator=rotator, tracker=tracker, source=f"{block_name}_stage2_grid"
-        )
-        stage2_done[pool_mint] = asdict(result2)
-        checkpoint["stage2"] = stage2_done
-        _save_checkpoint(checkpoint_path, checkpoint)
+    if not stage1_aborted:
+        for pool_mint in [*survivors, *baseline]:
+            if pool_mint in stage2_done:
+                continue
+            candidate = candidates_by_pool[pool_mint]
+            try:
+                result2 = seal_stage2_grid_token(
+                    conn, carbon, candidate, rotator=rotator, tracker=tracker, source=f"{block_name}_stage2_grid"
+                )
+            except PilotAbortedRateLimited as exc:
+                stage2_aborted = True
+                stage2_abort_reason = str(exc)
+                print(f"[selagem {block_name}] Estagio 2 PAROU: {exc}")
+                break
+            except Exception as exc:  # noqa: BLE001 -- token isolado, nao e rajada de 429
+                print(
+                    f"[selagem {block_name}] token {pool_mint} falhou na grade (nao abortou): "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            stage2_done[pool_mint] = asdict(result2)
+            checkpoint["stage2"] = stage2_done
+            _save_checkpoint(checkpoint_path, checkpoint)
 
     conn.commit()
     stage2_rows = conn.execute("SELECT COUNT(*) FROM sig_fast_h2_backfill_v0").fetchone()[0]
@@ -368,6 +418,13 @@ def seal_block(
     return {
         "version": VERSION,
         "classification": "COVERAGE_ONLY_NO_RETURN_NO_EV_NO_MFE_NO_BARRIER",
+        "aborted": enumeration_aborted or stage1_aborted or stage2_aborted,
+        "enumeration_aborted": enumeration_aborted,
+        "enumeration_abort_reason": enumeration_abort_reason,
+        "stage1_aborted": stage1_aborted,
+        "stage1_abort_reason": stage1_abort_reason,
+        "stage2_aborted": stage2_aborted,
+        "stage2_abort_reason": stage2_abort_reason,
         "block_name": block_name,
         "start_date": start_date,
         "end_date": end_date,
@@ -394,6 +451,77 @@ def seal_block(
         "total_elapsed_seconds_stage1": round(sum(r["elapsed_seconds"] for r in stage1_results), 1),
         "total_elapsed_seconds_stage2": round(sum(r["elapsed_seconds"] for r in stage2_results), 1),
     }
+
+
+def _self_check_abort_handling() -> None:
+    """Achado real (producao): a 1a tentativa real de rodar seal_block
+    crashou porque a enumeracao nao tratava PilotAbortedRateLimited --
+    um 429 sustentado numa janela derrubava o processo inteiro em vez de
+    parar a enumeracao e ainda processar os candidatos ja achados nas
+    janelas anteriores (mesmo principio ja usado em h2_pilot_v0.py).
+    Este teste prova a correcao."""
+    import tempfile
+    from unittest.mock import patch
+
+    pool_x = "POOLXpump"
+    window_start_x = 50_000
+    call_count = {"n": 0}
+
+    def fake_enumeration(rpc_url: str, *, window_start: int, window_end: int) -> list[MigrationCandidate]:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [
+                MigrationCandidate(
+                    pool_mint=pool_x, migration_signature="SIGMIGX", migration_block_time=window_start_x
+                )
+            ]
+        raise PilotAbortedRateLimited(3, "429 simulado (self-check)")
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            assert params[0] == pool_x
+            # So 1 trade -- bem abaixo do limiar de 20, nao-sobrevivente
+            # direto, nenhum getTransaction/decode gasto.
+            return {"result": [{"signature": "SIG_X1", "blockTime": window_start_x + 10, "err": None}]}
+        raise AssertionError(f"unexpected call (nao deveria resolver preco): {method} {params}")
+
+    class _FakeCarbonNoopAbort:
+        def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+            raise AssertionError("nao deveria decodificar nada neste self-check")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "abort.db"
+        checkpoint_path = Path(tmp) / "abort_checkpoint.json"
+        with patch(
+            "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+            side_effect=fake_rpc,
+        ):
+            tracker = RpcUsageTracker()
+            rotator = EndpointRotator(["fake://rpc"])
+            report = seal_block(
+                block_name="self_check_abort",
+                start_date="2026-01-01",
+                end_date="2026-01-03",
+                k_windows=2,
+                window_minutes=10,
+                seed=1,
+                db_path=db_path,
+                checkpoint_path=checkpoint_path,
+                rpc_url="fake://rpc",
+                rotator=rotator,
+                tracker=tracker,
+                carbon=_FakeCarbonNoopAbort(),
+                enumeration_rpc_call=fake_enumeration,
+            )
+
+    assert report["enumeration_aborted"] is True, report
+    assert report["aborted"] is True, report
+    assert report["stage1_aborted"] is False, report  # nao confundido com abort do Estagio 1
+    # Candidato da janela 1 (antes do abort na janela 2) nao foi jogado
+    # fora -- ainda foi classificado pelo Estagio 1.
+    assert report["n_migrations_found"] == 1, report
+    assert report["n_tokens_system_error_missing"] == 0, report
+    assert report["n_non_survivors"] == 1, report
 
 
 def _self_check() -> None:
@@ -572,10 +700,11 @@ def _self_check() -> None:
             "row_count_sig_fast_h2_backfill_v0"
         ], (report, report2)
 
+    _self_check_abort_handling()
     print(
         "self-check OK: seal_block (enumeracao + Estagio 1 com missing explicito + hash + "
         "baseline seed-fixa + Estagio 2 grade completa + hash + cobertura, sem retorno/EV) + "
-        "resume idempotente do checkpoint"
+        "resume idempotente do checkpoint + abort de 429 nao descarta candidatos ja achados"
     )
 
 
