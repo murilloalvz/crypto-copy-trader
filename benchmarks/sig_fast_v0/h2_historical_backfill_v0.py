@@ -30,6 +30,7 @@ import random
 import re
 import sqlite3
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -121,22 +122,38 @@ class EndpointRotator:
         raise RuntimeError(f"all {len(self._urls)} rotation endpoints failed for {method}: {errors}")
 
 
-def fetch_pool_trades_raw_rotation(
+# Addendum Fase E parte 4 (operador, 2026-10-09): tamanho do bucket da
+# grade de preco. Achado que motivou isso: uma migracao real teve 16.473
+# transacoes numa janela de 80min -- 1 getTransaction por trade e
+# proibitivo; a grade reduz isso pra ~1 getTransaction por bucket.
+GRID_BUCKET_SECONDS = 5
+
+# Nao martelar um bucket anomalo cheio de tx nao-swap -- regra 2.
+DEFAULT_BUCKET_SEARCH_MAX_LOOKBACK = 5
+# Quantos buckets o preco em T0/no marco pode andar (pra frente em T0, pra
+# tras no marco) procurando o primeiro swap resolvivel antes de desistir.
+DEFAULT_PRICE_SEARCH_MAX_BUCKETS = 20
+
+
+@dataclass(frozen=True)
+class PoolSignatureEntry:
+    signature: str
+    block_time: int | None
+    failed: bool
+
+
+def fetch_pool_signatures_in_window(
     rotator: "EndpointRotator", *, pool_mint: str, window_start: int, window_end: int
-) -> list[dict[str, Any]]:
-    """Stage 1+2 rotation method (rev. 4 addendum, Phase E): the same trades
-    as fetch_pool_trades_raw, but via the standard two-call method
-    (getSignaturesForAddress + getTransaction) instead of Helius's exclusive
-    getTransactionsForAddress, so it runs against any standard RPC endpoint
-    and can rotate across them. getSignaturesForAddress only walks backward
-    (newest first) via the `before` cursor, so this pages back from "now"
-    until a page's oldest blockTime is at or before window_start, keeps
-    entries inside [window_start, window_end), then resolves each kept
-    signature with getTransaction. This necessarily also pages through every
-    pool signature between "now" and window_end even though only the first
-    ~80min are wanted -- a real cost the piloto measures empirically rather
-    than assumes."""
-    kept: list[dict[str, Any]] = []
+) -> list[PoolSignatureEntry]:
+    """Regra 1 (addendum Fase E parte 4): lista COMPLETA de assinaturas do
+    pool na janela, via getSignaturesForAddress -- barato (1 credito
+    flat), sem getTransaction nenhum, porque block_time e err ja vem na
+    propria resposta. getSignaturesForAddress so caminha pra tras (mais
+    novo primeiro) via `before`, entao pagina a partir de "agora" ate
+    passar window_start, mantendo so o que cai em [window_start,
+    window_end). Devolve em ordem crescente de block_time (mais antigo
+    primeiro), pronta pra agrupar em buckets."""
+    kept: list[PoolSignatureEntry] = []
     before: str | None = None
     while True:
         params: list = [pool_mint, {"limit": 1000}]
@@ -149,29 +166,114 @@ def fetch_pool_trades_raw_rotation(
         for entry in page:
             bt = entry.get("blockTime")
             if bt is not None and window_start <= bt < window_end:
-                kept.append(entry)
+                kept.append(
+                    PoolSignatureEntry(
+                        signature=entry["signature"],
+                        block_time=bt,
+                        failed=entry.get("err") is not None,
+                    )
+                )
         before = page[-1]["signature"]
         oldest_bt = page[-1].get("blockTime")
         if len(page) < 1000:
             break
         if oldest_bt is not None and oldest_bt <= window_start:
             break
+    kept.sort(key=lambda e: e.block_time if e.block_time is not None else 0)
+    return kept
 
-    rows: list[dict[str, Any]] = []
-    for entry in kept:
+
+def group_successful_signatures_by_bucket(
+    entries: list[PoolSignatureEntry], *, window_start: int, bucket_seconds: int = GRID_BUCKET_SECONDS
+) -> dict[int, list[PoolSignatureEntry]]:
+    """Agrupa as entradas BEM-SUCEDIDAS (err descartado -- regra 1) por
+    bucket de `bucket_seconds`, preservando a ordem crescente de
+    block_time dentro de cada bucket -- precisa disso pra andar pra tras
+    (regra 2: "tenta a anterior no bucket")."""
+    buckets: dict[int, list[PoolSignatureEntry]] = defaultdict(list)
+    for entry in entries:
+        if entry.failed or entry.block_time is None:
+            continue
+        bucket_index = (entry.block_time - window_start) // bucket_seconds
+        buckets[bucket_index].append(entry)
+    return dict(buckets)
+
+
+def resolve_bucket_swap_price(
+    rotator: "EndpointRotator",
+    carbon: "CarbonDecoderProcess",
+    candidates_in_bucket: list[PoolSignatureEntry],
+    *,
+    max_lookback: int = DEFAULT_BUCKET_SEARCH_MAX_LOOKBACK,
+) -> dict[str, Any] | None:
+    """Regra 2: pega a ULTIMA transacao bem-sucedida do bucket; se nao for
+    (ou nao decodificar como) swap PumpSwap, tenta a anterior dentro do
+    MESMO bucket, até achar um swap ou esgotar `max_lookback` tentativas
+    (nunca martela um bucket anomalo sem fim). None se nenhum swap foi
+    resolvido -- quem chama decide se carrega o preco do bucket anterior
+    (regra 2) ou busca pra frente (preco em T0, regra 2)."""
+    if not candidates_in_bucket:
+        return None
+    for entry in reversed(candidates_in_bucket[-max_lookback:]):
         result = rotator.call(
             "getTransaction",
-            [entry["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+            [entry.signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
         )
         tx = result.get("result")
         if tx is None:
             continue
-        rows.append(tx)
-    # Rule 3 ordering (slot + in-tx index) -- getTransaction gives no literal
-    # in-block index either, so slot + signature is the best available stable
-    # tiebreaker here, same limitation already documented on record_backfill_rows.
-    rows.sort(key=lambda r: (r.get("slot") or 0, r["transaction"]["signatures"][0]))
-    return rows
+        decoded = decode_historical_trades(carbon, [tx], batch_id=1)
+        swap = next(
+            (
+                e
+                for e in decoded
+                if e.get("status") == "decoded" and e.get("event_type") in ("pumpswap_buy", "pumpswap_sell")
+            ),
+            None,
+        )
+        if swap is not None:
+            return {"signature": entry.signature, "block_time": entry.block_time, "event": swap, "raw_tx": tx}
+    return None
+
+
+def resolve_price_at_t0(
+    rotator: "EndpointRotator",
+    carbon: "CarbonDecoderProcess",
+    buckets_by_index: dict[int, list[PoolSignatureEntry]],
+    *,
+    max_buckets: int = DEFAULT_PRICE_SEARCH_MAX_BUCKETS,
+) -> dict[str, Any] | None:
+    """Preco em T0 (migracao): bucket 0 nao tem "anterior" pra carregar de
+    (regra 2), entao busca pra FRENTE a partir dele até achar o primeiro
+    swap resolvivel -- equivalente ao "price_first" do design anterior,
+    so que restrito a um bucket por vez em vez de qualquer swap na janela
+    inteira."""
+    for bucket_index in range(0, max_buckets):
+        resolved = resolve_bucket_swap_price(rotator, carbon, buckets_by_index.get(bucket_index, []))
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def resolve_price_at_marker(
+    rotator: "EndpointRotator",
+    carbon: "CarbonDecoderProcess",
+    buckets_by_index: dict[int, list[PoolSignatureEntry]],
+    *,
+    marker_seconds: int,
+    bucket_seconds: int = GRID_BUCKET_SECONDS,
+    max_buckets: int = DEFAULT_PRICE_SEARCH_MAX_BUCKETS,
+) -> dict[str, Any] | None:
+    """Preco no marco (ex. +20min): acha o bucket do marco; se nao tiver
+    swap resolvivel, carrega do bucket anterior (regra 2: "bucket sem tx
+    -> preco carregado do anterior, sem swap o pool nao muda"), andando
+    pra tras até `max_buckets` ou o bucket 0."""
+    target_bucket = marker_seconds // bucket_seconds
+    for bucket_index in range(target_bucket, max(-1, target_bucket - max_buckets), -1):
+        resolved = resolve_bucket_swap_price(rotator, carbon, buckets_by_index.get(bucket_index, []))
+        if resolved is not None:
+            return resolved
+    return None
 
 
 @dataclass(frozen=True)
@@ -630,20 +732,11 @@ def _self_check_rotation() -> None:
         if method == "getSignaturesForAddress":
             return {
                 "result": [
-                    {"signature": "SIG_NEW", "blockTime": 1_000_200},
-                    {"signature": "SIG_IN_WINDOW", "blockTime": 1_000_050},
-                    {"signature": "SIG_OLD", "blockTime": 900_000},
+                    {"signature": "SIG_NEW", "blockTime": 1_000_200, "err": None},
+                    {"signature": "SIG_IN_WINDOW", "blockTime": 1_000_050, "err": None},
+                    {"signature": "SIG_FAILED_IN_WINDOW", "blockTime": 1_000_060, "err": {"InstructionError": [0, "boom"]}},
+                    {"signature": "SIG_OLD", "blockTime": 900_000, "err": None},
                 ]
-            }
-        if method == "getTransaction":
-            signature = params[0]
-            return {
-                "result": {
-                    "slot": 42,
-                    "blockTime": 1_000_050,
-                    "transaction": {"signatures": [signature], "message": {}},
-                    "meta": {"logMessages": []},
-                }
             }
         raise AssertionError(f"unexpected method: {method}")
 
@@ -652,21 +745,124 @@ def _self_check_rotation() -> None:
         side_effect=fake_rpc_pool,
     ):
         rotator = EndpointRotator(["fake://only"])
-        rows = fetch_pool_trades_raw_rotation(
+        entries = fetch_pool_signatures_in_window(
             rotator, pool_mint="POOLpump", window_start=window_start, window_end=window_end
         )
-    assert len(rows) == 1, rows
-    assert rows[0]["transaction"]["signatures"] == ["SIG_IN_WINDOW"], rows
+    # regra 1: so o que cai na janela, mas AMBAS sucesso e falha (err !=
+    # null nao e descartado AQUI -- so no agrupamento por bucket).
+    assert [e.signature for e in entries] == ["SIG_IN_WINDOW", "SIG_FAILED_IN_WINDOW"], entries
+    assert entries[0].failed is False and entries[1].failed is True, entries
+
+
+def _self_check_price_grid() -> None:
+    from unittest.mock import patch
+
+    window_start = 1_000
+    pool_mint = "POOLpump"
+    sig_t0 = "SIG_T0"
+    sig_marker_swap = "SIG_MARKER_SWAP"
+    sig_marker_notswap = "SIG_MARKER_NOTSWAP"
+    sig_failed = "SIG_FAILED"
+
+    raw_rows_by_sig = {
+        sig_t0: _fake_pumpswap_buy_raw_row(
+            signature=sig_t0, slot=1, block_time=window_start, pool_mint=pool_mint
+        ),
+        sig_marker_swap: _fake_pumpswap_buy_raw_row(
+            signature=sig_marker_swap, slot=2, block_time=window_start + 21, pool_mint=pool_mint
+        ),
+        # Sem log de PumpSwap nenhum -- extract_contextual_target_payloads
+        # nao acha target, decode_historical_trades devolve [] -- "nao e
+        # swap", regra 2 deve andar pra tras no bucket a partir daqui.
+        sig_marker_notswap: {
+            "transaction": {"signatures": [sig_marker_notswap], "message": {"accountKeys": []}},
+            "slot": 3,
+            "blockTime": window_start + 23,
+            "meta": {"logMessages": []},
+        },
+    }
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            return {
+                "result": [
+                    {"signature": sig_t0, "blockTime": window_start, "err": None},
+                    {"signature": sig_marker_swap, "blockTime": window_start + 21, "err": None},
+                    {"signature": sig_marker_notswap, "blockTime": window_start + 23, "err": None},
+                    {
+                        "signature": sig_failed,
+                        "blockTime": window_start + 24,
+                        "err": {"InstructionError": [0, "boom"]},
+                    },
+                ]
+            }
+        if method == "getTransaction":
+            signature = params[0]
+            row = raw_rows_by_sig.get(signature)
+            if row is None:
+                raise AssertionError(f"unexpected getTransaction for failed/unknown signature {signature}")
+            return {"result": row}
+        raise AssertionError(f"unexpected method: {method}")
+
+    canned = [
+        {
+            "event_key": f"{sig_t0}:1:pumpswap_buy",
+            "status": "decoded",
+            "event_type": "pumpswap_buy",
+            "pool_base_token_reserves_raw": 1000,
+            "pool_quote_token_reserves_raw": 600,
+        },
+        {
+            "event_key": f"{sig_marker_swap}:1:pumpswap_buy",
+            "status": "decoded",
+            "event_type": "pumpswap_buy",
+            "pool_base_token_reserves_raw": 500,
+            "pool_quote_token_reserves_raw": 900,
+        },
+    ]
+    carbon = _FakeCarbonProcess(canned)
+
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc,
+    ):
+        rotator = EndpointRotator(["fake://only"])
+        entries = fetch_pool_signatures_in_window(
+            rotator, pool_mint=pool_mint, window_start=window_start, window_end=window_start + 100
+        )
+        assert len(entries) == 4, entries
+        assert sum(1 for e in entries if e.failed) == 1, entries
+
+        buckets = group_successful_signatures_by_bucket(entries, window_start=window_start)
+        # bucket 0 (0-4s): so sig_t0; bucket 4 (20-24s): sig_marker_swap(21)
+        # seguido de sig_marker_notswap(23), que e o ULTIMO cronologicamente.
+        assert [e.signature for e in buckets[0]] == [sig_t0], buckets
+        assert [e.signature for e in buckets[4]] == [sig_marker_swap, sig_marker_notswap], buckets
+
+        t0_resolved = resolve_price_at_t0(rotator, carbon, buckets)
+        assert t0_resolved is not None and t0_resolved["signature"] == sig_t0, t0_resolved
+
+        # regra 2: a ULTIMA tx do bucket (sig_marker_notswap) nao e swap --
+        # tem que andar pra tras e achar sig_marker_swap, nunca pular pra
+        # outro bucket enquanto o atual nao se esgota.
+        marker_resolved = resolve_price_at_marker(rotator, carbon, buckets, marker_seconds=20)
+        assert marker_resolved is not None and marker_resolved["signature"] == sig_marker_swap, marker_resolved
+
+        # Bucket vazio (nenhuma entrada bem-sucedida) -> None; quem chama
+        # decide se carrega o preco do bucket anterior.
+        assert resolve_bucket_swap_price(rotator, carbon, buckets.get(1, [])) is None
 
 
 def _self_check() -> None:
     _self_check_sampling()
     _self_check_decode_and_persist()
     _self_check_rotation()
+    _self_check_price_grid()
     print(
         "self-check OK: sampling (dedup/exclusion/deterministic seed) + decode/persist "
-        "(wiring + idempotent replay) + rotation (fallback-not-abort + sanitized errors + "
-        "2-stage window filter)"
+        "(wiring + idempotent replay) + rotation (fallback-not-abort + sanitized errors) + "
+        "price grid (signature list w/ err + bucket grouping + swap search w/ backward "
+        "lookback + T0/marker resolution)"
     )
 
 

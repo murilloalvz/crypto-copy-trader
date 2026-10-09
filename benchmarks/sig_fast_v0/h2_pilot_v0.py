@@ -55,14 +55,18 @@ from benchmarks.move_first_h_coverage_audit_v0 import sample_migration_account a
 from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     CarbonDecoderProcess,
     EndpointRotator,
+    GRID_BUCKET_SECONDS,
     MigrationCandidate,
     POOL_TRADE_WINDOW_SECONDS,
     SIGNAL_MARKER_SECONDS,
     _load_rpc_url,
-    decode_historical_trades,
     fetch_migrations_in_windows,
-    fetch_pool_trades_raw_rotation,
+    fetch_pool_signatures_in_window,
+    group_successful_signatures_by_bucket,
     load_rotation_rpc_urls,
+    resolve_bucket_swap_price,
+    resolve_price_at_marker,
+    resolve_price_at_t0,
     sample_calendar_windows,
 )
 from src.opportunity_path_metrics_v0 import PathTrade, mid_price_sol
@@ -302,73 +306,69 @@ def install_rate_limited_rpc(
     return restore
 
 
+# Operador (addendum Fase E parte 4): "contagem de trades bem-sucedidos
+# nos ultimos 5 min" antes do marco de 20min -- diagnostico de sistema,
+# vem direto da lista de assinaturas (regra 1), nunca de uma chamada nova.
+LAST_5MIN_SECONDS = 5 * 60
+
+
 @dataclass(frozen=True)
 class PilotTokenResult:
     pool_mint: str
     migration_signature: str
     migration_block_time: int
-    n_tx_in_window: int
+    n_signatures_in_window: int
+    n_failed_tx: int
+    pct_failed_tx: float
+    n_successful_trades_last_5min_before_marker: int
     n_events_decoded: int
     n_events_with_reserves_and_fee: int
     pct_decoded_with_reserves_and_fee: float
     estimated_credits: int
+    n_rpc_calls: int
+    elapsed_seconds: float
     survived_20min_system_count: bool | None
 
 
-def _survival_system_count(
-    decoded_events: list[dict[str, Any]],
-    signature_to_block_time: dict[str, int],
-    *,
-    migration_block_time: int,
+def _survival_system_count_from_resolved(
+    t0_resolved: dict[str, Any] | None, marker_resolved: dict[str, Any] | None
 ) -> bool | None:
     """MemeTrans 20-minute survival proxy, operator-authorized as a system
-    count for N-sizing only (never an H2 verdict input). price(T0) from the
-    first decoded swap in the window; price(marker) from the last decoded
-    swap at or before migration+20min. None if either side is missing --
-    never inferred as 0."""
-    swaps = [
-        event
-        for event in decoded_events
-        if event.get("status") == "decoded"
-        and event.get("event_type") in ("pumpswap_buy", "pumpswap_sell")
-        and event.get("pool_base_token_reserves_raw") is not None
-        and event.get("pool_quote_token_reserves_raw") is not None
-    ]
-    if not swaps:
+    count for K-sizing only (never an H2 verdict input) -- MESMA regua
+    pre-registrada (razao marco/T0 >= 0,40) de antes do addendum Fase E
+    parte 4; o que mudou e so a FONTE do preco (grade de 5s em vez de
+    "qualquer swap decodificado na janela"), nunca a regra de decisao.
+    None se um dos dois lados nao foi resolvido -- nunca inferido como 0."""
+    if t0_resolved is None or marker_resolved is None:
         return None
-    marker = migration_block_time + SIGNAL_MARKER_SECONDS
-    ordered = sorted(
-        swaps, key=lambda event: signature_to_block_time.get(str(event.get("signature")), 0)
-    )
-    first = ordered[0]
-    at_or_before_marker = [
-        event
-        for event in ordered
-        if signature_to_block_time.get(str(event.get("signature")), 0) <= marker
-    ]
-    if not at_or_before_marker:
+    event_t0 = t0_resolved["event"]
+    event_marker = marker_resolved["event"]
+    if (
+        event_t0.get("pool_base_token_reserves_raw") is None
+        or event_t0.get("pool_quote_token_reserves_raw") is None
+        or event_marker.get("pool_base_token_reserves_raw") is None
+        or event_marker.get("pool_quote_token_reserves_raw") is None
+    ):
         return None
-    last_before_marker = at_or_before_marker[-1]
-
-    price_first = mid_price_sol(
+    price_t0 = mid_price_sol(
         PathTrade(
             chain_time=0,
             venue="pumpswap",
-            base_reserves_raw=first["pool_base_token_reserves_raw"],
-            quote_reserves_raw=first["pool_quote_token_reserves_raw"],
+            base_reserves_raw=event_t0["pool_base_token_reserves_raw"],
+            quote_reserves_raw=event_t0["pool_quote_token_reserves_raw"],
         )
     )
     price_marker = mid_price_sol(
         PathTrade(
             chain_time=0,
             venue="pumpswap",
-            base_reserves_raw=last_before_marker["pool_base_token_reserves_raw"],
-            quote_reserves_raw=last_before_marker["pool_quote_token_reserves_raw"],
+            base_reserves_raw=event_marker["pool_base_token_reserves_raw"],
+            quote_reserves_raw=event_marker["pool_quote_token_reserves_raw"],
         )
     )
-    if price_first is None or price_marker is None or price_first <= 0:
+    if price_t0 is None or price_marker is None or price_t0 <= 0:
         return None
-    return (price_marker / price_first) >= 0.40
+    return (price_marker / price_t0) >= 0.40
 
 
 def run_pilot_token(
@@ -378,62 +378,77 @@ def run_pilot_token(
     rotator: EndpointRotator,
     tracker: RpcUsageTracker,
 ) -> PilotTokenResult:
-    """Stage 2 (per-pool trade fetch) now goes through the rotation 2-stage
-    method (getSignaturesForAddress + getTransaction), per operator
-    instruction -- see module docstring for why Stage 1 enumeration stays on
-    Helius. `candidate.migration_block_time` is already the real on-chain
-    instant (fetch_migrations_in_windows reads it straight from the
-    enumeration response's own blockTime, Fase E parte 2) -- no extra
-    getTransaction call needed to resolve it any more. `estimated_credits`
-    is the real tracker delta for this token (works for either method, since
-    it just reads total_credits before/after), not the old Helius-batch-
-    pricing formula, which no longer applies once calls are split across
-    providers."""
+    """Estagio 1 barato (addendum Fase E parte 4, operador 2026-10-09):
+    substitui o metodo antigo de 1 getTransaction por trade (achado:
+    16.473 transacoes numa janela real, proibitivo). Lista de assinaturas
+    da janela inteira e barata (so getSignaturesForAddress, err/block_time
+    ja vem na resposta); preco em T0 e no marco de 20min vem da grade de
+    5s (resolve_price_at_t0/resolve_price_at_marker), tipicamente 2
+    getTransaction no caso otimista. `candidate.migration_block_time` ja e
+    o instante real (fetch_migrations_in_windows le direto da propria
+    enumeracao, Fase E parte 2)."""
+    t0_wall = time.monotonic()
     credits_before = tracker.total_credits
-    migration_block_time = candidate.migration_block_time
-    raw_rows = fetch_pool_trades_raw_rotation(
-        rotator,
-        pool_mint=candidate.pool_mint,
-        window_start=migration_block_time,
-        window_end=migration_block_time + POOL_TRADE_WINDOW_SECONDS,
+    calls_before = len(tracker.calls)
+    window_start = candidate.migration_block_time
+    window_end = window_start + POOL_TRADE_WINDOW_SECONDS
+
+    entries = fetch_pool_signatures_in_window(
+        rotator, pool_mint=candidate.pool_mint, window_start=window_start, window_end=window_end
     )
-    decoded = decode_historical_trades(carbon, raw_rows, batch_id=1)
-    n_decoded = sum(1 for event in decoded if event.get("status") == "decoded")
+    n_total = len(entries)
+    n_failed = sum(1 for e in entries if e.failed)
+    pct_failed = round(100.0 * n_failed / n_total, 2) if n_total else 0.0
+
+    n_last_5min = sum(
+        1
+        for e in entries
+        if not e.failed
+        and e.block_time is not None
+        and (SIGNAL_MARKER_SECONDS - LAST_5MIN_SECONDS) <= (e.block_time - window_start) < SIGNAL_MARKER_SECONDS
+    )
+
+    buckets = group_successful_signatures_by_bucket(entries, window_start=window_start)
+    t0_resolved = resolve_price_at_t0(rotator, carbon, buckets)
+    marker_resolved = resolve_price_at_marker(rotator, carbon, buckets, marker_seconds=SIGNAL_MARKER_SECONDS)
+
+    decoded_events = [r["event"] for r in (t0_resolved, marker_resolved) if r is not None]
+    n_decoded = len(decoded_events)
     n_with_both = sum(
         1
-        for event in decoded
-        if event.get("status") == "decoded"
-        and event.get("pool_base_token_reserves_raw") is not None
-        and (event.get("lp_fee_raw") is not None or event.get("fee_raw") is not None)
+        for e in decoded_events
+        if e.get("pool_base_token_reserves_raw") is not None
+        and (e.get("lp_fee_raw") is not None or e.get("fee_raw") is not None)
     )
-    pct = round(100.0 * n_with_both / len(decoded), 2) if decoded else 0.0
-    signature_to_block_time = {
-        row["transaction"]["signatures"][0]: row.get("blockTime") for row in raw_rows
-    }
+    pct = round(100.0 * n_with_both / n_decoded, 2) if n_decoded else 0.0
 
     return PilotTokenResult(
         pool_mint=candidate.pool_mint,
         migration_signature=candidate.migration_signature,
-        migration_block_time=migration_block_time,
-        n_tx_in_window=len(raw_rows),
+        migration_block_time=window_start,
+        n_signatures_in_window=n_total,
+        n_failed_tx=n_failed,
+        pct_failed_tx=pct_failed,
+        n_successful_trades_last_5min_before_marker=n_last_5min,
         n_events_decoded=n_decoded,
         n_events_with_reserves_and_fee=n_with_both,
         pct_decoded_with_reserves_and_fee=pct,
         estimated_credits=tracker.total_credits - credits_before,
-        survived_20min_system_count=_survival_system_count(
-            decoded, signature_to_block_time, migration_block_time=migration_block_time
-        ),
+        n_rpc_calls=len(tracker.calls) - calls_before,
+        elapsed_seconds=round(time.monotonic() - t0_wall, 3),
+        survived_20min_system_count=_survival_system_count_from_resolved(t0_resolved, marker_resolved),
     )
 
 
 @dataclass(frozen=True)
 class PilotSummary:
     n_sampled: int
-    n_with_any_trade: int
-    avg_tx_per_pool_trade_window: float
-    median_tx_per_pool_trade_window: float | None
-    p90_tx_per_pool_trade_window: float | None
-    avg_credits_per_token: float
+    avg_rpc_calls_per_pool: float
+    median_rpc_calls_per_pool: float | None
+    p90_rpc_calls_per_pool: float | None
+    avg_elapsed_seconds_per_pool: float
+    avg_credits_per_pool: float
+    avg_pct_failed_tx: float
     avg_pct_decoded_with_reserves_and_fee: float
     n_survived_system_count: int
     n_survival_determinable: int
@@ -442,18 +457,21 @@ class PilotSummary:
     avg_migrations_per_window: float | None
     h2_signals_per_window_system_count: float | None
     k_windows_proposed_for_n30_signals: int | None
-    estimated_credits_for_k_proposed: int | None
+    estimated_total_seconds_for_k_proposed: float | None
 
 
 def summarize_pilot(results: list[PilotTokenResult], *, k_windows_used: int) -> PilotSummary:
     """k_windows_used e o numero de janelas de 10min REALMENTE enumeradas
     (nao o K pedido) -- base real pra extrapolar quantas janelas por bloco
-    dariam n>=30 sinais H2 no treino (operador, Fase E parte 2). "Sinal H2"
-    aqui = migracao com sobrevivencia determinavel (survived_20min_system_
-    count is not None), ou seja, teve dado de preco suficiente pra calcular
-    o proxy -- contagem de sistema, nao julgamento economico."""
+    dariam n>=30 sinais H2 no treino (operador, Fase E partes 2/4). "Sinal
+    H2" aqui = migracao com sobrevivencia determinavel (survived_20min_
+    system_count is not None), ou seja, teve preco resolvido em T0 e no
+    marco -- contagem de sistema, nao julgamento economico. O tempo total
+    estimado usa o tempo medio REAL do Estagio 1 barato por pool (regra 3
+    do addendum) -- NAO inclui a grade completa do Estagio 2 (regra 4,
+    discovery/confirmacao reais), que e medida separadamente (ver
+    run_price_grid_benchmark)."""
     n = len(results)
-    with_trade = [r for r in results if r.n_tx_in_window > 0]
     determinable = [r for r in results if r.survived_20min_system_count is not None]
     survived = [r for r in determinable if r.survived_20min_system_count]
     survival_rate = (len(survived) / len(determinable)) if determinable else None
@@ -462,27 +480,24 @@ def summarize_pilot(results: list[PilotTokenResult], *, k_windows_used: int) -> 
     signals_per_window = (len(determinable) / k_windows_used) if k_windows_used else None
 
     k_proposed = None
-    estimated_credits_for_k_proposed = None
+    estimated_total_seconds = None
     if signals_per_window and signals_per_window > 0:
         k_proposed = math.ceil(30 / signals_per_window)
-        if with_trade and avg_migrations_per_window:
-            avg_credits = sum(r.estimated_credits for r in with_trade) / len(with_trade)
-            estimated_credits_for_k_proposed = math.ceil(
-                k_proposed * avg_migrations_per_window * avg_credits
-            )
+        if n and avg_migrations_per_window:
+            avg_seconds = sum(r.elapsed_seconds for r in results) / n
+            estimated_total_seconds = round(k_proposed * avg_migrations_per_window * avg_seconds, 1)
 
-    tx_counts = [float(r.n_tx_in_window) for r in results]
+    calls_counts = [float(r.n_rpc_calls) for r in results]
     return PilotSummary(
         n_sampled=n,
-        n_with_any_trade=len(with_trade),
-        avg_tx_per_pool_trade_window=(sum(r.n_tx_in_window for r in results) / n) if n else 0.0,
-        median_tx_per_pool_trade_window=_percentile(tx_counts, 0.50),
-        p90_tx_per_pool_trade_window=_percentile(tx_counts, 0.90),
-        avg_credits_per_token=(sum(r.estimated_credits for r in results) / n) if n else 0.0,
+        avg_rpc_calls_per_pool=(sum(r.n_rpc_calls for r in results) / n) if n else 0.0,
+        median_rpc_calls_per_pool=_percentile(calls_counts, 0.50),
+        p90_rpc_calls_per_pool=_percentile(calls_counts, 0.90),
+        avg_elapsed_seconds_per_pool=(sum(r.elapsed_seconds for r in results) / n) if n else 0.0,
+        avg_credits_per_pool=(sum(r.estimated_credits for r in results) / n) if n else 0.0,
+        avg_pct_failed_tx=(sum(r.pct_failed_tx for r in results) / n) if n else 0.0,
         avg_pct_decoded_with_reserves_and_fee=(
-            sum(r.pct_decoded_with_reserves_and_fee for r in with_trade) / len(with_trade)
-            if with_trade
-            else 0.0
+            sum(r.pct_decoded_with_reserves_and_fee for r in results) / n if n else 0.0
         ),
         n_survived_system_count=len(survived),
         n_survival_determinable=len(determinable),
@@ -491,7 +506,70 @@ def summarize_pilot(results: list[PilotTokenResult], *, k_windows_used: int) -> 
         avg_migrations_per_window=avg_migrations_per_window,
         h2_signals_per_window_system_count=signals_per_window,
         k_windows_proposed_for_n30_signals=k_proposed,
-        estimated_credits_for_k_proposed=estimated_credits_for_k_proposed,
+        estimated_total_seconds_for_k_proposed=estimated_total_seconds,
+    )
+
+
+@dataclass(frozen=True)
+class GridBenchmarkResult:
+    pool_mint: str
+    bucket_seconds: int
+    n_buckets_total: int
+    n_buckets_processed: int
+    n_buckets_with_swap_resolved: int
+    n_rpc_calls: int
+    elapsed_seconds: float
+    time_budget_seconds: float
+    completed: bool
+
+
+def run_price_grid_benchmark(
+    carbon: CarbonDecoderProcess,
+    candidate: MigrationCandidate,
+    *,
+    rotator: EndpointRotator,
+    tracker: RpcUsageTracker,
+    time_budget_seconds: float,
+) -> GridBenchmarkResult:
+    """Mede o custo REAL do Estagio 2 (grade completa, regra 4) num unico
+    token real -- so pra extrapolar tempo/chamadas, nunca pra julgar H2
+    nem calcular retorno. Orcamento de tempo prende a medicao (nunca roda
+    sem teto); `completed=False` quando o orcamento acaba antes da janela
+    inteira (migracao + 80min) ser percorrida -- os numeros parciais ainda
+    sao reais, nao extrapolados."""
+    t0_wall = time.monotonic()
+    calls_before = len(tracker.calls)
+    window_start = candidate.migration_block_time
+    window_end = window_start + POOL_TRADE_WINDOW_SECONDS
+
+    entries = fetch_pool_signatures_in_window(
+        rotator, pool_mint=candidate.pool_mint, window_start=window_start, window_end=window_end
+    )
+    buckets = group_successful_signatures_by_bucket(entries, window_start=window_start)
+    n_buckets_total = POOL_TRADE_WINDOW_SECONDS // GRID_BUCKET_SECONDS
+
+    completed = True
+    n_processed = 0
+    n_resolved = 0
+    for bucket_index in range(n_buckets_total):
+        if time.monotonic() - t0_wall > time_budget_seconds:
+            completed = False
+            break
+        resolved = resolve_bucket_swap_price(rotator, carbon, buckets.get(bucket_index, []))
+        n_processed += 1
+        if resolved is not None:
+            n_resolved += 1
+
+    return GridBenchmarkResult(
+        pool_mint=candidate.pool_mint,
+        bucket_seconds=GRID_BUCKET_SECONDS,
+        n_buckets_total=n_buckets_total,
+        n_buckets_processed=n_processed,
+        n_buckets_with_swap_resolved=n_resolved,
+        n_rpc_calls=len(tracker.calls) - calls_before,
+        elapsed_seconds=round(time.monotonic() - t0_wall, 3),
+        time_budget_seconds=time_budget_seconds,
+        completed=completed,
     )
 
 
@@ -723,76 +801,59 @@ def _self_check_credits_formula() -> None:
 
 
 def _self_check_survival() -> None:
-    migration_block_time = 1_000_000
-    sig_a, sig_b, sig_c = "SIGA", "SIGB", "SIGC"
-    signature_to_block_time = {
-        sig_a: migration_block_time,
-        sig_b: migration_block_time + SIGNAL_MARKER_SECONDS - 10,
-        sig_c: migration_block_time + SIGNAL_MARKER_SECONDS + 999_999,  # after marker, ignored
-    }
-
-    def _swap(signature: str, base_reserves: int, quote_reserves: int) -> dict[str, Any]:
+    def _resolved(base_reserves: int, quote_reserves: int) -> dict[str, Any]:
         return {
-            "status": "decoded",
-            "event_type": "pumpswap_buy",
-            "signature": signature,
-            "pool_base_token_reserves_raw": base_reserves,
-            "pool_quote_token_reserves_raw": quote_reserves,
+            "signature": "SIG",
+            "block_time": 0,
+            "event": {
+                "status": "decoded",
+                "event_type": "pumpswap_buy",
+                "pool_base_token_reserves_raw": base_reserves,
+                "pool_quote_token_reserves_raw": quote_reserves,
+            },
         }
 
     # Survives: price at marker (quote/base = 60/1000=0.06) is exactly the
     # same as at migration (600/10000=0.06) -- ratio 1.0 >= 0.40.
-    survived = _survival_system_count(
-        [_swap(sig_a, 10_000, 600), _swap(sig_b, 10_000, 600)],
-        signature_to_block_time,
-        migration_block_time=migration_block_time,
-    )
+    survived = _survival_system_count_from_resolved(_resolved(10_000, 600), _resolved(10_000, 600))
     assert survived is True, survived
 
     # Dies: price at marker is 10% of price at migration -- ratio 0.10 < 0.40.
-    died = _survival_system_count(
-        [_swap(sig_a, 10_000, 600), _swap(sig_b, 10_000, 60)],
-        signature_to_block_time,
-        migration_block_time=migration_block_time,
-    )
+    died = _survival_system_count_from_resolved(_resolved(10_000, 600), _resolved(10_000, 60))
     assert died is False, died
 
-    # Undeterminable: no swap at or before the marker (sig_c is after it).
-    undeterminable = _survival_system_count(
-        [_swap(sig_c, 10_000, 600)],
-        signature_to_block_time,
-        migration_block_time=migration_block_time,
-    )
-    assert undeterminable is None, undeterminable
-
-    # Undeterminable: no swaps at all.
-    assert _survival_system_count([], signature_to_block_time, migration_block_time=migration_block_time) is None
+    # Undeterminable: either side unresolved (grade nao achou swap no
+    # bucket) -- nunca inferido como 0.
+    assert _survival_system_count_from_resolved(None, _resolved(10_000, 600)) is None
+    assert _survival_system_count_from_resolved(_resolved(10_000, 600), None) is None
+    assert _survival_system_count_from_resolved(None, None) is None
 
 
 def _self_check_summary() -> None:
     results = [
-        PilotTokenResult("P1", "S1", 0, 50, 50, 50, 100.0, 10, True),
-        PilotTokenResult("P2", "S2", 0, 150, 150, 150, 100.0, 20, False),
-        PilotTokenResult("P3", "S3", 0, 0, 0, 0, 0.0, 0, None),
+        PilotTokenResult("P1", "S1", 0, 100, 5, 5.0, 10, 2, 2, 100.0, 10, 3, 1.5, True),
+        PilotTokenResult("P2", "S2", 0, 300, 10, 3.33, 20, 2, 1, 50.0, 20, 4, 2.5, False),
+        PilotTokenResult("P3", "S3", 0, 50, 0, 0.0, 0, 0, 0, 0.0, 5, 2, 1.0, None),
     ]
     summary = summarize_pilot(results, k_windows_used=2)
     assert summary.n_sampled == 3, summary
-    assert summary.n_with_any_trade == 2, summary
     assert summary.n_survival_determinable == 2, summary
     assert summary.n_survived_system_count == 1, summary
     assert summary.survival_rate_system_count == 0.5, summary
     # k_windows_used=2 -> avg_migrations_per_window = 3/2 = 1.5;
     # signals_per_window = 2/2 = 1.0; k_proposed = ceil(30/1.0) = 30; avg
-    # credits over tokens WITH a trade (10, 20) = 15; estimated = ceil(30 *
-    # 1.5 * 15) = 675.
+    # elapsed over ALL 3 tokens (1.5, 2.5, 1.0) = 5.0/3; estimated =
+    # 30 * 1.5 * (5.0/3) = 75.0.
     assert summary.avg_migrations_per_window == 1.5, summary
     assert summary.h2_signals_per_window_system_count == 1.0, summary
     assert summary.k_windows_proposed_for_n30_signals == 30, summary
-    assert summary.estimated_credits_for_k_proposed == 675, summary
-    # tx_counts = [50, 150, 0] -> sorted [0, 50, 150]; median (p50, nearest-
-    # rank index round(0.5*2)=1) = 50; p90 (index round(0.9*2)=2) = 150.
-    assert summary.median_tx_per_pool_trade_window == 50.0, summary
-    assert summary.p90_tx_per_pool_trade_window == 150.0, summary
+    assert summary.estimated_total_seconds_for_k_proposed == 75.0, summary
+    # calls = [3, 4, 2] -> sorted [2,3,4]; median (p50, index round(0.5*2)=1)=3;
+    # p90 (index round(0.9*2)=2) = 4.
+    assert summary.median_rpc_calls_per_pool == 3.0, summary
+    assert summary.p90_rpc_calls_per_pool == 4.0, summary
+    # avg_pct_failed_tx = (5.0 + 3.33 + 0.0) / 3.
+    assert round(summary.avg_pct_failed_tx, 2) == round((5.0 + 3.33 + 0.0) / 3, 2), summary
 
 
 def _self_check_run_pilot_token_wiring() -> None:
@@ -800,43 +861,71 @@ def _self_check_run_pilot_token_wiring() -> None:
 
     migration_sig = "SIGMIGRATION"
     pool_mint = "POOLpump"
-    migration_block_time = 2_000_000
-    trade_sig = "SIGTRADE1"
+    window_start = 2_000_000
+    sig_t0 = "SIG_T0"
+    sig_marker = "SIG_MARKER"
+    sig_failed = "SIG_FAILED"
+    sig_last5min = "SIG_LAST5MIN"
+    marker_offset = SIGNAL_MARKER_SECONDS  # bucket index = marker_offset // 5
+
+    def _fake_swap_tx(signature: str, block_time: int) -> dict[str, Any]:
+        from benchmarks.carbon_decoder_parity_v1.parity import (
+            PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
+            PUMPSWAP_PROGRAM_ID,
+        )
+        import base64 as _b64
+
+        payload = _b64.b64encode(PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"\x00" * 16).decode("ascii")
+        return {
+            "slot": 1,
+            "blockTime": block_time,
+            "transaction": {"signatures": [signature], "message": {"accountKeys": [PUMPSWAP_PROGRAM_ID]}},
+            "meta": {
+                "logMessages": [
+                    f"Program {PUMPSWAP_PROGRAM_ID} invoke [1]",
+                    f"Program data: {payload}",
+                    f"Program {PUMPSWAP_PROGRAM_ID} success",
+                ]
+            },
+        }
+
+    raw_rows_by_sig = {
+        sig_t0: _fake_swap_tx(sig_t0, window_start),
+        sig_marker: _fake_swap_tx(sig_marker, window_start + marker_offset),
+    }
 
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
         if method == "getSignaturesForAddress":
             assert params[0] == pool_mint
-            return {"result": [{"signature": trade_sig, "blockTime": migration_block_time + 10}]}
-        if method == "getTransaction" and params[0] == trade_sig:
-            from benchmarks.carbon_decoder_parity_v1.parity import (
-                PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
-                PUMPSWAP_PROGRAM_ID,
-            )
-            import base64 as _b64
-
-            payload = _b64.b64encode(PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"\x00" * 16).decode("ascii")
             return {
-                "result": {
-                    "slot": 42,
-                    "blockTime": migration_block_time + 10,
-                    "transaction": {
-                        "signatures": [trade_sig],
-                        "message": {"accountKeys": [PUMPSWAP_PROGRAM_ID]},
+                "result": [
+                    {"signature": sig_t0, "blockTime": window_start, "err": None},
+                    {
+                        "signature": sig_last5min,
+                        "blockTime": window_start + marker_offset - 50,
+                        "err": None,
                     },
-                    "meta": {
-                        "logMessages": [
-                            f"Program {PUMPSWAP_PROGRAM_ID} invoke [1]",
-                            f"Program data: {payload}",
-                            f"Program {PUMPSWAP_PROGRAM_ID} success",
-                        ]
+                    {
+                        "signature": sig_failed,
+                        "blockTime": window_start + marker_offset - 100,
+                        "err": {"InstructionError": [0, "boom"]},
                     },
-                }
+                    {"signature": sig_marker, "blockTime": window_start + marker_offset, "err": None},
+                ]
             }
+        if method == "getTransaction":
+            signature = params[0]
+            row = raw_rows_by_sig.get(signature)
+            if row is None:
+                raise AssertionError(f"unexpected getTransaction for {signature}")
+            return {"result": row}
         raise AssertionError(f"unexpected RPC call in self-check: {method} {params}")
 
     class _FakeCarbon:
         def request(self, payload: dict[str, Any]) -> dict[str, Any]:
             event_key = payload["items"][0]["event_key"]
+            signature = event_key.split(":")[0]
+            reserves = {sig_t0: (1000, 600), sig_marker: (500, 900)}[signature]
             return {
                 "type": "carbon_canonical_batch",
                 "batch_id": payload["batch_id"],
@@ -845,9 +934,9 @@ def _self_check_run_pilot_token_wiring() -> None:
                         "event_key": event_key,
                         "status": "decoded",
                         "event_type": "pumpswap_buy",
-                        "signature": trade_sig,
-                        "pool_base_token_reserves_raw": 500,
-                        "pool_quote_token_reserves_raw": 600,
+                        "signature": signature,
+                        "pool_base_token_reserves_raw": reserves[0],
+                        "pool_quote_token_reserves_raw": reserves[1],
                         "lp_fee_raw": 7,
                     }
                 ],
@@ -868,23 +957,91 @@ def _self_check_run_pilot_token_wiring() -> None:
                 MigrationCandidate(
                     pool_mint=pool_mint,
                     migration_signature=migration_sig,
-                    migration_block_time=migration_block_time,
+                    migration_block_time=window_start,
                 ),
                 rotator=rotator,
                 tracker=tracker,
             )
         finally:
             restore()
-    assert result.migration_block_time == migration_block_time, result
-    assert result.n_tx_in_window == 1, result
-    assert result.n_events_decoded == 1, result
-    assert result.n_events_with_reserves_and_fee == 1, result
+    assert result.migration_block_time == window_start, result
+    assert result.n_signatures_in_window == 4, result
+    assert result.n_failed_tx == 1, result
+    assert result.pct_failed_tx == 25.0, result
+    # so sig_last5min cai em [marker-5min, marker) E e bem-sucedida.
+    assert result.n_successful_trades_last_5min_before_marker == 1, result
+    assert result.n_events_decoded == 2, result
+    assert result.n_events_with_reserves_and_fee == 2, result
     assert result.pct_decoded_with_reserves_and_fee == 100.0, result
-    # 2-stage credits: 1 getSignaturesForAddress + 1 getTransaction (pool
-    # fetch) = 2, flat-rate under Helius pricing (helius.dev/docs/billing/
-    # credits). migration_block_time no longer needs its own resolve call --
-    # it comes straight from the (now real) enumeration candidate.
-    assert result.estimated_credits == 2, result
+    # 1 getSignaturesForAddress + 2 getTransaction (bucket 0 e bucket do
+    # marco resolvem na primeira tentativa) = 3 chamadas/creditos.
+    assert result.n_rpc_calls == 3, result
+    assert result.estimated_credits == 3, result
+    assert result.survived_20min_system_count is not None, result
+
+
+class _FakeCarbonNoop:
+    """Carbon de mentira que nunca deveria ser chamado -- usado nos
+    self-checks do benchmark da grade onde todos os buckets ficam vazios
+    (sem assinatura nenhuma), logo nenhum getTransaction/decode acontece."""
+
+    def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("nao deveria decodificar nada -- buckets vazios neste self-check")
+
+
+def _self_check_grid_benchmark() -> None:
+    from unittest.mock import patch
+
+    def fake_rpc_empty(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            return {"result": []}
+        raise AssertionError(f"unexpected method: {method}")
+
+    candidate = MigrationCandidate(pool_mint="POOLpump", migration_signature="SIG", migration_block_time=0)
+
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc_empty,
+    ):
+        tracker = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius-unused", max_consecutive_failures=99, tracker=tracker
+        )
+        try:
+            rotator = EndpointRotator(["fake://rpc"])
+            # Orcamento generoso + lista de assinaturas vazia -> percorre as
+            # ~960 buckets sem NENHUM getTransaction (nenhum bucket tem
+            # candidato), completo dentro do orcamento.
+            result = run_price_grid_benchmark(
+                _FakeCarbonNoop(), candidate, rotator=rotator, tracker=tracker, time_budget_seconds=30.0
+            )
+        finally:
+            restore()
+    assert result.completed is True, result
+    assert result.n_buckets_total == POOL_TRADE_WINDOW_SECONDS // GRID_BUCKET_SECONDS, result
+    assert result.n_buckets_processed == result.n_buckets_total, result
+    assert result.n_buckets_with_swap_resolved == 0, result
+    assert result.n_rpc_calls == 1, result  # so a enumeracao -- nenhum getTransaction
+
+    # Orcamento ja esgotado antes de processar qualquer bucket ->
+    # completed=False, numeros parciais honestos, nunca extrapolados.
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc_empty,
+    ):
+        tracker2 = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius-unused", max_consecutive_failures=99, tracker=tracker2
+        )
+        try:
+            rotator2 = EndpointRotator(["fake://rpc"])
+            result2 = run_price_grid_benchmark(
+                _FakeCarbonNoop(), candidate, rotator=rotator2, tracker=tracker2, time_budget_seconds=-1.0
+            )
+        finally:
+            restore()
+    assert result2.completed is False, result2
+    assert result2.n_buckets_processed == 0, result2
 
 
 def _self_check_checkpoint() -> None:
@@ -911,11 +1068,13 @@ def _self_check() -> None:
     _self_check_survival()
     _self_check_summary()
     _self_check_run_pilot_token_wiring()
+    _self_check_grid_benchmark()
     _self_check_checkpoint()
     print(
         "self-check OK: rate limiter + consecutive-failure breaker + 429 slow-down policy + "
-        "credit tracker + credits formula + survival system-count + summary arithmetic "
-        "(median/p90 + K-per-window) + run_pilot_token wiring + checkpoint round-trip"
+        "credit tracker + credits formula + survival system-count (grade de 5s) + summary "
+        "arithmetic (median/p90 + K-per-window) + run_pilot_token wiring (Estagio 1 barato) + "
+        "grid benchmark (completed/budget-exceeded) + checkpoint round-trip"
     )
 
 
@@ -962,6 +1121,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--checkpoint", type=Path, default=Path("artifacts/sig_fast_h2_pilot_v0/checkpoint.json")
+    )
+    parser.add_argument(
+        "--grid-benchmark-seconds",
+        type=float,
+        default=90.0,
+        help="orcamento de tempo (s) pro benchmark da grade completa (Estagio 2) num token real",
+    )
+    parser.add_argument(
+        "--skip-grid-benchmark",
+        action="store_true",
+        help="pula o benchmark da grade completa (so mede o Estagio 1 barato)",
     )
     parser.add_argument(
         "--out", type=Path, default=Path("artifacts/sig_fast_h2_pilot_v0/report.json")
@@ -1056,6 +1226,7 @@ def main() -> int:
                 f"{len(candidates_by_pool)} candidatas no total"
             )
 
+        grid_benchmark: GridBenchmarkResult | None = None
         if candidates_by_pool:
             from benchmarks.integrated_market_signal_plane_v1.live_shadow import (
                 JsonLineProcess,
@@ -1087,10 +1258,39 @@ def main() -> int:
                     checkpoint["tokens"] = tokens_done
                     _save_checkpoint(args.checkpoint, checkpoint)
                     print(
-                        f"[piloto] token {result.pool_mint}: tx={result.n_tx_in_window} "
-                        f"decoded={result.n_events_decoded} creditos={result.estimated_credits} "
+                        f"[piloto] token {result.pool_mint}: assinaturas={result.n_signatures_in_window} "
+                        f"falha%={result.pct_failed_tx} decoded={result.n_events_decoded} "
+                        f"sobreviveu={result.survived_20min_system_count} "
+                        f"chamadas={result.n_rpc_calls} tempo={result.elapsed_seconds}s "
                         f"total_creditos_acumulado={tracker.total_credits}"
                     )
+
+                # Benchmark da grade COMPLETA (Estagio 2, regra 4) -- so pra
+                # medir custo real/extrapolar, nunca pra julgar H2. Roda em
+                # UM token conhecido, com orcamento de tempo; nunca insiste
+                # se o Estagio 1 ja abortou (respeita o mesmo sinal de parada).
+                if not stage2_aborted and not args.skip_grid_benchmark and candidates_by_pool:
+                    benchmark_candidate = next(iter(candidates_by_pool.values()))
+                    print(
+                        f"[piloto] benchmark da grade completa (Estagio 2) em "
+                        f"{benchmark_candidate.pool_mint}, orcamento {args.grid_benchmark_seconds}s..."
+                    )
+                    try:
+                        grid_benchmark = run_price_grid_benchmark(
+                            carbon,
+                            benchmark_candidate,
+                            rotator=rotator,
+                            tracker=tracker,
+                            time_budget_seconds=args.grid_benchmark_seconds,
+                        )
+                        print(
+                            f"[piloto] benchmark grade: buckets={grid_benchmark.n_buckets_processed}/"
+                            f"{grid_benchmark.n_buckets_total} resolvidos={grid_benchmark.n_buckets_with_swap_resolved} "
+                            f"chamadas={grid_benchmark.n_rpc_calls} tempo={grid_benchmark.elapsed_seconds}s "
+                            f"completo={grid_benchmark.completed}"
+                        )
+                    except PilotAbortedRateLimited as exc:
+                        print(f"[piloto] benchmark da grade PAROU (429 sustentado): {exc}")
             finally:
                 carbon.close()
     finally:
@@ -1131,6 +1331,7 @@ def main() -> int:
         "checkpoint_path": str(args.checkpoint),
         "tokens": [asdict(r) for r in results],
         "summary": asdict(summary),
+        "grid_benchmark": asdict(grid_benchmark) if grid_benchmark is not None else None,
         "rpc_usage": {
             "total_credits": tracker.total_credits,
             "n_calls": len(tracker.calls),
