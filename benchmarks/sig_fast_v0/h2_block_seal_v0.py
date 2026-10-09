@@ -275,11 +275,13 @@ def seal_block(
 ) -> dict[str, Any]:
     """Orquestra um bloco do inicio ao fim: enumeracao (checkpointada) ->
     Estagio 1 barato pra TODO candidato achado -> hash -> sobreviventes +
-    baseline (amostra aleatoria seed-fixa de nao-sobreviventes do mesmo
-    tamanho) -> Estagio 2 (grade completa) -> hash -> relatorio de
-    cobertura (NUNCA retorno/EV). `enumeration_rpc_call` e
-    fetch_migrations_in_windows em producao; parametro injetavel so pra
-    self-checks (evita rede)."""
+    baseline (amostra aleatoria seed-fixa de TODAS as migracoes
+    classificadas, sobreviventes E nao-sobreviventes, mesmo tamanho do
+    grupo de sobreviventes -- Fase 0a do mandato autonomo: amostrar so
+    nao-sobreviventes inflaria o edge) -> Estagio 2 (grade completa) ->
+    hash -> relatorio de cobertura (NUNCA retorno/EV).
+    `enumeration_rpc_call` e fetch_migrations_in_windows em producao;
+    parametro injetavel so pra self-checks (evita rede)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     ensure_h2_backfill_schema(conn)
@@ -363,8 +365,14 @@ def seal_block(
 
     survivors = sorted(p for p, r in stage1_done.items() if r["survived_20min_system_count"] is True)
     non_survivors = sorted(p for p, r in stage1_done.items() if r["survived_20min_system_count"] is False)
+    # Fase 0a (mandato autonomo, correcao do operador): a baseline e uma
+    # amostra aleatoria de TODAS as migracoes classificadas neste bloco
+    # (sobreviventes E nao-sobreviventes) -- amostrar so nao-sobreviventes
+    # inflaria o edge medido depois em FASE 4 (overlap com `survivors` e
+    # esperado e correto, nao um bug: sobreviventes tambem sao migracoes).
+    all_classified = sorted(stage1_done.keys())
     rng = random.Random(seed)
-    baseline = rng.sample(non_survivors, k=min(len(survivors), len(non_survivors)))
+    baseline = rng.sample(all_classified, k=min(len(survivors), len(all_classified)))
 
     stage2_aborted = False
     stage2_abort_reason: str | None = None
@@ -524,6 +532,159 @@ def _self_check_abort_handling() -> None:
     assert report["n_non_survivors"] == 1, report
 
 
+def _self_check_fake_swap_tx(signature: str, block_time: int) -> dict[str, Any]:
+    from benchmarks.carbon_decoder_parity_v1.parity import (
+        PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
+        PUMPSWAP_PROGRAM_ID,
+    )
+    import base64 as _b64
+
+    payload = _b64.b64encode(PUMPSWAP_BUY_EVENT_DISCRIMINATOR + b"\x00" * 16).decode("ascii")
+    return {
+        "slot": 1,
+        "blockTime": block_time,
+        "transaction": {"signatures": [signature], "message": {"accountKeys": [PUMPSWAP_PROGRAM_ID]}},
+        "meta": {
+            "logMessages": [
+                f"Program {PUMPSWAP_PROGRAM_ID} invoke [1]",
+                f"Program data: {payload}",
+                f"Program {PUMPSWAP_PROGRAM_ID} success",
+            ]
+        },
+    }
+
+
+def _self_check_baseline_samples_all_classified() -> None:
+    """Fase 0a (mandato autonomo, correcao do operador): a baseline tem
+    que poder sortear sobreviventes tambem, nao so non_survivors -- a
+    versao antiga (`rng.sample(non_survivors, ...)`) nunca sorteava um
+    sobrevivente mesmo quando eles dominam a populacao, o que inflava o
+    edge medido depois em FASE 4. Monta 3 sobreviventes + 1
+    nao-sobrevivente (so 1 de cada "tipo" realmente testavel sem replicar
+    o fixture completo de preco) e prova, por perfuracao de casas (k=3
+    sorteados de uma populacao com so 1 nao-sobrevivente), que pelo menos
+    2 sobreviventes aparecem na baseline -- o que a versao antiga nunca
+    conseguiria (ela so tinha 1 nao-sobrevivente pra sortear e travava
+    nisso)."""
+    import tempfile
+    from unittest.mock import patch
+
+    survivor_pools = ["POOLDpump", "POOLEpump", "POOLFpump"]
+    non_survivor_pool = "POOLGpump"
+    base_window_start = 40_000
+    marker = SIGNAL_MARKER_SECONDS
+
+    raw_rows_by_sig: dict[str, dict[str, Any]] = {}
+    sigs_by_pool: dict[str, list[dict[str, Any]]] = {}
+    for idx, pool in enumerate(survivor_pools):
+        window_start = base_window_start + idx * 100
+        sig_t0 = f"SIG_T0_{pool}"
+        sig_marker = f"SIG_MARKER_{pool}"
+        rows = [{"signature": sig_t0, "blockTime": window_start, "err": None}]
+        raw_rows_by_sig[sig_t0] = _self_check_fake_swap_tx(sig_t0, window_start)
+        for j in range(MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR):
+            sig = f"SIG_{pool}_LAST5MIN_{j}"
+            block_time = window_start + marker - 290 + j * 10
+            rows.append({"signature": sig, "blockTime": block_time, "err": None})
+            raw_rows_by_sig[sig] = _self_check_fake_swap_tx(sig, block_time)
+        rows.append({"signature": sig_marker, "blockTime": window_start + marker, "err": None})
+        raw_rows_by_sig[sig_marker] = _self_check_fake_swap_tx(sig_marker, window_start + marker)
+        sigs_by_pool[pool] = rows
+
+    non_survivor_window_start = base_window_start + 500
+    sigs_by_pool[non_survivor_pool] = [
+        {"signature": "SIG_G_1", "blockTime": non_survivor_window_start + marker - 100, "err": None},
+        {"signature": "SIG_G_2", "blockTime": non_survivor_window_start + marker - 50, "err": None},
+    ]
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            pool_mint = params[0]
+            rows = sigs_by_pool.get(pool_mint)
+            if rows is None:
+                raise AssertionError(f"unexpected pool_mint: {pool_mint}")
+            return {"result": rows}
+        if method == "getTransaction":
+            signature = params[0]
+            row = raw_rows_by_sig.get(signature)
+            if row is None:
+                raise AssertionError(f"unexpected getTransaction for {signature}")
+            return {"result": row}
+        raise AssertionError(f"unexpected RPC call in self-check: {method} {params}")
+
+    class _FakeCarbon:
+        def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+            event_key = payload["items"][0]["event_key"]
+            signature = event_key.split(":")[0]
+            return {
+                "type": "carbon_canonical_batch",
+                "batch_id": payload["batch_id"],
+                "items": [
+                    {
+                        "event_key": event_key,
+                        "status": "decoded",
+                        "event_type": "pumpswap_buy",
+                        "signature": signature,
+                        "pool_base_token_reserves_raw": 1000,
+                        "pool_quote_token_reserves_raw": 600,
+                        "lp_fee_raw": 7,
+                    }
+                ],
+            }
+
+    def fake_enumeration(rpc_url: str, *, window_start: int, window_end: int) -> list[MigrationCandidate]:
+        candidates = [
+            MigrationCandidate(
+                pool_mint=pool,
+                migration_signature=f"SIGMIG_{pool}",
+                migration_block_time=base_window_start + idx * 100,
+            )
+            for idx, pool in enumerate(survivor_pools)
+        ]
+        candidates.append(
+            MigrationCandidate(
+                pool_mint=non_survivor_pool,
+                migration_signature=f"SIGMIG_{non_survivor_pool}",
+                migration_block_time=non_survivor_window_start,
+            )
+        )
+        return candidates
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "baseline_pop.db"
+        checkpoint_path = Path(tmp) / "baseline_pop_checkpoint.json"
+        with patch(
+            "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+            side_effect=fake_rpc,
+        ):
+            tracker = RpcUsageTracker()
+            rotator = EndpointRotator(["fake://rpc"])
+            report = seal_block(
+                block_name="self_check_baseline_pop",
+                start_date="2026-01-01",
+                end_date="2026-01-02",
+                k_windows=1,
+                window_minutes=10,
+                seed=20261008,
+                db_path=db_path,
+                checkpoint_path=checkpoint_path,
+                rpc_url="fake://rpc",
+                rotator=rotator,
+                tracker=tracker,
+                carbon=_FakeCarbon(),
+                enumeration_rpc_call=fake_enumeration,
+            )
+
+    assert report["n_survivors"] == 3, report
+    assert report["n_non_survivors"] == 1, report
+    assert report["n_baseline_sampled"] == 3, report
+    n_survivors_in_baseline = sum(1 for p in report["baseline_pools"] if p in survivor_pools)
+    # Perfuracao de casas: so 1 non_survivor existe, k=3 sorteados de 4 ->
+    # pelo menos 2 tem que ser sobreviventes. A versao antiga nunca
+    # conseguiria isso (populacao dela era so [non_survivor_pool]).
+    assert n_survivors_in_baseline >= 2, report
+
+
 def _self_check() -> None:
     import tempfile
 
@@ -535,6 +696,7 @@ def _self_check() -> None:
     marker = SIGNAL_MARKER_SECONDS
 
     def _fake_swap_tx(signature: str, block_time: int) -> dict[str, Any]:
+        return _self_check_fake_swap_tx(signature, block_time)
         from benchmarks.carbon_decoder_parity_v1.parity import (
             PUMPSWAP_BUY_EVENT_DISCRIMINATOR,
             PUMPSWAP_PROGRAM_ID,
@@ -661,6 +823,10 @@ def _self_check() -> None:
         assert report["n_non_survivors"] == 1, report
         assert report["survival_rate_system_count"] == 0.5, report
         assert report["n_baseline_sampled"] == 1, report
+        # Fase 0a: a amostra sai de TODAS as classificadas (pool_a + pool_b),
+        # nao so de non_survivors -- com este seed o sorteio ainda cai em
+        # pool_b, mas sobre a populacao corrigida (ver teste de populacao
+        # abaixo, que prova que pool_a tambem poderia ter sido sorteado).
         assert report["baseline_pools"] == [pool_b], report
         assert report["n_stage2_tokens_sealed"] == 2, report
         # Regra 5: hash commitado, e DIFERENTE entre os dois estagios
@@ -701,10 +867,12 @@ def _self_check() -> None:
         ], (report, report2)
 
     _self_check_abort_handling()
+    _self_check_baseline_samples_all_classified()
     print(
         "self-check OK: seal_block (enumeracao + Estagio 1 com missing explicito + hash + "
-        "baseline seed-fixa + Estagio 2 grade completa + hash + cobertura, sem retorno/EV) + "
-        "resume idempotente do checkpoint + abort de 429 nao descarta candidatos ja achados"
+        "baseline seed-fixa (Fase 0a: TODAS as classificadas) + Estagio 2 grade completa + "
+        "hash + cobertura, sem retorno/EV) + resume idempotente do checkpoint + abort de 429 "
+        "nao descarta candidatos ja achados"
     )
 
 

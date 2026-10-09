@@ -1,7 +1,10 @@
 # Pré-registro em lote — SIG-FAST-DISC-V0 — 2026-10-08 (RASCUNHO, rev. 4 2026-10-08)
 
-Status: **RASCUNHO, aguardando sign-off do operador.** Nenhuma coleta foi rodada
-para julgar este lote. Segue o formato de
+Status: **PRE-REGISTRADA — sign-off do operador aplicado em 2026-10-09** (mandato
+autônomo: "tudo pré-autorizado com critérios fixados AGORA, antes de qualquer
+retorno"; ver "Addendum Fase 0" ao final deste documento). Nenhuma coleta que
+julgue este lote (passo B) foi rodada ainda — só o piloto de custo/cobertura
+(passo A). Segue o formato de
 `docs/templates/batch-preregistration-template-v1.md`, adaptado à régua nova do
 SIG-FAST (caminho de preço, não retorno de horizonte fixo — ver
 `docs/strategy-options-move-first-2026-10-07.md`, "Revisão 4"/"Opção SIG-FAST").
@@ -893,3 +896,126 @@ RASCUNHO não conta como `PRE-REGISTRADA` até o sign-off do operador.
    investigação** -- precisaria de uma fonte paga/indexador de terceiros
    (Dune já descartado por exigir plano pago) ou de evidência nova. H1
    continua só ao vivo (seção 1a, inalterada); isso não afeta H2.
+
+## Addendum Fase 0 (mandato autônomo, 2026-10-09) — correções de protocolo
+ANTES de qualquer download novo
+
+Escrito e commitado antes de qualquer chamada de rede desta rodada, conforme
+exigido pelo mandato autônomo do operador ("trabalho até segunda, sem
+decisão dele"). Nenhum dado de retorno foi visto antes deste addendum.
+
+### Fase 0a — baseline corrigida (implementado em código, não só aqui)
+
+Bug real encontrado pelo operador antes de qualquer download: a baseline em
+`seal_block` (`benchmarks/sig_fast_v0/h2_block_seal_v0.py`) amostrava só de
+`non_survivors`. Isso infla o edge medido em Fase 4, porque a baseline deixa
+de representar "uma migração qualquer do bloco" e passa a representar "uma
+migração que já sabemos ter morrido". **Corrigido**: a baseline agora é uma
+amostra aleatória (seed `20261008`, `random.Random` padrão, sem substituição)
+de TODAS as migrações classificadas no bloco (sobreviventes E
+não-sobreviventes), do mesmo tamanho do grupo de sobreviventes. Overlap entre
+`baseline_pools` e o grupo de sobreviventes é esperado e correto (um
+sobrevivente também é uma migração do bloco) -- não é um bug, é a definição.
+Guardado por um self-check dedicado (`_self_check_baseline_samples_all_classified`,
+prova por perfuração de casas que a amostra consegue sortear sobreviventes
+mesmo quando eles dominam a população, o que a versão antiga nunca
+conseguia). `python -m benchmarks.sig_fast_v0.h2_block_seal_v0 --self-check`
+passa com a correção.
+
+### Fase 0b — preço de entrada/saída contra o pool
+
+**Achado ao revisar antes de codar (regra do CLAUDE.md "inspecionar a
+implementação existente primeiro"): isto já existe, pronto e testado, em
+`src/opportunity_path_metrics_v0.py` (F2, item 5 da lista de tarefas
+original) e `src/opportunity_path_baseline_v0.py` (F3). Fase 0b não precisa
+de código novo — precisa confirmar que o método já implementado é
+exatamente o pedido, e isso é verdade:**
+
+- Entrada: `find_causal_entry` pega o primeiro trade com
+  `chain_time >= signal_time + entry_latency_seconds` e resolve o preço de
+  execução hipotético via `simulate_amm_buy_execution_price_sol` --
+  constant-product (`x*y=k`) sobre as RESERVAS pós-trade desse trade (proxy
+  de estado do pool, não um terceiro trade real) + fee + slippage pro
+  tamanho pedido. Não exige nenhum trade de terceiro no instante exato --
+  um pool parado ainda é precificável desde que exista PELO MENOS UM trade
+  decodificado com reservas em algum ponto `>= T+Δ` (exatamente o que a
+  grade de 5s do Passo B já persiste).
+- Saída: mesmo mecanismo, `simulate_amm_sell_execution_price_sol`, chamado
+  por `simulate_exit` em `trigger_time + exit_latency_seconds` (Δ_exit).
+- Fee: cada chamada recebe um `CostModel` explícito (`venue_fee_pct`,
+  `terminal_fee_pct`, `network_fee_sol`, `ata_fee_sol`) -- **sem default**
+  pra `venue_fee_pct`/`terminal_fee_pct` de propósito (ver docstring de
+  `CostModel`: um default silencioso aqui seria a violação "nada inventado"
+  que o próprio F2 foi desenhado pra evitar).
+
+**Decisão nova desta fase (resolve a parte de Fase 0b que ainda não tinha
+mecanismo): de onde vem `venue_fee_pct` por trade.** O pedido original do
+operador foi "fee bps do evento mais recente do pool; se ausente, tabela
+escalonada por faixa". Não existe hoje no repositório nenhuma tabela
+escalonada de fee do PumpSwap/pump.fun (busquei -- `grep -ri tiered` não
+achou nada), e inventar valores de bps específicos sem fonte autoritativa
+violaria a mesma regra "nada inventado" que protege `CostModel`. Em vez de
+inventar números, a regra congelada agora é:
+
+1. fee primário = o campo de fee do evento decodificado mais próximo (mesmo
+   bucket de 5s ou, se ausente nele, caminhando pra buckets anteriores DO
+   MESMO POOL -- reusa o mecanismo de lookback que `resolve_bucket_swap_price`
+   já implementa, não um mecanismo novo);
+2. se o pool inteiro não tiver NENHUM evento com fee decodificado em toda a
+   janela de 80min (deve ser raro -- o piloto já mediu
+   `avg_pct_decoded_with_reserves_and_fee` alto nos candidatos reais), o
+   trade correspondente fica `missing_reason` explícito e é excluído do
+   cálculo daquele leg -- nunca um valor global adivinhado, nunca fee de
+   outro pool;
+3. **desvio documentado do pedido literal do operador**: não construí a
+   "tabela escalonada por faixa" porque não tenho fonte confiável pros
+   valores exatos agora. Se Fase 4 mostrar que (2) acontece com frequência
+   não-trivial, o tratamento correto é reportar isso no coverage_report
+   (já existe `avg_pct_decoded_with_reserves_and_fee`) e decidir a tabela
+   com o operador usando a taxa de ausência REAL medida -- nunca adivinhada
+   antes de ver dado nenhum. Flagado aqui pra revisão de segunda-feira.
+
+### Fase 0c — parâmetros congelados (confirmação explícita, antes de qualquer download)
+
+Mapeamento 1:1 pros parâmetros de `src/opportunity_path_metrics_v0.py` /
+`simulate_exit` / `first_barrier_touch`, fixado agora:
+
+| Parâmetro do mandato          | Valor          | Nome no código                                    |
+|--------------------------------|----------------|----------------------------------------------------|
+| Δ primário                     | 30s + 2s detecção = **32s total** | `entry_latency_seconds=32` em `find_causal_entry` |
+| Δ_exit                          | igual (32s)    | `exit_latency_seconds=32` em `simulate_exit`       |
+| Tamanho                         | 0.15 SOL       | `size_sol=0.15`                                    |
+| Terminal                        | 1%/leg         | `CostModel.terminal_fee_pct=1.0`                   |
+| Rede                            | 0.0003 SOL/leg | `CostModel.network_fee_sol=0.0003` (já é o default)|
+| ATA                             | 0              | `CostModel.ata_fee_sol=0.0` (já é o default)       |
+| W primário                      | 900s           | `window_seconds=900` (já está em `WINDOW_GRID_SECONDS`) |
+| Barreira                        | +50% / −30%    | `first_barrier_touch(target_pct=50.0, stop_pct=-30.0)`, idêntico a `EXIT_RULE_TP50_SL30` |
+| Saídas fixas                    | 6, nenhuma a mais | `EXIT_RULE_IDS` (já tem exatamente 6)           |
+| MFE                             | descritivo apenas | `WindowMetrics.mfe_pct` (já rotulado "nunca é métrica de edge" no docstring) |
+
+`entry_latency_seconds=32`/`exit_latency_seconds=32` não está na
+`ENTRY_LATENCY_GRID_SECONDS`/`EXIT_LATENCY_GRID_SECONDS` existente (que tem
+30, não 32) -- **decisão**: Fase 4 chama `find_causal_entry`/`simulate_exit`
+com `entry_latency_seconds=32`/`exit_latency_seconds=32` como valor literal
+(fora da grade, que é só pros outros Δ diagnósticos da regra (d) de Fase 4),
+nunca com 30 puro. Os outros pontos da grade (5/15/60/120) permanecem
+diagnóstico-apenas, nunca load-bearing, como já documentado no módulo.
+
+### Fase 0d — regra de sobrevivente (confirmação, sem mudança de código)
+
+Já implementada corretamente desde a "Addendum Fase E parte 5" (seção
+anterior deste documento) e usada sem alteração por `seal_block`: pool com
+`n_successful_trades_last_5min_before_marker < 20` é não-sobrevivente
+DIRETO (sem gastar nenhuma chamada de preço); só com >=20 o sistema resolve
+preço em T0/+20min e aplica `preço_marco / preço_T0 >= 0.40`.
+"Indeterminado" existe só para falha de sistema genuína (a própria lista de
+assinaturas falhar), nunca para baixo volume. Esta fase não precisou de
+nenhuma mudança -- só confirma, para o registro deste mandato, que a regra
+que Fase 2/3/4 vão usar é esta e nenhuma outra.
+
+### Nada mudou nos parâmetros já fixados
+
+K permanece 26 janelas (discovery) / 13 janelas (confirmação), calculado na
+Addendum Fase E parte 5 a partir da taxa de sobrevivência real
+bias-corrigida (0.333) -- este addendum não tinha motivo pra recalcular K,
+porque nenhum dado novo foi visto.
