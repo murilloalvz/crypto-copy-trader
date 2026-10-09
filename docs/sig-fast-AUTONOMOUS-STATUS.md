@@ -71,26 +71,31 @@ mandato).
   não-sobreviventes, baseline amostrada de todas as 5 (Fase 0a), Estágio 2
   completo em 2 tokens, hash gravado -- pipeline ponta a ponta validado
   com rede real antes de disparar a rodada completa.
-  **Download real em andamento, progresso real às 2h de execução**
-  (atualizado 2026-10-09, ~05:09 depois do início): enumeração e Estágio
-  1 **100% completos** -- 26/26 janelas, 202 migrações encontradas, 202
-  classificadas, 0 erro de sistema. **76 sobreviventes / 126
-  não-sobreviventes (taxa 37,6% -- mesma ordem de grandeza do 0,333
-  bias-corrigido do piloto)**. Regra de parada (Fase 2): 76 >= 30
-  (gatilho) -- **não precisou estender k_windows**, os 26 iniciais já
-  bastaram. Estágio 2 (grade completa de preço): alvo ~123-152 tokens
-  distintos (sobreviventes + baseline, com overlap esperado pela Fase
-  0a); **31 selados até agora** (~2h reais). Ritmo médio observado
-  ~3,9min/token (mais lento que o benchmark de 1 token isolado -- real
-  tem mais variância de volume entre tokens) -- **estimativa real: mais
-  várias horas até terminar o Estágio 2 completo**. Processo roda
-  destacado (`nohup`, PID próprio) e sobrevive independente deste chat;
-  checkpoint garante que nada já selado é reprocessado. Vou continuar
-  checando periodicamente (agendado via `send_later`) e reportando aqui.
+  **Download real em andamento -- sobreviveu a um restart real do
+  container, retomado do checkpoint sem perda** (atualizado 2026-10-09
+  ~07:53). Enumeração e Estágio 1 **100% completos** -- 26/26 janelas,
+  202 migrações, 202 classificadas, 0 erro de sistema. **76
+  sobreviventes / 126 não-sobreviventes (taxa 37,6%)**. Regra de parada:
+  76 >= 30 (gatilho) -- **não precisou estender k_windows**. Estágio 2:
+  alvo ~123-152 tokens distintos; chegou a 34 selados (~2h reais), e
+  então **o processo em background morreu porque o container reiniciou
+  de verdade** (`uptime` voltou a "up 0 min" entre um check-in agendado e
+  o outro -- não foi um bug do código, foi o ambiente sendo reciclado
+  numa janela ociosa). `checkpoint.json` e `discovery.db` sobreviveram
+  intactos no disco persistente (`PRAGMA integrity_check: ok`, 202/202
+  Stage1, 34/N Stage2) -- **retomado chamando o mesmo wrapper de novo**,
+  que pulou tudo já feito e continuou o Estágio 2 exatamente de onde
+  parou, sem reprocessar nada. Prova real (não só teórica) de que o
+  design de checkpoint funciona sob uma falha de infraestrutura real.
+  Processo relançado em background (desta vez via `run_in_background`
+  direto da ferramenta, sem `nohup`/`&` manual) ~07:53. Ritmo médio
+  observado antes do restart: ~3,9min/token -- estimativa de mais
+  várias horas (e possivelmente mais 1+ ciclo de retomada, se o
+  container reciclar de novo numa folga entre check-ins). Vou continuar
+  checando periodicamente (agendado via `send_later`) e retomando sempre
+  que precisar -- o checkpoint faz isso seguro.
   Confirmação (K=13, sem regra de parada -- não tem treino/retentor)
-  ainda não disparada; densidade final por dia já está decidida (K=26
-  final, sem extensão), então o K=13 da confirmação já pode ser usado
-  como estava quando a discovery terminar o Estágio 2.
+  ainda não disparada; K=26 final (sem extensão) já decide a densidade.
 - [~] **Fase 3 — gate de cobertura**
   Código pronto e testado (`benchmarks/sig_fast_v0/h2_coverage_gate_v0.py`,
   `evaluate_coverage_gate`): todos os 7 critérios do mandato (paridade
