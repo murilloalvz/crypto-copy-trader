@@ -241,6 +241,76 @@ tensiona com a regra 5 (cobertura completa reportada antes do resultado).
 K/N continuam **não fixados** — faltam dados de Estágio 2 de qualquer
 migração ainda.
 
+**Addendum Fase E parte 4 (2026-10-09): grade de preço de 5s — decisão do
+operador, congelada antes de qualquer download, substitui as 3 opções
+puras da parte 3.** Nenhuma das opções (a)/(b)/(c) isoladas resolvia bem:
+(a) depende de suporte a batch JSON-RPC ainda não confirmado; (b)
+reintroduz a dependência exclusiva da Helius que esta rodada queria evitar;
+(c) pura tensiona com a regra 5 (cobertura completa). A decisão é uma
+variante de (c) com regras fixas, igual para sinal e baseline, sem viés
+introduzido por amostragem seletiva:
+
+1. **Lista de assinaturas, completa e barata.** Por pool, todas as
+   assinaturas da janela via `getSignaturesForAddress` (1 crédito flat,
+   sem `getTransaction` nenhum) — `block_time` e `err` **já vêm na própria
+   resposta**, sem precisar resolver a transação. Descarta-se `err != null`
+   (não decodificável como trade bem-sucedido); a % de falha é reportada
+   como contagem de sistema, nunca descartada em silêncio.
+2. **Grade de 5s a partir da migração.** Em cada bucket de 5s: pega a
+   **última** transação bem-sucedida do bucket; chama `getTransaction`
+   nela; se não tiver evento de swap PumpSwap (`pumpswap_buy`/
+   `pumpswap_sell`) decodificado, tenta a transação anterior dentro do
+   mesmo bucket (limite de tentativas por bucket, pra não martelar um
+   bucket anômalo cheio de instruções não-swap). Reservas pós-trade do
+   swap achado = preço no fim do bucket. Bucket sem transação bem-sucedida,
+   ou sem nenhum swap resolvível dentro dele → preço **carregado do bucket
+   anterior** (sem swap o pool não muda de reservas). Preço em T0
+   (migração) = o mesmo procedimento aplicado a partir do bucket 0, andando
+   pra **frente** até achar o primeiro swap (não há bucket anterior pra
+   carregar). Entrada (quando o cálculo de sinal real for autorizado) = 1ª
+   transação bem-sucedida com `block_time >= T + Δ`, buscada
+   especificamente (não é parte do piloto, que nunca calcula entrada/
+   retorno).
+3. **Estágio 1 barato, para TODO token sorteado (piloto e discovery/
+   confirmação futuros).** Preço em T0 + preço no marco de 20min (regra 2,
+   tipicamente 2 chamadas `getTransaction` no caso otimista — mais se a
+   busca por bucket precisar andar pra trás) + contagem de trades
+   bem-sucedidos nos últimos 5 minutos antes do marco (da própria lista da
+   regra 1, sem chamada nova) → classifica sobrevivente pela regra já
+   pré-registrada de H2 (razão de preço marco/T0 >= 0,40, inalterada —
+   este addendum troca só a FONTE do preço, nunca a régua de decisão). A
+   contagem de trades nos últimos 5min é reportada como diagnóstico
+   adicional de sistema, não substitui nem pondera a régua pré-registrada.
+4. **Estágio 2 (grade completa, migração até +80min) — só pra discovery/
+   confirmação reais, não pro piloto de custo.** Todos os sobreviventes +
+   amostra aleatória (seed fixa `20261008`) de não-sobreviventes do mesmo
+   tamanho, para o baseline (F3). Proporção exata (1:1 sobrevivente:
+   não-sobrevivente) fixada aqui; nenhuma mudança de proporção depois de
+   ver dado.
+5. **Limitação documentada:** a grade de 5s não resolve picos de preço
+   mais curtos que 5s — um pico que sobe e desce dentro do mesmo bucket
+   nunca aparece, só o preço no fim do bucket (= o último swap resolvido).
+   Essa subestimação é **simétrica entre sinal e baseline** (mesma grade,
+   mesma regra, nos dois grupos) — não introduz viés direcional a favor ou
+   contra H2. Um operador humano real executando manualmente com Δ=30s
+   (a latência de decisão primária desta rodada) também não capturaria
+   picos sub-5s — a grade não é menos realista que a execução que o
+   produto pretende viabilizar.
+6. **Batch JSON-RPC é só otimização de velocidade, nunca de medida.** Se
+   QuickNode/público suportarem enviar várias requisições num único POST
+   HTTP, usar isso pra reduzir round-trips/tempo de parede — mas o que é
+   contado (nº de chamadas lógicas, créditos, cobertura) não muda. Testar
+   antes de assumir suporte; cair pra chamadas sequenciais se não suportar.
+   A Helius continua restrita ao Estágio 1 (enumeração) nesta grade também.
+
+Custo esperado (vs. o achado da parte 3): pra um pool de ~16.500
+transações em 80min (≈960 buckets de 5s), o Estágio 2 completo (regra 4)
+custa na ordem de ~1 `getTransaction` por bucket não-vazio no caso
+otimista — uma redução de ordem de grandeza frente a 1-por-transação,
+medida empiricamente abaixo antes de qualquer download dos 2 blocos. O
+Estágio 1 barato (regra 3) é independente do volume de trade do pool (só
+2+ chamadas por token), então escala bem pra qualquer K.
+
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 
 Instrumento de medida (congelado para este lote, trocar exige lote novo):
