@@ -311,6 +311,21 @@ def install_rate_limited_rpc(
 # vem direto da lista de assinaturas (regra 1), nunca de uma chamada nova.
 LAST_5MIN_SECONDS = 5 * 60
 
+# Operador, correcao de vies (2026-10-09): "Indeterminado por baixo volume"
+# NAO existe na regra de H2. Pool com menos que isso de trades bem-
+# sucedidos nos ultimos 5min antes do marco de 20min = NAO-SOBREVIVENTE,
+# determinado SO pela lista de assinaturas (sem precisar de preco nenhum).
+# Classificar como "indeterminado"/None aqui seria viés de sobrevivência
+# (excluiria os pools mortos do denominador) -- so e indeterminado se a
+# PROPRIA lista de assinaturas falhar (erro de sistema, tratado em main()).
+MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR = 20
+# Pra tokens com volume suficiente (>= MIN_SUCCESSFUL_TRADES...), a busca
+# de preco em T0/no marco nao fica limitada a poucos buckets -- com essa
+# densidade de trades, um swap resolvivel esta sempre muito perto (poucas
+# tentativas), entao cobrir a janela inteira custa pouco e nunca deveria
+# "nao achar" por um limite artificial pequeno.
+FULL_WINDOW_BUCKETS = POOL_TRADE_WINDOW_SECONDS // GRID_BUCKET_SECONDS
+
 
 @dataclass(frozen=True)
 class PilotTokenResult:
@@ -378,15 +393,20 @@ def run_pilot_token(
     rotator: EndpointRotator,
     tracker: RpcUsageTracker,
 ) -> PilotTokenResult:
-    """Estagio 1 barato (addendum Fase E parte 4, operador 2026-10-09):
-    substitui o metodo antigo de 1 getTransaction por trade (achado:
-    16.473 transacoes numa janela real, proibitivo). Lista de assinaturas
-    da janela inteira e barata (so getSignaturesForAddress, err/block_time
-    ja vem na resposta); preco em T0 e no marco de 20min vem da grade de
-    5s (resolve_price_at_t0/resolve_price_at_marker), tipicamente 2
-    getTransaction no caso otimista. `candidate.migration_block_time` ja e
-    o instante real (fetch_migrations_in_windows le direto da propria
-    enumeracao, Fase E parte 2)."""
+    """Estagio 1 barato (addendum Fase E parte 4, operador 2026-10-09;
+    correcao de vies da mesma data). Lista de assinaturas da janela
+    inteira e barata (so getSignaturesForAddress, err/block_time ja vem na
+    resposta). Classificacao de sobrevivencia em DUAS etapas, SEM
+    indeterminado por baixo volume: (1) se trades bem-sucedidos nos
+    ultimos 5min antes do marco < MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_
+    SURVIVOR, e NAO-SOBREVIVENTE direto, da lista de assinaturas, sem
+    gastar nenhuma chamada de preco; (2) so com volume suficiente, resolve
+    preco em T0 e no marco via a grade de 5s (resolve_price_at_t0/
+    resolve_price_at_marker) e aplica a razao >=0,40. `None` so pode vir
+    de uma falha real de resolucao com volume alto (raro); nunca de baixo
+    volume. `candidate.migration_block_time` ja e o instante real
+    (fetch_migrations_in_windows le direto da propria enumeracao, Fase E
+    parte 2)."""
     t0_wall = time.monotonic()
     credits_before = tracker.total_credits
     calls_before = len(tracker.calls)
@@ -408,9 +428,20 @@ def run_pilot_token(
         and (SIGNAL_MARKER_SECONDS - LAST_5MIN_SECONDS) <= (e.block_time - window_start) < SIGNAL_MARKER_SECONDS
     )
 
-    buckets = group_successful_signatures_by_bucket(entries, window_start=window_start)
-    t0_resolved = resolve_price_at_t0(rotator, carbon, buckets)
-    marker_resolved = resolve_price_at_marker(rotator, carbon, buckets, marker_seconds=SIGNAL_MARKER_SECONDS)
+    if n_last_5min < MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR:
+        # Correcao de vies (operador, 2026-10-09): nao-sobrevivente
+        # determinado so pela lista de assinaturas -- nenhuma chamada de
+        # preco gasta num pool que ja sabemos estar morto por atividade.
+        t0_resolved = None
+        marker_resolved = None
+        survived: bool | None = False
+    else:
+        buckets = group_successful_signatures_by_bucket(entries, window_start=window_start)
+        t0_resolved = resolve_price_at_t0(rotator, carbon, buckets, max_buckets=FULL_WINDOW_BUCKETS)
+        marker_resolved = resolve_price_at_marker(
+            rotator, carbon, buckets, marker_seconds=SIGNAL_MARKER_SECONDS, max_buckets=FULL_WINDOW_BUCKETS
+        )
+        survived = _survival_system_count_from_resolved(t0_resolved, marker_resolved)
 
     decoded_events = [r["event"] for r in (t0_resolved, marker_resolved) if r is not None]
     n_decoded = len(decoded_events)
@@ -436,7 +467,7 @@ def run_pilot_token(
         estimated_credits=tracker.total_credits - credits_before,
         n_rpc_calls=len(tracker.calls) - calls_before,
         elapsed_seconds=round(time.monotonic() - t0_wall, 3),
-        survived_20min_system_count=_survival_system_count_from_resolved(t0_resolved, marker_resolved),
+        survived_20min_system_count=survived,
     )
 
 
@@ -865,8 +896,12 @@ def _self_check_run_pilot_token_wiring() -> None:
     sig_t0 = "SIG_T0"
     sig_marker = "SIG_MARKER"
     sig_failed = "SIG_FAILED"
-    sig_last5min = "SIG_LAST5MIN"
     marker_offset = SIGNAL_MARKER_SECONDS  # bucket index = marker_offset // 5
+    # Correcao de vies: precisa de >= MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_
+    # SURVIVOR trades nos ultimos 5min pra sair do atalho "nao-sobrevivente
+    # direto" e exercitar a resolucao de preco (caminho que este teste
+    # quer cobrir).
+    last5min_sigs = [f"SIG_LAST5MIN_{i}" for i in range(MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR)]
 
     def _fake_swap_tx(signature: str, block_time: int) -> dict[str, Any]:
         from benchmarks.carbon_decoder_parity_v1.parity import (
@@ -897,22 +932,24 @@ def _self_check_run_pilot_token_wiring() -> None:
     def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
         if method == "getSignaturesForAddress":
             assert params[0] == pool_mint
-            return {
-                "result": [
-                    {"signature": sig_t0, "blockTime": window_start, "err": None},
+            rows = [
+                {"signature": sig_t0, "blockTime": window_start, "err": None},
+                {
+                    "signature": sig_failed,
+                    "blockTime": window_start + marker_offset - 100,
+                    "err": {"InstructionError": [0, "boom"]},
+                },
+            ]
+            for i, sig in enumerate(last5min_sigs):
+                rows.append(
                     {
-                        "signature": sig_last5min,
-                        "blockTime": window_start + marker_offset - 50,
+                        "signature": sig,
+                        "blockTime": window_start + marker_offset - 290 + i * 10,
                         "err": None,
-                    },
-                    {
-                        "signature": sig_failed,
-                        "blockTime": window_start + marker_offset - 100,
-                        "err": {"InstructionError": [0, "boom"]},
-                    },
-                    {"signature": sig_marker, "blockTime": window_start + marker_offset, "err": None},
-                ]
-            }
+                    }
+                )
+            rows.append({"signature": sig_marker, "blockTime": window_start + marker_offset, "err": None})
+            return {"result": rows}
         if method == "getTransaction":
             signature = params[0]
             row = raw_rows_by_sig.get(signature)
@@ -964,12 +1001,14 @@ def _self_check_run_pilot_token_wiring() -> None:
             )
         finally:
             restore()
+    # 1 (sig_t0) + 1 (sig_failed) + 20 (last5min_sigs) + 1 (sig_marker) = 23.
     assert result.migration_block_time == window_start, result
-    assert result.n_signatures_in_window == 4, result
+    assert result.n_signatures_in_window == 23, result
     assert result.n_failed_tx == 1, result
-    assert result.pct_failed_tx == 25.0, result
-    # so sig_last5min cai em [marker-5min, marker) E e bem-sucedida.
-    assert result.n_successful_trades_last_5min_before_marker == 1, result
+    assert result.pct_failed_tx == round(100.0 * 1 / 23, 2), result
+    # exatamente no limiar (20) -- >= MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_
+    # SURVIVOR, entao sai do atalho "nao-sobrevivente direto" e resolve preco.
+    assert result.n_successful_trades_last_5min_before_marker == 20, result
     assert result.n_events_decoded == 2, result
     assert result.n_events_with_reserves_and_fee == 2, result
     assert result.pct_decoded_with_reserves_and_fee == 100.0, result
@@ -977,7 +1016,60 @@ def _self_check_run_pilot_token_wiring() -> None:
     # marco resolvem na primeira tentativa) = 3 chamadas/creditos.
     assert result.n_rpc_calls == 3, result
     assert result.estimated_credits == 3, result
-    assert result.survived_20min_system_count is not None, result
+    # reservas: T0 quote/base=600/1000=0.6; marco=900/500=1.8; razao=3.0>=0.40.
+    assert result.survived_20min_system_count is True, result
+
+
+def _self_check_low_volume_is_non_survivor() -> None:
+    """Correcao de vies (operador, 2026-10-09): pool com poucos trades nos
+    ultimos 5min antes do marco e NAO-SOBREVIVENTE direto, da lista de
+    assinaturas -- NUNCA None/indeterminado, e NENHUMA chamada
+    getTransaction e gasta (nem decodifica nada)."""
+    from unittest.mock import patch
+
+    pool_mint = "POOLdeadpump"
+    window_start = 5_000_000
+    marker_offset = SIGNAL_MARKER_SECONDS
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            assert params[0] == pool_mint
+            # So 2 trades bem-sucedidos perto do marco -- bem abaixo do
+            # limiar de 20.
+            return {
+                "result": [
+                    {"signature": "SIG_A", "blockTime": window_start + marker_offset - 100, "err": None},
+                    {"signature": "SIG_B", "blockTime": window_start + marker_offset - 50, "err": None},
+                ]
+            }
+        raise AssertionError(f"unexpected RPC call (nao deveria resolver preco): {method} {params}")
+
+    class _FakeCarbonNoop2:
+        def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+            raise AssertionError("nao deveria decodificar nada -- volume baixo, classificado direto")
+
+    with patch(
+        "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc",
+        side_effect=fake_rpc,
+    ):
+        tracker = RpcUsageTracker()
+        restore = install_rate_limited_rpc(
+            max_rps=1000.0, helius_url="fake://helius-unused", max_consecutive_failures=99, tracker=tracker
+        )
+        try:
+            rotator = EndpointRotator(["fake://rpc"])
+            result = run_pilot_token(
+                _FakeCarbonNoop2(),
+                MigrationCandidate(pool_mint=pool_mint, migration_signature="SIGM", migration_block_time=window_start),
+                rotator=rotator,
+                tracker=tracker,
+            )
+        finally:
+            restore()
+    assert result.n_successful_trades_last_5min_before_marker == 2, result
+    assert result.survived_20min_system_count is False, result  # nunca None
+    assert result.n_events_decoded == 0, result
+    assert result.n_rpc_calls == 1, result  # so a lista de assinaturas
 
 
 class _FakeCarbonNoop:
@@ -1068,12 +1160,14 @@ def _self_check() -> None:
     _self_check_survival()
     _self_check_summary()
     _self_check_run_pilot_token_wiring()
+    _self_check_low_volume_is_non_survivor()
     _self_check_grid_benchmark()
     _self_check_checkpoint()
     print(
         "self-check OK: rate limiter + consecutive-failure breaker + 429 slow-down policy + "
         "credit tracker + credits formula + survival system-count (grade de 5s) + summary "
         "arithmetic (median/p90 + K-per-window) + run_pilot_token wiring (Estagio 1 barato) + "
+        "low-volume = non-survivor (no bias, no RPC spent) + "
         "grid benchmark (completed/budget-exceeded) + checkpoint round-trip"
     )
 
@@ -1182,6 +1276,11 @@ def main() -> int:
         c["pool_mint"]: MigrationCandidate(**c) for c in checkpoint["candidates"]
     }
     tokens_done: dict[str, dict[str, Any]] = checkpoint["tokens"]
+    # Operador, correcao de vies (2026-10-09): "so e indeterminado se a
+    # LISTA DE ASSINATURAS falhar (erro de sistema), e isso entra como
+    # missing explicito" -- distinto de nao-sobrevivente (que e um
+    # resultado valido, nao uma falha). Nunca descartado em silencio.
+    tokens_system_error: list[str] = []
 
     # Enumeracao e Stage 2 abortam de forma independente -- se a enumeracao
     # parar numa janela (ex. 429 sustentado na Helius), os candidatos JA
@@ -1249,9 +1348,11 @@ def main() -> int:
                         print(f"[piloto] PAROU: {exc}")
                         break
                     except Exception as exc:  # token isolado, nao e rajada de 429
+                        tokens_system_error.append(pool_mint)
                         print(
                             f"[piloto] token {pool_mint} falhou "
-                            f"(nao abortou o piloto): {type(exc).__name__}: {exc}"
+                            f"(erro de sistema, missing explicito -- nao abortou o piloto): "
+                            f"{type(exc).__name__}: {exc}"
                         )
                         continue
                     tokens_done[pool_mint] = asdict(result)
@@ -1315,6 +1416,8 @@ def main() -> int:
         "window_minutes": args.window_minutes,
         "windows_sampled": [list(w) for w in windows],
         "n_candidates_found": len(candidates_by_pool),
+        "n_tokens_system_error": len(tokens_system_error),
+        "tokens_system_error_pools": tokens_system_error,
         "seed": args.seed,
         "lookback_start": args.lookback_start,
         "lookback_end": args.lookback_end,
