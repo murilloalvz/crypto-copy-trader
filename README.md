@@ -3,6 +3,7 @@
 MVP local para monitorar wallets públicas na Solana, guardar transações em SQLite,
 confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 **A aplicação não possui chave privada e não envia ordens reais.**
+Laboratório local de **dados on-chain e automação** para monitorar wallets públicas na Solana, persistir atividade em SQLite, identificar swaps e avaliar estratégias por meio de **paper trading**.
 
 ## Direção atual: Opportunity Intelligence / Signal-First
 
@@ -37,7 +38,7 @@ direção atual.
 ## O que já funciona
 
 - cadastro e remoção lógica de wallets públicas;
-- sincronização via JSON-RPC da Solana;
+- sincronização de atividade via JSON-RPC da Solana;
 - persistência idempotente em SQLite;
 - confirmação de swaps por program ID e fluxo de saldos;
 - suporte inicial a Jupiter v4-v6, Raydium AMM/CPMM/CLMM/LaunchLab/Router,
@@ -45,6 +46,8 @@ direção atual.
 - separação entre swaps, atividade em DEX e transferências comuns;
 - diagnóstico dos programas encontrados quando uma wallet fica sem swaps confirmados;
 - Wallet Score financeiro apenas quando existe amostra mínima;
+- detecção inicial de swaps, transferências de SOL e transferências de tokens;
+- métricas de atividade e Wallet Score preliminar;
 - paper trades com tamanho, slippage e atraso configuráveis;
 - preços históricos por minuto via GeckoTerminal, com cache local;
 - reconstrução de posições FIFO e P&L realizado;
@@ -483,6 +486,26 @@ modo normal. As cinco compras e cinco vendas, os tokens e os preços são inteir
 sintéticos e aparecem identificados no dashboard. Eles servem para validar o software,
 não para avaliar uma wallet ou estratégia real.
 
+## Arquitetura
+
+```text
+Solana JSON-RPC
+      ↓
+Coleta e parsing
+      ↓
+SQLite
+      ↓
+Métricas / Wallet Score
+      ↓
+Paper Trading
+      ↓
+Dashboard Streamlit
+```
+
+## Stack
+
+**Python • SQLite • Solana JSON-RPC • APIs • Streamlit • Análise de Dados • Testes Automatizados**
+
 ## Instalação no Windows
 
 Requer Python 3.11 ou 3.12.
@@ -495,7 +518,7 @@ copy .env.example .env
 streamlit run app.py
 ```
 
-Abra o endereço exibido no terminal, normalmente `http://localhost:8501`.
+Abra o endereço exibido pelo Streamlit no terminal.
 
 Para executar os testes locais:
 
@@ -605,3 +628,27 @@ tests/test_parser.py   teste do parser
 ```
 
 Dados de mercado on-chain: GeckoTerminal. Powered by CoinGecko.
+tests/test_parser.py   testes do parser
+```
+
+## Limitações atuais
+
+- O parser inicial usa diferenças de saldo e seleciona o token com maior variação; transações complexas com múltiplos tokens exigem parsing específico.
+- O Wallet Score atual mede comportamento e não deve ser interpretado como previsão de rentabilidade.
+- Métricas financeiras dependem de preços históricos confiáveis no instante de cada operação.
+- O paper trading é uma simulação e não representa execução real ou garantia de performance.
+
+## Próximos passos
+
+- Evoluir o parser de transações e swaps
+- Integrar preços históricos por timestamp
+- Reconstruir posições e P&L
+- Expandir métricas de risco e performance
+- Aumentar cobertura de testes
+
+## Autor
+
+**Murillo Lourenço**  
+Estudante de Análise e Desenvolvimento de Sistemas na FATEC Sorocaba.
+
+Interesses: Dados, Inteligência Artificial, Automação e aplicações quantitativas.
