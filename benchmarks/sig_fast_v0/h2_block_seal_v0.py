@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.sig_fast_v0.h2_enumeration_no_helius_v0 import fetch_migrations_in_window_no_helius
 from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     EndpointRotator,
     GRID_BUCKET_SECONDS,
@@ -37,7 +38,6 @@ from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     POOL_TRADE_WINDOW_SECONDS,
     SIGNAL_MARKER_SECONDS,
     ensure_h2_backfill_schema,
-    fetch_migrations_in_windows,
     fetch_pool_signatures_in_window,
     group_successful_signatures_by_bucket,
     record_backfill_rows,
@@ -271,7 +271,7 @@ def seal_block(
     rotator: EndpointRotator,
     tracker: RpcUsageTracker,
     carbon: CarbonDecoderProcess,
-    enumeration_rpc_call: Any = fetch_migrations_in_windows,
+    enumeration_rpc_call: Any = fetch_migrations_in_window_no_helius,
 ) -> dict[str, Any]:
     """Orquestra um bloco do inicio ao fim: enumeracao (checkpointada) ->
     Estagio 1 barato pra TODO candidato achado -> hash -> sobreviventes +
@@ -280,8 +280,14 @@ def seal_block(
     grupo de sobreviventes -- Fase 0a do mandato autonomo: amostrar so
     nao-sobreviventes inflaria o edge) -> Estagio 2 (grade completa) ->
     hash -> relatorio de cobertura (NUNCA retorno/EV).
-    `enumeration_rpc_call` e fetch_migrations_in_windows em producao;
-    parametro injetavel so pra self-checks (evita rede)."""
+    `enumeration_rpc_call` e fetch_migrations_in_window_no_helius (Fase 1 do
+    mandato autonomo) em producao -- recebe `rotator`, nao `rpc_url`
+    (QuickNode/publico primeiro, Helius so como ultimo recurso dentro do
+    proprio rotator; validado por paridade real contra o piloto Helius,
+    ver h2_enumeration_no_helius_v0.py). `rpc_url` fica no parametro so por
+    compatibilidade com os dois wrappers que ja o passam; nao e mais usado
+    na enumeracao. `enumeration_rpc_call` e injetavel so pra self-checks
+    (evita rede)."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     ensure_h2_backfill_schema(conn)
@@ -306,7 +312,7 @@ def seal_block(
         if window in windows_done:
             continue
         try:
-            new_candidates = enumeration_rpc_call(rpc_url, window_start=window[0], window_end=window[1])
+            new_candidates = enumeration_rpc_call(rotator, window_start=window[0], window_end=window[1])
         except PilotAbortedRateLimited as exc:
             enumeration_aborted = True
             enumeration_abort_reason = str(exc)

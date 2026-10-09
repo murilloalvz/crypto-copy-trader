@@ -42,8 +42,17 @@ mandato).
     autônomo do operador é o sign-off) — feito ANTES de qualquer download
     desta rodada, por disciplina do CLAUDE.md ("pré-registrada antes da
     coleta que julga").
-- [ ] **Fase 1 — enumeração sem Helius + validação de paridade obrigatória**
-  (em andamento a seguir)
+- [x] **Fase 1 — enumeração sem Helius + validação de paridade obrigatória**
+  Novo `benchmarks/sig_fast_v0/h2_enumeration_no_helius_v0.py`: busca binária
+  por slot (blockTime, nunca undershoot) + âncora + `getSignaturesForAddress`
+  paginado pra trás + `getTransaction` confirma CreatePool (reaproveita a
+  mesma lógica de confirmação do caminho Helius) + dedup. `seal_block` agora
+  usa isso como default (recebe `rotator`, não `rpc_url`), Helius só como
+  último recurso dentro do próprio rotator. **Paridade validada com rede
+  real na 1ª tentativa: 7/7 pool_mints idênticos aos do piloto Helius, zero
+  missing, zero unexpected.** Achado extra: as 55 chamadas da validação
+  foram 100% servidas pelo endpoint de 1ª preferência (nunca Helius),
+  remontando ~2,5 meses -- suficiente pros dois blocos reais.
 - [ ] **Fase 2 — download + selagem real (regra de parada por contagem)**
 - [ ] **Fase 3 — gate de cobertura**
 - [ ] **Fase 4 — avaliação discovery**

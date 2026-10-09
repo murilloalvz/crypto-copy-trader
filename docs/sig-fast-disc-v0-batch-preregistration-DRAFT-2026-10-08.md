@@ -1019,3 +1019,68 @@ K permanece 26 janelas (discovery) / 13 janelas (confirmação), calculado na
 Addendum Fase E parte 5 a partir da taxa de sobrevivência real
 bias-corrigida (0.333) -- este addendum não tinha motivo pra recalcular K,
 porque nenhum dado novo foi visto.
+
+## Addendum Fase 1 (mandato autônomo, 2026-10-09) — enumeração sem Helius,
+validada por paridade real
+
+Bloqueador recorrente (4x nesta sessão, sempre na enumeração): Helius
+`getTransactionsForAddress` com 429 sustentado. Resposta: novo módulo
+`benchmarks/sig_fast_v0/h2_enumeration_no_helius_v0.py`, que substitui esse
+método por um caminho que usa SÓ RPC padrão (`getSlot`/`getBlockTime`/
+`getBlock`/`getSignaturesForAddress`/`getTransaction`, nenhum exclusivo da
+Helius):
+
+1. busca binária por um slot com `blockTime >= window_end` (nunca por
+   baixo -- undershoot perderia transações no limite da janela; slot
+   pulado é tratado com nudge SEMPRE pra frente, nunca pra trás);
+2. 1 assinatura desse bloco como âncora `before` (qualquer transação real
+   serve -- não precisa tocar a conta de migração);
+3. `getSignaturesForAddress(MIGRATION_AUTHORITY, before=âncora)` paginando
+   pra trás até passar de `window_start`;
+4. mantém só `err is None`;
+5. `getTransaction` confirma `CreatePool` -- reaproveita
+   `_touches_pumpfun_programs`/`_extract_pool_mint`, a mesma lógica de
+   confirmação que o caminho Helius já usava, não reescrita;
+6. dedup por `pool_mint`.
+
+Mesmo contrato de retorno de `fetch_migrations_in_windows`
+(`list[MigrationCandidate]`), só troca `rpc_url: str` por
+`rotator: EndpointRotator` -- `seal_block` agora chama
+`enumeration_rpc_call(rotator, ...)` (antes passava `rpc_url` bruto) e seu
+default passa a ser este método novo. `fetch_migrations_in_windows`
+(Helius-exclusivo) fica no código, inalterado, só não é mais o default --
+segue sendo a referência usada pela própria validação de paridade abaixo.
+
+**Validação de paridade OBRIGATÓRIA (feita, PASS):** rodado contra a mesma
+janela que o piloto já tinha enumerado via Helius
+(`artifacts/sig_fast_h2_pilot_v0/checkpoint.json`, 1ª das 3 janelas
+sorteadas por `sample_calendar_windows(start_date="2026-07-21",
+end_date="2026-08-20", window_minutes=10, k=3, seed=20261008)` =
+`(1784814600, 1784815200)`, 7 migrações). Resultado real (rede real, não
+simulado):
+
+```
+n_expected=7, n_found=7, n_missing=0, n_unexpected=0, passed=true
+```
+
+7/7 `pool_mint` idênticos, zero divergência. Nenhuma investigação adicional
+necessária -- paridade exata na 1ª tentativa real.
+
+**Achado sobre profundidade de histórico por endpoint** (pedido explícito
+da Fase 1): instrumentado temporariamente (contagem por índice de rotação,
+nunca a URL) durante a validação de paridade -- **as 55 chamadas RPC da
+validação foram servidas 100% pelo endpoint de 1ª preferência**
+(`H2_BACKFILL_RPC_URLS`, índice 0 do rotator), remontando a
+~2026-07-21 (quase 2,5 meses antes de "agora", 2026-10-09). Zero chamadas
+caíram pro endpoint público (índice 1) ou pra Helius (índice 2, último
+recurso). Não ficou provado se o endpoint público também serve esse
+histórico (não foi exercitado) nem o teto de profundidade real do endpoint
+primário (só provado que cobre pelo menos ~2,5 meses) -- suficiente pros
+blocos de discovery/confirmação (ambos mais recentes que a janela
+testada), não precisa de mais investigação pra este lote.
+
+**Impacto em Fase 2:** Helius pode ficar inteiramente fora do caminho
+crítico de enumeração dos blocos reais, eliminando o bloqueador de 429 que
+travou 4 tentativas anteriores. Helius permanece disponível como último
+recurso (ordem do rotator inalterada) só para o caso raro do endpoint
+primário falhar numa janela específica.
