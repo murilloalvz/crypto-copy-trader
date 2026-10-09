@@ -80,8 +80,26 @@ mandato).
   ainda não disparada; densidade final por dia depende do K final da
   discovery (regra "mesma densidade por dia" do mandato), por isso espera
   a discovery terminar antes de fixar o K da confirmação.
-- [ ] **Fase 3 — gate de cobertura**
-- [ ] **Fase 4 — avaliação discovery**
+- [~] **Fase 3 — gate de cobertura**
+  Código pronto e testado (`benchmarks/sig_fast_v0/h2_coverage_gate_v0.py`,
+  `evaluate_coverage_gate`): todos os 7 critérios do mandato (paridade
+  Fase 1, não abortou, >=90% janelas processadas, >=95% buckets Estágio
+  2, missing_source<=5%, >=95% reservas+fee, >=30 sobreviventes no
+  treino) com self-check isolando cada critério. Ainda não rodado contra
+  o `coverage_report.json` real -- esperando Fase 2 terminar.
+- [~] **Fase 4 — avaliação discovery**
+  Código pronto e testado (`benchmarks/sig_fast_v0/h2_discovery_evaluation_v0.py`):
+  carrega preços/fee do banco selado (`PathTrade` + fee bps real, nunca
+  inventado), reusa F2 (`find_causal_entry`/`first_barrier_touch`/
+  `simulate_exit`) sem nenhuma mudança, calcula edge de barreira
+  sinal-menos-baseline, escolhe a melhor das 6 saídas por EV no treino
+  (exige EV>0 e PF>1), revalida a MESMA saída no retentor, classifica
+  CANDIDATE/FAIL. Self-check cobre a agregação (cenário calculável a mão)
+  + o pipeline completo a partir de um banco SQLite sintético (preço via
+  reservas AMM na entrada, preço executado real no rastreamento
+  pós-entrada -- bug real encontrado e corrigido durante a escrita do
+  teste). Nunca abre o bloco de confirmação. Ainda não rodado com dado
+  real -- esperando Fase 2 terminar.
 - [ ] **Fase 5 — confirmação (só se CANDIDATE)**
 - [ ] **Fase 6 — relatório final**
 - [ ] Reserva 1 — spec/código paper ao vivo (self-check only)

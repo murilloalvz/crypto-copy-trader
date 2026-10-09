@@ -1134,3 +1134,63 @@ regra de parada pedir) em background, checkpoint vazio no início
 (tentativas anteriores nunca passaram da 1ª janela). Resultado real
 (cobertura, nunca retorno) vai ficar no `coverage_report.json` e será
 reportado em `docs/sig-fast-AUTONOMOUS-STATUS.md` quando terminar.
+
+## Addendum Fase 3/4 (mandato autônomo, 2026-10-09) — gate de cobertura +
+avaliação, código pronto antes do dado real terminar
+
+Escrito e commitado ANTES de qualquer resultado real da Fase 2 (download
+ainda rodando em background no momento deste addendum) -- nenhum número
+de retorno foi visto.
+
+**Fase 3** (`benchmarks/sig_fast_v0/h2_coverage_gate_v0.py`,
+`evaluate_coverage_gate`): os 7 critérios do mandato mapeados 1:1 pros
+campos que `seal_block`/`seal_discovery_block_with_stopping_rule` já
+produzem (paridade da Fase 1 passada explicitamente, nunca assumida; "não
+abortou"; `windows_done`/`k_windows_final` do checkpoint; `avg_pct_*` do
+report; `n_tokens_system_error_missing/n_migrations_found` pra
+missing_source; `n_train_survivors_final` da regra de parada). Qualquer
+falha → `INCONCLUSIVE_SYSTEM`, nunca chega a calcular nada de Fase 4.
+
+**Fase 4** (`benchmarks/sig_fast_v0/h2_discovery_evaluation_v0.py`):
+
+- **Decisão de design (confirma a leitura já implícita em Fase 0a):**
+  grupo de SINAL = sobreviventes (Estágio 1); grupo de BASELINE = amostra
+  de todas as migrações classificadas. **Ambos entram no MESMO marcador
+  +20min** (`migration_block_time + 1200s`), não na migração em si -- é
+  isso que "entrando no mesmo marcador +20min" (Fase 0a) sempre quis
+  dizer: o teste econômico é "sobreviver 20min prediz um movimento melhor
+  que entrar sem filtro nenhum no mesmo instante", não "entrar na
+  migração prediz algo".
+- Preço de entrada/saída: F2 sem nenhuma mudança (`find_causal_entry` +
+  `simulate_amm_buy/sell_execution_price_sol`, contra as RESERVAS do pool
+  na entrada). Rastreamento de preço DEPOIS da entrada (barreira e saída)
+  usa o preço EXECUTADO do trade real (`executed_trade_price_sol`), não
+  as reservas -- distinção que um bug real no self-check expôs (a 1ª
+  versão do teste só variava reservas, nunca o preço executado, e o
+  resultado ficava sempre "NONE" até corrigir).
+- Fee por token: confirmado nos dados reais selados (ver amostra em
+  `discovery.db`) que `lp_fee_basis_points_raw` +
+  `coin_creator_fee_basis_points_raw` + `protocol_fee_basis_points_raw`
+  está presente em praticamente todo evento decodificado -- a decisão da
+  Fase 0b (fee do evento mais próximo, nunca uma tabela inventada) se
+  confirma sem precisar de fallback na prática.
+- EV líquido/PF por saída: `compute_exit_ev` exclui tokens sem
+  `net_return_pct` determinável (nunca trata missing como 0% nem como
+  perda) -- PF fica `None` (nunca `inf` fingido) se não houver nenhuma
+  perda na amostra.
+- A saída escolhida no treino (por EV líquido médio) NUNCA é reescolhida
+  no retentor -- (c) é confirmação da mesma regra, não uma nova seleção
+  (é exatamente esse retune que o desenho treino/retentor existe pra
+  impedir).
+
+**Validação:** self-check com 2 camadas -- (1) agregação
+(`barrier_up_rate`/`compute_exit_ev`/`select_best_exit_rule`/
+`evaluate_discovery`) com um cenário pequeno calculável à mão (edge,
+EV, PF e CANDIDATE/FAIL batem com a conta manual); (2) pipeline completo
+a partir de um banco SQLite sintético com o formato real (reservas +
+amounts + fee bps), checkpoint.json e coverage_report.json -- prova que
+o carregamento/resolução de fee/preço funciona ponta a ponta antes de
+apontar pro banco de verdade.
+
+Nenhum dos dois módulos foi rodado contra dado real ainda -- esperando a
+Fase 2 (download em background) terminar.
