@@ -1,0 +1,2 @@
+"""CopyTrader Solana MVP."""
+

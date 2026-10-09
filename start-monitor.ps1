@@ -1,0 +1,54 @@
+param(
+    [ValidateRange(0.5, 72)]
+    [double]$Hours = 12,
+    [ValidateRange(1, 60)]
+    [double]$PriceIntervalMinutes = 5,
+    [ValidateRange(5, 360)]
+    [double]$DiscoveryIntervalMinutes = 30,
+    [ValidateRange(1, 100)]
+    [int]$Tokens = 25,
+    [ValidateRange(1, 100)]
+    [int]$Top = 3
+)
+
+$ErrorActionPreference = "Stop"
+$ProjectRoot = $PSScriptRoot
+$Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$EnvFile = Join-Path $ProjectRoot ".env"
+$LogDirectory = Join-Path $ProjectRoot "logs"
+
+if (-not (Test-Path $Python)) {
+    throw "Ambiente virtual nao encontrado. Crie .venv e instale requirements.txt."
+}
+if (-not (Test-Path $EnvFile)) {
+    throw "Arquivo .env nao encontrado. Copie .env.example para .env e configure a API."
+}
+if ($DiscoveryIntervalMinutes -lt $PriceIntervalMinutes) {
+    throw "DiscoveryIntervalMinutes deve ser maior ou igual a PriceIntervalMinutes."
+}
+
+New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+$Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$LogPath = Join-Path $LogDirectory "monitor-$Timestamp.log"
+
+Set-Location $ProjectRoot
+Write-Host "Crypto Copy Trader — iniciador do laboratorio paper"
+Write-Host "Log desta sessao: $LogPath"
+Write-Host "Mantenha o notebook ligado e sem suspensao. Ctrl+C encerra com seguranca."
+
+Start-Transcript -Path $LogPath | Out-Null
+try {
+    & $Python monitor.py `
+        --hours $Hours `
+        --price-interval-minutes $PriceIntervalMinutes `
+        --discovery-interval-minutes $DiscoveryIntervalMinutes `
+        --tokens $Tokens `
+        --top $Top
+    $ExitCode = $LASTEXITCODE
+}
+finally {
+    Stop-Transcript | Out-Null
+}
+
+Write-Host "Monitor encerrado. Log salvo em: $LogPath"
+exit $ExitCode
