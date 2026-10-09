@@ -313,6 +313,46 @@ def sample_calendar_windows(
     ]
 
 
+def sample_calendar_windows_ordered(
+    *, start_date: str, end_date: str, window_minutes: int, seed: int
+) -> list[tuple[int, int]]:
+    """Fase 2 (mandato autonomo, 2026-10-09): sequencia ORDENADA e ESTAVEL
+    POR PREFIXO de todas as janelas possiveis sobre [start_date, end_date).
+    `random.Random(seed).sample(range(n), k=...)` (usado por
+    sample_calendar_windows acima) NAO garante que o resultado de um k
+    maior contenha o de um k menor com a MESMA seed -- os dois sorteios
+    consomem o stream aleatorio de formas diferentes. Isso quebra a regra
+    de parada por contagem da Fase 2 ("amostrar janelas ADICIONAIS da
+    MESMA sequencia sorteada, em ordem"), que precisa que extender k nunca
+    descarte nem reordene o que ja foi sorteado.
+
+    Aqui o range inteiro e embaralhado UMA UNICA VEZ (seed fixa) e
+    devolvido por completo, em ordem de sorteio -- pegar os primeiros `k`
+    elementos deste resultado e SEMPRE um prefixo exato de pegar os
+    primeiros k2>k, por construcao. `sample_calendar_windows(..., k=k)` e
+    `sample_calendar_windows_ordered(...)[:k]` NAO sao o mesmo subconjunto
+    (algoritmos diferentes) -- intencional: nenhum dado real de Passo B
+    foi coletado ainda sob a seed/algoritmo antigo pros blocos de
+    discovery/confirmacao (so o piloto, que usa k fixo sem extensao, nao
+    afetado), entao nao ha protocolo congelado sendo retunado aqui."""
+    start_epoch = int(
+        datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    )
+    end_epoch = int(
+        datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    )
+    window_seconds = window_minutes * 60
+    n_slots = max(0, (end_epoch - start_epoch) // window_seconds)
+    if n_slots == 0:
+        return []
+    order = list(range(n_slots))
+    random.Random(seed).shuffle(order)
+    return [
+        (start_epoch + i * window_seconds, start_epoch + (i + 1) * window_seconds)
+        for i in order
+    ]
+
+
 def fetch_migrations_in_windows(
     rpc_url: str, *, window_start: int, window_end: int
 ) -> list[MigrationCandidate]:
@@ -634,6 +674,40 @@ def _self_check_sampling() -> None:
     assert candidates[0].migration_block_time == window_start + 5, candidates
 
 
+def _self_check_sampling_ordered() -> None:
+    """Fase 2 (mandato autonomo): prova a propriedade que
+    sample_calendar_windows_ordered existe pra garantir -- prefixo
+    estavel -- e que ela NAO precisa ser (nem e) o mesmo subconjunto que
+    sample_calendar_windows produz pra mesma seed (algoritmos diferentes
+    de proposito, ver docstring da funcao)."""
+    full = sample_calendar_windows_ordered(
+        start_date="2026-01-01", end_date="2026-01-15", window_minutes=10, seed=20261008
+    )
+    n_slots_expected = (14 * 24 * 60) // 10
+    assert len(full) == n_slots_expected, (len(full), n_slots_expected)
+    assert len(set(full)) == len(full), "janelas duplicadas/sobrepostas"
+
+    for k_small, k_large in [(5, 5), (5, 12), (12, 40), (0, 3)]:
+        prefix_small = sample_calendar_windows_ordered(
+            start_date="2026-01-01", end_date="2026-01-15", window_minutes=10, seed=20261008
+        )[:k_small]
+        prefix_large = sample_calendar_windows_ordered(
+            start_date="2026-01-01", end_date="2026-01-15", window_minutes=10, seed=20261008
+        )[:k_large]
+        assert prefix_large[: len(prefix_small)] == prefix_small, (k_small, k_large, prefix_small, prefix_large)
+
+    # Mesma seed, mesmos parametros -> sempre a mesma ordem completa.
+    full_again = sample_calendar_windows_ordered(
+        start_date="2026-01-01", end_date="2026-01-15", window_minutes=10, seed=20261008
+    )
+    assert full == full_again, "mesma seed tem que reproduzir a mesma ordem"
+
+    empty = sample_calendar_windows_ordered(
+        start_date="2026-01-01", end_date="2026-01-01", window_minutes=10, seed=1
+    )
+    assert empty == [], empty
+
+
 def _self_check_decode_and_persist() -> None:
     import sqlite3
 
@@ -855,11 +929,13 @@ def _self_check_price_grid() -> None:
 
 def _self_check() -> None:
     _self_check_sampling()
+    _self_check_sampling_ordered()
     _self_check_decode_and_persist()
     _self_check_rotation()
     _self_check_price_grid()
     print(
-        "self-check OK: sampling (dedup/exclusion/deterministic seed) + decode/persist "
+        "self-check OK: sampling (dedup/exclusion/deterministic seed) + sampling ordenado "
+        "(prefixo estavel pra regra de parada da Fase 2) + decode/persist "
         "(wiring + idempotent replay) + rotation (fallback-not-abort + sanitized errors) + "
         "price grid (signature list w/ err + bucket grouping + swap search w/ backward "
         "lookback + T0/marker resolution)"

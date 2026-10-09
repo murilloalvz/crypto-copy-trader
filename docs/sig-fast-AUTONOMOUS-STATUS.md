@@ -53,7 +53,33 @@ mandato).
   missing, zero unexpected.** Achado extra: as 55 chamadas da validação
   foram 100% servidas pelo endpoint de 1ª preferência (nunca Helius),
   remontando ~2,5 meses -- suficiente pros dois blocos reais.
-- [ ] **Fase 2 — download + selagem real (regra de parada por contagem)**
+- [~] **Fase 2 — download + selagem real (regra de parada por contagem)**
+  EM ANDAMENTO (real, em background). Infra pronta e testada: nova
+  `sample_calendar_windows_ordered` (sequência embaralhada UMA vez, prefixo
+  estável -- `random.Random(seed).sample()` não garante isso entre k's
+  diferentes, bug que eu tinha identificado antes deste mandato) +
+  `seal_discovery_block_with_stopping_rule` em `h2_block_seal_v0.py`
+  (treino = primeiros 70% do calendário; se sobreviventes no treino < 30,
+  estende k em passos de 5 janelas, mesma sequência estável, até atingir
+  >= 36 ou esgotar 10 extensões -- documentado como
+  `extension_exhausted` se esgotar). `seal_block` em si só trocou a fonte
+  das janelas (prefixo estável em vez de `.sample()`) -- sem mudança de
+  comportamento pros self-checks existentes. Testado: self-check completo
+  (3 cenários da regra de parada: sem extensão, estende até o alvo, esgota
+  sem atingir) + **smoke test real em 1 janela do bloco de discovery
+  real** (2026-08-20..09-17): 5 migrações achadas, 1 sobrevivente, 4
+  não-sobreviventes, baseline amostrada de todas as 5 (Fase 0a), Estágio 2
+  completo em 2 tokens, hash gravado -- pipeline ponta a ponta validado
+  com rede real antes de disparar a rodada completa.
+  **Download real das 26 janelas iniciais (+ extensões se precisar)
+  disparado em background** (checkpoint vazio -- tentativas anteriores
+  nunca passaram da 1ª janela). Vai rodar por um tempo (1 janela real
+  levou ~183s, a maior parte no Estágio 2); vou checar o progresso
+  periodicamente e reportar aqui quando terminar ou se abortar.
+  Confirmação (K=13, sem regra de parada -- não tem treino/retentor)
+  ainda não disparada; densidade final por dia depende do K final da
+  discovery (regra "mesma densidade por dia" do mandato), por isso espera
+  a discovery terminar antes de fixar o K da confirmação.
 - [ ] **Fase 3 — gate de cobertura**
 - [ ] **Fase 4 — avaliação discovery**
 - [ ] **Fase 5 — confirmação (só se CANDIDATE)**

@@ -27,6 +27,7 @@ import random
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +45,18 @@ from benchmarks.sig_fast_v0.h2_historical_backfill_v0 import (
     resolve_bucket_swap_price,
     resolve_price_at_marker,
     resolve_price_at_t0,
-    sample_calendar_windows,
+    sample_calendar_windows_ordered,
 )
+
+# Fase 2 (mandato autonomo): regra de parada por contagem de sobreviventes
+# no TREINO (primeiros TRAIN_FRACTION do calendario do bloco de discovery
+# -- mesmo corte que Fase 4 usa pra treino/retentor). Nunca olha
+# retorno/EV, so contagem de sobreviventes do Estagio 1.
+TRAIN_FRACTION = 0.7
+MIN_TRAIN_SURVIVORS_TRIGGER = 30
+MIN_TRAIN_SURVIVORS_TARGET = 36
+DEFAULT_K_EXTENSION_STEP = 5
+MAX_K_EXTENSIONS = 10
 from benchmarks.sig_fast_v0.h2_pilot_v0 import (
     CarbonDecoderProcess,
     FULL_WINDOW_BUCKETS,
@@ -293,9 +304,14 @@ def seal_block(
     ensure_h2_backfill_schema(conn)
 
     checkpoint = _load_checkpoint(checkpoint_path)
-    windows = sample_calendar_windows(
-        start_date=start_date, end_date=end_date, window_minutes=window_minutes, k=k_windows, seed=seed
-    )
+    # Fase 2 (mandato autonomo): prefixo de uma sequencia ESTAVEL (nunca
+    # sample_calendar_windows -- essa nao garante prefixo entre k's
+    # diferentes) -- condicao necessaria pra seal_block_with_stopping_rule
+    # poder chamar seal_block de novo com k_windows maior e so processar
+    # as janelas NOVAS (as antigas ja estao em windows_done e sao puladas).
+    windows = sample_calendar_windows_ordered(
+        start_date=start_date, end_date=end_date, window_minutes=window_minutes, seed=seed
+    )[:k_windows]
     windows_done = {tuple(w) for w in checkpoint["windows_done"]}
     candidates_by_pool: dict[str, MigrationCandidate] = {
         c["pool_mint"]: MigrationCandidate(**c) for c in checkpoint["candidates"]
@@ -465,6 +481,124 @@ def seal_block(
         "total_elapsed_seconds_stage1": round(sum(r["elapsed_seconds"] for r in stage1_results), 1),
         "total_elapsed_seconds_stage2": round(sum(r["elapsed_seconds"] for r in stage2_results), 1),
     }
+
+
+def train_cutoff_epoch(start_date: str, end_date: str, *, train_fraction: float = TRAIN_FRACTION) -> int:
+    """Fase 4: treino = primeiros `train_fraction` do calendario do bloco,
+    retentor = o resto. Usado aqui so pra CONTAR sobreviventes no treino
+    pra regra de parada (Fase 2) -- a avaliacao economica (Fase 4) usa o
+    mesmo corte pra dividir treino/retentor de verdade."""
+    start_epoch = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    end_epoch = int(datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    return start_epoch + int((end_epoch - start_epoch) * train_fraction)
+
+
+def count_train_survivors(stage1_done: dict[str, dict[str, Any]], *, train_cutoff: int) -> int:
+    return sum(
+        1
+        for r in stage1_done.values()
+        if r["survived_20min_system_count"] is True and r["migration_block_time"] < train_cutoff
+    )
+
+
+def seal_discovery_block_with_stopping_rule(
+    *,
+    block_name: str,
+    start_date: str,
+    end_date: str,
+    initial_k_windows: int,
+    window_minutes: int,
+    seed: int,
+    db_path: Path,
+    checkpoint_path: Path,
+    rpc_url: str,
+    rotator: EndpointRotator,
+    tracker: RpcUsageTracker,
+    carbon: CarbonDecoderProcess,
+    enumeration_rpc_call: Any = fetch_migrations_in_window_no_helius,
+    min_train_survivors_trigger: int = MIN_TRAIN_SURVIVORS_TRIGGER,
+    min_train_survivors_target: int = MIN_TRAIN_SURVIVORS_TARGET,
+    k_extension_step: int = DEFAULT_K_EXTENSION_STEP,
+    max_k_extensions: int = MAX_K_EXTENSIONS,
+) -> dict[str, Any]:
+    """Fase 2 (mandato autonomo): roda seal_block com initial_k_windows; se
+    sobreviventes no TREINO ficarem abaixo de min_train_survivors_trigger,
+    estende k_windows (mesma sequencia ESTAVEL,
+    sample_calendar_windows_ordered -- nunca descarta/reordena o que ja
+    foi sorteado, so adiciona janelas novas no fim) e roda seal_block de
+    novo (retoma do checkpoint, nunca reprocessa janela ja feita) ate
+    atingir min_train_survivors_target OU esgotar max_k_extensions. NUNCA
+    olha retorno/EV -- so contagem de sobreviventes (Estagio 1), a regra
+    pre-registrada. So pro bloco de DISCOVERY -- confirmacao nao tem
+    treino/retentor, usa k fixo direto em seal_block."""
+    train_cutoff = train_cutoff_epoch(start_date, end_date)
+    k = initial_k_windows
+    report = seal_block(
+        block_name=block_name,
+        start_date=start_date,
+        end_date=end_date,
+        k_windows=k,
+        window_minutes=window_minutes,
+        seed=seed,
+        db_path=db_path,
+        checkpoint_path=checkpoint_path,
+        rpc_url=rpc_url,
+        rotator=rotator,
+        tracker=tracker,
+        carbon=carbon,
+        enumeration_rpc_call=enumeration_rpc_call,
+    )
+    checkpoint = _load_checkpoint(checkpoint_path)
+    n_train_survivors_initial = count_train_survivors(checkpoint["stage1"], train_cutoff=train_cutoff)
+    n_train_survivors = n_train_survivors_initial
+    extensions_used = 0
+    extension_exhausted = False
+
+    if n_train_survivors_initial < min_train_survivors_trigger:
+        while n_train_survivors < min_train_survivors_target and not report["aborted"]:
+            if extensions_used >= max_k_extensions:
+                extension_exhausted = True
+                print(
+                    f"[selagem {block_name}] regra de parada ESGOTADA: {extensions_used} extensoes, "
+                    f"{n_train_survivors} sobreviventes no treino (meta {min_train_survivors_target})"
+                )
+                break
+            extensions_used += 1
+            k += k_extension_step
+            print(
+                f"[selagem {block_name}] regra de parada: {n_train_survivors} sobreviventes no treino "
+                f"(< {min_train_survivors_target}) -- estendendo pra k_windows={k}"
+            )
+            report = seal_block(
+                block_name=block_name,
+                start_date=start_date,
+                end_date=end_date,
+                k_windows=k,
+                window_minutes=window_minutes,
+                seed=seed,
+                db_path=db_path,
+                checkpoint_path=checkpoint_path,
+                rpc_url=rpc_url,
+                rotator=rotator,
+                tracker=tracker,
+                carbon=carbon,
+                enumeration_rpc_call=enumeration_rpc_call,
+            )
+            checkpoint = _load_checkpoint(checkpoint_path)
+            n_train_survivors = count_train_survivors(checkpoint["stage1"], train_cutoff=train_cutoff)
+
+    report["stopping_rule"] = {
+        "train_cutoff_epoch": train_cutoff,
+        "min_train_survivors_trigger": min_train_survivors_trigger,
+        "min_train_survivors_target": min_train_survivors_target,
+        "n_train_survivors_initial": n_train_survivors_initial,
+        "n_train_survivors_final": n_train_survivors,
+        "k_windows_initial": initial_k_windows,
+        "k_windows_final": k,
+        "k_extensions_used": extensions_used,
+        "extension_exhausted": extension_exhausted,
+    }
+    return report
 
 
 def _self_check_abort_handling() -> None:
@@ -874,12 +1008,151 @@ def _self_check() -> None:
 
     _self_check_abort_handling()
     _self_check_baseline_samples_all_classified()
+    _self_check_stopping_rule()
     print(
         "self-check OK: seal_block (enumeracao + Estagio 1 com missing explicito + hash + "
         "baseline seed-fixa (Fase 0a: TODAS as classificadas) + Estagio 2 grade completa + "
         "hash + cobertura, sem retorno/EV) + resume idempotente do checkpoint + abort de 429 "
-        "nao descarta candidatos ja achados"
+        "nao descarta candidatos ja achados + regra de parada por contagem (Fase 2: sem "
+        "extensao se >= trigger, estende em passos estaveis se < trigger, para sozinha se "
+        "esgotar o teto de extensoes)"
     )
+
+
+def _self_check_stopping_rule() -> None:
+    """Fase 2 (mandato autonomo): prova a regra de parada por contagem --
+    (a) nao estende se o treino ja tem >= trigger(30) com o k inicial;
+    (b) estende em passos de uma sequencia ESTAVEL (nunca reprocessa
+    janela ja feita -- checkpoint) ate atingir o alvo(36); (c) para
+    sozinha (extension_exhausted=True) se esgotar o teto de extensoes,
+    nunca entra em loop infinito mesmo sem nunca atingir o alvo. Usa um
+    `fake_enumeration(rotator, *, window_start, window_end)` que sempre
+    forca o `migration_block_time` do candidato pra bem no inicio do
+    bloco (2026-01-01 + poucos segundos) -- testa so o MECANISMO de
+    extensao/parada, nao a distribuicao real treino/retentor (que
+    depende do sorteio real de sample_calendar_windows_ordered, fora do
+    escopo deste self-check)."""
+    import tempfile
+    from unittest.mock import patch
+
+    marker = SIGNAL_MARKER_SECONDS
+    block_start_epoch = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+
+    def _survivor_fixture(pool: str, window_start: int) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        sig_t0 = f"SIG_T0_{pool}"
+        sig_marker = f"SIG_MARKER_{pool}"
+        rows = [{"signature": sig_t0, "blockTime": window_start, "err": None}]
+        raw: dict[str, dict[str, Any]] = {sig_t0: _self_check_fake_swap_tx(sig_t0, window_start)}
+        for j in range(MIN_SUCCESSFUL_TRADES_LAST_5MIN_FOR_SURVIVOR):
+            sig = f"SIG_{pool}_L5_{j}"
+            block_time = window_start + marker - 290 + j * 10
+            rows.append({"signature": sig, "blockTime": block_time, "err": None})
+            raw[sig] = _self_check_fake_swap_tx(sig, block_time)
+        rows.append({"signature": sig_marker, "blockTime": window_start + marker, "err": None})
+        raw[sig_marker] = _self_check_fake_swap_tx(sig_marker, window_start + marker)
+        return rows, raw
+
+    state: dict[str, Any] = {"n_calls": 0, "sigs_by_pool": {}, "raw_by_sig": {}, "max_survivors": 1000}
+
+    def fake_enumeration(rotator: Any, *, window_start: int, window_end: int) -> list[MigrationCandidate]:
+        state["n_calls"] += 1
+        if state["n_calls"] > state["max_survivors"]:
+            return []
+        forced_block_time = block_start_epoch + 1 + state["n_calls"]
+        pool = f"POOL{state['n_calls']}pump"
+        rows, raw = _survivor_fixture(pool, forced_block_time)
+        state["sigs_by_pool"][pool] = rows
+        state["raw_by_sig"].update(raw)
+        return [
+            MigrationCandidate(pool_mint=pool, migration_signature=f"SIGMIG{pool}", migration_block_time=forced_block_time)
+        ]
+
+    def fake_rpc(rpc_url: str, method: str, params: list, *, retries: int = 5) -> dict:
+        if method == "getSignaturesForAddress":
+            return {"result": state["sigs_by_pool"][params[0]]}
+        if method == "getTransaction":
+            return {"result": state["raw_by_sig"][params[0]]}
+        raise AssertionError(f"unexpected call: {method}")
+
+    class _FakeCarbon:
+        def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+            event_key = payload["items"][0]["event_key"]
+            signature = event_key.split(":")[0]
+            return {
+                "type": "carbon_canonical_batch",
+                "batch_id": payload["batch_id"],
+                "items": [
+                    {
+                        "event_key": event_key,
+                        "status": "decoded",
+                        "event_type": "pumpswap_buy",
+                        "signature": signature,
+                        "pool_base_token_reserves_raw": 1000,
+                        "pool_quote_token_reserves_raw": 600,
+                        "lp_fee_raw": 7,
+                    }
+                ],
+            }
+
+    def _run(tmp: str, *, name: str, initial_k: int, seed: int, step: int = 5, max_ext: int = MAX_K_EXTENSIONS) -> dict[str, Any]:
+        with patch(
+            "benchmarks.move_first_h_coverage_audit_v0.sample_migration_account._rpc", side_effect=fake_rpc
+        ):
+            tracker = RpcUsageTracker()
+            rotator = EndpointRotator(["fake://rpc"])
+            return seal_discovery_block_with_stopping_rule(
+                block_name=name,
+                start_date="2026-01-01",
+                end_date="2027-01-01",
+                initial_k_windows=initial_k,
+                window_minutes=10,
+                seed=seed,
+                db_path=Path(tmp) / f"{name}.db",
+                checkpoint_path=Path(tmp) / f"{name}_checkpoint.json",
+                rpc_url="fake://rpc",
+                rotator=rotator,
+                tracker=tracker,
+                carbon=_FakeCarbon(),
+                enumeration_rpc_call=fake_enumeration,
+                k_extension_step=step,
+                max_k_extensions=max_ext,
+            )
+
+    # (a) k inicial ja da exatamente o trigger -- nunca estende.
+    with tempfile.TemporaryDirectory() as tmp:
+        state.update(n_calls=0, sigs_by_pool={}, raw_by_sig={}, max_survivors=1000)
+        report = _run(tmp, name="sc_stop_a", initial_k=MIN_TRAIN_SURVIVORS_TRIGGER, seed=1)
+        sr = report["stopping_rule"]
+        assert sr["n_train_survivors_initial"] == MIN_TRAIN_SURVIVORS_TRIGGER, sr
+        assert sr["k_extensions_used"] == 0, sr
+        assert sr["extension_exhausted"] is False, sr
+        assert report["n_survivors"] == MIN_TRAIN_SURVIVORS_TRIGGER, report
+
+    # (b) k inicial fica curto -- estende em passos estaveis ate o alvo.
+    with tempfile.TemporaryDirectory() as tmp:
+        state.update(n_calls=0, sigs_by_pool={}, raw_by_sig={}, max_survivors=1000)
+        report = _run(tmp, name="sc_stop_b", initial_k=10, seed=2, step=5)
+        sr = report["stopping_rule"]
+        assert sr["n_train_survivors_initial"] == 10, sr
+        assert sr["k_extensions_used"] > 0, sr
+        assert sr["n_train_survivors_final"] >= MIN_TRAIN_SURVIVORS_TARGET, sr
+        assert report["n_survivors"] == sr["n_train_survivors_final"], report
+        assert sr["extension_exhausted"] is False, sr
+        # k_extension_step=5 a partir de k=10 nunca acerta 36 exatamente --
+        # a regra tem que parar na 1a vez que ATINGE OU PASSA o alvo, nunca
+        # ficar perseguindo um valor exato.
+        assert sr["k_windows_final"] == 10 + 5 * sr["k_extensions_used"], sr
+
+    # (c) nunca atinge o alvo (poucos candidatos disponiveis) -- para
+    # sozinha, nunca entra em loop infinito.
+    with tempfile.TemporaryDirectory() as tmp:
+        state.update(n_calls=0, sigs_by_pool={}, raw_by_sig={}, max_survivors=15)
+        report = _run(tmp, name="sc_stop_c", initial_k=5, seed=3, step=5, max_ext=3)
+        sr = report["stopping_rule"]
+        assert sr["extension_exhausted"] is True, sr
+        assert sr["k_extensions_used"] == 3, sr
+        assert sr["n_train_survivors_final"] < MIN_TRAIN_SURVIVORS_TARGET, sr
+        assert sr["n_train_survivors_final"] == 15, sr  # esgotou os candidatos disponiveis, nao mais
 
 
 def main() -> int:

@@ -1084,3 +1084,53 @@ crítico de enumeração dos blocos reais, eliminando o bloqueador de 429 que
 travou 4 tentativas anteriores. Helius permanece disponível como último
 recurso (ordem do rotator inalterada) só para o caso raro do endpoint
 primário falhar numa janela específica.
+
+## Addendum Fase 2 (mandato autônomo, 2026-10-09) — regra de parada por
+contagem, download real
+
+**Correção técnica necessária antes da regra de parada:**
+`sample_calendar_windows` (addendum Fase E parte 2) usa
+`random.Random(seed).sample(range(n), k=...)` -- isso NÃO garante que o
+resultado de um `k` maior contenha o de um `k` menor com a mesma seed (os
+dois sorteios consomem o stream aleatório de formas diferentes). A regra
+de parada por contagem exige "amostrar janelas ADICIONAIS da MESMA
+sequência sorteada, em ordem" -- impossível de garantir com `.sample()`.
+Nova função `sample_calendar_windows_ordered` (embaralha o range inteiro
+UMA vez, seed fixa, devolve por completo): pegar os primeiros `k`
+elementos é **sempre** um prefixo exato de pegar os primeiros `k2>k`, por
+construção. Não retuna nenhum protocolo congelado: nenhum dado real do
+Passo B tinha sido coletado sob o algoritmo antigo pros blocos de
+discovery/confirmação (só o piloto, que usa k fixo sem extensão, não
+afetado). `seal_block` passou a usar a função nova como fonte de janelas
+(mesmo comportamento de resumo por checkpoint, só a fonte mudou).
+
+**Regra de parada implementada** (`seal_discovery_block_with_stopping_rule`,
+só para o bloco de discovery -- confirmação não tem treino/retentor):
+treino = primeiros 70% do calendário do bloco (mesmo corte que Fase 4 usa).
+Se sobreviventes no treino < 30 (gatilho), estende `k_windows` em passos de
+5 janelas (mesma sequência estável) e roda `seal_block` de novo (retoma do
+checkpoint, nunca reprocessa janela já feita) até atingir >= 36
+sobreviventes no treino (alvo) ou esgotar 10 extensões -- se esgotar, fica
+documentado como `extension_exhausted=true` no relatório, sem inventar
+sobreviventes nem forçar a meta. Tamanho do passo (5) e teto de extensões
+(10) não vieram especificados no mandato -- escolha razoável documentada
+aqui, nunca ajustada depois de ver dado algum. Nunca olha retorno/EV, só
+contagem de sobreviventes do Estágio 1 (classificação de sistema, não
+julgamento econômico).
+
+**Validação:** self-check completo (3 cenários: sem extensão quando o k
+inicial já basta; estende em passos até o alvo; esgota e para sozinha sem
+loop infinito quando os candidatos disponíveis nunca bastam) +
+**smoke test com rede real em 1 janela do bloco de discovery de verdade**
+(2026-08-20..09-17, janela real `(1789549200, 1789549800)`): 5 migrações
+achadas, 1 sobrevivente / 4 não-sobreviventes (taxa 0,20, mesma ordem de
+grandeza do 0,333 medido no piloto, amostra pequena), baseline amostrada
+de TODAS as 5 (Fase 0a), Estágio 2 completo em 2 tokens (749 linhas,
+~38,96% dos buckets resolvidos), hash gravado em ambos os estágios --
+pipeline ponta a ponta confirmado antes de disparar a rodada completa.
+
+**Download real disparado** (K inicial = 26 janelas + extensões se a
+regra de parada pedir) em background, checkpoint vazio no início
+(tentativas anteriores nunca passaram da 1ª janela). Resultado real
+(cobertura, nunca retorno) vai ficar no `coverage_report.json` e será
+reportado em `docs/sig-fast-AUTONOMOUS-STATUS.md` quando terminar.

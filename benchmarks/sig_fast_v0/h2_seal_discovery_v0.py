@@ -1,8 +1,16 @@
 """SIG-FAST H2 Passo B -- sela o bloco de DISCOVERY (2026-08-20 a
-2026-09-17, K=26 janelas, addendum Fase E parte 5). So este bloco: nunca
+2026-09-17, K=26 janelas iniciais, addendum Fase E parte 5 + regra de
+parada por contagem da Fase 2 do mandato autonomo). So este bloco: nunca
 importa nem abre o arquivo/banco da confirmacao (h2_seal_confirmation_v0.py
 e um arquivo separado, sem import nenhum entre os dois). So cobertura --
 nunca retorno/MFE/barreira/EV. Nunca imprime URL de RPC.
+
+K_WINDOWS e so o PONTO DE PARTIDA -- se o treino (primeiros 70% do
+calendario) ficar com menos de 30 sobreviventes, o proprio
+seal_discovery_block_with_stopping_rule estende k automaticamente (mesma
+sequencia estavel de janelas, nunca reprocessa o que ja foi selado) ate
+atingir >=36 sobreviventes no treino ou esgotar o teto de extensoes -- ver
+report["stopping_rule"] no coverage_report.json produzido.
 """
 
 from __future__ import annotations
@@ -11,7 +19,7 @@ import argparse
 import json
 from pathlib import Path
 
-from benchmarks.sig_fast_v0.h2_block_seal_v0 import _self_check, seal_block
+from benchmarks.sig_fast_v0.h2_block_seal_v0 import _self_check, seal_discovery_block_with_stopping_rule
 from benchmarks.sig_fast_v0.h2_pilot_v0 import (
     DEFAULT_MAX_CONSECUTIVE_FAILURES,
     DEFAULT_MAX_RPS,
@@ -78,11 +86,11 @@ def main() -> int:
     carbon = JsonLineProcess(_carbon_command(args.cargo), ready_type="carbon_stream_decoder_ready")
     carbon.start()
     try:
-        report = seal_block(
+        report = seal_discovery_block_with_stopping_rule(
             block_name=BLOCK_NAME,
             start_date=DISCOVERY_BLOCK_START,
             end_date=DISCOVERY_BLOCK_END,
-            k_windows=K_WINDOWS,
+            initial_k_windows=K_WINDOWS,
             window_minutes=PILOT_WINDOW_MINUTES_DEFAULT,
             seed=PILOT_SEED,
             db_path=DB_PATH,
