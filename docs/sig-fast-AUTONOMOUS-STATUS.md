@@ -71,29 +71,30 @@ mandato).
   não-sobreviventes, baseline amostrada de todas as 5 (Fase 0a), Estágio 2
   completo em 2 tokens, hash gravado -- pipeline ponta a ponta validado
   com rede real antes de disparar a rodada completa.
-  **Download real em andamento -- sobreviveu a um restart real do
-  container, retomado do checkpoint sem perda** (atualizado 2026-10-09
-  ~07:53). Enumeração e Estágio 1 **100% completos** -- 26/26 janelas,
-  202 migrações, 202 classificadas, 0 erro de sistema. **76
-  sobreviventes / 126 não-sobreviventes (taxa 37,6%)**. Regra de parada:
-  76 >= 30 (gatilho) -- **não precisou estender k_windows**. Estágio 2:
-  alvo ~123-152 tokens distintos; chegou a 34 selados (~2h reais), e
-  então **o processo em background morreu porque o container reiniciou
-  de verdade** (`uptime` voltou a "up 0 min" entre um check-in agendado e
-  o outro -- não foi um bug do código, foi o ambiente sendo reciclado
-  numa janela ociosa). `checkpoint.json` e `discovery.db` sobreviveram
-  intactos no disco persistente (`PRAGMA integrity_check: ok`, 202/202
-  Stage1, 34/N Stage2) -- **retomado chamando o mesmo wrapper de novo**,
-  que pulou tudo já feito e continuou o Estágio 2 exatamente de onde
-  parou, sem reprocessar nada. Prova real (não só teórica) de que o
-  design de checkpoint funciona sob uma falha de infraestrutura real.
-  Processo relançado em background (desta vez via `run_in_background`
-  direto da ferramenta, sem `nohup`/`&` manual) ~07:53. Ritmo médio
-  observado antes do restart: ~3,9min/token -- estimativa de mais
-  várias horas (e possivelmente mais 1+ ciclo de retomada, se o
-  container reciclar de novo numa folga entre check-ins). Vou continuar
-  checando periodicamente (agendado via `send_later`) e retomando sempre
-  que precisar -- o checkpoint faz isso seguro.
+  **Download real em andamento -- padrão operacional estabelecido: o
+  container reinicia periodicamente numa folga entre check-ins (2
+  ocorrências confirmadas até agora, `uptime` voltando a "up 0 min"),
+  mas o checkpoint nunca perde trabalho e o ciclo retoma/avança sempre**
+  (atualizado 2026-10-09 ~15:03). Enumeração e Estágio 1 **100%
+  completos** -- 26/26 janelas, 202 migrações, 202 classificadas, 0 erro
+  de sistema. **76 sobreviventes / 126 não-sobreviventes (taxa 37,6%)**.
+  Regra de parada: não precisou estender k_windows. Estágio 2: alvo
+  ~123-152 tokens distintos.
+  - Ciclo 1: 0 -> 31 selados (~2h), container reiniciou.
+  - Ciclo 2 (retomado ~07:53): 31 -> 51 selados, container reiniciou de
+    novo.
+  - Ciclo 3 (retomado ~15:03, `PRAGMA integrity_check: ok` confirmado
+    antes de retomar): em andamento agora.
+  Cada retomada chama o mesmo wrapper, que pula tudo já feito (janelas,
+  Stage1, tokens de Stage2 já selados) e continua exatamente de onde
+  parou -- zero reprocessamento, zero dado perdido, confirmado em 2
+  reinícios reais consecutivos. Ritmo observado ~17-20 tokens de
+  Stage2/ciclo de ~45min -- a ~51/~123-152 tokens, estimativa de mais
+  4-6 ciclos (várias horas) até completar. Processo sempre relançado via
+  `run_in_background` direto da ferramenta (nunca `nohup`/`&` manual).
+  Vou continuar checando periodicamente (agendado via `send_later`,
+  ~40-45min) e retomando sempre que precisar -- esse ciclo é esperado e
+  seguro, não é mais tratado como anomalia.
   Confirmação (K=13, sem regra de parada -- não tem treino/retentor)
   ainda não disparada; K=26 final (sem extensão) já decide a densidade.
 - [~] **Fase 3 — gate de cobertura**
