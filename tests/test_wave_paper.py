@@ -1,15 +1,18 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from src import database
 from src.database import initialize_database, rows
+from src.prices import PermanentPriceProviderError, ProviderCycleBudgetExhausted
 from src.wave_paper import (
     LEGACY_WAVE_STRATEGY_VERSION,
     WAVE_STRATEGY_VERSION,
+    WAVE_V2_STRATEGY_VERSION,
     backfill_wave_strategy_versions,
     latest_paper_signals,
     record_paper_signals,
@@ -28,6 +31,19 @@ class FakePriceProvider:
         self.timestamps.append(timestamp)
         self.max_distance_seconds = max_distance_seconds
         return self.price
+
+
+class FailingPriceProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise PermanentPriceProviderError(
+            "Candle histórico distante.",
+            code="distant_historical_candle",
+        )
+
+
+class BudgetFailingPriceProvider:
+    def price_at(self, _token, _timestamp, *, max_distance_seconds=3_600):
+        raise ProviderCycleBudgetExhausted("cycle budget")
 
 
 class WavePaperTests(unittest.TestCase):
@@ -70,6 +86,20 @@ class WavePaperTests(unittest.TestCase):
         signal = rows("SELECT strategy_version FROM wave_signals")[0]
         self.assertEqual(signal["strategy_version"], WAVE_STRATEGY_VERSION)
 
+    def test_persistence_rejects_inconsistent_volume_even_if_marked_as_passed(self):
+        approved = self.approved_results()[0]
+        inconsistent = replace(
+            approved,
+            token=token(volume_5m_usd=150_000, volume_1h_usd=100_000),
+            passed=True,
+            barriers=(),
+        )
+
+        created = record_paper_signals([inconsistent], detected_at=1_000)
+
+        self.assertEqual(created, 0)
+        self.assertEqual(rows("SELECT COUNT(*) AS total FROM wave_signals")[0]["total"], 0)
+
     def test_backfills_only_historical_signals_that_match_momentum_gate(self):
         base_snapshot = {
             "wave_score": 61,
@@ -110,7 +140,7 @@ class WavePaperTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(versions["baseline-token"], LEGACY_WAVE_STRATEGY_VERSION)
-        self.assertEqual(versions["momentum-token"], WAVE_STRATEGY_VERSION)
+        self.assertEqual(versions["momentum-token"], WAVE_V2_STRATEGY_VERSION)
 
     def test_prices_exact_due_horizons_and_completes_signal(self):
         record_paper_signals(
@@ -132,6 +162,45 @@ class WavePaperTests(unittest.TestCase):
         self.assertEqual(signal["status"], "completed")
         self.assertAlmostEqual(signal["checks"][0]["return_pct"], 7.821782, places=5)
         self.assertAlmostEqual(signal["checks"][0]["pnl_usd"], 1.955445, places=5)
+
+    def test_records_structured_price_failure_code(self):
+        record_paper_signals(
+            self.approved_results(),
+            detected_at=1_000,
+            copy_size_usd=25,
+            slippage_bps=100,
+        )
+
+        result = update_due_paper_checks(FailingPriceProvider(), now=1_301)
+        check = rows(
+            """SELECT status, error, error_code, retry_count
+            FROM wave_signal_checks WHERE horizon_minutes=5"""
+        )[0]
+
+        self.assertEqual(result, {"completed": 0, "failed": 1, "pending": 2})
+        self.assertEqual(check["status"], "failed")
+        self.assertEqual(check["error_code"], "distant_historical_candle")
+        self.assertIn("Candle histórico distante", check["error"])
+        self.assertEqual(check["retry_count"], 1)
+
+    def test_cycle_budget_deferral_keeps_checkpoint_pending_without_retry_penalty(self):
+        record_paper_signals(
+            self.approved_results(),
+            detected_at=1_000,
+            copy_size_usd=25,
+            slippage_bps=100,
+        )
+
+        result = update_due_paper_checks(BudgetFailingPriceProvider(), now=1_301)
+        check = rows(
+            """SELECT status, error_code, retry_count
+            FROM wave_signal_checks WHERE horizon_minutes=5"""
+        )[0]
+
+        self.assertEqual(result, {"completed": 0, "failed": 0, "pending": 3})
+        self.assertEqual(check["status"], "pending")
+        self.assertEqual(check["error_code"], "provider_cycle_budget_exhausted")
+        self.assertEqual(check["retry_count"], 0)
 
 
 if __name__ == "__main__":

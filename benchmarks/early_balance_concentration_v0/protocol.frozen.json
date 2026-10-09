@@ -1,0 +1,55 @@
+{
+  "schema_version": "early_balance_concentration_v0_protocol",
+  "experiment_id": "MF-EARLY-BALANCE-CONCENTRATION-V0",
+  "status": "PREREGISTERED_RETROSPECTIVE_DISCOVERY",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-21",
+  "question": "Does concentration of causally observed net token acquisition among early Pump wallets add signal-quality information beyond Participant Quality and existing flow evidence?",
+  "discovery_runs": [
+    "launch_burst_prospective_route_live_v4-1789605670-3592832863",
+    "launch_burst_prospective_route_live_v4-1789687945-0315e2560c",
+    "launch_burst_prospective_route_live_v4-1789692405-6daeedeb29",
+    "launch_burst_prospective_route_live_v4-1789698815-b277ffea77",
+    "launch_burst_prospective_route_live_v4-1789946453-0367216d26"
+  ],
+  "feature_contract": {
+    "primary_feature_id": "mf_early_net_acquired_token_hhi_t0_5s",
+    "definition": "For decoded Pump trades of the episode mint causally observed from T0 through T0+5s inclusive, aggregate token_amount_raw per wallet as +buy and -sell; retain only positive ending observed net balances; divide each positive wallet balance by the sum of positive observed net balances; primary feature is the sum of squared shares.",
+    "interpretation": "Concentration of observed early net-acquired token inventory across wallets; this is not full on-chain holder concentration and does not claim true wallet inventory outside the observed launch window.",
+    "expected_direction": "negative",
+    "normalization": "sum of positive observed net token balances within the same T0..T0+5s causal window",
+    "one_positive_wallet_policy": "valid feature value 1.0",
+    "no_positive_wallet_policy": "MISSING",
+    "event_causality": "first_received_wall_ns must be within episode T0..T0+5s and decoded chain timestamp must be within observed_t0..observed_t0+5",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false
+  },
+  "outcomes": {
+    "primary": "ROUTE_CLOSED gross Fixed+60 standardized outcome from the already-captured frozen route contract",
+    "secondary": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100"
+  },
+  "incremental_controls": [
+    "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "mf_buy_event_rate_acceleration_per_s2",
+    "signed_flow_over_event_reserve"
+  ],
+  "directional_read": {
+    "minimum_primary_route_closed_pairs": 30,
+    "promotion_from_this_sample_allowed": false,
+    "next_step_if_sufficient": "mechanism/robustness review, then freeze an independent prospective confirmation using the exact feature",
+    "next_step_if_insufficient_or_not_incremental": "close this feature family without threshold retuning or sample extension based on observed outcomes"
+  },
+  "guardrails": {
+    "no_external_holder_provider": true,
+    "no_live_acquisition_required": true,
+    "no_new_outcome_collection": true,
+    "retrospective_discovery_only": true,
+    "selector_change": false,
+    "participant_quality_change": false,
+    "route_contract_change": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false
+  },
+  "protocol_hash_sha256": "fb31f536d816d47a2974271d44d8584022dc5acf57e7ed6bad6b7bf9487ac2ec"
+}

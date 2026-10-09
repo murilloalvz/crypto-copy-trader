@@ -1,0 +1,47 @@
+name: MarketEpisode research snapshot v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'src/market_episode_research_snapshot.py'
+      - 'src/market_intelligence_baseline.py'
+      - 'src/pump_creation_mode_facts.py'
+      - 'tests/test_market_episode_research_snapshot.py'
+      - '.github/workflows/market-episode-research-snapshot-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile research snapshot
+        run: python -m py_compile src/market_episode_research_snapshot.py
+
+      - name: Run focused tests
+        run: |
+          python -m unittest tests.test_market_episode_research_snapshot -v
+          python -m unittest tests.test_market_intelligence_baseline -v
+          python -m unittest tests.test_pump_creation_mode_facts -v
+
+      - name: Run full unit suite
+        run: python -m unittest discover -s tests -q

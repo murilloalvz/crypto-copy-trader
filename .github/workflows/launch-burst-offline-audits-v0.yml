@@ -1,0 +1,139 @@
+name: Launch Burst Offline Audits V0
+
+on:
+  push:
+    branches:
+      - spike/launch-burst-v0
+    paths:
+      - 'src/launch_burst_v0.py'
+      - 'src/launch_burst_economic_v1.py'
+      - 'src/launch_burst_route_paper_v2.py'
+      - 'benchmarks/market_first_live_discovery_v0/rotating_trace.py'
+      - 'benchmarks/launch_burst_replay_v0/**'
+      - 'benchmarks/launch_burst_run_inventory_v0/**'
+      - 'benchmarks/launch_burst_coverage_audit_v0/**'
+      - 'benchmarks/launch_burst_matched_unit_coverage_v0/**'
+      - 'benchmarks/launch_burst_readiness_v0/**'
+      - 'benchmarks/launch_burst_shadow_v0/**'
+      - 'benchmarks/launch_burst_stability_audit_v0/**'
+      - 'benchmarks/launch_burst_trajectory_audit_v0/**'
+      - 'benchmarks/launch_burst_live_capture_v0/**'
+      - 'benchmarks/launch_burst_live_capture_v1/**'
+      - 'benchmarks/launch_burst_live_capture_v2/**'
+      - 'benchmarks/launch_burst_live_feature_analysis_v0/**'
+      - 'benchmarks/launch_burst_feature_redundancy_v0/**'
+      - 'benchmarks/launch_burst_prospective_economic_v1/**'
+      - 'benchmarks/launch_burst_prospective_route_paper_v2/**'
+      - 'benchmarks/launch_burst_prospective_route_live_v3/**'
+      - 'benchmarks/launch_burst_prospective_route_live_v4/**'
+      - 'tests/test_launch_burst_v0.py'
+      - 'tests/test_launch_burst_replay_v0.py'
+      - 'tests/test_launch_burst_run_inventory_v0.py'
+      - 'tests/test_launch_burst_coverage_audit_v0.py'
+      - 'tests/test_launch_burst_matched_unit_coverage_v0.py'
+      - 'tests/test_launch_burst_readiness_v0.py'
+      - 'tests/test_launch_burst_shadow_v0.py'
+      - 'tests/test_launch_burst_stability_audit_v0.py'
+      - 'tests/test_launch_burst_trajectory_audit_v0.py'
+      - 'tests/test_launch_burst_live_capture_v0.py'
+      - 'tests/test_launch_burst_live_capture_v1.py'
+      - 'tests/test_launch_burst_live_capture_v2.py'
+      - 'tests/test_launch_burst_live_feature_analysis_v0.py'
+      - 'tests/test_launch_burst_feature_redundancy_v0.py'
+      - 'tests/test_launch_burst_economic_v1.py'
+      - 'tests/test_launch_burst_route_paper_v2.py'
+      - 'tests/test_launch_burst_prospective_route_live_v2.py'
+      - 'tests/test_launch_burst_prospective_route_live_v3.py'
+      - 'tests/test_launch_burst_prospective_route_capacity_replay_v3.py'
+      - 'tests/test_launch_burst_prospective_route_live_v4.py'
+      - 'tests/test_launch_burst_v4_watermark_capacity_bound.py'
+      - '.github/workflows/launch-burst-offline-audits-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-audits:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile
+        run: |
+          python -m py_compile src/launch_burst_v0.py
+          python -m py_compile src/launch_burst_economic_v1.py
+          python -m py_compile src/launch_burst_route_paper_v2.py
+          python -m py_compile benchmarks/market_first_live_discovery_v0/rotating_trace.py
+          python -m py_compile benchmarks/launch_burst_replay_v0/run.py
+          python -m py_compile benchmarks/launch_burst_run_inventory_v0/run.py
+          python -m py_compile benchmarks/launch_burst_coverage_audit_v0/run.py
+          python -m py_compile benchmarks/launch_burst_matched_unit_coverage_v0/run.py
+          python -m py_compile benchmarks/launch_burst_readiness_v0/run.py
+          python -m py_compile benchmarks/launch_burst_shadow_v0/run.py
+          python -m py_compile benchmarks/launch_burst_stability_audit_v0/run.py
+          python -m py_compile benchmarks/launch_burst_trajectory_audit_v0/run.py
+          python -m py_compile benchmarks/launch_burst_live_capture_v0/run.py
+          python -m py_compile benchmarks/launch_burst_live_capture_v1/run.py
+          python -m py_compile benchmarks/launch_burst_live_capture_v2/run.py
+          python -m py_compile benchmarks/launch_burst_live_feature_analysis_v0/run.py
+          python -m py_compile benchmarks/launch_burst_feature_redundancy_v0/run.py
+          python -m py_compile benchmarks/launch_burst_prospective_economic_v1/run.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_paper_v2/run.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_paper_v2/live.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_live_v3/live.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_live_v3/replay_capacity.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_live_v4/live.py
+          python -m py_compile benchmarks/launch_burst_prospective_route_live_v4/replay_bound.py
+          python -m py_compile tests/test_launch_burst_v0.py
+          python -m py_compile tests/test_launch_burst_replay_v0.py
+          python -m py_compile tests/test_launch_burst_run_inventory_v0.py
+          python -m py_compile tests/test_launch_burst_coverage_audit_v0.py
+          python -m py_compile tests/test_launch_burst_matched_unit_coverage_v0.py
+          python -m py_compile tests/test_launch_burst_readiness_v0.py
+          python -m py_compile tests/test_launch_burst_shadow_v0.py
+          python -m py_compile tests/test_launch_burst_stability_audit_v0.py
+          python -m py_compile tests/test_launch_burst_trajectory_audit_v0.py
+          python -m py_compile tests/test_launch_burst_live_capture_v0.py
+          python -m py_compile tests/test_launch_burst_live_capture_v1.py
+          python -m py_compile tests/test_launch_burst_live_capture_v2.py
+          python -m py_compile tests/test_launch_burst_live_feature_analysis_v0.py
+          python -m py_compile tests/test_launch_burst_feature_redundancy_v0.py
+          python -m py_compile tests/test_launch_burst_economic_v1.py
+          python -m py_compile tests/test_launch_burst_route_paper_v2.py
+          python -m py_compile tests/test_launch_burst_prospective_route_live_v2.py
+          python -m py_compile tests/test_launch_burst_prospective_route_live_v3.py
+          python -m py_compile tests/test_launch_burst_prospective_route_capacity_replay_v3.py
+          python -m py_compile tests/test_launch_burst_prospective_route_live_v4.py
+          python -m py_compile tests/test_launch_burst_v4_watermark_capacity_bound.py
+      - name: Run offline audit contracts
+        run: |
+          python -m unittest tests.test_launch_burst_v0 -v
+          python -m unittest tests.test_launch_burst_replay_v0 -v
+          python -m unittest tests.test_launch_burst_run_inventory_v0 -v
+          python -m unittest tests.test_launch_burst_coverage_audit_v0 -v
+          python -m unittest tests.test_launch_burst_matched_unit_coverage_v0 -v
+          python -m unittest tests.test_launch_burst_readiness_v0 -v
+          python -m unittest tests.test_launch_burst_shadow_v0 -v
+          python -m unittest tests.test_launch_burst_stability_audit_v0 -v
+          python -m unittest tests.test_launch_burst_trajectory_audit_v0 -v
+          python -m unittest tests.test_launch_burst_live_capture_v0 -v
+          python -m unittest tests.test_launch_burst_live_capture_v1 -v
+          python -m unittest tests.test_launch_burst_live_capture_v2 -v
+          python -m unittest tests.test_launch_burst_live_feature_analysis_v0 -v
+          python -m unittest tests.test_launch_burst_feature_redundancy_v0 -v
+          python -m unittest tests.test_launch_burst_economic_v1 -v
+          python -m unittest tests.test_launch_burst_route_paper_v2 -v
+          python -m unittest tests.test_launch_burst_prospective_route_live_v2 -v
+          python -m unittest tests.test_launch_burst_prospective_route_live_v3 -v
+          python -m unittest tests.test_launch_burst_prospective_route_capacity_replay_v3 -v
+          python -m unittest tests.test_launch_burst_prospective_route_live_v4 -v
+          python -m unittest tests.test_launch_burst_v4_watermark_capacity_bound -v

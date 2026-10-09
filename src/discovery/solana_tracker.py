@@ -391,13 +391,20 @@ class SolanaTrackerClient:
                 "limit": limit,
             },
         )
+        source_items = payload.get("data") or []
         snapshots = []
         seen = set()
-        for item in payload.get("data") or []:
+        invalid_count = duplicate_count = 0
+        for item in source_items:
             if not isinstance(item, dict):
+                invalid_count += 1
                 continue
             token = str(item.get("mint") or "")
-            if not is_solana_address(token) or token in seen:
+            if not is_solana_address(token):
+                invalid_count += 1
+                continue
+            if token in seen:
+                duplicate_count += 1
                 continue
             seen.add(token)
             token_details = item.get("tokenDetails") or {}
@@ -446,6 +453,14 @@ class SolanaTrackerClient:
                     ),
                 )
             )
+        self.last_wave_diagnostics = {
+            "requested_limit": limit,
+            "source_item_count": len(source_items),
+            "source_invalid_count": invalid_count,
+            "source_duplicate_count": duplicate_count,
+            "returned_count": len(snapshots),
+            "cache_used": False,
+        }
         return snapshots
 
     def token_traders(

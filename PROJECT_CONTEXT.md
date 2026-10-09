@@ -1,0 +1,753 @@
+# Crypto Copy Trader — Project Context
+
+Este arquivo é o **source of truth operacional e científico atual** do projeto. Histórico detalhado, protocolos e resultados ficam em `docs/`.
+
+## Estado canônico
+
+- Repositório: `murilloalvz/crypto-copy-trader`
+- Branch científica base: `feat/exit-engine-v1`
+- Head científico canônico pré-hardening: `94017d7d96231a5bcd05a6d2a69d8d2ee90e231c`
+- Branch systems ativa: `fix/pumpswap-causal-throughput-v5`
+- Modo: **PAPER / RESEARCH / READ ONLY**
+- Tese: **market-first Opportunity Intelligence / Opportunity Engine**
+- Laboratório principal: **Solana**
+- Detector Solana: **FROZEN**
+- Wallet: evidência pós-episódio, nunca whitelist de aquisição
+- Fluxo oficial: `market -> radar -> causal episode -> enrichment -> research decision -> forward outcomes -> prospective validation -> execution research -> shadow`
+
+## Status executivo
+
+### Sistemas / aquisição
+
+- v54 demand-only resolver admission: **historical accepted systems profile / PASS 11/11**
+- Tailfix v1: cross-source token commit isolation implemented/tested
+- Tailfix v2: bounded shared RPC transport + early decision release implemented/tested
+- Tailfix v3: resolver latency class fixed live, but run failed 9/11 on persistence drain capacity
+- Tailfix v4: persistence drain fixed live, but run failed 10/11 on PumpSwap causal latency due normalization/single-flight amplification
+- Tailfix v5: **failed live on unchanged global-prefix HOL; retained as base**
+- Tailfix v6: **active structural correction; causal per-asset partial-order admission implemented/tests required before live**
+- Tailfix v8: **live failed under a different high-load profile; authoritative writer admission was insufficient**
+- Tailfix v9: **LIVE PASS 11/11; PumpSwap p95 3.151s, Pump p95 1.478s, coverage 99.6%, backlog 0.408%**
+- SQLite cleanup: **Windows/Python 3.14 test-handle fix committed; full suite 1049/1049**
+- official Pump/PumpSwap p95 gate: **5s unchanged**
+- preventive causal-stage warning: **4s p95**
+- V5 sustained writer warning: queue-depth p95 >=80% of bounded PumpSwap persistence-worker reservoir, writer-result-wait p95 >=4s, or incomplete drain
+- provider pacing: **650/1000/250ms frozen** for current route research
+- route-only research: **US$25 / 100 bps / 300-900-3600s**
+
+### Signal Plane V4 — accepted systems baseline (2026-09-22)
+
+The current Signal Plane systems baseline is **V4 burst microbatch / PASS**.
+
+Live V4 evidence:
+
+- classification: `PASS_RUST_SIGNAL_PLANE_LIVE_SHADOW_V4_BURST_MICROBATCH`
+- Python/Rust Radar parity: **701/701 = 100%**
+- ingress accounting: **2347 enqueued / 2347 consumed**
+- ingress drops: **0**
+- reader errors: **0**
+- ingress queue high-water: **31 / 8192**
+- true drain after source cutoff: **8.33 ms**
+- ingress queue wait p95: **0.572 ms**
+- Carbon roundtrip p95: **1.016 ms**
+- Rust service p95: **0.164 ms**
+- Rust source->signal p95: **7.754 ms**
+- Rust source->signal p99: **11.097 ms**
+- async PumpSwap identity requested/resolved: **111 / 111**
+- PumpSwap adapted via async identity: **268**
+- PumpSwap adapted coverage in this live window: **67.99%**
+- first unknown -> causal identity ready: p50 **540.9 ms**, p95 **1021.9 ms**
+- async RPC batch latency: p50 **512.1 ms**, p95 **546.5 ms**
+
+Interpretation:
+
+- the earlier multi-second systems bottleneck is closed for the isolated Signal Plane;
+- further millisecond-level tuning is not authorized from this sample;
+- the V4 microbatch reduced ingress queue p95 from the prior V3 6.664 ms to 0.572 ms, but total
+  source->signal remained in the same single-digit-millisecond class because batching moved some
+  waiting into per-event post-Carbon processing;
+- this is not economic edge evidence;
+- pending-release of the first unknown PumpSwap trade is **not** part of V4 and must not be
+  introduced without its own causal protocol.
+
+**Critical release rule:** V68 remains blocked. Its current release path still enters the historical
+v46/v44/v43/v42/V9 acquisition stack. A V4 shadow PASS does not authorize running a new V68 fresh
+key through that old acquisition path. Before V68 resumes, a systems-only bridge must prove that the
+actual V68 acquisition/admission path consumes the accepted Signal Plane semantics without changing
+the frozen V68 economic contract.
+
+### Signal Plane V4.1 long-soak result / V5 active correction
+
+The first valid 30-minute V4.1 soak **FAILED sustained capacity** after successful startup:
+
+- trigger parity: **30,200 / 30,200 = 100%**
+- ingress queue high-water: **8,192 / 8,192**
+- Pump ingress drops: **1,455**
+- PumpSwap ingress drops: **38,356**
+- ingress queue wait p95: **~29.09s**
+- Rust source->signal p95: **~29.52s**
+- Carbon roundtrip p95: **~2.04ms**
+- target extraction p95: **~0.164ms**
+- Identity Plane requested/resolved: **456 / 456**
+- both readers later closed without close frames
+- V68 remains blocked
+
+Interpretation: short-run correctness remained intact, but the live shadow verifier itself became
+load-bearing. Per-event Python Radar verification plus per-event Rust stdin/stdout IPC serialized
+inside the consumer path and saturated the bounded ingress queue. Do **not** rescue by increasing
+queue capacity or tuning the existing microbatch cap.
+
+Active correction: **V5 ordered Rust signal batch + post-run Python parity audit**.
+
+V5 keeps Rust as the only live Radar hot path, batches ordered signal records into one IPC per
+canonical batch, and moves Python parity to an exact post-run replay over the same TraceRecords.
+Python parity remains mandatory at 100%; it is removed only from live latency, not from correctness
+gating.
+
+### V68 Signal Plane migration active (2026-09-22)
+
+V68 fresh remains **blocked** while the accepted Signal Plane is integrated into the real research
+path. Do not run `-03` through the historical v46/v44/v43/v42 hot path.
+
+Current migration pieces:
+
+- Rust V5 ordered `signal_batch` live path with post-run Python parity audit;
+- `signal_plane_episode_bridge_v0` preserves historical Pump/PumpSwap trigger keys, clocks and
+  durable venue names;
+- `signal_plane_episode_admission_v0` reuses the existing durable episode +
+  `admit_opportunity_episode` contract and supports injected admission callbacks;
+- `signal_plane_research_persistence_v0` persists each canonical observation before any trigger
+  episode admission and is benchmark-independent via Protocol;
+- V5 live shadow has optional systems-only `--episode-bridge-run-key` and
+  `--research-plane-run-key` modes, both off the Rust hot path;
+- `benchmarks.v68_signal_plane_bridge_v0.run` is the offline Rust -> episode-identity semantic
+  audit;
+- `route_research_v68_release.py` is fail-closed with
+  `V68_SIGNAL_PLANE_PROMOTION_AUTHORIZED = False` and cannot launch fresh V68 until explicit
+  promotion;
+- V68 provider-health probes now use concurrent Pump/PumpSwap WSS probes with
+  server-heartbeat policy (`ping_interval=None`) and explicit opening timeout.
+
+Remaining before promotion: offline bridge PASS, V5 live/sustained capacity PASS on unrestricted
+network, ordered Research Plane durability PASS, systems-only end-to-end admission -> hazard /
+Jupiter / forward-outcome bridge using a non-V68 key, then explicit release authorization.
+
+See `docs/v68-signal-plane-migration-v0-2026-09-22.md`.
+
+### Signal Plane -> Research Plane -> V68 downstream bridge (2026-09-22)
+
+Additional offline migration work completed while live provider access was unsuitable:
+
+- `signal_plane_research_persistence_v0` now accepts an injectable admission callback;
+- `test_signal_plane_v68_feature_bridge_v0` proves the intended durable path can reconstruct the
+  frozen V68 feature boundary from persisted flow: 4 BUY / 7 events =
+  `57.142857...%`, which must classify as LOW under frozen `V68_LOW_MAX=57.1429`;
+- `signal_plane_route_research_coordinator_v0` extracts the historical v37/v41 dual-lane topology:
+  every selected episode fans out independently to hazard and research queues, research waits for
+  terminal hazard evidence, then performs the original route-only Jupiter entry and freezes the
+  existing research decision/outcome schedule;
+- coordinator defaults preserve the frozen economic cohort shape/pacing:
+  cap=40, research_workers=4, hazard_workers=4, hazard start interval=650ms, entry start
+  interval=1000ms;
+- episode admission handoff is safe from both event-loop and worker threads and is acknowledged
+  before the caller returns, preventing a false downstream-drained race;
+- `route_research_signal_plane_bridge_v0.py` is the new systems-only end-to-end bridge runner:
+  V5 live -> ordered durable Research Plane -> frozen episode admission -> hazard -> Jupiter
+  route-only decision -> 300/900/3600 outcome scheduling. It explicitly rejects a
+  `v68-flow60-fresh*` run key and does not evaluate outcomes or V68 economics.
+
+This means the remaining migration risk is now concentrated in live sustained V5 capacity and
+provider-backed systems validation of the new bridge, not in inventing a new economic contract.
+
+### Fast path to V68 edge — migration prepared (2026-09-22)
+
+The repository now contains the complete **blocked** migration path needed to test V68 on the
+new Signal Plane once V5 sustained systems evidence passes.
+
+Implemented:
+
+- `benchmarks/integrated_market_signal_plane_v1/v5_batch_suite.py`
+  - deterministic offline V5 batch IPC capacity/parity test;
+  - frozen seed=68 / 10k events;
+  - exact Python/Rust trigger parity required;
+  - preserves existing 5k and 7.5k synthetic capacity targets;
+  - includes persistent Rust stdin/stdout batch overhead.
+
+- `benchmarks/v68_signal_plane_bridge_v0/run.py`
+  - offline Rust trigger -> historical episode identity audit.
+
+- `src/signal_plane_research_persistence_v0.py`
+  - ordered durable Research Plane observations behind the live Rust hot path.
+
+- `src/signal_plane_episode_admission_v0.py`
+  - frozen trigger snapshot -> durable episode/admission semantics.
+
+- `src/signal_plane_route_research_coordinator_v0.py`
+  - new-episode admission -> hazard + Jupiter route decision using historical pacing/at-most-once
+    provider semantics.
+
+- `route_research_signal_plane_bridge_v0.py`
+  - systems-only live end-to-end Signal Plane -> Research Plane -> hazard/Jupiter bridge.
+
+- `src/signal_plane_forward_cohort_v0.py`
+  - one complete new-path prospective route-only cohort:
+    Signal Plane acquisition -> cap 40/min 30 -> exact 300/900/3600 forward outcomes -> descriptive
+    lineage/readiness gate;
+  - frozen $25 notional, 100 bps slippage and 650/1000/250ms provider-start pacing.
+
+- `route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py`
+  - two sequential fresh A/B subcohorts over the promoted Signal Plane path;
+  - strict all-table fresh-key residue check;
+  - reuses the existing frozen V55 dataset builder and V68 primary gate;
+  - does not recalculate Flow60 bins, support minima or economic thresholds.
+
+- `signal_plane_v68_promotion_v0.py`
+  - produces a fail-closed promotion manifest only after offline capacity, offline episode bridge,
+    V5 120s smoke, V5 30m soak and live route-research bridge all PASS;
+  - requires zero live ingress drops, exact accounting, 100% parity, all gates true and
+    Rust source->signal p95 <=5s;
+  - records SHA-256 for every evidence artifact and the exact git HEAD.
+
+- `route_research_v68_release.py`
+  - accepts the new Signal Plane V68 path only with a valid promotion manifest;
+  - promotion manifest must match the current git HEAD and all evidence hashes;
+  - after promotion, the historical v46/v44/v43/v42 acquisition path is not used.
+
+**Current blocker remains systems-only:** V5 live acquisition has not yet been evaluated on an
+unrestricted network. The last V5 attempt failed before acquisition because both Alchemy WSS
+opening handshakes timed out on the restricted school network. This does not consume V68 fresh
+evidence and is not a V5 capacity verdict.
+
+Once unrestricted internet is available, the shortest path is:
+
+1. offline V5 batch capacity PASS;
+2. offline V68 episode-bridge audit PASS;
+3. V5 120s live smoke PASS;
+4. V5 30m sustained soak PASS;
+5. systems-only `route_research_signal_plane_bridge_v0.py` PASS with a non-V68 key;
+6. build promotion manifest;
+7. run canonical `route_research_v68_release.py` with a brand-new V68 key and the promotion
+   manifest;
+8. evaluate the frozen V68 economic gate. No more hot-path tuning is permitted unless one of the
+   required systems gates fails.
+
+### Signal Plane edge path implementation checkpoint — 2026-09-22 school/offline work
+
+Additional migration work completed while live provider access was unreliable:
+
+- `src/signal_plane_research_persistence_v0.py` admission wiring was corrected:
+  market observation persistence no longer receives an unsupported admission callback, and the
+  injected route-research coordinator callback is now passed to trigger episode admission.
+- `benchmarks/integrated_market_signal_plane_v1/rust_suite.py` explicitly selects the original
+  `rust-indexed-signal-plane-v0` binary so the offline bridge audit is not ambiguous after adding
+  the `stream` binary.
+- `signal_plane_edge_offline_readiness_v0.py` now provides one offline gate over:
+  V5 real batched Rust stdin/stdout IPC capacity/parity, Rust->episode bridge parity, and the frozen
+  V68/cohort contracts.
+- `src/signal_plane_forward_cohort_v0.py` now bridges one promoted Signal Plane subcohort through
+  route decisions and the exact forward 300/900/3600 outcome collector with frozen 250ms exit pacing.
+- `route_research_prospective_flow60_buy_share_holdout_v68_signal_plane_v0.py` now contains the
+  complete A/B fresh prospective V68 path over Signal Plane acquisition and reuses the existing V55
+  dataset builder + frozen V68 primary gate.
+- `signal_plane_v68_promotion_v0.py` builds and validates a promotion manifest bound to the exact
+  git HEAD and SHA-256 hashes of all required evidence artifacts.
+- Both the canonical release wrapper and the direct Signal Plane V68 runner require a valid
+  promotion manifest. There is no supported direct bypass to a fresh economic acquisition.
+
+The economic runner remains intentionally blocked until unrestricted-network evidence passes:
+V5 120s live smoke, V5 30m sustained soak, and systems-only live route-research bridge. A school
+network handshake failure before acquisition is not V5 evidence and does not consume a V68 key.
+
+### Signal Plane release integration hardening — 2026-09-22
+
+Final seam audit found and fixed two release-only blockers before live evidence:
+
+- the promoted fresh V68 runner reused `route_research_signal_plane_bridge_v0.run_bridge`, whose
+  systems-only run-key guard rejected every `v68-flow60-fresh*` key; fresh cohorts now require the
+  promotion manifest again inside `signal_plane_forward_cohort_v0` and only that validated internal
+  path can authorize the bridge component to accept the fresh key;
+- the canonical release readiness still gated a promoted Signal Plane run on legacy V9 worker/writer
+  capacity settings even though promoted acquisition no longer uses that path; those legacy readiness
+  gates were removed from the promoted release preflight.
+
+Regression coverage now checks that a fresh V68 cohort cannot reach the bridge without a promotion
+report, and that the validated promotion report is threaded from the V68 runner into each fresh
+forward cohort. Frozen V68 economics, provider pacing, episode identity, freshness checks and
+promotion evidence hashing were not changed.
+
+Current next step is execution evidence, not more architecture: pull the branch, run the focused
+regression/offline readiness gates, then on unrestricted internet run V5 smoke -> V5 soak ->
+systems-only route bridge -> promotion manifest -> canonical fresh V68 release.
+
+### Ciência econômica Solana
+
+- v48 `flow60_event_count` prospective holdout: **FAIL / CLOSED**
+- v55 causal discovery: **COMPLETE / CLEAN**
+- v55 rank #1: `flow60_buy_share_pct`, favorable LOW / opposite HIGH
+- v68 prospective Flow60 buy-share holdout: **IMPLEMENTED + PRE-REGISTERED / ECONOMIC VERDICT NOT OBTAINED**
+- profitable prospective route-only selection edge: **NOT YET ESTABLISHED**
+
+All systems-aborted v68 attempts stopped before valid forward economic collection.
+
+Therefore:
+
+`V68 ECONOMIC HYPOTHESIS = NOT_EVALUATED`
+
+Do not classify Flow60 buy-share as PASS/FAIL from a systems abort. Never reuse a failed/partial acquisition key as a clean prospective cohort.
+
+## Frozen systems gate — 11/11
+
+Every systems-sensitive acquisition must pass all:
+
+1. no worker/traceback errors
+2. drops = 0
+3. reference asset episodes = 0
+4. radar coverage >=95%
+5. true backlog <=5%
+6. Pump p95 <=5s
+7. PumpSwap causal pipeline p95 <=5s
+8. hydration budget skips = 0
+9. wallet/flow bundles nonempty
+10. replay/audit valid
+11. reservation superset violations = 0
+
+Never relax the 5s thresholds to rescue an experiment.
+
+## Historical accepted v54 profile
+
+Run: `route-research-systems-stability-20260907-54`
+
+- coverage 98.1%
+- true backlog 1.913%
+- Pump p95 ~1.906s
+- PumpSwap p95 ~1.626s
+- 11/11 PASS
+- zero worker errors / drops / hydration skips / reservation-superset violations
+
+This is historical evidence only; it does not guarantee future high-load acquisitions.
+
+## Tailfix v3 — latency fixed, throughput failed
+
+Protocol: `docs/pumpswap-latency-hardening-tailfix-v3-protocol-2026-09-08.md`
+
+V3 moved pool-store lookup/write/reload off the asyncio event loop, retained same-pool single-flight until durable canonical identity, retained one physical SQLite writer, added `RESOLUTION > CAUSAL > AUDIT` admission, preserved bounded RPC transport and added causal-stage headroom telemetry.
+
+Fresh v3 live systems result:
+
+- PumpSwap received: 2,969
+- persistence completed: 2,559
+- radar processed: 2,551
+- coverage: **90.4% FAIL**
+- true backlog: **9.597% FAIL**
+- Pump p95: **1.516s PASS**
+- PumpSwap p95: **1.894s PASS**
+- systems: **9/11**
+- writer queue at deadline: 224
+- all monitored V3 latency stages <4s
+- `event_loop_store_calls=0`
+- mapping sync started/admitted/completed 243/243/243
+- transport violations=0
+- same-token overlap violations=0
+
+Interpretation: the latency class targeted by V3 was fixed; the remaining failure was sustained persistence drain capacity.
+
+## Tailfix v4 — throughput fixed, normalization latency failed
+
+Protocol: `docs/pumpswap-persistence-throughput-hardening-v4-protocol-2026-09-08.md`
+
+V4 added:
+
+- bounded SQLite resolution fairness: when causal work waits, at most one consecutive resolution grant goes first;
+- optimistic pool mapping insert-first fast path;
+- writer pressure instrumentation;
+- V3 latency headroom retained;
+- no detector/economic/RPC-worker/FIFO changes.
+
+Fresh v4 live systems result on 2026-09-08:
+
+- PumpSwap received / persisted / processed: **5,191 / 5,191 / 5,191**
+- Pump received / persisted / processed: **2,107 / 2,107 / 2,107**
+- coverage: **100.0% PASS**
+- true backlog: **0.000% PASS**
+- drops: 0
+- worker errors: 0
+- Pump p95: **2.463s PASS**
+- PumpSwap p95: **19.066s FAIL**
+- systems: **10/11**
+- normalization->reservation p95: ~17.421s
+- global prefix normalization barrier p95: ~17.412s
+- resolver pool-lock hold p95: ~4.439s
+- resolver durable mapping write p95: ~4.221s
+- SQLite resolution admission p95: ~3.566s
+- demand same-pool lock wait p95: ~14.934s
+- RPC decision p95: ~0.534s; capacity/transport violations=0
+- mapping writes: 560
+- pool mapping collision reads: **238 / 560 = 42.5%**
+- identity conflicts: 0
+- writer submitted/completed: 5,191 / 5,191
+- writer pending at close: 0
+- writer queue high-water: 222
+- writer result wait p95: ~2.030s
+
+Interpretation:
+
+**V4 fixed the V3 throughput failure.** It did not fail because SQLite could not drain. It failed because the critical identity/normalization path accumulated repeated same-pool work and SQLite-resolution admission waits; strict ingress-order reservation then amplified a few slow predecessors into a ~17s global barrier.
+
+The 42.5% pool-mapping collision rate with zero identity conflicts is consistent with repeated writes of already-present same identities. Code review identified two concrete sources: historical promotion before the per-pool single-flight lock and older queued notifications re-resolving identities learned later in the same run.
+
+Do not tune the v4 fairness constant by trial and error. The active V5 removes redundant demand while preserving the v4 fairness rule.
+
+## Tailfix v5 — failed live causal-throughput hardening
+
+Protocol: `docs/pumpswap-causal-throughput-hardening-v5-protocol-2026-09-08.md`
+
+Main additions:
+
+- `src/pumpswap_normalization_resolver_v5.py`
+- `src/pumpswap_causal_normalization_v5.py`
+- `src/pumpswap_writer_headroom_v5.py`
+- `unified_market_route_research_smoke_tailfix_v5.py`
+- `route_research_systems_stability_tailfix_v5.py`
+- V5-specific deterministic tests
+
+### V5 fixes failure classes instead of tuning one threshold
+
+1. **Historical promotion is inside per-pool single-flight.** Concurrent notifications cannot all promote the same prior-run mapping independently.
+2. **Current-run durable identity may be reused as delayed knowledge.** If notification time is 120 and mapping becomes known at 130, the normalized event is persisted at `observed_at=130`, never 120. This prevents redundant re-resolution without lookahead/backdating.
+3. **Prior-run historical reuse stays strict.** A historical mapping observed after the notification cutoff is not reused as if it were already known.
+4. **CreatePool identity persistence becomes async/off-loop.** The remaining synchronous pool-store write in normalization is removed from the asyncio event loop.
+5. **V4 fairness stays unchanged.** V5 tests removal of redundant resolution demand instead of simultaneously changing the fairness knob.
+6. **Writer pressure becomes sustained evidence.** Queue high-water remains diagnostic, but promotion uses queue-depth p95, writer-result-wait p95 and complete drain.
+7. **One PumpSwap finalizer remains intentionally unchanged.** V4 ready-queue tails happened downstream of the ~17s normalization burst and are not yet proven to be an independent root cause. Do not increase finalizer workers preemptively.
+
+### Delayed-availability causal rule
+
+For a current-run mapping learned later than an already queued notification:
+
+`effective_event_observed_at = max(notification.observed_at, mapping.observed_at)`
+
+This means identity learned later can unblock old queued work only at the later availability timestamp. It cannot create evidence before the identity became known.
+
+### V5 preventive classifications
+
+`FAIL_TAILFIX_V5_UNCHANGED_11_GATE`
+- frozen 11/11 failed;
+- V68 remains blocked.
+
+`HOLD_TAILFIX_V5_PREVENTIVE_HEADROOM`
+- 11/11 passed but required preventive evidence is missing, at least one monitored causal stage p95 >=4s, sustained writer pressure is too high, writer result-wait p95 >=4s, or writer did not drain;
+- V68 remains blocked.
+
+`PASS_TAILFIX_V5_11_GATE_WITH_CAUSAL_AND_THROUGHPUT_HEADROOM`
+- 11/11 PASS;
+- all V3 monitored causal stages p95 <4s;
+- V5 resolver/coalescing evidence present;
+- writer queue-depth p95 <80% of persistence-worker reservoir;
+- writer result-wait p95 <4s;
+- writer fully drained;
+- only this exact classification can be considered for a fresh V68 acquisition.
+
+## Tailfix v6 — structural partial-order correction after V5 FAIL
+
+V5 removed duplicate normalization demand but retained the strict global reservation prefix. The
+V5 live result therefore showed the same structural HOL in reservation admission and downstream
+stateful/demoted ready queues even though RPC and finalizer service were small.
+
+V6 adds `src/pumpswap_partial_order_v6.py` and V6 wrappers. Reservations are admitted when their
+causal normalization hint is available. The existing scheduler still issues one FIFO ticket chain
+per asset, while disjoint assets have no dependency edge. The ordering contract is explicitly
+causal admission order, not ingress FIFO across an unresolved normalization gap; late episode
+ordering remains fail-closed through the existing canonical episode store semantics.
+
+V6 does not change detector, V68, economics, 5s gate, RPC ceiling, SQLite writer count, writer
+authority, persistence superset guard, or stateful/demoted queue policy. Its deterministic tests
+prove disjoint bypass, same-asset serialization, multi-asset acyclicity, stateful priority over
+proven demotion, and asynchronous writer interaction inherited from V5.
+
+### Tailfix V7 — remaining-HOL attribution only
+
+V7 diagnostic wrappers preserve V6 scheduling and add observation-only attribution for predecessor
+wait versus post-ready shared capacity, stateful/demoted finalizer occupancy, authoritative writer
+result correlation, per-asset dependency p95, top-hot-asset concentration, and proven demotion rate.
+No V7 structural correction is authorized until a systems-only run proves an avoidable cause while
+the V6 same-asset and fail-closed invariants remain green.
+
+### Tailfix V8 — authoritative writer HOL correction
+
+V8 keeps V6 partial-order semantics and makes the existing authoritative PumpSwap batch enter the
+shared SQLite admission gate as `CAUSAL`; resolver mapping writes remain `RESOLUTION` under the
+existing bounded fairness rule. The physical PumpSwap writer remains one dedicated thread. V8 also
+groups canonical affected-token readback for batches with distinct transaction keys, while duplicate
+transaction keys retain per-item readback for replay correctness. Continuation/audit persistence is
+not mixed into this authoritative queue.
+
+### Tailfix V9 — proven-demotion causal acknowledgement
+
+V8 proved the remaining tail had moved after submit: 913 pending jobs were proven demoted, but the
+V34/V42/V51 scheduler still put those continuation payloads into the shared stateful ready queue
+for an audit/finalizer acknowledgement. V9 keeps the exact proof and per-asset ticket ordering, but
+routs proven demoted payloads to a bounded audit-only queue multiplexed by the existing finalizer.
+Their causal tickets are consumed immediately; later state-changing work cannot be blocked by
+audit-only queueing. The existing V27
+continuation writer, canonical-hit accounting, replay and fail-closed audit behavior remain active.
+Ambiguous, ready, running and state-changing work remains on the original causal path.
+
+## Current product direction — Signal-First / Human-Executed
+
+The project is an **Opportunity Intelligence Engine**, not a product whose initial value depends
+on full automatic trading. The current product path is:
+
+`opportunity intelligence -> research signal -> validated signal -> human TAKE/SKIP -> manual execution -> automatic outcome tracking -> shadow execution -> assisted/selective automation -> eventual full automation`
+
+Separate these claims:
+
+1. finding an opportunity or edge;
+2. emitting a useful, prospective and auditable decision;
+3. capturing the opportunity economically;
+4. automating that capture.
+
+Proof of the first three must not depend on completing the fourth. Automation may be delayed, but
+execution realism may not: executable quotes, liquidity, slippage, latency, entry geometry, exit
+behavior, route availability and net economics remain required research evidence.
+
+### Future signal contract
+
+A research signal is an immutable, versioned prospective decision. It must preserve at least:
+
+- `signal_id`, `signal_version`, `episode_id`;
+- `detected_at`, `emitted_at`, `decision_as_of`;
+- detector/strategy versions and signal class/status;
+- reference quote and its observation time;
+- market, participant, wallet, social, launch-quality and execution-reality evidence;
+- explicit missingness, risk flags and reason codes;
+- confidence method/version/value, or `confidence=NOT_AVAILABLE` until calibrated.
+
+Later information creates an update, a new version or a new event. It never silently rewrites the
+original signal. No arbitrary percentage confidence is allowed without prospective calibration.
+
+### Independent outcome populations
+
+Future human-execution experiments must retain three independent sets:
+
+- **ALL SIGNALS:** every prospective signal emitted;
+- **HUMAN SELECTED:** Murillo's pre-outcome `TAKE`/`SKIP`, timestamp, optional reason and signal
+  version seen;
+- **SHADOW AUTO:** the same frozen execution policy applied independently of the human choice.
+
+Human-selected performance cannot be called incremental edge merely because its median exceeds all
+signals; comparisons must control for evidence available in the original signal.
+
+### Signal taxonomy and evidence families
+
+- **Research Signal:** hypothesis/evidence under research; not an operating recommendation.
+- **Validated Signal:** rule survived the declared prospective protocol; execution is not yet proven.
+- **Operational Signal:** opportunity, execution realism, exit behavior, shadow validation and risk
+  specification are all sufficiently evidenced; it still does not authorize live money.
+
+Evidence families remain distinct: market/flow, participant structure, wallet intelligence,
+social/narrative, launch/token quality, execution reality and future cross-market/multichain
+context. Wallet intelligence is post-opportunity evidence, never a primary acquisition whitelist.
+Social `created_at` is not causal availability, and non-Solana research cannot rescue a failed
+Solana hypothesis.
+
+### Product roadmap
+
+1. Opportunity Intelligence: detect and structure causal opportunities.
+2. Research Signals: emit versioned, auditable prospective signals.
+3. Validated Signal Bot: promote only rules that pass prospective validation.
+4. Human-Executed Workflow: record TAKE/SKIP before outcome and track outcomes automatically.
+5. Shadow Execution: compare all signals, human selections and frozen shadow policy.
+6. Assisted Execution: prepare execution while retaining human confirmation.
+7. Selective Automation: automate only validated contexts.
+8. Full Automation: consider only after later evidence justifies it.
+
+Current execution state remains: funded executable BUY `BLOCKED_BY_FUNDING`, landing/fill
+validation `NOT_RELEASED`, market-first exit `NOT_VALIDATED`, shadow `NOT_RELEASED`, live money
+`NOT_AUTHORIZED`.
+
+### Deterministic V5/V6 requirements before live
+
+Tests must prove:
+
+- many concurrent historical same-pool requests -> one promotion;
+- many older queued same-pool requests -> one network resolution;
+- delayed current-run mapping reuse clamps observed availability forward;
+- prior-run future historical mapping is not looked ahead;
+- CreatePool identity is async + durable;
+- V5 seams restore after success and exception;
+- transient max queue spike alone does not HOLD;
+- sustained queue p95 does HOLD;
+- writer result-wait p95 >=4s does HOLD;
+- incomplete drain does HOLD;
+- official systems FAIL cannot be rescued;
+- missing preventive evidence causes HOLD;
+- full repository compile/tests green.
+
+## v48 Flow60 prospective result — CLOSED
+
+Classification: `FAIL_V48_PROSPECTIVE_FLOW60_ROUTE_ONLY_HYPOTHESIS`
+
+Frozen hypothesis:
+- `flow60_event_count`
+- LOW<=25 / MID=26..47 / HIGH>47
+- primary 900s LOW vs HIGH
+
+Do not retune bins/horizon or reuse the burned sample.
+
+## v55 causal discovery — COMPLETE
+
+Fresh discovery rows=79; A=39 / B=40; lineage/causal audit clean.
+
+Exactly one candidate advanced:
+
+- feature `flow60_buy_share_pct`
+- LOW <=57.1429
+- MID <=65.7143
+- HIGH >65.7143
+- favorable LOW / opposite HIGH
+
+The v55 sample is burned for validation.
+
+## v68 prospective Flow60 Buy-Share — FROZEN / NOT_EVALUATED
+
+Frozen:
+
+- `flow60_buy_share_pct`
+- LOW<=57.1429
+- MID=(57.1429,65.7143]
+- HIGH>65.7143
+- favorable LOW / opposite HIGH
+- primary horizon 900s
+- support LOW>=5 and HIGH>=5 independently in A and B
+- same detector / pacing / notional / slippage / horizons
+
+PASS requires all:
+1. LOW median > HIGH median A
+2. LOW median > HIGH median B
+3. LOW median > HIGH median ALL
+4. LOW median >0 A and B
+5. LOW PF >1 A and B
+6. aggregate LOW PF >1
+7. aggregate LOW mean_without_best >0
+
+MID and 300/3600s are diagnostic only. No same-sample rescue if a valid v68 FAILS/INCONCLUSIVE.
+
+## Other research tracks — isolated
+
+- v56 Exceptional Trade Pre-Entry: causal scaffold ready
+- v57 Market-First Social Evidence: causal scaffold ready / no approved live provider
+- v58 Market-First Exit Geometry: measurement ready / no policy tuning
+- v59 Multichain Market Contract: chain-aware adapter scaffold ready
+- v60 Opportunity Wallet Convergence: pre-frozen-cohort evidence ready
+- v61 Direct Funding Link: causal relationship primitive ready
+- v62 Pons adapter/lifecycle: read-only scaffold ready
+- v63 Exceptional Trade Outcome-Blind Controls: case-control matcher ready
+- v64 Pons Exact Curve Progress: state-snapshot progress ready
+- v65 Smart-Wallet Cohort Manifest: deterministic hashed cohort freeze ready
+- v66 Protocol Deployment Capability Attestation: authority scaffold ready
+- v67 Pons Raw Launch Quality Evidence: implemented / no score
+
+These remain isolated from active Solana systems/V68 validation.
+
+## Future hypothesis — Post-Graduation Pullback / Reacceleration
+
+- Status: **IDEA / NOT OPENED**
+- Rationale: possible intermediate regime between ultra-early launch and late public trending.
+- Core question: after causal graduation and an observable first pullback, is there prospectively distinguishable residual movement versus simple exhaustion/collapse?
+- Potential interaction: Early-Buyer Prior Quality may later provide incremental participant evidence.
+- Do not open implementation, thresholds, selector logic, Trending features or combined scoring until the active scientific/outcome-executability work is closed and this line has its own causal population, T0, baseline and outcomes.
+
+## Execution state
+
+- funded executable BUY: **BLOCKED_BY_FUNDING**
+- landing/fill validation: **NOT RELEASED**
+- market-first exit policy: **NOT VALIDATED**
+- shadow execution: **NOT RELEASED**
+- live money: **NOT AUTHORIZED**
+
+## Scientific invariants
+
+1. discovery != validation
+2. systems PASS != economic edge
+3. route-only return != realized P&L
+4. route availability != transaction assembly != landing != fill
+5. first persisted trigger remains canonical
+6. no lookahead / retroactive enrollment / causal backfill
+7. missingness stays explicit
+8. wallet is post-episode evidence only
+9. distinct wallet addresses != independent traders
+10. concentration/repetition != manipulation proof
+11. failed prospective hypotheses are closed, not retuned
+12. v48 sample is burned
+13. v55 sample is discovery-only and burned for v68 validation
+14. only v55 rank #1 may advance from that discovery sequence
+15. v68 cutpoints/direction/horizon/gate remain frozen
+16. v68 cannot be rescued with MID/another horizon/feature/new bins on the same sample
+17. Solana detector thresholds remain frozen through v68
+18. non-Solana research cannot contaminate v68 acquisition
+19. historical chain data cannot receive fake historical `observed_at`
+20. social `created_at` != causal availability
+21. old Wave exit results do not validate market-first exits
+22. no live money without robust forward + execution + shadow evidence
+23. systems abort before forward collector = no economic verdict
+24. never reuse partial/failed acquisition identities blindly
+25. do not increase worker counts without proving causal independence and respecting ceilings
+26. systems/headroom engineering cannot relax the frozen 5s gate
+27. one physical SQLite writer remains authoritative unless a future architecture proves equivalent semantics
+28. pool identity must be durable before publication
+29. current-run delayed identity reuse must clamp event `observed_at` forward to mapping availability
+30. prior-run historical identity remains subject to the original event causal cutoff
+31. do not tune SQLite fairness by trial-and-error while duplicate identity demand remains possible
+32. execution automation is not required to prove opportunity intelligence or signal validity
+33. execution realism remains mandatory before any execution claim
+34. every signal is prospective and bounded by its `decision_as_of`
+35. confidence stays unavailable until methodology and prospective calibration exist
+36. ALL SIGNALS, HUMAN SELECTED and SHADOW AUTO remain independently attributable
+37. human selection is recorded before outcome and does not rewrite the signal
+38. funded BUY, landing/fill, shadow and live money remain explicitly blocked/not released
+
+## Immediate next action
+
+1. Keep the accepted V9 systems profile frozen; do not reopen PumpSwap latency without new evidence.
+2. Land the Signal-First / Human-Executed documentation update and keep detector, systems and V68 frozen.
+3. Keep V68 as the next existing economic experiment, still `NOT_EVALUATED`; do not start it automatically.
+4. Define the future signal contract and human TAKE/SKIP workflow before implementing UI or execution.
+5. Require execution realism and shadow evidence before considering assisted or selective automation.
+
+## Route-paper economic conformance — priceImpact bug closed
+
+Post-close replay of the Early Buyer Churn fresh capture proved a route-paper implementation inconsistency:
+
+- admitted episodes: 49
+- original `ROUTE_CLOSED`: 1
+- corrected offline replay `ROUTE_CLOSED`: 37
+- delta: +36 closed routes
+- changed episodes: 41
+- 34 old `ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE` -> `ROUTE_CLOSED`
+- 5 old `ENTRY_REJECTED:PRICE_IMPACT_UNAVAILABLE` -> `UNROUTABLE_EXIT:PRICE_IMPACT_EXCEEDS_LIMIT`
+- 2 old `UNROUTABLE_EXIT:PRICE_IMPACT_UNAVAILABLE` -> `ROUTE_CLOSED`
+- route input hash unchanged
+- original route result hash unchanged
+- episode identity set unchanged
+
+Root cause: the historical raw V4 route evaluator treated any negative finite Jupiter Swap V2
+`priceImpact` as unavailable. Jupiter documents `priceImpact` in percentage points and explicitly
+permits negative values. The repository's existing `price_impact_semantics_fix_v0` is therefore
+mandatory for all new economic route-paper experiments.
+
+Canonical future rule:
+
+- missing/non-finite `priceImpact` -> unavailable
+- finite `priceImpact <= frozen max` -> route-quality PASS
+- finite `priceImpact > frozen max` -> exceeds-limit
+- negative finite values are available, not missing
+
+New economic experiments must use
+`benchmarks.launch_burst_control_taker_sim_v0.route_paper_economic_conformance_v1.run_sim_v4_conformant`
+or explicitly apply the versioned price-impact fix. CI contains a static guard that rejects new
+economic wrappers calling raw `run_sim_v4` without conformance.
+
+The Early Buyer Churn prospective verdict remains closed as
+`INSUFFICIENT_SAMPLE_NO_EXTENSION`; corrected replay is implementation-conformance evidence only
+and cannot rescue or replace that one-shot confirmation.
+

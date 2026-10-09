@@ -100,6 +100,26 @@ class WaveRadarCLITests(unittest.TestCase):
         self.assertEqual(check_count, 3)
         self.assertIn("Novos sinais salvos: 1", output.getvalue())
 
+    def test_monitor_mode_can_defer_price_update_after_persisting_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            test_settings = SimpleNamespace(database_path=Path(directory) / "radar.db")
+            output = io.StringIO()
+            with (
+                patch.object(database, "settings", test_settings),
+                patch("radar.SolanaTrackerClient.wave_tokens", return_value=[token()]),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    ["--tokens", "1", "--top", "1", "--defer-price-update"]
+                )
+                signal_count = rows("SELECT COUNT(*) AS total FROM wave_signals")[0][
+                    "total"
+                ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(signal_count, 1)
+        self.assertIn("adiada para o ciclo dedicado do monitor", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

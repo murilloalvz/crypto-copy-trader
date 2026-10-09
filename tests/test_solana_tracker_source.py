@@ -226,13 +226,25 @@ class SolanaTrackerSourceTests(unittest.TestCase):
             }
         )
 
-        result = self.client().wave_tokens(25)
+        client = self.client()
+        result = client.wave_tokens(25)
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].token, token)
         self.assertEqual(result[0].volume_5m_usd, 25_000)
         self.assertEqual(result[0].risk_score, 2)
         self.assertEqual(result[0].created_at_ms, 1_800_000_000_000)
+        self.assertEqual(
+            client.last_wave_diagnostics,
+            {
+                "requested_limit": 25,
+                "source_item_count": 1,
+                "source_invalid_count": 0,
+                "source_duplicate_count": 0,
+                "returned_count": 1,
+                "cache_used": False,
+            },
+        )
         request_url = mocked_urlopen.call_args.args[0].full_url
         self.assertIn("sortBy=volume_5m", request_url)
         self.assertIn("volumeTimeframe=5m", request_url)

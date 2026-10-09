@@ -1,0 +1,198 @@
+import unittest
+from unittest.mock import patch
+
+import route_research_forward_cohort_v43 as v43
+from src.opportunity_route_research_store import RouteResearchForwardOutcome
+from src.route_research_forward_collection_v43 import collect_route_research_forward_v43
+
+
+PASS_OUTPUT = """
+SUMMARY
+elapsed=120.0s received={'pump': 100, 'pumpswap': 900} enqueued={'pump': 100, 'pumpswap': 900} dropped={}
+persistence_completed={'pump': 100, 'pumpswap': 900} radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}
+backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}
+raw_radar_hits={'pump': 10, 'pumpswap': 20} unique_episodes=5 reference_asset_episodes=0
+bundle_wallets_total=50 bundle_flow30_total=60 risk_missing=5
+pump_radar_end_to_end_wait_ms p50=100.0 p95=1800.0 max=2000.0
+pumpswap_pipeline_end_to_end_ms p50=200.0 p95=3300.0 max=4400.0
+pumpswap_historical_pool_hits=10 network_hydrations=5 hydration_successes=5 rpc_failures=0 budget_skips=0
+reservation_superset_violations=0
+continuation_writer_fatal_error=False
+V37 RETAINED
+budget_skips=0
+reservation_superset_violations=0
+"""
+
+
+class SystemsGateV43Tests(unittest.TestCase):
+    def test_full_pass_is_11_of_11(self):
+        result = v43.audit_systems_gate_v43(PASS_OUTPUT)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.passed_count, 11)
+        self.assertEqual(result.true_backlog_pct, 0.0)
+        self.assertEqual(result.pumpswap_p95_ms, 3300.0)
+
+    def test_pumpswap_tail_over_gate_fails(self):
+        result = v43.audit_systems_gate_v43(
+            PASS_OUTPUT.replace("p95=3300.0 max=4400.0", "p95=5100.0 max=6000.0")
+        )
+        self.assertFalse(result.passed)
+        self.assertIn(("pumpswap_p95_le_5s", False), result.checks)
+
+    def test_missing_replay_evidence_cannot_silently_pass(self):
+        result = v43.audit_systems_gate_v43(
+            PASS_OUTPUT.replace("continuation_writer_fatal_error=False\n", "")
+        )
+        self.assertFalse(result.passed)
+        self.assertIn(("replay_auditable", False), result.checks)
+
+    def test_true_backlog_uses_received_minus_processed_not_overlapping_counters(self):
+        output = PASS_OUTPUT.replace(
+            "radar_processed={'pump': 100, 'pumpswap': 900}",
+            "radar_processed={'pump': 90, 'pumpswap': 850}",
+        ).replace("radar_coverage_pct=100.0%", "radar_coverage_pct=94.0%")
+        result = v43.audit_systems_gate_v43(output)
+        self.assertAlmostEqual(result.true_backlog_pct, 6.0)
+        self.assertFalse(result.passed)
+
+    def test_demoted_audit_deadline_marker_is_bounded_missingness_when_counts_match(self):
+        output = PASS_OUTPUT.replace(
+            "radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}",
+            "radar_processed={'pump': 100, 'pumpswap': 875} radar_coverage_pct=97.5% "
+            "worker_errors={'pumpswap_demoted_audit_deadline': 25}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.passed_count, 11)
+        self.assertAlmostEqual(result.true_backlog_pct, 2.5)
+        self.assertIn(("no_worker_errors", True), result.checks)
+
+    def test_v68_release_181505_systems_shape_is_11_of_11_after_missingness_normalization(self):
+        output = """
+SUMMARY
+elapsed=120.0s received={'pump': 2676, 'pumpswap': 6002} enqueued={'pump': 2676, 'pumpswap': 6002} dropped={}
+persistence_completed={'pump': 2676, 'pumpswap': 6002} radar_processed={'pump': 2676, 'pumpswap': 5773} radar_coverage_pct=97.4% worker_errors={'pumpswap_demoted_audit_deadline': 149}
+backlog_at_deadline={'pump_ingress': 0, 'pump_inflight': 0, 'pump_reorder': 0, 'pumpswap_ingress': 0, 'pumpswap_inflight': 0, 'pumpswap_total_radar': 229, 'pumpswap_demoted_audit_pending_at_deadline': 149, 'pumpswap_ready': 8, 'pumpswap_waiting': 71}
+raw_radar_hits={'pumpswap': 2176, 'pump': 731} unique_episodes=116 reference_asset_episodes=0
+bundle_wallets_total=2660 bundle_flow30_total=3519 risk_missing=116
+pump_radar_end_to_end_wait_ms p50=144.5 p95=1573.8 max=2893.7
+pumpswap_pipeline_end_to_end_ms p50=819.8 p95=3837.5 max=9002.0
+pumpswap_historical_pool_hits=108 pumpswap_run_store_hits=4 cache_hits=6374 network_hydrations=213 hydration_successes=213 rpc_failures=0 budget_skips=0
+reservation_superset_violations=0
+continuation_writer_fatal_error=False
+TAILFIX V5
+budget_skips=0
+reservation_superset_violations=0
+"""
+        result = v43.audit_systems_gate_v43(output)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.passed_count, 11)
+        self.assertAlmostEqual(result.true_backlog_pct, 100.0 * 229 / 8678)
+        self.assertEqual(result.coverage_pct, 97.4)
+        self.assertEqual(result.pump_p95_ms, 1573.8)
+        self.assertEqual(result.pumpswap_p95_ms, 3837.5)
+
+    def test_demoted_audit_deadline_marker_must_match_reported_backlog(self):
+        output = PASS_OUTPUT.replace(
+            "worker_errors={}",
+            "worker_errors={'pumpswap_demoted_audit_deadline': 24}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", False), result.checks)
+
+    def test_real_demoted_audit_exception_remains_fail_closed(self):
+        output = PASS_OUTPUT.replace(
+            "worker_errors={}",
+            "worker_errors={'pumpswap_demoted_audit_deadline': 25, 'pumpswap_demoted_audit': 1}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 25}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", False), result.checks)
+
+    def test_deadline_missingness_above_frozen_backlog_limit_still_fails(self):
+        output = PASS_OUTPUT.replace(
+            "radar_processed={'pump': 100, 'pumpswap': 900} radar_coverage_pct=100.0% worker_errors={}",
+            "radar_processed={'pump': 100, 'pumpswap': 840} radar_coverage_pct=94.0% "
+            "worker_errors={'pumpswap_demoted_audit_deadline': 60}",
+        ).replace(
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 0}",
+            "backlog_at_deadline={'pumpswap_demoted_audit_pending_at_deadline': 60}",
+        )
+        result = v43.audit_systems_gate_v43(output)
+        self.assertFalse(result.passed)
+        self.assertIn(("no_worker_errors", True), result.checks)
+        self.assertIn(("coverage_ge_95pct", False), result.checks)
+        self.assertIn(("true_backlog_le_5pct", False), result.checks)
+
+
+class ForwardCollectionV43Tests(unittest.TestCase):
+    def test_no_schedule_is_explicit_inconclusive(self):
+        with patch(
+            "src.route_research_forward_collection_v43.load_route_research_outcomes",
+            return_value=(),
+        ):
+            result = collect_route_research_forward_v43(
+                acquisition_run_key="run",
+                api_key=None,
+            )
+        self.assertEqual(result.scheduled, 0)
+        self.assertEqual(
+            result.classification,
+            "INCONCLUSIVE_NO_ROUTE_RESEARCH_SCHEDULE",
+        )
+
+    def test_stall_before_first_poll_fails_closed_not_inconclusive(self):
+        # Reproduces v68-09-A (2026-10-04): a schedule exists, nothing is ever
+        # submitted or captured, and the gap between the pre-loop monotonic reading
+        # and the first loop check is far larger than one poll interval -- as it was
+        # when the header print() blocked under Windows console QuickEdit mode.
+        outcome = RouteResearchForwardOutcome(
+            outcome_key="k1",
+            acquisition_run_key="run",
+            episode_key="episode-key-0000001",
+            token_mint="So11111111111111111111111111111111111111112",
+            research_decision_as_of=0,
+            horizon_seconds=300,
+            target_at=0,
+            status="PENDING",
+            observed_at=None,
+            quote_key=None,
+            error_type=None,
+            error_message=None,
+        )
+        with patch(
+            "src.route_research_forward_collection_v43.load_route_research_outcomes",
+            return_value=(outcome,),
+        ), patch(
+            "src.route_research_forward_collection_v43.time.monotonic",
+            side_effect=[0.0, 100.0],
+        ):
+            result = collect_route_research_forward_v43(
+                acquisition_run_key="run",
+                api_key=None,
+            )
+        self.assertTrue(result.stall_detected)
+        self.assertEqual(result.stall_gap_seconds, 100.0)
+        self.assertEqual(result.submitted, 0)
+        self.assertEqual(
+            result.classification,
+            "FAIL_ROUTE_ONLY_FORWARD_COLLECTION_STALL_DETECTED",
+        )
+        self.assertNotEqual(
+            result.classification,
+            "INCONCLUSIVE_NO_AVAILABLE_ROUTE_OUTCOME",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

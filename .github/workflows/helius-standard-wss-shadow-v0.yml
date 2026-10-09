@@ -1,0 +1,102 @@
+name: Helius standard WSS shadow v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'benchmarks/helius_standard_wss_shadow_v0/**'
+      - 'src/carbon_matched_unit_adapter.py'
+      - 'src/carbon_protocol_adapter.py'
+      - 'src/pumpswap_pool_identity.py'
+      - 'tests/test_helius_standard_wss_shadow_v0.py'
+      - 'tests/test_helius_standard_wss_shadow_reduce_v0.py'
+      - 'tests/test_helius_standard_wss_shadow_adapt_v0.py'
+      - 'tests/test_helius_pumpswap_pool_bootstrap_probe_v0.py'
+      - 'tests/test_helius_standard_wss_shadow_invalid_diagnostic_v0.py'
+      - 'tests/test_helius_pumpswap_lazy_pool_context_replay_v0.py'
+      - 'tests/test_helius_standard_wss_finalized_block_reconciler_v0.py'
+      - 'tests/test_helius_standard_wss_boundary_safe_finalized_recall_v0.py'
+      - 'tests/test_pumpswap_pool_lookup_latency_probe_v0.py'
+      - 'tests/test_jupiter_token_intelligence_probe_v0.py'
+      - 'tests/test_dexscreener_market_probe_v0.py'
+      - 'tests/test_external_market_evidence_comparison_v0.py'
+      - 'tests/test_jupiter_market_discovery_probe_v0.py'
+      - '.github/workflows/helius-standard-wss-shadow-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install WSS dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r benchmarks/helius_standard_wss_shadow_v0/requirements.txt
+
+      - name: Compile research modules
+        run: |
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/collect.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/reduce.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/adapt.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/bootstrap_pools.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/diagnose_invalid_matched_unit.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/lazy_pool_context_replay.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/reconcile_finalized_blocks.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/boundary_safe_finalized_recall.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/pumpswap_pool_lookup_latency_probe.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/jupiter_token_intelligence_probe.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/dexscreener_market_probe.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/compare_external_market_evidence.py
+          python -m py_compile benchmarks/helius_standard_wss_shadow_v0/jupiter_market_discovery_probe.py
+          python -m py_compile src/carbon_matched_unit_adapter.py
+          python -m py_compile src/carbon_protocol_adapter.py
+          python -m py_compile src/pumpswap_pool_identity.py
+
+      - name: Run WSS shadow contract tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_v0 -v
+
+      - name: Run WSS shadow reducer tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_reduce_v0 -v
+
+      - name: Run WSS shadow adapter audit tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_adapt_v0 -v
+
+      - name: Run PumpSwap pool bootstrap probe tests
+        run: python -m unittest tests.test_helius_pumpswap_pool_bootstrap_probe_v0 -v
+
+      - name: Run matched-unit invalid diagnostic tests
+        run: python -m unittest tests.test_helius_standard_wss_shadow_invalid_diagnostic_v0 -v
+
+      - name: Run lazy pool-context replay tests
+        run: python -m unittest tests.test_helius_pumpswap_lazy_pool_context_replay_v0 -v
+
+      - name: Run finalized block reconciler tests
+        run: python -m unittest tests.test_helius_standard_wss_finalized_block_reconciler_v0 -v
+
+      - name: Run boundary-safe finalized recall tests
+        run: python -m unittest tests.test_helius_standard_wss_boundary_safe_finalized_recall_v0 -v
+
+      - name: Run PumpSwap pool lookup latency probe tests
+        run: python -m unittest tests.test_pumpswap_pool_lookup_latency_probe_v0 -v
+
+      - name: Run Jupiter token intelligence probe tests
+        run: python -m unittest tests.test_jupiter_token_intelligence_probe_v0 -v
+
+      - name: Run DexScreener market evidence probe tests
+        run: python -m unittest tests.test_dexscreener_market_probe_v0 -v
+
+      - name: Run external market evidence comparison tests
+        run: python -m unittest tests.test_external_market_evidence_comparison_v0 -v
+
+      - name: Run Jupiter market discovery probe tests
+        run: python -m unittest tests.test_jupiter_market_discovery_probe_v0 -v

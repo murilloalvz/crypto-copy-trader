@@ -1,0 +1,101 @@
+name: Market-First Capacity + T0 Boundary V0
+
+on:
+  push:
+    branches:
+      - fix/market-first-capacity-t0-boundary-v0
+      - fix/market-first-capacity-profile-v1
+      - spike/market-first-shadow-signal-plane-v0
+      - feat/market-first-signal-plane-v0
+    paths:
+      - 'src/market_activity_discovery_signal_boundary_v0.py'
+      - 'src/market_observation_batch_v0.py'
+      - 'src/market_opportunity_episode_batch_v0.py'
+      - 'src/market_signal_kernel_v3.py'
+      - 'benchmarks/market_first_live_discovery_v0/pipeline.py'
+      - 'benchmarks/market_first_capacity_harness_v0/**'
+      - 'benchmarks/market_first_signal_plane_v0/**'
+      - 'tests/test_market_activity_discovery_signal_boundary_v0.py'
+      - 'tests/test_market_first_capacity_harness_v0.py'
+      - 'tests/test_market_first_capacity_profile_v1.py'
+      - 'tests/test_market_first_shadow_signal_plane_v0.py'
+      - 'tests/test_market_first_shadow_result_gate_v1.py'
+      - 'tests/test_market_first_shadow_pumpswap_causal_v0.py'
+      - 'tests/test_market_observation_batch_v0.py'
+      - 'tests/test_market_opportunity_episode_batch_v0.py'
+      - 'tests/test_market_signal_kernel_v3.py'
+      - 'tests/test_market_first_signal_plane_v0.py'
+      - '.github/workflows/market-first-capacity-t0-boundary-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: market-first-capacity-t0-boundary-v0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile changed modules
+        run: |
+          python -m py_compile src/market_activity_discovery_signal_boundary_v0.py
+          python -m py_compile src/market_observation_batch_v0.py
+          python -m py_compile src/market_opportunity_episode_batch_v0.py
+          python -m py_compile src/market_signal_kernel_v3.py
+          python -m py_compile benchmarks/market_first_live_discovery_v0/pipeline.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/run.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/profile_one_chunk.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_signal_plane.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_result_gate.py
+          python -m py_compile benchmarks/market_first_capacity_harness_v0/shadow_pumpswap_causal.py
+          python -m py_compile benchmarks/market_first_signal_plane_v0/pipeline.py
+          python -m py_compile benchmarks/market_first_signal_plane_v0/replay.py
+          python -m py_compile benchmarks/market_first_signal_plane_v0/replay_kernel_v3.py
+          python -m py_compile tests/test_market_activity_discovery_signal_boundary_v0.py
+          python -m py_compile tests/test_market_first_capacity_harness_v0.py
+          python -m py_compile tests/test_market_first_capacity_profile_v1.py
+          python -m py_compile tests/test_market_first_shadow_signal_plane_v0.py
+          python -m py_compile tests/test_market_first_shadow_result_gate_v1.py
+          python -m py_compile tests/test_market_first_shadow_pumpswap_causal_v0.py
+          python -m py_compile tests/test_market_observation_batch_v0.py
+          python -m py_compile tests/test_market_opportunity_episode_batch_v0.py
+          python -m py_compile tests/test_market_signal_kernel_v3.py
+          python -m py_compile tests/test_market_first_signal_plane_v0.py
+
+      - name: Run new boundary and capacity tests
+        run: |
+          python -m unittest tests.test_market_activity_discovery_signal_boundary_v0 -v
+          python -m unittest tests.test_market_first_capacity_harness_v0 -v
+          python -m unittest tests.test_market_first_capacity_profile_v1 -v
+          python -m unittest tests.test_market_first_shadow_signal_plane_v0 -v
+          python -m unittest tests.test_market_first_shadow_result_gate_v1 -v
+          python -m unittest tests.test_market_first_shadow_pumpswap_causal_v0 -v
+          python -m unittest tests.test_market_observation_batch_v0 -v
+          python -m unittest tests.test_market_opportunity_episode_batch_v0 -v
+          python -m unittest tests.test_market_signal_kernel_v3 -v
+          python -m unittest tests.test_market_first_signal_plane_v0 -v
+
+      - name: Re-run forward scheduling contracts
+        run: |
+          python -m unittest tests.test_opportunity_forward_outcome_store -v
+          python -m unittest tests.test_market_activity_discovery_handoff_v0 -v
+          python -m unittest tests.test_market_activity_discovery_research_processor_v0 -v
+          python -m unittest tests.test_market_activity_discovery_admission_v0 -v
+
+      - name: Re-run Market-First live contracts
+        run: python -m unittest tests.test_market_first_live_discovery_v0 -v

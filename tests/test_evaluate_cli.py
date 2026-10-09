@@ -11,10 +11,15 @@ from src import database
 from src.wave_metrics import (
     SlippageStressMetrics,
     WaveCohortMetrics,
+    WaveCoverageMetrics,
     WaveEvaluationReport,
     WaveExposureMetrics,
+    WaveFailureReasonMetrics,
     WaveOutlierMetrics,
     WaveHorizonMetrics,
+    WaveInputIntegrityMetrics,
+    WaveMissingOutcomeStressMetrics,
+    WavePriceTraceMetrics,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
 
@@ -254,6 +259,91 @@ class WaveEvaluationCLITests(unittest.TestCase):
         self.assertIn("IC 95% aproximado", output)
         self.assertIn("Média sem o melhor sinal: -6.01%", output)
         self.assertIn("ALERTA: a média positiva desaparece", output)
+
+    def test_report_exposes_missing_prices_pool_mismatch_and_input_anomaly(self):
+        report = WaveEvaluationReport(
+            strategy_version=WAVE_STRATEGY_VERSION,
+            signal_count=4,
+            completed_check_count=2,
+            pending_check_count=1,
+            failed_check_count=1,
+            horizons=(
+                WaveHorizonMetrics(
+                    strategy_version=WAVE_STRATEGY_VERSION,
+                    horizon_minutes=60,
+                    sample_size=2,
+                    wins=2,
+                    win_rate_pct=100,
+                    win_rate_low_pct=34.2,
+                    win_rate_high_pct=100,
+                    average_return_pct=20,
+                    median_return_pct=20,
+                    total_pnl_usd=10,
+                    average_pnl_usd=5,
+                    profit_factor=float("inf"),
+                    max_drawdown_usd=0,
+                    best_return_pct=30,
+                    worst_return_pct=10,
+                ),
+            ),
+            coverages=(
+                WaveCoverageMetrics(
+                    horizon_minutes=60,
+                    total_count=4,
+                    completed_count=2,
+                    failed_count=1,
+                    pending_count=1,
+                    coverage_pct=50,
+                    failure_pct=25,
+                    pending_pct=25,
+                ),
+            ),
+            missing_outcome_stress=(
+                WaveMissingOutcomeStressMetrics(
+                    horizon_minutes=60,
+                    assumed_missing_return_pct=-100,
+                    completed_count=2,
+                    missing_count=2,
+                    total_count=4,
+                    win_rate_pct=50,
+                    average_return_pct=-40,
+                    total_pnl_usd=-40,
+                    profit_factor=0.2,
+                ),
+            ),
+            failure_reasons=(
+                WaveFailureReasonMetrics(
+                    horizon_minutes=60,
+                    error_code="distant_historical_candle",
+                    count=1,
+                ),
+            ),
+            price_traces=(
+                WavePriceTraceMetrics(
+                    horizon_minutes=60,
+                    completed_count=2,
+                    comparable_pool_count=2,
+                    matching_pool_count=1,
+                    mismatched_pool_count=1,
+                    unavailable_pool_count=0,
+                ),
+            ),
+            input_integrity=WaveInputIntegrityMetrics(
+                signal_count=4,
+                parsed_snapshot_count=4,
+                missing_source_pool_count=0,
+                inconsistent_volume_window_count=1,
+            ),
+        )
+
+        output = format_evaluation_report(report)
+
+        self.assertIn("Cobertura: 2/4 (50.0%)", output)
+        self.assertIn("ALERTA DE SOBREVIVÊNCIA", output)
+        self.assertIn("assumindo -100%", output)
+        self.assertIn("candle histórico distante: 1", output)
+        self.assertIn("1 diferentes", output)
+        self.assertIn("ALERTA DE ENTRADA", output)
 
 
 if __name__ == "__main__":

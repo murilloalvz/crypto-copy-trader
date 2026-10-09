@@ -2,6 +2,7 @@ import argparse
 import math
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -9,7 +10,12 @@ from typing import Callable
 from evaluate import main as evaluate_main
 from radar import main as radar_main
 from src.database import initialize_database
-from src.wave_paper import update_due_paper_checks
+from src.exit_engine import ensure_exit_experiment
+from src.prices import (
+    GECKOTERMINAL_MIN_INTERVAL_SECONDS,
+    GECKOTERMINAL_RATE_LIMIT_INTERVAL_SECONDS,
+)
+from src.wave_paper import update_wave_paper_prices
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,7 @@ def run_hybrid_monitor(
     discovery_interval_seconds: float,
     radar_args: list[str],
     radar_runner: Callable[[list[str]], int] = radar_main,
-    price_updater: Callable[[], dict[str, int]] = update_due_paper_checks,
+    price_updater: Callable[[], dict[str, int]] = update_wave_paper_prices,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> HybridMonitorSummary:
@@ -50,7 +56,9 @@ def run_hybrid_monitor(
 
     def settle_prices() -> None:
         nonlocal settlement_runs, completed_checks, failed_checks
+        cycle_started = clock()
         result = price_updater()
+        cycle_duration = max(0.0, clock() - cycle_started)
         settlement_runs += 1
         completed_checks += result["completed"]
         failed_checks += result["failed"]
@@ -59,17 +67,70 @@ def run_hybrid_monitor(
             f"{result['completed']} concluídos | {result['pending']} pendentes | "
             f"{result['failed']} falhos"
         )
+        if "exit_open_positions" in result:
+            open_signals = result.get("exit_open_signals", 0)
+            normal_seconds = open_signals * GECKOTERMINAL_MIN_INTERVAL_SECONDS
+            limited_seconds = open_signals * GECKOTERMINAL_RATE_LIMIT_INTERVAL_SECONDS
+            load_pct = limited_seconds / price_interval_seconds * 100
+            print(
+                "[exit-engine-v1] "
+                f"{result['exit_closed_positions']} fechadas | "
+                f"{result['exit_open_positions']} abertas | "
+                f"{open_signals} sinais | "
+                f"{result['exit_price_failures']} falhas de preço"
+            )
+            print(
+                "[exit-polling] "
+                f"ciclo {cycle_duration:.1f}s | carga dinâmica aproximada: "
+                f"normal {normal_seconds:.1f}s | sob rate-limit "
+                f"{limited_seconds:.1f}s/{price_interval_seconds:.0f}s "
+                f"({load_pct:.1f}%)"
+            )
+            if load_pct >= 80:
+                print(
+                    "[exit-polling] ALERTA: carga próxima da capacidade; "
+                    "observe atrasos, HTTP 429 e falhas antes de manter 1m."
+                )
 
     while clock() < ends_at:
         now = clock()
         discovery_due = now >= next_discovery
         settlement_due = now >= next_settlement
 
+        if settlement_due:
+            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            print()
+            print(f"========== ATUALIZAÇÃO DE PREÇOS | {timestamp} ==========")
+            settle_prices()
+            next_settlement = _next_after(
+                next_settlement, price_interval_seconds, clock()
+            )
+            continue
+
         if discovery_due:
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
             print()
             print(f"========== DISCOVERY | {timestamp} ==========")
-            exit_code = radar_runner(radar_args)
+            discovery_started = clock()
+            try:
+                exit_code = radar_runner(radar_args)
+            except Exception as exc:
+                discovery_duration = max(0.0, clock() - discovery_started)
+                discovery_runs += 1
+                discovery_failures += 1
+                print(
+                    "[scheduler] discovery lançou exceção inesperada; "
+                    "o monitor continuará e tentará novamente na próxima rodada. "
+                    f"Erro: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
+                next_discovery = _next_after(
+                    next_discovery, discovery_interval_seconds, clock()
+                )
+                continue
+            discovery_duration = max(0.0, clock() - discovery_started)
+            print(f"[scheduler] discovery concluído em {discovery_duration:.1f}s")
             discovery_runs += 1
             if exit_code == 0:
                 successful += 1
@@ -86,26 +147,6 @@ def run_hybrid_monitor(
                 configuration_error = True
                 print("Monitor interrompido por erro de configuração.")
                 break
-            if exit_code == 0:
-                # radar.py already settles due checkpoints after a successful search.
-                next_settlement = _next_after(
-                    next_settlement, price_interval_seconds, now
-                )
-            elif settlement_due:
-                settle_prices()
-                next_settlement = _next_after(
-                    next_settlement, price_interval_seconds, clock()
-                )
-            continue
-
-        if settlement_due:
-            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            print()
-            print(f"========== ATUALIZAÇÃO DE PREÇOS | {timestamp} ==========")
-            settle_prices()
-            next_settlement = _next_after(
-                next_settlement, price_interval_seconds, clock()
-            )
             continue
 
         next_event = min(next_discovery, next_settlement, ends_at)
@@ -135,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--hours", type=float, default=12)
-    parser.add_argument("--price-interval-minutes", type=float, default=5)
+    parser.add_argument("--price-interval-minutes", type=float, default=1)
     parser.add_argument("--discovery-interval-minutes", type=float, default=30)
     parser.add_argument("--tokens", type=int, default=25)
     parser.add_argument("--top", type=int, default=3)
@@ -194,8 +235,12 @@ def main(argv: list[str] | None = None) -> int:
         str(args.min_acceleration),
         "--min-wave-score",
         str(args.min_wave_score),
+        "--defer-price-update",
     ]
     initialize_database()
+    experiment = ensure_exit_experiment(
+        expected_observation_interval_seconds=int(args.price_interval_minutes * 60)
+    )
     print("Crypto Copy Trader — Monitor Híbrido")
     print("Modo: PAPER/READ ONLY — nenhuma compra, venda ou assinatura.")
     print(
@@ -203,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         f"discovery: {args.discovery_interval_minutes:g}min"
     )
     print(f"Rodadas planejadas de discovery no Solana Tracker: {planned_discoveries}")
+    print(
+        "Exit engine v1 forward: "
+        f"experimento {experiment['id']} | ativado em {experiment['activated_at']} | "
+        f"somente sinais com ID > {experiment['start_after_signal_id']}"
+    )
     try:
         summary = run_hybrid_monitor(
             duration_seconds=args.hours * 3_600,

@@ -2,6 +2,7 @@ import unittest
 
 from src.discovery.models import CandidateInput, LeaderboardWallet, WalletPeriodMetrics
 from src.discovery.ranking import (
+    REJECTION_LABELS,
     CandidatePolicy,
     filter_30d,
     filter_recent,
@@ -95,6 +96,13 @@ class CandidateFilterTests(unittest.TestCase):
 
     def test_recent_activity_is_a_separate_filter(self):
         self.assertEqual(filter_recent(period("7d", trades=0), self.policy), ("inactive_7d",))
+
+    def test_trading_days_label_matches_frozen_policy(self):
+        self.assertEqual(self.policy.min_trading_days_30d, 10)
+        self.assertEqual(
+            REJECTION_LABELS["too_few_trading_days"],
+            "menos de 10 dias ativos em 30d",
+        )
 
 
 class CandidateRankingTests(unittest.TestCase):

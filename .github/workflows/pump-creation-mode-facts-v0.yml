@@ -1,0 +1,42 @@
+name: Pump creation mode facts v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'src/pump_creation_mode_facts.py'
+      - 'tests/test_pump_creation_mode_facts.py'
+      - '.github/workflows/pump-creation-mode-facts-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  facts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile creation mode facts
+        run: python -m py_compile src/pump_creation_mode_facts.py
+
+      - name: Run focused tests
+        run: python -m unittest tests.test_pump_creation_mode_facts -v
+
+      - name: Run full unit suite
+        run: python -m unittest discover -s tests -q

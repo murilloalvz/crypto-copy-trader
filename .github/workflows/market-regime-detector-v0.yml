@@ -1,0 +1,60 @@
+name: Market regime detector v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'benchmarks/market_regime_detector_v0/**'
+      - 'src/market_episode_research_snapshot.py'
+      - 'tests/test_market_regime_causal_intensity.py'
+      - '.github/workflows/market-regime-detector-v0.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install river
+
+      - name: Compile research modules
+        run: |
+          python -m py_compile benchmarks/market_regime_detector_v0/benchmark.py
+          python -m py_compile benchmarks/market_regime_detector_v0/causal_intensity.py
+          python -m py_compile benchmarks/market_regime_detector_v0/covered_page_hinkley.py
+          python -m py_compile benchmarks/market_regime_detector_v0/covered_smoke.py
+          python -m py_compile benchmarks/market_regime_detector_v0/episode_adapter.py
+          python -m py_compile benchmarks/market_regime_detector_v0/episode_pipeline_smoke.py
+
+      - name: Run causal intensity adapter tests
+        run: python -m unittest tests.test_market_regime_causal_intensity -v
+
+      - name: Run coverage-aware Page-Hinkley smoke
+        run: python -m benchmarks.market_regime_detector_v0.covered_smoke
+
+      - name: Run MarketEpisode regime pipeline smoke
+        run: python -m benchmarks.market_regime_detector_v0.episode_pipeline_smoke
+
+      - name: Run frozen detector benchmark
+        run: |
+          python -m benchmarks.market_regime_detector_v0.benchmark \
+            --out artifacts/market_regime_detector_v0/report.json
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-regime-detector-v0-report
+          path: artifacts/market_regime_detector_v0/report.json

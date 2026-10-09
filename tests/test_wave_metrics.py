@@ -7,11 +7,16 @@ from unittest.mock import patch
 from src import database
 from src.database import initialize_database
 from src.wave_metrics import (
+    backfill_wave_check_error_codes,
     build_wave_evaluation_report,
+    summarize_coverage,
     summarize_horizon,
     summarize_fixed_cohorts,
     summarize_exposure,
+    summarize_input_integrity,
+    summarize_missing_outcome_stress,
     summarize_outlier_sensitivity,
+    summarize_price_trace,
     summarize_slippage_stress,
 )
 from src.wave_paper import WAVE_STRATEGY_VERSION
@@ -94,6 +99,122 @@ class WaveMetricsTests(unittest.TestCase):
         self.assertEqual(len(report.cohorts), 2)
         self.assertEqual(len(report.exposures), 1)
         self.assertEqual(len(report.outlier_diagnostics), 1)
+        self.assertEqual(len(report.coverages), 3)
+        self.assertEqual(len(report.missing_outcome_stress), 12)
+        self.assertEqual(len(report.failure_reasons), 1)
+        self.assertEqual(report.failure_reasons[0].error_code, "legacy_unclassified")
+        self.assertEqual(len(report.price_traces), 1)
+
+    def test_coverage_and_missing_outcome_stress_include_unpriced_checks(self):
+        checks = [
+            {
+                "status": "completed",
+                "return_pct": 20,
+                "pnl_usd": 5,
+                "copy_size_usd": 25,
+            },
+            {
+                "status": "completed",
+                "return_pct": 10,
+                "pnl_usd": 2.5,
+                "copy_size_usd": 25,
+            },
+            {
+                "status": "failed",
+                "return_pct": None,
+                "pnl_usd": None,
+                "copy_size_usd": 25,
+            },
+            {
+                "status": "pending",
+                "return_pct": None,
+                "pnl_usd": None,
+                "copy_size_usd": 25,
+            },
+        ]
+
+        coverage = summarize_coverage(60, checks)
+        worst_case = summarize_missing_outcome_stress(60, -100, checks)
+
+        self.assertEqual(coverage.completed_count, 2)
+        self.assertEqual(coverage.failed_count, 1)
+        self.assertEqual(coverage.pending_count, 1)
+        self.assertEqual(coverage.coverage_pct, 50)
+        self.assertEqual(worst_case.total_count, 4)
+        self.assertEqual(worst_case.missing_count, 2)
+        self.assertEqual(worst_case.average_return_pct, -42.5)
+        self.assertEqual(worst_case.total_pnl_usd, -42.5)
+        self.assertAlmostEqual(worst_case.profit_factor, 0.15)
+
+    def test_legacy_price_errors_are_classified_without_rewriting_message(self):
+        with database.connection() as conn:
+            signal_id = conn.execute(
+                """INSERT INTO wave_signals
+                (token_mint, detected_at, wave_score, entry_market_price_usd,
+                entry_execution_price_usd, copy_size_usd, slippage_bps,
+                strategy_version, snapshot_json)
+                VALUES ('failed-token', 1000, 60, 1, 1.01, 25, 100, ?, '{}')""",
+                (WAVE_STRATEGY_VERSION,),
+            ).lastrowid
+            conn.execute(
+                """INSERT INTO wave_signal_checks
+                (signal_id, horizon_minutes, target_at, status, error)
+                VALUES (?, 60, 4600, 'failed',
+                'Candle disponível está distante demais do horário do sinal.')""",
+                (signal_id,),
+            )
+
+        self.assertEqual(backfill_wave_check_error_codes(), 1)
+        with database.connection() as conn:
+            check = conn.execute(
+                "SELECT error, error_code FROM wave_signal_checks"
+            ).fetchone()
+
+        self.assertIn("distante demais", check["error"])
+        self.assertEqual(check["error_code"], "distant_historical_candle")
+        self.assertEqual(backfill_wave_check_error_codes(), 0)
+
+    def test_price_trace_compares_source_and_cached_exit_pools(self):
+        checks = [
+            {
+                "snapshot_json": '{"token":{"pool_address":"pool-a"}}',
+                "exit_pool_address": "pool-a",
+            },
+            {
+                "snapshot_json": '{"token":{"pool_address":"pool-b"}}',
+                "exit_pool_address": "pool-c",
+            },
+            {"snapshot_json": "{}", "exit_pool_address": "pool-d"},
+        ]
+
+        trace = summarize_price_trace(15, checks)
+
+        self.assertEqual(trace.comparable_pool_count, 2)
+        self.assertEqual(trace.matching_pool_count, 1)
+        self.assertEqual(trace.mismatched_pool_count, 1)
+        self.assertEqual(trace.unavailable_pool_count, 1)
+
+    def test_input_integrity_flags_non_monotonic_volume_windows(self):
+        signals = [
+            {
+                "snapshot_json": (
+                    '{"token":{"pool_address":"pool-a","volume_5m_usd":200,'
+                    '"volume_1h_usd":100,"volume_24h_usd":300}}'
+                )
+            },
+            {
+                "snapshot_json": (
+                    '{"token":{"pool_address":null,"volume_5m_usd":10,'
+                    '"volume_1h_usd":100,"volume_24h_usd":1000}}'
+                )
+            },
+        ]
+
+        integrity = summarize_input_integrity(signals)
+
+        self.assertEqual(integrity.parsed_snapshot_count, 2)
+        self.assertEqual(integrity.missing_source_pool_count, 1)
+        self.assertEqual(integrity.inconsistent_volume_window_count, 1)
 
     def test_slippage_stress_recalculates_both_sides_from_market_prices(self):
         observations = [

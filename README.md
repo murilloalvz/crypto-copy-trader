@@ -5,19 +5,37 @@ confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
 **A aplicação não possui chave privada e não envia ordens reais.**
 Laboratório local de **dados on-chain e automação** para monitorar wallets públicas na Solana, persistir atividade em SQLite, identificar swaps e avaliar estratégias por meio de **paper trading**.
 
-O projeto foi construído para explorar integração com blockchain, pipelines de dados e análise quantitativa sem assumir riscos de execução: **não possui chave privada e não envia ordens reais.**
+## Direção atual: Opportunity Intelligence / Signal-First
 
-## O que este projeto demonstra
+O produto evoluiu de uma descrição wallet-first para um **Opportunity Intelligence Engine**:
 
-- Integração com Solana via JSON-RPC
-- Coleta, transformação e persistência de dados
-- Modelagem de métricas e scoring
-- Automação de monitoramento
-- Simulação de estratégias com paper trading
-- Dashboard interativo com Streamlit
-- Testes automatizados e código modular
+```text
+oportunidade -> research signal -> validated signal -> decisão humana TAKE/SKIP
+             -> execução manual -> outcome automático -> shadow execution
+             -> assisted/selective automation -> eventual full automation
+```
 
-## Funcionalidades atuais
+O valor inicial é encontrar, explicar e avaliar oportunidades antes de operar. Full automation
+não é requisito para provar valor, mas execution realism continua obrigatório: cotação executável,
+liquidez, slippage, latência, geometria de entrada, saída, disponibilidade de rota e economia
+líquida.
+
+Wallet discovery e paper copy permanecem funcionalidades e infraestrutura de pesquisa histórica;
+wallet não é whitelist primária de aquisição no Market Opportunity Radar. A aplicação continua
+em `PAPER / RESEARCH / READ ONLY`: não possui chave privada, não envia ordens e não autoriza
+dinheiro real.
+
+Signals futuros devem ser prospectivos, versionados e limitados por `decision_as_of`. Informação
+posterior gera update/nova versão, nunca reescrita silenciosa. Até existir metodologia calibrada,
+`confidence` deve permanecer `NOT_AVAILABLE`.
+
+O roadmap formal está em
+[`docs/signal-first-human-execution-roadmap-2026-09-08.md`](docs/signal-first-human-execution-roadmap-2026-09-08.md).
+
+As seções abaixo documentam funcionalidades já existentes e trilhas históricas; não alteram essa
+direção atual.
+
+## O que já funciona
 
 - cadastro e remoção lógica de wallets públicas;
 - sincronização de atividade via JSON-RPC da Solana;
@@ -214,6 +232,9 @@ um token apenas líquido/seguro de uma atividade que está realmente acelerando 
 liquidez concentrada podem retornar zero mesmo quando esse mecanismo não se aplica da mesma
 forma. O Risk Score da fonte continua sendo a barreira agregada de segurança. Um holder
 count zero junto de atividade real é tratado como dado indisponível, não como zero confiável.
+Como as três janelas são cumulativas, a versão ativa também exige
+`volume 5m <= volume 1h <= volume 24h`. Uma violação zera a aceleração e reprova o sinal
+como `volume_windows_inconsistent`, em vez de transformar um dado impossível em momentum.
 
 O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
 aceleração contra a média de cinco minutos da última hora (20), pressão compradora
@@ -238,10 +259,11 @@ Para apenas consultar o radar sem salvar/atualizar o laboratório:
 python radar.py --tokens 25 --top 10 --no-paper
 ```
 
-Os sinais novos recebem a versão `wave_v2_momentum`. O banco existente é migrado sem
-apagar resultados: sinais antigos que não atendiam à aceleração atual continuam isolados
-como `wave_v1_baseline`. Isso impede que resultados de regras diferentes sejam somados na
-mesma estatística.
+Os sinais novos recebem a versão `wave_v3_volume_integrity`. Os resultados anteriores
+continuam preservados como `wave_v2_momentum` ou `wave_v1_baseline`; nenhuma linha antiga é
+reescrita para a v3. Isso impede que a nova barreira seja avaliada usando resultados da
+regra anterior. Para consultar todas as versões históricas, use
+`python evaluate.py --all-strategies --cohorts`.
 
 Para formar amostra sem executar o comando manualmente, use o coletor limitado. O exemplo
 abaixo roda 12 fotografias, uma a cada cinco minutos, e termina sozinho:
@@ -276,8 +298,38 @@ powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1 -Hours 24
 Alternativamente, execute o monitor diretamente:
 
 ```powershell
-python monitor.py --hours 12 --price-interval-minutes 5 --discovery-interval-minutes 30 --tokens 25 --top 3
+python monitor.py --hours 12 --price-interval-minutes 1 --discovery-interval-minutes 30 --tokens 25 --top 3
 ```
+
+### Exit Engine v1 (forward-only)
+
+Ao iniciar o monitor, o sistema registra uma fronteira de coorte antes de criar novos
+sinais. Somente sinais `wave_v3_volume_integrity` posteriores a essa fronteira recebem,
+em paralelo, as políticas pré-registradas `fixed_15m_v1`, `fixed_60m_v1`,
+`stop_loss_10_v1`, `take_profit_20_v1` e `trailing_stop_10_v1`. Os parâmetros são
+hipóteses forward e não foram escolhidos a partir dos sinais históricos.
+
+```powershell
+python evaluate_exits.py
+```
+
+Os benchmarks fixos consultam o candle exato de 15m/60m. As políticas dinâmicas reagem
+somente às observações feitas pelo monitor. Desde a primeira coorte oficial, o intervalo
+padrão é de um minuto. Um cruzamento intraminuto ainda pode ser perdido; se o preço saltar o threshold, a saída usa o
+primeiro preço observado, com slippage, e não um preenchimento artificial no threshold.
+As observações originais por minuto são persistidas e podem ser subamostradas futuramente
+para comparação com 5m, sem reescrever a coorte.
+
+O provedor aplica um intervalo mínimo de 2,1 segundos entre requisições. Cada sinal aberto
+faz uma consulta dinâmica por ciclo, compartilhada pelas cinco políticas, e não cinco
+consultas. O monitor mostra a duração e a utilização teórica estimadas dessa carga; a partir
+de 80% imprime um alerta. Consultas de benchmarks vencidos e a primeira resolução de pool
+podem adicionar chamadas, e o limite público efetivo do provedor ainda pode ser menor que a
+capacidade teórica imposta pelo cliente.
+
+Cada discovery paper também grava um funil auditável: limite solicitado à fonte, tokens
+retornados, validade dos dados, rejeições por barreira, candidatos v3, cooldown/duplicados
+e sinais efetivamente persistidos. Essa instrumentação não altera filtros ou ranking.
 
 O comando mostra antes de iniciar o número planejado de rodadas no Solana Tracker. Com os
 valores acima, são 24 rodadas em aproximadamente 12 horas; retentativas de rede ainda podem
@@ -309,6 +361,21 @@ O relatório separa 5, 15 e 60 minutos e mostra win rate com intervalo de confia
 retorno. Cada horizonte também é recalculado com slippage de 0,5%, 1%, 2% e 3% por lado.
 Esse stress test usa os preços de mercado já armazenados e mostra quando uma aparente
 vantagem desaparece com custos mais conservadores.
+
+Além do resultado observado, a avaliação audita a cobertura de cada horizonte. Ela mostra
+quantos checkpoints foram concluídos, falharam ou continuam pendentes, agrupa as falhas por
+causa e recalcula o experimento atribuindo aos resultados sem preço retornos hipotéticos de
+0%, -25%, -50% e -100%. Esse segundo stress inclui falhos e pendentes e existe para revelar
+viés de sobrevivência; não afirma que esses retornos realmente aconteceram.
+
+O relatório também compara, quando os dados permitem, o pool do snapshot de entrada com o
+pool usado pelo provedor no candle de saída. Divergências ficam explícitas e devem ser
+investigadas antes de interpretar o P&L como executável. Snapshots com pool ausente ou com
+janelas de volume não monotônicas (`5m > 1h` ou `1h > 24h`) recebem alerta de integridade.
+O sistema preserva os valores brutos e não corrige silenciosamente respostas da fonte.
+
+O stress de slippage continua usando apenas observações que possuem preço. Por isso ele
+deve ser lido junto do stress de resultados sem preço, nunca isoladamente.
 
 O relatório calcula ainda o pico de posições simultâneas e de capital fictício empregado
 em cada horizonte. Se os sinais exigirem mais que `STARTING_BALANCE_USD`, o resultado mostra
@@ -343,6 +410,44 @@ python evaluate.py --update-prices --cohorts
 
 Essa opção consulta apenas os candles históricos do GeckoTerminal e depois recalcula o
 relatório local. Ela não procura tokens novos; serve para concluir sinais já salvos.
+Executar `python evaluate.py` sem `--update-prices` é totalmente local e não consome cota
+de nenhuma API.
+
+Para simular uma banca sequencial usando os retornos líquidos individuais já armazenados,
+sem substituir a série pela média, use:
+
+```powershell
+python simulate_bankroll.py --starting-balance 100 --allocation-pct 30 --horizon-minutes 5 --expected-trades 64
+```
+
+O comando mostra banca final, lucro, retorno acumulado, maior drawdown, maior sequência de
+perdas e a evolução trade a trade. Ele é totalmente offline. A hipótese é sequencial: cada
+posição é encerrada antes do reinvestimento; posições que se sobrepuseram no monitor exigem
+uma simulação de capital concorrente separada.
+
+Para modelar capital bloqueado, sinais simultâneos e limites reais de exposição nos quatro
+perfis predefinidos, execute:
+
+```powershell
+python backtest_concurrent.py --expected-trades 64 --output backtest-concurrent.txt
+```
+
+O backtest prioriza sinais simultâneos por maior Wave Score e usa o ID apenas como desempate.
+Ele fecha cada posição no `target_at` do checkpoint de cinco minutos, libera o principal e
+o P&L somente nesse instante e nunca usa capital inexistente. São comparadas posições de
+10%/20%/30% e exposição de 40%/60%/70%, além de bancas iniciais de US$ 100, US$ 500 e
+US$ 1.000. O retorno armazenado já contém o slippage configurado. Entrada/liquidez é exibida
+como diagnóstico, mas fees ou impacto histórico não são inventados quando ausentes.
+
+O drawdown desse backtest usa a equity contábil nos eventos de fechamento. Como não há
+snapshots contínuos de todas as posições entre a entrada e a saída, posições abertas não são
+marcadas a mercado; o drawdown intratrade pode ter sido maior que o reportado.
+
+O relatório também aplica um stress transparente de 0, 25, 50, 100 e 200 bps de custo
+adicional de ida e volta aos perfis moderado e muito agressivo. Esse desconto é uma análise
+de sensibilidade além do slippage já armazenado, não uma afirmação de que essas foram as
+fees reais. `--output` grava o texto diretamente em UTF-8 e evita caracteres quebrados no
+Windows PowerShell.
 
 As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
 um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
@@ -488,13 +593,13 @@ histórico bruto da blockchain.
 
 ## Próximo marco recomendado
 
-Coletar pelo menos 30 sinais concluídos da `wave_v2_momentum` e comparar os três horizontes.
-Somente se retorno mediano, profit factor e drawdown forem aceitáveis em uma amostra maior,
-testar regras de saída como stop, alvo parcial e trailing stop em dados paper. Execução com
-dinheiro real permanece fora do escopo.
-Edite `.env` para configurar o endpoint RPC. O RPC público pode ser utilizado em testes, mas pode limitar requisições em uso contínuo.
+1. Formalizar o Signal Layer prospectivo e seus reason codes/missingness.
+2. Registrar, antes do outcome, a decisão humana `TAKE` ou `SKIP` e a versão do sinal observada.
+3. Comparar futuramente `ALL SIGNALS`, `HUMAN SELECTED` e `SHADOW AUTO` sem seleção retrospectiva.
+4. Validar execução, liquidez, slippage, saída e shadow antes de qualquer automação assistida.
 
-Nunca adicione seed phrase ou chave privada ao projeto ou ao repositório.
+V68 permanece congelado e `NOT_EVALUATED`; esta documentação não altera feature, bins, horizonte,
+detector ou protocolo econômico. Execução com dinheiro real permanece bloqueada.
 
 ## Estrutura
 
@@ -505,11 +610,15 @@ radar.py               CLI de tokens ativos e Wave Score inicial
 collect.py             polling limitado para formar amostra paper
 monitor.py             preços frequentes com discovery econômico e independente
 evaluate.py            estatísticas por versão e horizonte
+evaluate_exits.py      comparação da coorte forward de políticas de saída
 src/demo.py            transações e preços sintéticos do modo offline
 src/discovery/          fontes, métricas, filtros e ranking de candidatas
 src/wave_radar.py      filtros e ranking de tokens ativos
 src/wave_paper.py      sinais paper e checkpoints históricos
 src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
+src/exit_engine.py     políticas pareadas, trajetória observada e persistência
+src/exit_metrics.py    métricas comparativas do experimento de saída
+src/wave_funnel.py     observabilidade discovery → filtros → sinal
 src/solana.py          cliente RPC e parser
 src/database.py        schema e acesso SQLite
 src/services.py        sincronização e paper trading

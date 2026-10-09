@@ -1,0 +1,74 @@
+{
+  "schema_version": "early_buyer_churn_prospective_v1_protocol",
+  "experiment_id": "MF-EARLY-BUYER-CHURN-PROSPECTIVE-V1",
+  "status": "PREREGISTERED_PROSPECTIVE_CONFIRMATION",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-21",
+  "source_feature_id": "mf_early_buyer_roundtrip_sellback_fraction_t0_5s",
+  "question": "Does the exact early buyer churn feature replicate prospectively on a fresh acquisition and retain incremental negative association with Fixed+60 outcomes beyond Participant Quality and existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_early_buyer_roundtrip_sellback_fraction_t0_5s",
+    "definition": "Within the causal T0..T0+5s Pump trade sequence, maintain observed acquired token inventory per wallet. Buys add token_amount_raw. A sell matches only up to that wallet's currently observed acquired inventory; unmatched sell quantity is ignored. Sum matched sellback across wallets and divide by total observed buy token_amount_raw.",
+    "expected_direction": "negative",
+    "range": "0..1",
+    "no_buy_policy": "MISSING",
+    "sell_before_buy_policy": "unmatched and ignored",
+    "oversell_policy": "matched only up to currently observed acquired inventory",
+    "event_causality": "first_received_wall_ns must be within episode T0..T0+5s and decoded chain timestamp must be within observed_t0..observed_t0+5",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false,
+    "feature_redefinition_allowed": false
+  },
+  "instrumentation": {
+    "snapshot_stage": "feature snapshot must be enriched after T0+5 causal coverage is complete and before any provider quote/outcome call starts",
+    "external_provider_required": false,
+    "signal_plane_blocking_external_io": false,
+    "offline_parity_required_before_fresh": true,
+    "parity_runs": [
+      "launch_burst_prospective_route_live_v4-1789605670-3592832863",
+      "launch_burst_prospective_route_live_v4-1789687945-0315e2560c",
+      "launch_burst_prospective_route_live_v4-1789692405-6daeedeb29",
+      "launch_burst_prospective_route_live_v4-1789698815-b277ffea77",
+      "launch_burst_prospective_route_live_v4-1789946453-0367216d26"
+    ],
+    "participant_quality_history_runs": [
+      "launch_burst_prospective_route_live_v4-1789605670-3592832863",
+      "launch_burst_prospective_route_live_v4-1789687945-0315e2560c",
+      "launch_burst_prospective_route_live_v4-1789692405-6daeedeb29",
+      "launch_burst_prospective_route_live_v4-1789698815-b277ffea77"
+    ]
+  },
+  "fresh_confirmation": {
+    "required_fresh_run_count": 1,
+    "requested_duration_seconds": 900,
+    "minimum_primary_route_closed_pairs": 30,
+    "primary_outcome": "ROUTE_CLOSED gross Fixed+60 standardized outcome",
+    "secondary_outcome": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100",
+    "controls": [
+      "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+      "mf_buy_event_rate_acceleration_per_s2",
+      "signed_flow_over_event_reserve"
+    ],
+    "keep_rule": {
+      "primary_spearman": "<0",
+      "primary_without_best": "<0",
+      "leave_one_out_sign_consistency_fraction": ">=0.8",
+      "partial_spearman_controlling_frozen_controls": "<0",
+      "higher_churn_half_median_gross": "< lower_or_equal_churn_half_median_gross"
+    },
+    "insufficient_rule": "If fewer than 30 primary route-closed feature/outcome pairs, return INSUFFICIENT_SAMPLE_NO_EXTENSION and do not extend or repeat based on observed outcomes.",
+    "negative_confirmation_rule": "If sample is sufficient but the preregistered keep rule fails, return NO_CONFIRMATION_CLOSE_OR_REVIEW without threshold search or feature redefinition."
+  },
+  "guardrails": {
+    "selector_change": false,
+    "participant_quality_change": false,
+    "route_contract_change": false,
+    "threshold_search": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false,
+    "retrospective_runs_cannot_count_as_fresh": true,
+    "prospective_run_identity_must_not_match_any_parity_or_discovery_run": true
+  },
+  "protocol_hash_sha256": "0aaf83c2644a6d5eab63034cb09bd403edf87791a0de47a597361a698eba9827"
+}

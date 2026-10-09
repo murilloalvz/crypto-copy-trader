@@ -1,0 +1,460 @@
+import argparse
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+from src.config import settings
+from src.database import initialize_database
+from src.wallet_forward_enrollments import freeze_wallet_forward_enrollment
+from src.wallet_forward_rpc import VALID_WALLET_FORWARD_COMMITMENTS
+from src.wallet_forward_runs import (
+    create_wallet_forward_run,
+    finish_wallet_forward_run,
+    get_wallet_forward_run,
+    list_wallet_forward_runs,
+)
+from src.wallet_quote_watch import latest_forward_observation_id
+
+
+DEFAULT_QUOTE_DELAYS = (0, 15, 30, 60, 120)
+
+
+def _load_cohort(path: Path) -> list[str]:
+    if not path.exists():
+        raise ValueError(f"arquivo da coorte não encontrado: {path}")
+    addresses = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    addresses = list(dict.fromkeys(addresses))
+    if not addresses:
+        raise ValueError("arquivo da coorte está vazio")
+    return addresses
+
+
+def _runtime_version(rpc_commitment: str, *, enrollment_aware: bool = False) -> str:
+    if enrollment_aware:
+        return (
+            "wallet_forward_runtime_v5_enrollment_followup_rotating_poll_"
+            f"{rpc_commitment}_commitment"
+        )
+    return f"wallet_forward_runtime_v4_rotating_poll_{rpc_commitment}_commitment"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Orquestra o Forward Wallet Watch e, opcionalmente, o Wallet Quote Watch em processo "
+            "separado. RESEARCH/READ ONLY; nenhum processo assina ou envia transações."
+        )
+    )
+    parser.add_argument("--file", required=True, help="arquivo da coorte de wallets")
+    parser.add_argument(
+        "--hours",
+        type=float,
+        help="modo legado: duração única sem enrollment/follow-up",
+    )
+    parser.add_argument(
+        "--enrollment-hours",
+        type=float,
+        help="janela em que novos BUYs podem entrar na amostra econômica",
+    )
+    parser.add_argument(
+        "--follow-up-hours",
+        type=float,
+        help="janela adicional apenas para observar SELLs/saídas dos BUYs enrolled",
+    )
+    parser.add_argument("--interval-seconds", type=int, default=30)
+    parser.add_argument(
+        "--rpc-commitment",
+        choices=sorted(VALID_WALLET_FORWARD_COMMITMENTS),
+        default="confirmed",
+        help=(
+            "commitment Solana usado para detectar as wallets. confirmed reduz a espera de "
+            "detecção; finalized preserva maior certeza com maior atraso."
+        ),
+    )
+    parser.add_argument(
+        "--with-jupiter-quotes",
+        action="store_true",
+        help="captura também snapshots de rota Jupiter para novas ações forward",
+    )
+    parser.add_argument(
+        "--quote-delays-seconds",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_QUOTE_DELAYS),
+        help="delays dos snapshots Jupiter após detecção (padrão: 0 15 30 60 120)",
+    )
+    parser.add_argument(
+        "--taker",
+        help=(
+            "chave pública opcional para Jupiter montar transação candidata. "
+            "Nenhuma chave privada é lida ou usada."
+        ),
+    )
+    parser.add_argument(
+        "--copy-size-usd",
+        type=float,
+        default=settings.copy_size_usd,
+    )
+    return parser
+
+
+def _resolve_duration(args: argparse.Namespace) -> tuple[float, float | None, float | None]:
+    using_protocol = args.enrollment_hours is not None or args.follow_up_hours is not None
+    if using_protocol:
+        if args.hours is not None:
+            raise ValueError("não combine --hours com --enrollment-hours/--follow-up-hours")
+        if args.enrollment_hours is None or args.follow_up_hours is None:
+            raise ValueError("use --enrollment-hours e --follow-up-hours juntos")
+        if not 0 < args.enrollment_hours <= 24:
+            raise ValueError("--enrollment-hours precisa ficar entre >0 e 24")
+        if not 0 <= args.follow_up_hours <= 24:
+            raise ValueError("--follow-up-hours precisa ficar entre 0 e 24")
+        total = args.enrollment_hours + args.follow_up_hours
+        if total > 24:
+            raise ValueError("enrollment + follow-up não pode exceder 24h")
+        return total, args.enrollment_hours, args.follow_up_hours
+
+    hours = 6.0 if args.hours is None else args.hours
+    if not 0 < hours <= 24:
+        raise ValueError("--hours precisa ficar entre >0 e 24")
+    return hours, None, None
+
+
+def _terminate(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _finish_run(
+    run_key: str,
+    *,
+    status: str,
+    ended_at: int,
+    end_observation_id: int,
+) -> None:
+    finish_wallet_forward_run(
+        run_key,
+        status=status,
+        ended_at=ended_at,
+        end_observation_id=end_observation_id,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    cohort_path = Path(args.file)
+    try:
+        addresses = _load_cohort(cohort_path)
+        total_hours, enrollment_hours, follow_up_hours = _resolve_duration(args)
+    except ValueError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 2
+    if args.interval_seconds < 10:
+        print("Erro: --interval-seconds precisa ser >= 10.", file=sys.stderr)
+        return 2
+    quote_delays = tuple(dict.fromkeys(args.quote_delays_seconds))
+    if not quote_delays or any(delay < 0 for delay in quote_delays):
+        print("Erro: --quote-delays-seconds precisa conter valores >= 0.", file=sys.stderr)
+        return 2
+    if args.copy_size_usd <= 0:
+        print("Erro: --copy-size-usd precisa ser > 0.", file=sys.stderr)
+        return 2
+    if args.with_jupiter_quotes and not settings.jupiter_api_key:
+        print(
+            "Erro: --with-jupiter-quotes requer JUPITER_API_KEY no .env.",
+            file=sys.stderr,
+        )
+        return 2
+
+    initialize_database()
+    active_runs = list_wallet_forward_runs(status="ACTIVE", limit=20)
+    if active_runs:
+        print(
+            "Erro: já existe Wallet Forward Run ACTIVE neste banco. "
+            "Execuções sobrepostas podem misturar observações e quebrar o isolamento por manifest.",
+            file=sys.stderr,
+        )
+        for item in active_runs:
+            print(
+                f"- {item.run_key} | runtime {item.runtime_version} | "
+                f"started_at={item.started_at}",
+                file=sys.stderr,
+            )
+        print(
+            "Não inicie outra run até confirmar se a ACTIVE ainda está rodando ou deve ser "
+            "reconciliada como ABORTED.",
+            file=sys.stderr,
+        )
+        return 2
+
+    baseline_id = latest_forward_observation_id()
+    started_at = int(time.time())
+    run_key = f"wallet-forward-{started_at}-{uuid.uuid4().hex[:8]}"
+    quote_mode = (
+        "assembled_candidate" if args.with_jupiter_quotes and args.taker else
+        "proxy" if args.with_jupiter_quotes else
+        "none"
+    )
+    enrollment_aware = enrollment_hours is not None
+    runtime_version = _runtime_version(
+        args.rpc_commitment,
+        enrollment_aware=enrollment_aware,
+    )
+    quote_intake_grace_seconds = (
+        max(5, args.interval_seconds + 5) if args.with_jupiter_quotes else 0
+    )
+    enrollment_ends_at = (
+        started_at + int(enrollment_hours * 3_600)
+        if enrollment_hours is not None
+        else None
+    )
+    follow_up_ends_at = (
+        started_at + int(total_hours * 3_600)
+        if enrollment_hours is not None
+        else None
+    )
+    create_wallet_forward_run(
+        run_key=run_key,
+        started_at=started_at,
+        baseline_observation_id=baseline_id,
+        cohort=addresses,
+        interval_seconds=args.interval_seconds,
+        quote_delays_seconds=quote_delays if args.with_jupiter_quotes else (),
+        with_jupiter_quotes=args.with_jupiter_quotes,
+        copy_size_usd=args.copy_size_usd,
+        quote_mode=quote_mode,
+        runtime_version=runtime_version,
+        quote_intake_grace_seconds=quote_intake_grace_seconds,
+        enrollment_ends_at=enrollment_ends_at,
+        follow_up_ends_at=follow_up_ends_at,
+    )
+
+    print("Crypto Copy Trader — Wallet Forward Experiment")
+    print("Modo: RESEARCH / READ ONLY — nenhum processo assina ou envia transações.")
+    print(
+        f"Run key: {run_key} | runtime {runtime_version} | "
+        f"RPC commitment {args.rpc_commitment} | baseline observation id={baseline_id} | "
+        f"wallets={len(addresses)} | duração={total_hours:.2f}h"
+    )
+    if enrollment_hours is not None:
+        print(
+            f"Enrollment econômico: {enrollment_hours:.2f}h | "
+            f"follow-up observacional: {follow_up_hours:.2f}h | "
+            "BUYs após o cutoff não entram no denominador econômico."
+        )
+    print(
+        "Run manifest: configuração e limites da coleta foram congelados no SQLite para "
+        "o checkpoint não misturar observações de execuções diferentes."
+    )
+    if args.rpc_commitment == "confirmed":
+        print(
+            "ATENÇÃO METODOLÓGICA: confirmed reduz espera de detecção, mas a finalização das "
+            "assinaturas deve ser verificada depois da run antes de tratar a amostra como definitiva."
+        )
+    if args.with_jupiter_quotes:
+        print(
+            f"Quote intake grace: {quote_intake_grace_seconds}s após a duração nominal, "
+            "para capturar o último ciclo RPC antes do drain."
+        )
+
+    python = sys.executable
+    quote_process: subprocess.Popen | None = None
+    wallet_process: subprocess.Popen | None = None
+    final_status = "ABORTED"
+    return_code = 1
+    collection_ended_at: int | None = None
+    collection_end_observation_id: int | None = None
+    enrollment_frozen = enrollment_ends_at is None
+
+    try:
+        if args.with_jupiter_quotes:
+            quote_hours = total_hours + quote_intake_grace_seconds / 3_600
+            quote_command = [
+                python,
+                "wallet_quote_watch.py",
+                "--file",
+                str(cohort_path),
+                "--hours",
+                str(quote_hours),
+                "--after-id",
+                str(baseline_id),
+                "--copy-size-usd",
+                str(args.copy_size_usd),
+                "--delays-seconds",
+                *[str(delay) for delay in quote_delays],
+            ]
+            if args.taker:
+                quote_command.extend(["--taker", args.taker])
+            print("Iniciando Wallet Quote Watch com o mesmo baseline congelado da run.")
+            quote_process = subprocess.Popen(quote_command)
+            time.sleep(1.0)
+            if quote_process.poll() is not None:
+                print(
+                    f"Erro: Wallet Quote Watch encerrou cedo com código {quote_process.returncode}.",
+                    file=sys.stderr,
+                )
+                return_code = int(quote_process.returncode or 1)
+                return return_code
+
+        wallet_command = [
+            python,
+            "wallet_watch_forward.py",
+            "--file",
+            str(cohort_path),
+            "--hours",
+            str(total_hours),
+            "--interval-seconds",
+            str(args.interval_seconds),
+            "--rpc-commitment",
+            args.rpc_commitment,
+            "--run-key",
+            run_key,
+        ]
+        print("Iniciando Forward Wallet Watch.")
+        wallet_process = subprocess.Popen(wallet_command)
+
+        while wallet_process.poll() is None:
+            if (
+                not enrollment_frozen
+                and enrollment_ends_at is not None
+                and time.time() >= enrollment_ends_at
+            ):
+                cutoff_id = latest_forward_observation_id()
+                enrolled = freeze_wallet_forward_enrollment(
+                    run_key,
+                    cutoff_observation_id=cutoff_id,
+                )
+                enrollment_frozen = True
+                print(
+                    f"Enrollment congelado em observation id={cutoff_id} | "
+                    f"BUYs enrolled={len(enrolled)}. Follow-up continua sem novas entradas econômicas."
+                )
+            if (
+                quote_process is not None
+                and quote_process.poll() is not None
+                and quote_process.returncode != 0
+            ):
+                print(
+                    f"Wallet Quote Watch falhou com código {quote_process.returncode}; "
+                    "encerrando watcher RPC para preservar alinhamento da run.",
+                    file=sys.stderr,
+                )
+                _terminate(wallet_process)
+                collection_ended_at = int(time.time())
+                collection_end_observation_id = latest_forward_observation_id()
+                return_code = int(quote_process.returncode or 1)
+                return return_code
+            time.sleep(0.5)
+
+        collection_ended_at = int(time.time())
+        collection_end_observation_id = latest_forward_observation_id()
+
+        if (
+            not enrollment_frozen
+            and enrollment_ends_at is not None
+            and collection_ended_at >= enrollment_ends_at
+        ):
+            enrolled = freeze_wallet_forward_enrollment(
+                run_key,
+                cutoff_observation_id=latest_forward_observation_id(),
+            )
+            enrollment_frozen = True
+            print(f"Enrollment congelado no encerramento | BUYs enrolled={len(enrolled)}.")
+
+        if wallet_process.returncode != 0:
+            print(
+                f"Forward Wallet Watch encerrou com código {wallet_process.returncode}; "
+                "encerrando coletor de quotes para não criar uma coorte desalinhada.",
+                file=sys.stderr,
+            )
+            _terminate(quote_process)
+            return_code = int(wallet_process.returncode or 1)
+            return return_code
+
+        if quote_process is not None:
+            print(
+                "Forward Watch terminou. O limite de observações da run já foi congelado. "
+                "Aguardando o Quote Watch concluir grace + drain dos snapshots agendados "
+                f"até +{max(quote_delays)}s."
+            )
+            quote_return = quote_process.wait()
+            if quote_return != 0:
+                print(
+                    f"Wallet Quote Watch encerrou com código {quote_return}.",
+                    file=sys.stderr,
+                )
+                return_code = int(quote_return or 1)
+                return return_code
+
+        if enrollment_ends_at is not None:
+            persisted = get_wallet_forward_run(run_key)
+            if persisted is None or persisted.enrollment_cutoff_observation_id is None:
+                print(
+                    "Erro: enrollment-aware run terminou sem cutoff econômico congelado.",
+                    file=sys.stderr,
+                )
+                return_code = 1
+                return 1
+
+        final_status = "COMPLETED"
+        return_code = 0
+        return 0
+    except KeyboardInterrupt:
+        print("\nInterrompido pelo usuário; a run será marcada como ABORTED.")
+        _terminate(wallet_process)
+        _terminate(quote_process)
+        collection_ended_at = collection_ended_at or int(time.time())
+        collection_end_observation_id = (
+            collection_end_observation_id
+            if collection_end_observation_id is not None
+            else latest_forward_observation_id()
+        )
+        return_code = 130
+        return 130
+    finally:
+        _terminate(wallet_process)
+        _terminate(quote_process)
+        collection_ended_at = collection_ended_at or int(time.time())
+        collection_end_observation_id = (
+            collection_end_observation_id
+            if collection_end_observation_id is not None
+            else latest_forward_observation_id()
+        )
+        try:
+            _finish_run(
+                run_key,
+                status=final_status,
+                ended_at=collection_ended_at,
+                end_observation_id=collection_end_observation_id,
+            )
+            print(
+                f"Run {run_key} finalizada com status {final_status} | "
+                f"observation end id={collection_end_observation_id}."
+            )
+        except Exception as exc:
+            print(
+                f"ALERTA: não foi possível finalizar o manifest da run {run_key}: {exc}",
+                file=sys.stderr,
+            )
+            if return_code == 0:
+                print(
+                    "A coleta terminou, mas o checkpoint deve ser tratado como BLOQUEADO "
+                    "até o manifest ser reconciliado.",
+                    file=sys.stderr,
+                )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

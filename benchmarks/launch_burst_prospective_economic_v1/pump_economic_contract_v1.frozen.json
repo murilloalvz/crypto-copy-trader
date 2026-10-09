@@ -1,0 +1,76 @@
+{
+  "schema_version": "launch_burst_economic_contract_v1",
+  "status": "FROZEN",
+  "source_feature_report_sha256": "8419dbb2b7e3dec6f6a521d828cfee7489807d344ab926ab18c2a336d5a211f7",
+  "selection_preregistration_sha256": "9a2f666a2e03e9c2ba39fc69ae9377de2ea2a0fcb2455e31256fdb473041865a",
+  "primary_evidence": {
+    "window_seconds": 5,
+    "confirmation_window_seconds": null
+  },
+  "strata": [
+    "pump_launch",
+    "pumpswap_liquidity_launch"
+  ],
+  "active_strata": [
+    "pump_launch"
+  ],
+  "selection_rule": {
+    "mode": "all_of",
+    "predicates": [
+      {
+        "feature": "signed_flow_over_event_reserve",
+        "op": ">=",
+        "value": 0.08
+      }
+    ]
+  },
+  "entry": {
+    "latency_seconds": 2,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "require_executable": true
+  },
+  "costs": {
+    "entry_fee_bps": 20,
+    "exit_fee_bps": 20,
+    "entry_adverse_slippage_bps": 100,
+    "exit_adverse_slippage_bps": 100
+  },
+  "position": {
+    "notional_usd": 25.0,
+    "max_fraction_of_reported_liquidity": 0.01,
+    "require_liquidity_observation": true,
+    "max_provider_price_impact_pct_points": 2.0
+  },
+  "exit": {
+    "policy": "fixed_horizon_from_entry",
+    "horizon_seconds": 60,
+    "max_quote_age_seconds": 15,
+    "max_quote_wait_seconds": 5,
+    "require_executable": true
+  },
+  "failure_policy": {
+    "entry_unavailable_return_pct": 0.0,
+    "unexitable_return_pct": -100.0
+  },
+  "execution_assumptions_provenance": {
+    "notional_and_slippage": "project Jupiter executable-entry defaults: $25 notional and 100 bps slippage tolerance",
+    "entry_latency": "2s conservative preregistered Signal Plane latency allowance; actual quote observed_at remains causal",
+    "quote_age": "15s matches existing conservative causal replay quote-age default",
+    "quote_wait": "5s matches Jupiter provider timeout scale and prevents late entries",
+    "fees": "20 bps per side conservative research charge for network/priority costs on a $25 position",
+    "liquidity_fraction": "1% hard cap, preregistered sizing guardrail rather than optimized threshold",
+    "price_impact": "2 percentage-point hard cap, preregistered execution-quality guardrail",
+    "exit_horizon": "60s fixed ex-ante horizon to test immediate post-burst continuation; not optimized on Launch Burst outcomes",
+    "unexitable": "-100% conservative failure accounting; never dropped"
+  },
+  "scientific_guardrails": {
+    "feature_selection_frozen_before_outcomes": true,
+    "inactive_strata_produce_no_economic_outcome": true,
+    "pump_and_pumpswap_independent": true,
+    "right_censoring_is_not_zero": true,
+    "unexitable_positions_count_negatively": true,
+    "post_hoc_mutation_invalidates_hash": true
+  },
+  "contract_hash_sha256": "859a071145395789956d8df27bf348c134c1031eb43bc6e3ccf3aeec820222a5"
+}

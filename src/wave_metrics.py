@@ -4,11 +4,12 @@ import statistics
 from dataclasses import dataclass
 
 from src.config import settings
-from src.database import rows
+from src.database import connection, rows
 from src.wave_paper import WAVE_STRATEGY_VERSION, backfill_wave_strategy_versions
 
 
 SLIPPAGE_STRESS_BPS = (50, 100, 200, 300)
+MISSING_OUTCOME_STRESS_PCT = (0.0, -25.0, -50.0, -100.0)
 T_CRITICAL_95 = (
     12.706,
     4.303,
@@ -117,6 +118,56 @@ class WaveOutlierMetrics:
 
 
 @dataclass(frozen=True)
+class WaveCoverageMetrics:
+    horizon_minutes: int
+    total_count: int
+    completed_count: int
+    failed_count: int
+    pending_count: int
+    coverage_pct: float
+    failure_pct: float
+    pending_pct: float
+
+
+@dataclass(frozen=True)
+class WaveMissingOutcomeStressMetrics:
+    horizon_minutes: int
+    assumed_missing_return_pct: float
+    completed_count: int
+    missing_count: int
+    total_count: int
+    win_rate_pct: float
+    average_return_pct: float
+    total_pnl_usd: float
+    profit_factor: float
+
+
+@dataclass(frozen=True)
+class WaveFailureReasonMetrics:
+    horizon_minutes: int
+    error_code: str
+    count: int
+
+
+@dataclass(frozen=True)
+class WavePriceTraceMetrics:
+    horizon_minutes: int
+    completed_count: int
+    comparable_pool_count: int
+    matching_pool_count: int
+    mismatched_pool_count: int
+    unavailable_pool_count: int
+
+
+@dataclass(frozen=True)
+class WaveInputIntegrityMetrics:
+    signal_count: int
+    parsed_snapshot_count: int
+    missing_source_pool_count: int
+    inconsistent_volume_window_count: int
+
+
+@dataclass(frozen=True)
 class WaveEvaluationReport:
     strategy_version: str
     signal_count: int
@@ -128,6 +179,11 @@ class WaveEvaluationReport:
     cohorts: tuple[WaveCohortMetrics, ...] = ()
     exposures: tuple[WaveExposureMetrics, ...] = ()
     outlier_diagnostics: tuple[WaveOutlierMetrics, ...] = ()
+    coverages: tuple[WaveCoverageMetrics, ...] = ()
+    missing_outcome_stress: tuple[WaveMissingOutcomeStressMetrics, ...] = ()
+    failure_reasons: tuple[WaveFailureReasonMetrics, ...] = ()
+    price_traces: tuple[WavePriceTraceMetrics, ...] = ()
+    input_integrity: WaveInputIntegrityMetrics | None = None
 
 
 def _wilson_interval(wins: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -190,6 +246,140 @@ def _profit_factor(pnl_values: list[float]) -> float:
         gross_profit / gross_loss
         if gross_loss > 0
         else math.inf if gross_profit > 0 else 0.0
+    )
+
+
+def backfill_wave_check_error_codes() -> int:
+    """Classify legacy paper failures without deleting their original messages."""
+    failed = rows(
+        """SELECT id, error FROM wave_signal_checks
+        WHERE status='failed' AND error_code IS NULL"""
+    )
+    updates = []
+    for item in failed:
+        message = str(item.get("error") or "").lower()
+        if "distante demais" in message:
+            code = "distant_historical_candle"
+        elif "sem candle histórico" in message:
+            code = "no_historical_candle"
+        elif "nenhum pool encontrado" in message:
+            code = "no_pool"
+        elif "geckoterminal recusou" in message:
+            code = "provider_http_error"
+        elif "temporariamente indisponível" in message:
+            code = "temporary_provider_error"
+        else:
+            code = "legacy_unclassified"
+        updates.append((code, item["id"]))
+    if updates:
+        with connection() as conn:
+            conn.executemany(
+                "UPDATE wave_signal_checks SET error_code=? WHERE id=?",
+                updates,
+            )
+    return len(updates)
+
+
+def summarize_coverage(
+    horizon_minutes: int,
+    checks: list[dict],
+) -> WaveCoverageMetrics:
+    total = len(checks)
+    completed = sum(item["status"] == "completed" for item in checks)
+    failed = sum(item["status"] == "failed" for item in checks)
+    pending = sum(item["status"] == "pending" for item in checks)
+    denominator = total or 1
+    return WaveCoverageMetrics(
+        horizon_minutes=horizon_minutes,
+        total_count=total,
+        completed_count=completed,
+        failed_count=failed,
+        pending_count=pending,
+        coverage_pct=completed / denominator * 100,
+        failure_pct=failed / denominator * 100,
+        pending_pct=pending / denominator * 100,
+    )
+
+
+def summarize_missing_outcome_stress(
+    horizon_minutes: int,
+    assumed_missing_return_pct: float,
+    checks: list[dict],
+) -> WaveMissingOutcomeStressMetrics:
+    completed = [item for item in checks if item["status"] == "completed"]
+    missing = [item for item in checks if item["status"] != "completed"]
+    returns = [float(item["return_pct"]) for item in completed]
+    pnl_values = [float(item["pnl_usd"]) for item in completed]
+    for item in missing:
+        assumed_pnl = (
+            float(item["copy_size_usd"]) * assumed_missing_return_pct / 100
+        )
+        returns.append(assumed_missing_return_pct)
+        pnl_values.append(assumed_pnl)
+    total = len(returns)
+    return WaveMissingOutcomeStressMetrics(
+        horizon_minutes=horizon_minutes,
+        assumed_missing_return_pct=assumed_missing_return_pct,
+        completed_count=len(completed),
+        missing_count=len(missing),
+        total_count=total,
+        win_rate_pct=(sum(value > 0 for value in returns) / total * 100 if total else 0),
+        average_return_pct=statistics.fmean(returns) if returns else 0,
+        total_pnl_usd=sum(pnl_values),
+        profit_factor=_profit_factor(pnl_values),
+    )
+
+
+def summarize_price_trace(
+    horizon_minutes: int,
+    completed_checks: list[dict],
+) -> WavePriceTraceMetrics:
+    matching = mismatched = unavailable = 0
+    for item in completed_checks:
+        source_pool = None
+        try:
+            source_pool = json.loads(item["snapshot_json"])["token"].get(
+                "pool_address"
+            )
+        except (KeyError, TypeError, json.JSONDecodeError):
+            pass
+        exit_pool = item.get("exit_pool_address")
+        if not source_pool or not exit_pool:
+            unavailable += 1
+        elif str(source_pool).strip().lower() == str(exit_pool).strip().lower():
+            matching += 1
+        else:
+            mismatched += 1
+    return WavePriceTraceMetrics(
+        horizon_minutes=horizon_minutes,
+        completed_count=len(completed_checks),
+        comparable_pool_count=matching + mismatched,
+        matching_pool_count=matching,
+        mismatched_pool_count=mismatched,
+        unavailable_pool_count=unavailable,
+    )
+
+
+def summarize_input_integrity(signals: list[dict]) -> WaveInputIntegrityMetrics:
+    parsed = missing_pool = inconsistent_volume = 0
+    for signal in signals:
+        try:
+            token = json.loads(signal["snapshot_json"])["token"]
+            volume_5m = float(token.get("volume_5m_usd") or 0)
+            volume_1h = float(token.get("volume_1h_usd") or 0)
+            volume_24h = float(token.get("volume_24h_usd") or 0)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        parsed += 1
+        if not token.get("pool_address"):
+            missing_pool += 1
+        if volume_5m > volume_1h or volume_1h > volume_24h:
+            inconsistent_volume += 1
+    return WaveInputIntegrityMetrics(
+        signal_count=len(signals),
+        parsed_snapshot_count=parsed,
+        missing_source_pool_count=missing_pool,
+        inconsistent_volume_window_count=inconsistent_volume,
     )
 
 
@@ -405,10 +595,13 @@ def build_wave_evaluation_report(
         else float(capital_budget_usd)
     )
     backfill_wave_strategy_versions()
-    signal_count = rows(
-        "SELECT COUNT(*) AS total FROM wave_signals WHERE strategy_version=?",
+    backfill_wave_check_error_codes()
+    signals = rows(
+        """SELECT id, snapshot_json FROM wave_signals
+        WHERE strategy_version=? ORDER BY detected_at, id""",
         (strategy_version,),
-    )[0]["total"]
+    )
+    signal_count = len(signals)
     status_counts = {
         item["status"]: item["total"]
         for item in rows(
@@ -419,17 +612,25 @@ def build_wave_evaluation_report(
             (strategy_version,),
         )
     }
-    completed = rows(
-        """SELECT c.horizon_minutes, c.return_pct, c.pnl_usd,
+    all_checks = rows(
+        """SELECT c.horizon_minutes, c.return_pct, c.pnl_usd, c.status,
+        c.error_code,
         c.market_price_usd, s.entry_market_price_usd, s.copy_size_usd,
         s.wave_score, s.snapshot_json, s.detected_at, c.target_at,
-        COALESCE(c.observed_at, c.target_at) AS event_at, c.id
+        COALESCE(c.observed_at, c.target_at) AS event_at, c.id,
+        pc.pool_address AS exit_pool_address
         FROM wave_signal_checks c
         JOIN wave_signals s ON s.id=c.signal_id
-        WHERE s.strategy_version=? AND c.status='completed'
+        LEFT JOIN price_cache pc ON pc.token_mint=s.token_mint
+        AND pc.minute_ts=(c.target_at - (c.target_at % 60))
+        WHERE s.strategy_version=?
         ORDER BY c.horizon_minutes, event_at, c.id""",
         (strategy_version,),
     )
+    completed = [item for item in all_checks if item["status"] == "completed"]
+    all_by_horizon: dict[int, list[dict]] = {}
+    for item in all_checks:
+        all_by_horizon.setdefault(item["horizon_minutes"], []).append(item)
     by_horizon: dict[int, list[dict]] = {}
     for item in completed:
         by_horizon.setdefault(item["horizon_minutes"], []).append(item)
@@ -467,6 +668,32 @@ def build_wave_evaluation_report(
         summarize_outlier_sensitivity(horizon, observations)
         for horizon, observations in sorted(by_horizon.items())
     )
+    coverages = tuple(
+        summarize_coverage(horizon, checks)
+        for horizon, checks in sorted(all_by_horizon.items())
+    )
+    missing_outcome_stress = tuple(
+        summarize_missing_outcome_stress(horizon, assumption, checks)
+        for horizon, checks in sorted(all_by_horizon.items())
+        for assumption in MISSING_OUTCOME_STRESS_PCT
+    )
+    failure_counts: dict[tuple[int, str], int] = {}
+    for item in all_checks:
+        if item["status"] != "failed":
+            continue
+        key = (
+            int(item["horizon_minutes"]),
+            str(item.get("error_code") or "unknown"),
+        )
+        failure_counts[key] = failure_counts.get(key, 0) + 1
+    failure_reasons = tuple(
+        WaveFailureReasonMetrics(horizon, error_code, count)
+        for (horizon, error_code), count in sorted(failure_counts.items())
+    )
+    price_traces = tuple(
+        summarize_price_trace(horizon, observations)
+        for horizon, observations in sorted(by_horizon.items())
+    )
     return WaveEvaluationReport(
         strategy_version=strategy_version,
         signal_count=signal_count,
@@ -478,4 +705,9 @@ def build_wave_evaluation_report(
         cohorts=cohorts,
         exposures=exposures,
         outlier_diagnostics=outlier_diagnostics,
+        coverages=coverages,
+        missing_outcome_stress=missing_outcome_stress,
+        failure_reasons=failure_reasons,
+        price_traces=price_traces,
+        input_integrity=summarize_input_integrity(signals),
     )

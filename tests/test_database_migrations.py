@@ -52,8 +52,65 @@ CREATE TABLE wave_signals (
 );
 """
 
+OLD_WAVE_SIGNAL_CHECKS_SCHEMA = """
+CREATE TABLE wave_signal_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    horizon_minutes INTEGER NOT NULL,
+    target_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(signal_id, horizon_minutes)
+);
+"""
+
+OLD_PROVIDER_HTTP_ATTEMPTS_SCHEMA = """
+CREATE TABLE provider_http_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_version TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    path TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms REAL NOT NULL,
+    retry_after TEXT,
+    outcome TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_exit_engine_and_funnel_tables_are_initialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new.db"
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+            with closing(sqlite3.connect(path)) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+
+        self.assertTrue(
+            {
+                "exit_experiments",
+                "exit_policies",
+                "exit_positions",
+                "exit_price_observations",
+                "provider_http_attempts",
+                "wave_discovery_runs",
+                "wave_discovery_candidates",
+            }.issubset(tables)
+        )
+
     def test_price_diagnostic_columns_are_added_without_losing_existing_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old-copytrader.db"
@@ -116,6 +173,84 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         self.assertEqual(row["token_mint"], "old-token")
         self.assertEqual(row["strategy_version"], "wave_v1_baseline")
+
+    def test_wave_check_error_code_is_added_without_losing_failure_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-wave-check.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript(OLD_WAVE_SIGNALS_SCHEMA)
+                conn.executescript(OLD_WAVE_SIGNAL_CHECKS_SCHEMA)
+                conn.execute(
+                    """INSERT INTO wave_signals
+                    (token_mint, detected_at, wave_score, entry_market_price_usd,
+                    entry_execution_price_usd, copy_size_usd, slippage_bps,
+                    snapshot_json)
+                    VALUES ('old-token', 1000, 50, 1, 1.01, 25, 100, '{}')"""
+                )
+                conn.execute(
+                    """INSERT INTO wave_signal_checks
+                    (signal_id, horizon_minutes, target_at, status, error)
+                    VALUES (1, 60, 4600, 'failed', 'erro antigo')"""
+                )
+                conn.commit()
+
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                columns = {
+                    row["name"]
+                    for row in conn.execute(
+                        "PRAGMA table_info(wave_signal_checks)"
+                    ).fetchall()
+                }
+                row = conn.execute(
+                    "SELECT status, error FROM wave_signal_checks"
+                ).fetchone()
+
+        self.assertIn("error_code", columns)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["error"], "erro antigo")
+
+    def test_provider_telemetry_control_columns_migrate_in_place(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-provider.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript(OLD_PROVIDER_HTTP_ATTEMPTS_SCHEMA)
+                conn.execute(
+                    """INSERT INTO provider_http_attempts
+                    (runtime_version, requested_at, provider, path, attempt_number,
+                     status_code, latency_ms, outcome)
+                    VALUES ('exit_runtime_v2_provider_stability', 1000,
+                            'geckoterminal', '/old', 1, 429, 12.5, 'failed')"""
+                )
+                conn.commit()
+
+            with patch.object(
+                database, "settings", SimpleNamespace(database_path=path)
+            ):
+                initialize_database()
+
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                columns = {
+                    row["name"]
+                    for row in conn.execute(
+                        "PRAGMA table_info(provider_http_attempts)"
+                    ).fetchall()
+                }
+                row = conn.execute(
+                    "SELECT runtime_version, wait_ms, control_mode FROM provider_http_attempts"
+                ).fetchone()
+
+        self.assertIn("wait_ms", columns)
+        self.assertIn("control_mode", columns)
+        self.assertEqual(row["runtime_version"], "exit_runtime_v2_provider_stability")
+        self.assertEqual(row["wait_ms"], 0)
+        self.assertEqual(row["control_mode"], "normal")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,47 @@
+name: Market-First Post-Run Readiness v0
+
+on:
+  push:
+    branches:
+      - spike/commodity-signal-plane-v0
+    paths:
+      - 'benchmarks/market_first_postrun_readiness_v0/**'
+      - 'tests/test_market_first_postrun_readiness_v0.py'
+      - '.github/workflows/market-first-postrun-readiness-v0.yml'
+  pull_request:
+    paths:
+      - 'benchmarks/market_first_postrun_readiness_v0/**'
+      - 'tests/test_market_first_postrun_readiness_v0.py'
+      - '.github/workflows/market-first-postrun-readiness-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: market-first-postrun-readiness-v0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile readiness gate
+        run: |
+          python -m py_compile benchmarks/market_first_postrun_readiness_v0/run.py
+          python -m py_compile tests/test_market_first_postrun_readiness_v0.py
+
+      - name: Run readiness contracts
+        run: python -m unittest tests.test_market_first_postrun_readiness_v0 -v
+
+      - name: Re-run frozen pre-economic audit contract
+        run: python -m unittest tests.test_market_activity_discovery_audit_v0 -v

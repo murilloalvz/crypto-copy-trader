@@ -77,6 +77,20 @@ class WaveRadarTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("volume_not_accelerating", result.barriers)
 
+    def test_inconsistent_cumulative_volume_windows_are_rejected(self):
+        five_above_hour = evaluate_wave_token(
+            token(volume_5m_usd=150_000, volume_1h_usd=100_000)
+        )
+        hour_above_day = evaluate_wave_token(
+            token(volume_1h_usd=1_100_000, volume_24h_usd=1_000_000)
+        )
+
+        for result in (five_above_hour, hour_above_day):
+            self.assertFalse(result.passed)
+            self.assertIsNone(result.volume_acceleration)
+            self.assertIn("volume_windows_inconsistent", result.barriers)
+            self.assertIn("volume_not_accelerating", result.barriers)
+
     def test_minimum_wave_score_is_a_hard_gate(self):
         result = evaluate_wave_token(
             token(

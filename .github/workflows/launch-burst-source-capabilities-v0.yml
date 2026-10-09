@@ -1,0 +1,39 @@
+name: Launch Burst Source Capabilities V0
+
+on:
+  push:
+    branches:
+      - spike/launch-burst-v0
+    paths:
+      - 'src/launch_burst_source_capabilities_v0.py'
+      - 'tests/test_launch_burst_source_capabilities_v0.py'
+      - 'src/carbon_market_trade_adapter.py'
+      - 'src/carbon_matched_unit_adapter.py'
+      - 'src/matched_unit_flow.py'
+      - 'src/causal_quotes.py'
+      - '.github/workflows/launch-burst-source-capabilities-v0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile
+        run: |
+          python -m py_compile src/launch_burst_source_capabilities_v0.py
+          python -m py_compile tests/test_launch_burst_source_capabilities_v0.py
+      - name: Source capability contracts
+        run: python -m unittest tests.test_launch_burst_source_capabilities_v0 -v

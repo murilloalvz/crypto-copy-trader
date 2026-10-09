@@ -1,0 +1,22 @@
+{
+  "schema_version": "launch_burst_funded_taker_fixture_v0",
+  "status": "FROZEN",
+  "route_contract_hash_sha256": "3d172e7b5f6f70703fe6f14d1734246c111513a82a7b74ad2811edfe4d6d494d",
+  "taker_public_key_sha256": "1ea3ae257e5405f95ced20a421f2a297bd0c2faa3d0715aa928c00cdb6d03203",
+  "input_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "input_decimals": 6,
+  "minimum_input_amount_raw": 25000000,
+  "minimum_sol_lamports": 10000000,
+  "control_output_mint": "So11111111111111111111111111111111111111112",
+  "representative_burst_output_mint": "DZDEaWrG7CpdAZvXzvK37gvMGh3ViuTi9P4Zg4UZpump",
+  "slippage_bps": 100,
+  "no_adaptive_top_up_after_acquisition_starts": true,
+  "read_only_assembly_only": true,
+  "notes": [
+    "Operational fixture only; it does not modify the frozen economic hypothesis or trade-cost contract.",
+    "The taker identity is frozen by SHA-256 so the public address need not be committed.",
+    "Minimum USDC equals the frozen USD 25 notional at 6 decimals.",
+    "Minimum SOL is a predeclared operational assembly floor, not an economic parameter."
+  ],
+  "fixture_hash_sha256": "e7bde615886a9674a9f67cccca6be12aefa833e730a4076447ce60530d2e4ba8"
+}

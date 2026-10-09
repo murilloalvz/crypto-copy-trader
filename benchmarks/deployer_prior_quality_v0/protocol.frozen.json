@@ -1,0 +1,51 @@
+{
+  "schema_version": "deployer_prior_quality_v0_protocol",
+  "experiment_id": "MF-DEPLOYER-PRIOR-QUALITY-V0",
+  "status": "PREREGISTERED_PROSPECTIVE_DISCOVERY",
+  "research_track": "Market-First",
+  "created_utc": "2026-09-18",
+  "question": "Does causally observed deployer launch-count evidence add signal-quality information beyond Participant Quality and existing flow evidence?",
+  "feature_contract": {
+    "primary_feature_id": "mf_deployer_created_count_snapshot_ex_current",
+    "definition": "max((inner_count + open_count) - 1, 0) from one GMGN created-tokens response whose response_after is no later than the current token 5s decision cutoff",
+    "missing_policy": "missing stays missing; late/error/rate-limited evidence is never backfilled",
+    "threshold_search_allowed": false,
+    "single_score_allowed": false
+  },
+  "acquisition": {
+    "source": "GMGN OpenAPI through gmgn-cli read-only commands",
+    "auth": "GMGN_API_KEY only",
+    "private_key_allowed": false,
+    "capital_allowed": false,
+    "token_info_command": "token info",
+    "created_tokens_command": "portfolio created-tokens",
+    "maximum_attempts_per_command": 1,
+    "cutoff_seconds_from_t0": 5,
+    "hot_path_blocking_allowed": false
+  },
+  "outcomes": {
+    "primary": "ROUTE_CLOSED gross Fixed+60 standardized outcome",
+    "secondary": "ROUTE_CLOSED net Fixed+60 standardized outcome",
+    "copyability_reference": "route-usable Fixed+60 including unroutable exit=-100"
+  },
+  "incremental_controls": [
+    "mf_early_buyer_prior_route_closed_gross_median_of_wallet_medians_pct",
+    "mf_buy_event_rate_acceleration_per_s2",
+    "signed_flow_over_event_reserve"
+  ],
+  "directional_read": {
+    "minimum_primary_route_closed_pairs": 30,
+    "promotion_from_this_sample_allowed": false,
+    "next_step_if_sufficient": "mechanism/robustness review then define/freeze a separate fresh-confirmation hypothesis",
+    "next_step_if_insufficient": "report insufficient sample; do not extend/repeat based on observed outcome"
+  },
+  "guardrails": {
+    "selector_change": false,
+    "sniper_change": false,
+    "route_contract_change": false,
+    "participant_quality_change": false,
+    "automatic_entry_rule": false,
+    "automatic_profitability_claim": false
+  },
+  "protocol_hash_sha256": "e1fd572b2913eccc174e1536c0e2ff29d8feefa2c740b786f85c62bd7616f179"
+}
