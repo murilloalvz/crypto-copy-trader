@@ -244,17 +244,51 @@ def _self_check() -> None:
         result = evaluate_coverage_gate(_base_report(), checkpoint_path=checkpoint_path, fase1_parity_validated=True)
         assert {c.name for c in result.checks if not c.passed} == {"pct_windows_processed"}
 
+        # valor EXATAMENTE no limiar -> passa (todas as comparacoes sao
+        # inclusivas, >=/<=, nunca estritas) -- prova que nenhum criterio
+        # exige folga implicita alem do limiar documentado.
+        checkpoint_path.write_text(json.dumps({"windows_done": [[0, 1]] * 18}), encoding="utf-8")  # 18/20 = 90.0%
+        boundary_report = _base_report(
+            n_migrations_found=100,
+            n_tokens_system_error_missing=5,  # 5/100 = 5.0% == limite
+            avg_pct_buckets_resolved_stage2=95.0,  # == limite
+            avg_pct_decoded_with_reserves_and_fee=95.0,  # == limite
+            stopping_rule={"k_windows_final": 20, "n_train_survivors_final": 30},  # == limite
+        )
+        result = evaluate_coverage_gate(boundary_report, checkpoint_path=checkpoint_path, fase1_parity_validated=True)
+        assert result.passed is True, result.checks
+        assert result.classification == CLASSIFICATION_PASS
+
+        # multiplas falhas simultaneas -> todas aparecem, all() nao mascara
+        # nenhuma (o relatorio real de H2 so teve 2 dos 7 criterios falhando
+        # ao mesmo tempo -- este caso prova que o gate reporta os dois, nao
+        # so o primeiro que encontra).
+        checkpoint_path.write_text(json.dumps({"windows_done": [[0, 1]] * 26}), encoding="utf-8")
+        result = evaluate_coverage_gate(
+            _base_report(avg_pct_buckets_resolved_stage2=44.76, avg_pct_decoded_with_reserves_and_fee=59.41),
+            checkpoint_path=checkpoint_path,
+            fase1_parity_validated=True,
+        )
+        assert result.passed is False
+        assert {c.name for c in result.checks if not c.passed} == {
+            "pct_stage2_buckets_resolved",
+            "pct_events_with_reserves_and_fee",
+        }
+
         # serializacao pra JSON (coverage_report) nao perde nenhum campo.
         as_dict = gate_result_to_dict(result)
         assert as_dict["passed"] is False
         assert as_dict["classification"] == CLASSIFICATION_FAIL
-        assert any(c["name"] == "pct_windows_processed" and not c["passed"] for c in as_dict["checks"])
+        assert any(c["name"] == "pct_stage2_buckets_resolved" and not c["passed"] for c in as_dict["checks"])
+        assert any(c["name"] == "pct_events_with_reserves_and_fee" and not c["passed"] for c in as_dict["checks"])
         json.dumps(as_dict)  # nunca falha a serializar
 
     print(
         "self-check OK: gate de cobertura (feliz=PASS; cada criterio reprova isolado: paridade, "
         "aborted, janelas processadas, buckets Estagio 2, missing_source, reservas+fee, "
-        "sobreviventes no treino; confirmacao sem treino ignora esse criterio; serializa pra JSON)"
+        "sobreviventes no treino; confirmacao sem treino ignora esse criterio; valor exatamente "
+        "no limiar passa (comparacao inclusiva); duas falhas simultaneas aparecem as duas; "
+        "serializa pra JSON)"
     )
 
 

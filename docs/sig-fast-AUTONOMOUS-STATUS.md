@@ -217,3 +217,24 @@ operador voltar.
 - Explica por que a infra de RPC de H2 (EndpointRotator/RateLimiter) não
   se aplica à sessão WS contínua de H1 -- o StallGuard existente já é o
   mecanismo certo para esse padrão de carga.
+
+## RESERVA 3 concluída: ampliar testes dos módulos novos (sem tocar congelado)
+
+Nenhuma lógica de produção/critério econômico foi alterada -- só casos de
+teste novos, isolados, dentro dos próprios `_self_check()` já existentes:
+
+- `h2_coverage_gate_v0.py`: valor EXATAMENTE no limiar de cada critério
+  passa (prova que as comparações são `>=`/`<=` inclusivas, sem folga
+  implícita) + duas falhas simultâneas aparecem as duas (não só a
+  primeira que o `all()` encontra) -- relevante porque o relatório real
+  de H2 teve exatamente esse caso (2 de 7 critérios reprovando juntos).
+- `h2_discovery_evaluation_v0.py`: `resolve_fee_pct_at`/`_total_fee_pct`
+  testados isolados (sem banco, sem pipeline inteiro) -- fronteira causal
+  exata (`<=`, nunca `<`), fallback pro primeiro evento quando não há
+  nenhum no passado, e missing explícito (`None`) quando o pool não tem
+  nenhum evento de fee ou quando falta qualquer um dos 3 componentes de
+  bps. Essas duas funções só eram exercitadas antes pelo caminho feliz do
+  self-check de pipeline completo.
+- Todos os 7 self-checks dos módulos novos desta sessão (incluindo os 2
+  das RESERVAS 1/2) rodados de novo depois das mudanças: todos OK, sem
+  regressão.

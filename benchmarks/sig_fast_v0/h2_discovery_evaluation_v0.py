@@ -457,6 +457,40 @@ def _fake_evaluation(
     )
 
 
+def _self_check_fee_resolution_missingness() -> None:
+    """`resolve_fee_pct_at`/`_total_fee_pct` isolados (sem banco, sem
+    pipeline inteiro) -- a cobertura existente so exercita o caminho feliz
+    (fee sempre presente) atraves do self-check de pipeline completo; aqui
+    prova o caminho causal (olha so pro passado), o fallback pro primeiro
+    evento disponivel, e o missing explicito quando o pool nao tem NENHUM
+    fee -- nunca inventa 0 ou reusa fee de outro pool."""
+    fee_events = ((100, 1.5), (200, 2.0), (400, 2.5))
+
+    # exatamente no tempo de um evento -> usa esse evento (fronteira causal,
+    # <=, nunca <).
+    assert resolve_fee_pct_at(fee_events, at_time=200) == 2.0
+    # entre dois eventos -> usa o mais recente NO PASSADO, nunca o futuro.
+    assert resolve_fee_pct_at(fee_events, at_time=250) == 2.0
+    assert resolve_fee_pct_at(fee_events, at_time=399) == 2.0
+    # antes de qualquer evento -> cai pro primeiro disponivel (fallback raro,
+    # documentado), nao None.
+    assert resolve_fee_pct_at(fee_events, at_time=50) == 1.5
+    # pool sem nenhum evento de fee -> None explicito, nunca 0 inventado.
+    assert resolve_fee_pct_at((), at_time=200) is None
+
+    # _total_fee_pct: qualquer um dos 3 componentes ausente -> None, nunca
+    # soma so os presentes (isso subestimaria a fee real).
+    assert _total_fee_pct(
+        {
+            "lp_fee_basis_points_raw": 25,
+            "coin_creator_fee_basis_points_raw": 5,
+            "protocol_fee_basis_points_raw": 20,
+        }
+    ) == 0.5  # (25+5+20)/100
+    assert _total_fee_pct({"lp_fee_basis_points_raw": 25, "coin_creator_fee_basis_points_raw": 5}) is None
+    assert _total_fee_pct({}) is None
+
+
 def _self_check_aggregation() -> None:
     """Prova a logica de decisao (barrier_up_rate, compute_exit_ev,
     select_best_exit_rule, evaluate_discovery) com um cenario pequeno,
@@ -664,10 +698,12 @@ def _self_check_token_pipeline_and_db_wiring() -> None:
 
 
 def _self_check() -> None:
+    _self_check_fee_resolution_missingness()
     _self_check_aggregation()
     _self_check_token_pipeline_and_db_wiring()
     print(
-        "self-check OK: agregacao (barrier rate + EV/PF + selecao de saida + CANDIDATE/FAIL, "
+        "self-check OK: resolucao de fee isolada (causal, fallback, missing explicito) + "
+        "agregacao (barrier rate + EV/PF + selecao de saida + CANDIDATE/FAIL, "
         "cenario calculavel a mao) + pipeline completo de arquivo (banco real + checkpoint + "
         "coverage_report -> preco/fee/barreira/saida corretos)"
     )
