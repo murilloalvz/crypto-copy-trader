@@ -198,3 +198,22 @@ operador voltar.
   `self-check OK`.
 - Sem rede, sem chave privada, sem ordem, sem wiring a nenhum feed real --
   exatamente o escopo da tarefa de RESERVA.
+
+## RESERVA 2 concluída: plano de H1 (copy) ao vivo com dados novos
+
+- `docs/sig-fast-h1-live-collection-plan-v0-2026-10-10.md` -- plano
+  consolidado, não execução. Nenhuma sessão ao vivo foi iniciada.
+- Reproduz o que já está congelado (seção 2/1a do DRAFT) sem reabrir nem
+  retunar nada; organiza pré-condições, cronograma (Passo 0 -> loader do
+  cohort -> bloco 1 -> discovery -> confirmação -> veredito) e o que fica
+  explicitamente para o operador decidir (run keys, datas, orçamento
+  Helius).
+- Identifica o gap de código real: o loader que lê
+  `market_trade_observations` e monta `DiscoverySignalInput` pro
+  `discovery_v0.py` (engine já pronto, agnóstico de família) ainda não
+  existe para H1 -- documentado como próximo passo de código, não
+  construído agora (sem dado real do cohort pra testar contra, e a
+  tarefa pedida foi o plano, não o código).
+- Explica por que a infra de RPC de H2 (EndpointRotator/RateLimiter) não
+  se aplica à sessão WS contínua de H1 -- o StallGuard existente já é o
+  mecanismo certo para esse padrão de carga.
