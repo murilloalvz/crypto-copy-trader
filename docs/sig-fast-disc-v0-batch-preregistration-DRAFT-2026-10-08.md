@@ -1192,8 +1192,38 @@ amounts + fee bps), checkpoint.json e coverage_report.json -- prova que
 o carregamento/resolução de fee/preço funciona ponta a ponta antes de
 apontar pro banco de verdade.
 
-Nenhum dos dois módulos foi rodado contra dado real ainda -- esperando a
-Fase 2 (download em background) terminar.
+## Resultado real da Fase 3 (mandato autônomo, 2026-10-10) — gate de
+cobertura REPROVOU, INCONCLUSIVE_SYSTEM
+
+Bloco de discovery terminou de selar (26/26 janelas, 202 migrações, 76
+sobreviventes/126 não-sobreviventes, taxa 37,6%, 0 erro de sistema). Gate
+de cobertura rodado contra os 7 critérios fixados -- **reprovou 2 de 7**:
+
+- % buckets do Estágio 2 resolvidos: 44,76% < 95% -- **real**, não
+  artefato: sobreviventes resolvem 65,87% em média, baseline morto por
+  desenho (Fase 0a) resolve só 12,69% -- a média mistura as duas
+  populações. Baseline PRECISA incluir tokens mortos (senão reintroduz o
+  viés de sobrevivência que a Fase 0a corrigiu), mas um token morto não
+  tem 95% de preço pra cobrir por definição -- os dois critérios, cada um
+  correto isolado, são incompatíveis do jeito que foram fixados.
+- % eventos com reservas+fee: 59,41% < 95% -- **artefato de cálculo**,
+  confirmado direto no banco: dos 54.191 eventos decodificados no bloco
+  inteiro, 100% têm reservas E fee. O número baixo vem de uma média por
+  token que inclui, com peso igual, os 126 não-sobreviventes que
+  corretamente NUNCA tentam decodificar preço no Estágio 1 (regra da
+  Fase 0a/E: <20 trades = não-sobrevivente direto) -- cada um contribui
+  0% à média não por falha, só por nunca ter tentado.
+
+**Nenhuma correção foi aplicada agora** -- mudar os critérios depois de
+ver este resultado seria exatamente o retune que o CLAUDE.md proíbe. Os
+dois achados (critério de buckets precisa ser por grupo; métrica de
+reservas+fee precisa excluir não-tentativas do denominador) ficam
+registrados para uma revisão de protocolo **pré-registrada antes de
+qualquer nova coleta**, decisão do operador.
+
+Fase 4 **nunca rodou** -- o gate bloqueou antes, exatamente como
+desenhado para fazer. Nenhum retorno/EV/barreira foi calculado. Ver
+`docs/sig-fast-h2-RESULTADO-2026-10-10.md` para o relatório completo.
 
 **Fase 5** (`benchmarks/sig_fast_v0/h2_confirmation_evaluation_v0.py`):
 reusa as mesmas funções de agregação da Fase 4 (`barrier_up_rate`,

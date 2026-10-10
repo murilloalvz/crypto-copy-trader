@@ -53,8 +53,12 @@ mandato).
   missing, zero unexpected.** Achado extra: as 55 chamadas da validação
   foram 100% servidas pelo endpoint de 1ª preferência (nunca Helius),
   remontando ~2,5 meses -- suficiente pros dois blocos reais.
-- [~] **Fase 2 — download + selagem real (regra de parada por contagem)**
-  EM ANDAMENTO (real, em background). Infra pronta e testada: nova
+- [x] **Fase 2 — download + selagem real (regra de parada por contagem) — TERMINADA**
+  **Resultado final real: 202 migrações, 76 sobreviventes/126
+  não-sobreviventes (37,6%), 126 tokens selados no Estágio 2, 0 erro de
+  sistema, k_windows_final=26 (sem extensão -- 50 sobreviventes no
+  treino, acima do gatilho de 30). 4 ciclos de queda-e-retomada do
+  container, zero dado perdido.** Infra pronta e testada: nova
   `sample_calendar_windows_ordered` (sequência embaralhada UMA vez, prefixo
   estável -- `random.Random(seed).sample()` não garante isso entre k's
   diferentes, bug que eu tinha identificado antes deste mandato) +
@@ -101,39 +105,33 @@ mandato).
   seguro, não é mais tratado como anomalia.
   Confirmação (K=13, sem regra de parada -- não tem treino/retentor)
   ainda não disparada; K=26 final (sem extensão) já decide a densidade.
-- [~] **Fase 3 — gate de cobertura**
-  Código pronto e testado (`benchmarks/sig_fast_v0/h2_coverage_gate_v0.py`,
-  `evaluate_coverage_gate`): todos os 7 critérios do mandato (paridade
-  Fase 1, não abortou, >=90% janelas processadas, >=95% buckets Estágio
-  2, missing_source<=5%, >=95% reservas+fee, >=30 sobreviventes no
-  treino) com self-check isolando cada critério. Ainda não rodado contra
-  o `coverage_report.json` real -- esperando Fase 2 terminar.
-- [~] **Fase 4 — avaliação discovery**
-  Código pronto e testado (`benchmarks/sig_fast_v0/h2_discovery_evaluation_v0.py`):
-  carrega preços/fee do banco selado (`PathTrade` + fee bps real, nunca
-  inventado), reusa F2 (`find_causal_entry`/`first_barrier_touch`/
-  `simulate_exit`) sem nenhuma mudança, calcula edge de barreira
-  sinal-menos-baseline, escolhe a melhor das 6 saídas por EV no treino
-  (exige EV>0 e PF>1), revalida a MESMA saída no retentor, classifica
-  CANDIDATE/FAIL. Self-check cobre a agregação (cenário calculável a mão)
-  + o pipeline completo a partir de um banco SQLite sintético (preço via
-  reservas AMM na entrada, preço executado real no rastreamento
-  pós-entrada -- bug real encontrado e corrigido durante a escrita do
-  teste). Nunca abre o bloco de confirmação. Ainda não rodado com dado
-  real -- esperando Fase 2 terminar.
-- [~] **Fase 5 — confirmação (só se CANDIDATE)**
-  Código pronto e testado (`benchmarks/sig_fast_v0/h2_confirmation_evaluation_v0.py`):
-  `freeze_evaluation_rule` grava um manifesto (hash do código de
-  avaliação + parâmetros + saída escolhida) ANTES de qualquer acesso ao
-  bloco de confirmação; `run_confirmation_evaluation` **recusa rodar**
-  (`ConfirmationNotFrozenError`) se esse manifesto não existir ainda --
-  fail-closed. PASS/FAIL só em (a) edge>=10pp e (b) EV>0 e PF>1 pra saída
-  JÁ escolhida (nunca reescolhe). Sensibilidade de custo 2x reportada
-  como diagnóstico, nunca decide o veredito. Só roda de verdade se Fase 4
-  (no dado real) produzir CANDIDATE -- e só depois do bloco de
-  confirmação ser baixado (K=13, ainda não disparado -- depende da
-  densidade final de Fase 2, que só se sabe quando discovery terminar).
-- [ ] **Fase 6 — relatório final**
+- [x] **Fase 3 — gate de cobertura — RODADO COM DADO REAL, REPROVOU**
+  `evaluate_coverage_gate` rodado contra o `coverage_report.json` real.
+  **Classificação: `INCONCLUSIVE_SYSTEM`.** Reprovou 2 de 7 critérios:
+  - % buckets Estágio 2 resolvidos: 44,76% < 95% (real -- sobreviventes
+    65,87%, baseline morto por desenho 12,69%; os dois critérios, cada
+    um correto isolado, são incompatíveis do jeito que foram fixados).
+  - % eventos com reservas+fee: 59,41% < 95% (**artefato de cálculo** --
+    confirmado 100% de cobertura real direto no banco; a média por token
+    pesa errado os 126 não-sobreviventes que corretamente nunca tentam
+    decodificar preço).
+  Os outros 5 critérios passaram (paridade, não abortou, 100% janelas,
+  missing_source 0%, 50 sobreviventes no treino >= 30). Nenhuma correção
+  foi aplicada -- mudar critério depois de ver resultado é retune
+  proibido. Ver `docs/sig-fast-h2-RESULTADO-2026-10-10.md`.
+- [x] **Fase 4 — avaliação discovery — NUNCA RODOU (gate bloqueou antes)**
+  Código pronto e testado, mas a Fase 3 reprovou primeiro -- por desenho,
+  Fase 4 não roda sem o gate passar. Nenhum retorno/EV/barreira foi
+  calculado com dado real.
+- [x] **Fase 5 — confirmação — NÃO SE APLICA (Fase 4 não produziu CANDIDATE)**
+  Código pronto e testado, mas nunca executado -- não há saída escolhida
+  pra congelar. Bloco de confirmação nunca foi baixado.
+- [x] **Fase 6 — relatório final — ESCRITO**
+  `docs/sig-fast-h2-RESULTADO-2026-10-10.md`: veredito `INCONCLUSIVE_SYSTEM`,
+  H2 permanece aberta (falha de sistema não gasta tentativa, CLAUDE.md),
+  diagnóstico completo das 2 causas de reprovação, recomendação de
+  correção de protocolo pra uma rodada futura (decisão do operador).
+  Registrado em `docs/research-hypothesis-registry-v1-2026-10-04.md`.
 - [ ] Reserva 1 — spec/código paper ao vivo (self-check only)
 - [ ] Reserva 2 — plano H1 (copy) ao vivo
 - [ ] Reserva 3 — ampliar testes dos módulos novos
@@ -170,6 +168,16 @@ infraestrutura de selagem).
 
 ## O que falta pra fechar o mandato (resumo pra segunda)
 
-Fases 1–6 completas (ou classificação `INCONCLUSIVE_SYSTEM`/bloqueio
-documentado, com reserva tomada), commits empurrados, este documento
-refletindo o estado final.
+**Mandato principal (Fases 0-6) concluído em 2026-10-10.** Veredito:
+`INCONCLUSIVE_SYSTEM` -- gate de cobertura (Fase 3) reprovou antes do
+teste econômico, nenhum retorno/EV calculado. H2 permanece aberta (não é
+FAIL/KILL). Relatório completo em `docs/sig-fast-h2-RESULTADO-2026-10-10.md`,
+registrado no registro de hipóteses. Duas correções de protocolo
+identificadas (critério de buckets por grupo; métrica de reservas+fee
+excluindo não-tentativas) ficam para decisão do operador antes de
+qualquer nova coleta -- os 202 candidatos e o banco já selado
+provavelmente bastam, sem precisar baixar nada de novo.
+
+Restam as 3 tarefas de RESERVA (spec/código do paper ao vivo, plano de
+H1 ao vivo, ampliar testes) -- trabalho autônomo continua nelas até o
+operador voltar.
