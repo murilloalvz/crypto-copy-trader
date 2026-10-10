@@ -181,3 +181,20 @@ provavelmente bastam, sem precisar baixar nada de novo.
 Restam as 3 tarefas de RESERVA (spec/código do paper ao vivo, plano de
 H1 ao vivo, ampliar testes) -- trabalho autônomo continua nelas até o
 operador voltar.
+
+## RESERVA 1 concluída: spec+código do paper ao vivo (self-check only)
+
+- `docs/sig-fast-live-paper-log-v0-spec-2026-10-10.md` -- spec completa.
+- `benchmarks/sig_fast_v0/live_paper_log_v0.py` -- código, só
+  `--self-check` (nenhum ponto de entrada "rodar ao vivo" existe no
+  arquivo, de propósito). Reusa sem alterar F2
+  (`src/opportunity_path_metrics_v0.py`) e o padrão de "run congelado" de
+  `src/shadow_execution_store.py`.
+- Duas tabelas SQLite novas (append-only, idempotentes): registro do
+  sinal no momento da detecção (config/contexto congelados) e registro do
+  resultado medido depois (primeiro valor persistido é canônico, nunca
+  sobrescrito).
+- `python -m benchmarks.sig_fast_v0.live_paper_log_v0 --self-check` →
+  `self-check OK`.
+- Sem rede, sem chave privada, sem ordem, sem wiring a nenhum feed real --
+  exatamente o escopo da tarefa de RESERVA.
