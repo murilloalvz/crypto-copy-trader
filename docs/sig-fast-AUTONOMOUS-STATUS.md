@@ -83,8 +83,12 @@ mandato).
   - Ciclo 1: 0 -> 31 selados (~2h), container reiniciou.
   - Ciclo 2 (retomado ~07:53): 31 -> 51 selados, container reiniciou de
     novo.
-  - Ciclo 3 (retomado ~15:03, `PRAGMA integrity_check: ok` confirmado
-    antes de retomar): em andamento agora.
+  - Ciclo 3 (retomado ~15:03): container reiniciou de novo SEM progresso
+    adicional (ainda 51 -- ciclo curto, pouco tempo rodando).
+  - Ciclo 4 (retomado 2026-10-10 ~00:36, `PRAGMA integrity_check: ok`
+    confirmado antes de retomar): em andamento agora. Monitoramento
+    migrado pra um cron recorrente (`/loop 2h`, job `9c9609eb`,
+    expira em 7 dias) no lugar da cadeia de `send_later` manual.
   Cada retomada chama o mesmo wrapper, que pula tudo já feito (janelas,
   Stage1, tokens de Stage2 já selados) e continua exatamente de onde
   parou -- zero reprocessamento, zero dado perdido, confirmado em 2
