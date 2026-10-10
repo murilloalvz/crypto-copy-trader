@@ -238,3 +238,15 @@ teste novos, isolados, dentro dos próprios `_self_check()` já existentes:
 - Todos os 7 self-checks dos módulos novos desta sessão (incluindo os 2
   das RESERVAS 1/2) rodados de novo depois das mudanças: todos OK, sem
   regressão.
+
+## Mandato autônomo encerrado (2026-10-10)
+
+Fases 0-6 concluídas (veredito `INCONCLUSIVE_SYSTEM` em H2, H2 permanece
+aberta) + as 3 tarefas de RESERVA concluídas (paper ao vivo self-check,
+plano de H1, testes ampliados). Nenhum bloqueador pendente. Nenhuma
+execução de dinheiro real, nenhuma chave privada, nenhuma automação ligada
+em nenhum momento desta sessão. Tudo commitado e empurrado pra
+`research/rust-signal-plane-live-shadow-v0`. Próxima ação é do operador:
+decidir sobre as duas correções de protocolo do gate de cobertura (Fase 3)
+e, separadamente, se/quando iniciar a coleta ao vivo de H1 conforme o
+plano consolidado.
