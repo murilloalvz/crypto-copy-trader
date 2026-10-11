@@ -262,3 +262,32 @@ ANTES de qualquer execução (ver
 `discovery.db` atual == `stage2_hash` gravado no `coverage_report.json`
 ANTES de qualquer cálculo de Fase 3/4 -- **MATCH**, banco inalterado.
 Próximo: recomputar a correção (a)/(b) e re-rodar a Fase 3.
+
+## Resultado da Fase 3 corrigida (2026-10-11): ainda INCONCLUSIVE_SYSTEM, margem pequena
+
+Código corrigido (`h2_block_seal_v0.py`, `h2_coverage_gate_v0.py`) +
+módulo novo `h2_coverage_recount_v0.py` (recomputa só o denominador de
+buckets que faltava, read-only, mesmo banco). Hash conferido de novo
+antes de gastar qualquer crédito: MATCH. Recontagem real rodada contra
+os 126 pools selados (4.133 créditos, read-only, nenhum preço novo).
+
+Resultado real:
+- reservas+fee: 59,41% → **100,0%** (confirma artefato puro de cálculo).
+- buckets total: 44,76% → **95,36%** (passa).
+- buckets grupo sinal: **96,53%** (passa).
+- buckets grupo baseline: **94,37%** (reprova, 0,63pp abaixo de 95%).
+
+Só 1 de 9 critérios reprova agora (era 2 de 7, com margens enormes).
+Causa raiz diagnosticada (268 créditos, read-only, `getTransaction` em
+6 buckets não-resolvidos do pior pool do baseline): parecem ser trocas
+roteadas via agregador (Prism + 1 program ID não identificado) via CPI,
+que o decoder Carbon atual não decodifica (só a instrução de nível
+superior, não `innerInstructions`).
+
+**Veredito final: `INCONCLUSIVE_SYSTEM` de novo.** Por instrução
+explícita do operador para este caso ("se reprovar: INCONCLUSIVE_SYSTEM
+de novo, causa raiz documentada, sem mexer em limite, e parar") --
+**parando aqui.** Fase 4 não rodou. Nenhum retorno/EV/barreira
+calculado. H2 permanece aberta. Detalhe completo em
+`docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md`
+("Resultado real da Fase 3 CORRIGIDA").

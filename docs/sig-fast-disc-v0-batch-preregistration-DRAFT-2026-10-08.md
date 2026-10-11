@@ -1336,3 +1336,67 @@ reintroduz viés de sobrevivência), não um resultado econômico.
    de abrir a confirmação) → Fase 6 (relatório). Se reprovar:
    `INCONCLUSIVE_SYSTEM` de novo, causa raiz documentada, sem mexer em
    limite, parar.
+
+## Resultado real da Fase 3 CORRIGIDA (2026-10-11) -- ainda reprova, por
+margem pequena, 1 critério só, causa raiz diferente das duas anteriores
+
+Hash do banco selado conferido de novo imediatamente antes da
+recomputação: **MATCH** (mesmo sha256 gravado antes de qualquer Fase
+3/4 original). Recontagem real executada contra os 126 pools já
+selados (read-only, `getSignaturesForAddress`, 4.133 créditos, nenhum
+preço novo, nenhum pool novo, nenhuma janela nova).
+
+| Critério | Antes (erro de implementação) | Depois (corrigido) | Limite | Passa? |
+|---|---|---|---|---|
+| % eventos com reservas+fee | 59,41% | **100,0%** (82 tokens que corretamente nunca tentaram ficam fora do denominador) | >=95% | ✅ |
+| % buckets Estágio 2 -- TOTAL | 44,76% | **95,36%** (56.779 buckets-com-tx, 54.147 resolvidos; 64.181 carregados, fora do denominador) | >=95% | ✅ |
+| % buckets Estágio 2 -- grupo SINAL (sobreviventes) | (não separado antes) | **96,53%** (49.783 com-tx, 48.058 resolvidos) | >=95% | ✅ |
+| % buckets Estágio 2 -- grupo BASELINE | (não separado antes) | **94,37%** (24.839 com-tx, 23.440 resolvidos) | >=95% | ❌ |
+| (demais 5 critérios, inalterados) | -- | -- | -- | ✅ (todos) |
+
+**Veredito: `INCONCLUSIVE_SYSTEM` de novo** -- 1 de 9 critérios reprova
+(antes eram 2 de 7, com margens enormes; agora é 1 de 9, margem de
+0,63pp). A correção de implementação funcionou exatamente como o
+operador previu para os outros dois pontos (reservas+fee foi 100%
+confirmado -- era puro artefato de cálculo; buckets total/sinal já
+passam). O que sobrou é um número real, diferente, no grupo baseline
+especificamente.
+
+### Causa raiz do item que ainda reprova (diagnóstico, nenhuma correção aplicada)
+
+Investigação pontual (read-only, 268 créditos, `getTransaction` em 6
+buckets não-resolvidos do pool baseline com a maior contagem absoluta
+de buckets-com-tx-sem-swap,
+`24GDdHfUvD8jwPG4C4n1RjiaHJk5Eh4fFmA5pwrHpump`): nas transações
+inspecionadas, o decoder Carbon não produz **nenhuma** linha
+decodificada (`no_decoded_rows_at_all`). As instruções de nível
+superior dessas transações envolvem `ComputeBudget`/`System Program`
+(esperado em qualquer tx) e, mais revelador, o programa `Prism8hsRo...`
+(agregador/roteador de swap conhecido do ecossistema Solana) e um
+program ID não identificado
+(`GX7pA5et5xeMuEyunqrz9xzSkD5Fcy1U1eZzFPPhhiTU`). **Hipótese plausível,
+não confirmada exaustivamente**: essas são trocas roteadas por um
+agregador que chama o PumpSwap via CPI (cross-program invocation) --
+o decoder Carbon atual decodifica a instrução de nível superior, não
+necessariamente as `innerInstructions`, então um swap real executado
+*dentro* de uma chamada de agregador não aparece como
+`pumpswap_buy`/`pumpswap_sell`. Isso é diferente dos dois achados
+anteriores (artefato de cálculo; denominador errado) -- aqui o
+denominador e a regra já estão corretos, o número é real, e a causa
+provável é uma lacuna de cobertura do decoder (trades roteados via
+agregador), não um erro de implementação do gate.
+
+**Nenhuma correção foi aplicada agora** -- nem no decoder, nem no
+limite, nem no denominador. Investigar/estender o decoder pra cobrir
+`innerInstructions`/agregadores é trabalho de protocolo novo, decisão
+do operador, só depois de pré-registro próprio (mesma disciplina das
+duas correções anteriores: nunca mudar regra depois de ver o número
+que ela produziu).
+
+### Por disciplina do mandato: PARAR aqui
+
+H2 continua `INCONCLUSIVE_SYSTEM` -- não é FAIL/KILL, não gasta
+tentativa no registro. Fase 4 **não rodou** (o gate corrigido ainda
+bloqueou, exatamente como desenhado para fazer). Nenhum
+retorno/EV/MFE/barreira foi calculado ou visto em nenhum momento desta
+correção.
