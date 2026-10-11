@@ -1244,3 +1244,95 @@ mão onde o custo 2x derruba o PF abaixo de 1 sem mudar o PASS.
 
 Só roda de verdade se Fase 4 produzir CANDIDATE no dado real -- e só
 depois do bloco de confirmação ser baixado (ainda não disparado).
+
+## Addendum — correção de implementação do gate de cobertura (decisão do
+operador, 2026-10-11, aplicada ANTES de qualquer nova execução)
+
+**Natureza da correção: as duas reprovações da Fase 3 são erros de
+IMPLEMENTAÇÃO do gate que contradizem regras JÁ pré-registradas -- nenhum
+limite (90%, 95%, 5%, 30) muda. Isto é documentado ANTES de rodar
+qualquer coisa; a única informação vista até agora são as métricas de
+cobertura já publicadas em "Resultado real da Fase 3" acima (nenhum
+retorno/EV/barreira foi calculado nem visto).**
+
+### (a) Buckets do Estágio 2 -- denominador errado
+
+Erro de implementação: `seal_stage2_grid_token` (código atual) usa
+`n_buckets_total = POOL_TRADE_WINDOW_SECONDS // GRID_BUCKET_SECONDS`
+(960, fixo) como denominador, contando todo bucket SEM nenhuma
+transação como "não resolvido". Isso contradiz a regra já pré-registrada
+de que, sem swap, o preço do pool simplesmente não muda (carrega do
+bucket anterior) -- um bucket vazio nunca foi definido como falha de
+cobertura em nenhum pré-registro anterior.
+
+**Correção**: denominador = buckets com **>=1 transação BEM-SUCEDIDA**
+(mesmo filtro `err=None` que `group_successful_signatures_by_bucket` já
+aplica); resolvido = preço de swap lido daquela transação (numerador,
+via `resolve_bucket_swap_price`, já correto e inalterado). Bucket sem
+nenhuma transação bem-sucedida fica **fora do denominador**, contado à
+parte como "carregado" (`n_buckets_carried_forward`) -- nunca como
+falha. Limite continua **>=95%**, mas passa a ser exigido **NO TOTAL E
+EM CADA GRUPO SEPARADAMENTE** (sinais = sobreviventes; baseline),
+pooled (soma de resolvidos / soma de buckets-com-tx do grupo, nunca
+média de percentuais por token -- evita divisão por zero num token sem
+nenhuma transação na grade inteira, caso real e esperado para baseline
+morto).
+
+**Método de recomputação (decidido agora, antes de ver qualquer
+número)**: o `Stage2SealResult` já selado (checkpoint.json) só guardava
+`n_buckets_resolved`/`n_buckets_total` -- nunca guardou quantos buckets
+tinham >=1 transação, porque o código antigo nunca precisou dessa
+distinção. Essa contagem **não está em nenhum lugar do banco selado nem
+do checkpoint** e só pode ser recuperada chamando de novo
+`getSignaturesForAddress` (a MESMA chamada, 1 crédito, já usada por
+`fetch_pool_signatures_in_window`) para os 126 pools já selados, nas
+MESMAS janelas de 80min já congeladas (migração a +80min, sem nenhuma
+nova amostragem). **Isto não é uma nova coleta econômica**: nenhum
+`getTransaction`/decode novo é chamado para preço (os preços já
+resolvidos continuam exatamente os mesmos, lidos do banco selado,
+hash-verificado); a única informação nova é "esse bucket teve ou não
+teve pelo menos 1 transação", que é contagem de assinatura, não preço.
+Nenhum pool novo, nenhuma janela nova, nenhum retorno. Classificado
+como `COVERAGE_ONLY`, igual ao resto da Fase 3.
+
+### (b) Reservas+fee -- denominador errado
+
+Erro de implementação: a média atual (`avg_pct_decoded_with_reserves_and_fee`
+em `seal_block`) divide por `n_determinable` (todos os 202 tokens
+classificados), incluindo os 126 não-sobreviventes que **corretamente
+nunca tentam** decodificar preço no Estágio 1 (regra já pré-registrada
+da Fase 0a/E: <20 trades nos últimos 5min = não-sobrevivente direto, sem
+gastar nenhuma chamada de preço). Cada um desses contribui 0% à média
+só por nunca ter tentado, não por ter falhado.
+
+**Correção**: denominador = tokens com `n_events_decoded > 0`
+(tentativas reais); tokens com `n_events_decoded == 0` ficam fora do
+denominador, contados à parte (`n_tokens_no_decode_attempt`). Nenhum
+dado novo necessário -- `n_events_decoded`/`n_events_with_reserves_and_fee`
+já estão no checkpoint.json selado, por token.
+
+### (c) Única informação vista
+
+A única informação vista antes desta correção são as métricas de
+cobertura da Fase 3 já publicadas (44,76% buckets; 59,41%
+reservas+fee; já documentadas acima desde 2026-10-10) -- nenhum
+retorno, EV, MFE ou barreira foi calculado ou visto em nenhum momento.
+O fato de o baseline ter muitos tokens parados é propriedade esperada
+do desenho (Fase 0a: baseline tem que incluir tokens mortos, senão
+reintroduz viés de sobrevivência), não um resultado econômico.
+
+### Próximos passos desta correção (ordem, sem pular)
+
+1. Conferir hash do banco selado (`discovery.db`) contra o hash gravado
+   no `coverage_report.json` ANTES de qualquer Fase 3 -- igual → segue;
+   diferente → PARA, reporta, não segue.
+2. Recomputar `n_buckets_with_tx` por pool selado (chamada read-only,
+   mesma janela congelada, sem novo preço) e corrigir o cálculo de (a)
+   e (b) em `h2_coverage_gate_v0.py`/`h2_block_seal_v0.py`.
+3. Re-rodar a Fase 3 corrigida no MESMO banco selado -- reportar a
+   tabela completa dos 7(+2 por grupo) critérios.
+4. Se passar: Fase 4 (treino 70%/retentor 30%, Δ=32s, saída escolhida
+   no treino) → Fase 5 só se CANDIDATE (congelar regra + commit ANTES
+   de abrir a confirmação) → Fase 6 (relatório). Se reprovar:
+   `INCONCLUSIVE_SYSTEM` de novo, causa raiz documentada, sem mexer em
+   limite, parar.

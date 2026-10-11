@@ -250,3 +250,15 @@ em nenhum momento desta sessão. Tudo commitado e empurrado pra
 decidir sobre as duas correções de protocolo do gate de cobertura (Fase 3)
 e, separadamente, se/quando iniciar a coleta ao vivo de H1 conforme o
 plano consolidado.
+
+## Decisão do operador recebida (2026-10-11): corrigir o gate (implementação, não limite)
+
+Operador decidiu: as duas reprovações da Fase 3 são erros de
+IMPLEMENTAÇÃO do gate, não limites errados. Addendum escrito no DRAFT
+ANTES de qualquer execução (ver
+`docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md`,
+"Addendum — correção de implementação do gate de cobertura"). Passo 1
+(hash do banco selado) já conferido nesta sessão: sha256 do
+`discovery.db` atual == `stage2_hash` gravado no `coverage_report.json`
+ANTES de qualquer cálculo de Fase 3/4 -- **MATCH**, banco inalterado.
+Próximo: recomputar a correção (a)/(b) e re-rodar a Fase 3.
