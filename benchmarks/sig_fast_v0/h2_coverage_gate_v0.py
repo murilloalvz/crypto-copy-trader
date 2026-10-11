@@ -14,10 +14,17 @@ Criterios (todos tem que passar):
 2. a selagem nao abortou (enumeracao/Estagio 1/Estagio 2).
 3. >=90% das janelas (do k final, apos qualquer extensao da regra de
    parada) foram processadas.
-4. >=95% dos buckets do Estagio 2 foram resolvidos (grade de 5s).
+4. >=95% dos buckets do Estagio 2 foram resolvidos (grade de 5s),
+   exigido NO TOTAL E EM CADA GRUPO (sinais/baseline) separadamente
+   (addendum 2026-10-11, correcao de implementacao: denominador = buckets
+   com >=1 transacao bem-sucedida, pooled por grupo; bucket vazio carrega
+   o preco anterior, nunca uma falha -- regra ja pre-registrada).
 5. missing_source (tokens cuja propria lista de assinaturas falhou) <=5%
    das migracoes encontradas.
-6. >=95% dos eventos decodificados tem reservas+fee.
+6. >=95% dos eventos decodificados tem reservas+fee, sobre o denominador
+   de tokens que efetivamente tentaram decodificar preco (addendum
+   2026-10-11: nao-sobreviventes que corretamente nunca tentam ficam
+   fora do denominador, nao contribuem 0%).
 7. >=30 sobreviventes no treino (so quando `require_train_survivors=True`
    -- discovery tem treino/retentor, confirmacao nao).
 """
@@ -97,10 +104,33 @@ def evaluate_coverage_gate(
             round(pct_windows, 2),
             min_pct_windows_processed,
         ),
+        # Addendum DRAFT 2026-10-11 (correcao de implementacao, decisao do
+        # operador): o denominador de buckets passa a ser buckets com >=1
+        # transacao bem-sucedida (um bucket vazio carrega o preco anterior,
+        # regra ja pre-registrada -- nunca uma falha), pooled por grupo. O
+        # limite >=95% continua o mesmo, mas agora exigido NO TOTAL E EM
+        # CADA GRUPO (sinais/baseline) separadamente -- 3 criterios, nao 1.
+        # None (grupo sem nenhum bucket-com-tx) e fail-closed, nunca passa
+        # silenciosamente.
         GateCheck(
-            "pct_stage2_buckets_resolved",
-            report["avg_pct_buckets_resolved_stage2"] >= min_pct_stage2_buckets_resolved,
+            "pct_stage2_buckets_resolved_total",
+            report["avg_pct_buckets_resolved_stage2"] is not None
+            and report["avg_pct_buckets_resolved_stage2"] >= min_pct_stage2_buckets_resolved,
             report["avg_pct_buckets_resolved_stage2"],
+            min_pct_stage2_buckets_resolved,
+        ),
+        GateCheck(
+            "pct_stage2_buckets_resolved_signal_group",
+            report["pct_buckets_resolved_signal_group"] is not None
+            and report["pct_buckets_resolved_signal_group"] >= min_pct_stage2_buckets_resolved,
+            report["pct_buckets_resolved_signal_group"],
+            min_pct_stage2_buckets_resolved,
+        ),
+        GateCheck(
+            "pct_stage2_buckets_resolved_baseline_group",
+            report["pct_buckets_resolved_baseline_group"] is not None
+            and report["pct_buckets_resolved_baseline_group"] >= min_pct_stage2_buckets_resolved,
+            report["pct_buckets_resolved_baseline_group"],
             min_pct_stage2_buckets_resolved,
         ),
         GateCheck(
@@ -109,9 +139,13 @@ def evaluate_coverage_gate(
             round(pct_missing, 2),
             max_pct_missing_source,
         ),
+        # Addendum DRAFT 2026-10-11: denominador passa a excluir tokens que
+        # corretamente nunca tentaram decodificar preco (n_events_decoded=0,
+        # nao-sobreviventes) -- None (ninguem tentou) e fail-closed.
         GateCheck(
             "pct_events_with_reserves_and_fee",
-            report["avg_pct_decoded_with_reserves_and_fee"] >= min_pct_events_with_reserves_and_fee,
+            report["avg_pct_decoded_with_reserves_and_fee"] is not None
+            and report["avg_pct_decoded_with_reserves_and_fee"] >= min_pct_events_with_reserves_and_fee,
             report["avg_pct_decoded_with_reserves_and_fee"],
             min_pct_events_with_reserves_and_fee,
         ),
@@ -155,6 +189,8 @@ def _base_report(**overrides: Any) -> dict[str, Any]:
         "n_migrations_found": 100,
         "n_tokens_system_error_missing": 2,
         "avg_pct_buckets_resolved_stage2": 97.0,
+        "pct_buckets_resolved_signal_group": 97.0,
+        "pct_buckets_resolved_baseline_group": 97.0,
         "avg_pct_decoded_with_reserves_and_fee": 98.0,
         "stopping_rule": {"k_windows_final": 26, "n_train_survivors_final": 40},
     }
@@ -189,13 +225,40 @@ def _self_check() -> None:
         assert result.passed is False, result
         assert {c.name for c in result.checks if not c.passed} == {"not_aborted"}
 
-        # Estagio 2 abaixo de 95% resolvido -> reprova so esse criterio.
+        # Estagio 2 abaixo de 95% resolvido (total) -> reprova so esse criterio.
         result = evaluate_coverage_gate(
             _base_report(avg_pct_buckets_resolved_stage2=80.0),
             checkpoint_path=checkpoint_path,
             fase1_parity_validated=True,
         )
-        assert {c.name for c in result.checks if not c.passed} == {"pct_stage2_buckets_resolved"}
+        assert {c.name for c in result.checks if not c.passed} == {"pct_stage2_buckets_resolved_total"}
+
+        # Addendum DRAFT 2026-10-11: cada grupo (sinal/baseline) reprova
+        # ISOLADAMENTE, independente do total -- um baseline morto por
+        # desenho (muitos buckets carregados, poucos com tx) reprovando
+        # sozinho nao pode ficar escondido atras de um total que passa.
+        result = evaluate_coverage_gate(
+            _base_report(pct_buckets_resolved_signal_group=80.0),
+            checkpoint_path=checkpoint_path,
+            fase1_parity_validated=True,
+        )
+        assert {c.name for c in result.checks if not c.passed} == {"pct_stage2_buckets_resolved_signal_group"}
+
+        result = evaluate_coverage_gate(
+            _base_report(pct_buckets_resolved_baseline_group=80.0),
+            checkpoint_path=checkpoint_path,
+            fase1_parity_validated=True,
+        )
+        assert {c.name for c in result.checks if not c.passed} == {"pct_stage2_buckets_resolved_baseline_group"}
+
+        # None (grupo sem nenhum bucket-com-tx em nenhum token selado) e
+        # fail-closed, nunca passa silenciosamente.
+        result = evaluate_coverage_gate(
+            _base_report(pct_buckets_resolved_baseline_group=None),
+            checkpoint_path=checkpoint_path,
+            fase1_parity_validated=True,
+        )
+        assert {c.name for c in result.checks if not c.passed} == {"pct_stage2_buckets_resolved_baseline_group"}
 
         # missing_source > 5% -> reprova.
         result = evaluate_coverage_gate(
@@ -208,6 +271,15 @@ def _self_check() -> None:
         # reservas+fee abaixo de 95% -> reprova.
         result = evaluate_coverage_gate(
             _base_report(avg_pct_decoded_with_reserves_and_fee=90.0),
+            checkpoint_path=checkpoint_path,
+            fase1_parity_validated=True,
+        )
+        assert {c.name for c in result.checks if not c.passed} == {"pct_events_with_reserves_and_fee"}
+
+        # Addendum DRAFT 2026-10-11: None (nenhum token tentou decodificar
+        # preco) e fail-closed, nunca passa silenciosamente.
+        result = evaluate_coverage_gate(
+            _base_report(avg_pct_decoded_with_reserves_and_fee=None),
             checkpoint_path=checkpoint_path,
             fase1_parity_validated=True,
         )
@@ -271,7 +343,7 @@ def _self_check() -> None:
         )
         assert result.passed is False
         assert {c.name for c in result.checks if not c.passed} == {
-            "pct_stage2_buckets_resolved",
+            "pct_stage2_buckets_resolved_total",
             "pct_events_with_reserves_and_fee",
         }
 
@@ -279,15 +351,16 @@ def _self_check() -> None:
         as_dict = gate_result_to_dict(result)
         assert as_dict["passed"] is False
         assert as_dict["classification"] == CLASSIFICATION_FAIL
-        assert any(c["name"] == "pct_stage2_buckets_resolved" and not c["passed"] for c in as_dict["checks"])
+        assert any(c["name"] == "pct_stage2_buckets_resolved_total" and not c["passed"] for c in as_dict["checks"])
         assert any(c["name"] == "pct_events_with_reserves_and_fee" and not c["passed"] for c in as_dict["checks"])
         json.dumps(as_dict)  # nunca falha a serializar
 
     print(
         "self-check OK: gate de cobertura (feliz=PASS; cada criterio reprova isolado: paridade, "
-        "aborted, janelas processadas, buckets Estagio 2, missing_source, reservas+fee, "
-        "sobreviventes no treino; confirmacao sem treino ignora esse criterio; valor exatamente "
-        "no limiar passa (comparacao inclusiva); duas falhas simultaneas aparecem as duas; "
+        "aborted, janelas processadas, buckets Estagio 2 (total/sinal/baseline separados, "
+        "addendum 2026-10-11), missing_source, reservas+fee, sobreviventes no treino; "
+        "confirmacao sem treino ignora esse criterio; valor exatamente no limiar passa "
+        "(comparacao inclusiva); None e fail-closed; duas falhas simultaneas aparecem as duas; "
         "serializa pra JSON)"
     )
 

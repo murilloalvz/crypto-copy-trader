@@ -207,8 +207,20 @@ def seal_stage1_token(
 class Stage2SealResult:
     pool_mint: str
     n_buckets_total: int
+    n_buckets_with_tx: int
+    """Addendum DRAFT 2026-10-11 (correcao de implementacao, decisao do
+    operador): denominador correto do gate de cobertura -- buckets com
+    >=1 transacao BEM-SUCEDIDA. Um bucket sem nenhuma transacao nunca e
+    uma falha de cobertura (regra ja pre-registrada: sem swap, o pool
+    nao muda de preco -- o valor carrega do bucket anterior), entao fica
+    de fora do denominador, nunca no numerador nem no denominador."""
+    n_buckets_carried_forward: int
+    """= n_buckets_total - n_buckets_with_tx. Reportado a parte, nunca
+    como falha."""
     n_buckets_resolved: int
-    pct_buckets_resolved: float
+    pct_buckets_resolved: float | None
+    """None (missing explicito) se n_buckets_with_tx == 0 -- nunca 0.0
+    inventado para um token sem nenhuma transacao na grade inteira."""
     n_rpc_calls: int
     elapsed_seconds: float
 
@@ -240,8 +252,16 @@ def seal_stage2_grid_token(
     raw_rows: list[dict[str, Any]] = []
     decoded_events: list[dict[str, Any]] = []
     n_resolved = 0
+    n_with_tx = 0
     for bucket_index in range(n_buckets_total):
-        resolved = resolve_bucket_swap_price(rotator, carbon, buckets.get(bucket_index, []))
+        candidates_in_bucket = buckets.get(bucket_index, [])
+        if not candidates_in_bucket:
+            # Addendum DRAFT 2026-10-11: sem nenhuma transacao bem-sucedida
+            # no bucket, o preco carrega do anterior (regra ja
+            # pre-registrada) -- fora do denominador, nunca uma falha.
+            continue
+        n_with_tx += 1
+        resolved = resolve_bucket_swap_price(rotator, carbon, candidates_in_bucket)
         if resolved is not None:
             n_resolved += 1
             raw_rows.append(resolved["raw_tx"])
@@ -261,11 +281,51 @@ def seal_stage2_grid_token(
     return Stage2SealResult(
         pool_mint=candidate.pool_mint,
         n_buckets_total=n_buckets_total,
+        n_buckets_with_tx=n_with_tx,
+        n_buckets_carried_forward=n_buckets_total - n_with_tx,
         n_buckets_resolved=n_resolved,
-        pct_buckets_resolved=round(100.0 * n_resolved / n_buckets_total, 2) if n_buckets_total else 0.0,
+        pct_buckets_resolved=round(100.0 * n_resolved / n_with_tx, 2) if n_with_tx else None,
         n_rpc_calls=len(tracker.calls) - calls_before,
         elapsed_seconds=round(time.monotonic() - t0_wall, 3),
     )
+
+
+def _avg_pct_decoded_with_reserves_and_fee(stage1_results: list[dict[str, Any]]) -> tuple[float | None, int]:
+    """Addendum DRAFT 2026-10-11 (correcao de implementacao, decisao do
+    operador): denominador = tokens que efetivamente tentaram decodificar
+    preco (`n_events_decoded > 0`). Nao-sobreviventes que corretamente
+    NUNCA tentam (regra ja pre-registrada da Fase 0a/E: <20 trades =
+    nao-sobrevivente direto, sem gastar chamada de preco) ficam fora do
+    denominador, contados a parte -- nao contribuem 0% por nunca terem
+    tentado. Retorna (media ou None se nenhum token tentou, n_sem_tentativa)."""
+    attempted = [r for r in stage1_results if r["n_events_decoded"] > 0]
+    n_no_attempt = len(stage1_results) - len(attempted)
+    if not attempted:
+        return None, n_no_attempt
+    avg = sum(100.0 * r["n_events_with_reserves_and_fee"] / r["n_events_decoded"] for r in attempted) / len(attempted)
+    return round(avg, 2), n_no_attempt
+
+
+def _pooled_pct_buckets_resolved(
+    pool_mints: Any, stage2_done: dict[str, dict[str, Any]]
+) -> tuple[float | None, int, int]:
+    """Addendum DRAFT 2026-10-11 (correcao de implementacao, decisao do
+    operador): soma de buckets resolvidos / soma de buckets-com-tx do
+    grupo (pooled) -- nunca media de percentuais por token, que daria 0/0
+    num token sem nenhuma transacao na grade inteira (baseline morto por
+    desenho, Fase 0a -- caso real esperado, nao uma falha). Retorna
+    (percentual ou None se o grupo nao tem nenhum bucket-com-tx,
+    soma_resolvidos, soma_com_tx)."""
+    sum_resolved = 0
+    sum_with_tx = 0
+    for pool in pool_mints:
+        result = stage2_done.get(pool)
+        if result is None:
+            continue
+        sum_resolved += result["n_buckets_resolved"]
+        sum_with_tx += result["n_buckets_with_tx"]
+    pct = round(100.0 * sum_resolved / sum_with_tx, 2) if sum_with_tx else None
+    return pct, sum_resolved, sum_with_tx
 
 
 def seal_block(
@@ -431,19 +491,16 @@ def seal_block(
     n_determinable = len(stage1_done)
     n_missing = len(system_error_pools)
     stage1_results = list(stage1_done.values())
-    avg_pct_decoded_with_reserves_and_fee = (
-        sum(
-            (100.0 * r["n_events_with_reserves_and_fee"] / r["n_events_decoded"]) if r["n_events_decoded"] else 0.0
-            for r in stage1_results
-        )
-        / n_determinable
-        if n_determinable
-        else 0.0
+    avg_pct_decoded_with_reserves_and_fee, n_tokens_no_decode_attempt = _avg_pct_decoded_with_reserves_and_fee(
+        stage1_results
     )
     stage2_results = list(stage2_done.values())
-    avg_pct_buckets_resolved = (
-        sum(r["pct_buckets_resolved"] for r in stage2_results) / len(stage2_results) if stage2_results else 0.0
+    pct_buckets_total, n_buckets_resolved_total, n_buckets_with_tx_total = _pooled_pct_buckets_resolved(
+        stage2_done.keys(), stage2_done
     )
+    pct_buckets_signal, _, _ = _pooled_pct_buckets_resolved(survivors, stage2_done)
+    pct_buckets_baseline, _, _ = _pooled_pct_buckets_resolved(baseline, stage2_done)
+    n_buckets_carried_forward_total = sum(r["n_buckets_carried_forward"] for r in stage2_results)
 
     return {
         "version": VERSION,
@@ -471,10 +528,16 @@ def seal_block(
         "n_survivors": len(survivors),
         "n_non_survivors": len(non_survivors),
         "survival_rate_system_count": (len(survivors) / n_determinable) if n_determinable else None,
-        "avg_pct_decoded_with_reserves_and_fee": round(avg_pct_decoded_with_reserves_and_fee, 2),
+        "avg_pct_decoded_with_reserves_and_fee": avg_pct_decoded_with_reserves_and_fee,
+        "n_tokens_no_decode_attempt": n_tokens_no_decode_attempt,
         "n_baseline_sampled": len(baseline),
         "baseline_pools": baseline,
-        "avg_pct_buckets_resolved_stage2": round(avg_pct_buckets_resolved, 2),
+        "avg_pct_buckets_resolved_stage2": pct_buckets_total,
+        "pct_buckets_resolved_signal_group": pct_buckets_signal,
+        "pct_buckets_resolved_baseline_group": pct_buckets_baseline,
+        "n_buckets_resolved_total": n_buckets_resolved_total,
+        "n_buckets_with_tx_total": n_buckets_with_tx_total,
+        "n_buckets_carried_forward_total": n_buckets_carried_forward_total,
         "n_stage2_tokens_sealed": len(stage2_results),
         "total_rpc_calls": len(tracker.calls),
         "total_credits": tracker.total_credits,
@@ -1009,14 +1072,85 @@ def _self_check() -> None:
     _self_check_abort_handling()
     _self_check_baseline_samples_all_classified()
     _self_check_stopping_rule()
+    _self_check_corrected_coverage_aggregates()
     print(
         "self-check OK: seal_block (enumeracao + Estagio 1 com missing explicito + hash + "
         "baseline seed-fixa (Fase 0a: TODAS as classificadas) + Estagio 2 grade completa + "
         "hash + cobertura, sem retorno/EV) + resume idempotente do checkpoint + abort de 429 "
         "nao descarta candidatos ja achados + regra de parada por contagem (Fase 2: sem "
         "extensao se >= trigger, estende em passos estaveis se < trigger, para sozinha se "
-        "esgotar o teto de extensoes)"
+        "esgotar o teto de extensoes) + addendum 2026-10-11 (buckets vazios carregam, nunca "
+        "falha; pooled por grupo; reservas+fee so sobre quem tentou)"
     )
+
+
+def _self_check_corrected_coverage_aggregates() -> None:
+    """Addendum DRAFT 2026-10-11 (correcao de implementacao do gate,
+    decisao do operador): prova as duas funcoes puras isoladas, sem rede.
+
+    (a) `_pooled_pct_buckets_resolved`: um token do grupo baseline sem
+    NENHUMA transacao na grade inteira (`n_buckets_with_tx=0`, caso real
+    esperado pra token morto por desenho) nao pode gerar 0/0 nem arrastar
+    a media pra baixo -- o pooled ignora esse token por completo. Grupos
+    sinal/baseline sao calculados separadamente, cada um so com os tokens
+    daquele grupo.
+
+    (b) `_avg_pct_decoded_with_reserves_and_fee`: tokens com
+    `n_events_decoded=0` (nao-sobreviventes que corretamente nunca
+    tentam) ficam fora do denominador e sao contados a parte, nunca
+    contribuem 0% por nunca terem tentado."""
+    # sinal: 2 tokens, ambos com atividade real na grade inteira.
+    stage2_done = {
+        "SIG1pump": {"n_buckets_resolved": 190, "n_buckets_with_tx": 200, "n_buckets_carried_forward": 760},
+        "SIG2pump": {"n_buckets_resolved": 200, "n_buckets_with_tx": 200, "n_buckets_carried_forward": 760},
+        # baseline: 1 token vivo (resolve bem) + 1 token morto (ZERO
+        # transacao na grade inteira -- nunca pode gerar 0/0).
+        "BASE1pump": {"n_buckets_resolved": 180, "n_buckets_with_tx": 200, "n_buckets_carried_forward": 760},
+        "BASE2pump": {"n_buckets_resolved": 0, "n_buckets_with_tx": 0, "n_buckets_carried_forward": 960},
+    }
+    survivors = ["SIG1pump", "SIG2pump"]
+    baseline = ["BASE1pump", "BASE2pump"]
+
+    pct_total, resolved_total, with_tx_total = _pooled_pct_buckets_resolved(stage2_done.keys(), stage2_done)
+    pct_signal, resolved_signal, with_tx_signal = _pooled_pct_buckets_resolved(survivors, stage2_done)
+    pct_baseline, resolved_baseline, with_tx_baseline = _pooled_pct_buckets_resolved(baseline, stage2_done)
+
+    # sinal: (190+200)/(200+200) = 97.5% -- bate a mao.
+    assert pct_signal == 97.5, pct_signal
+    assert with_tx_signal == 400 and resolved_signal == 390
+    # baseline: so BASE1 conta (BASE2 tem 0 buckets-com-tx, e ignorado por
+    # completo, nao entra como 0/0 nem como 0%) -> 180/200 = 90.0%.
+    assert pct_baseline == 90.0, pct_baseline
+    assert with_tx_baseline == 200 and resolved_baseline == 180
+    # total: pooled sobre TODOS (BASE2 ainda ignorado) -> (190+200+180)/(200+200+200) = 95.0%.
+    assert pct_total == 95.0, pct_total
+    assert with_tx_total == 600 and resolved_total == 570
+
+    # grupo sem nenhum bucket-com-tx em NENHUM token -> None explicito,
+    # nunca 0.0 nem 100.0 inventado.
+    pct_empty, resolved_empty, with_tx_empty = _pooled_pct_buckets_resolved(["BASE2pump"], stage2_done)
+    assert pct_empty is None and resolved_empty == 0 and with_tx_empty == 0
+
+    # (b): 2 sobreviventes tentaram (100%/80%), 3 nao-sobreviventes
+    # corretamente nunca tentaram (n_events_decoded=0) -- media antiga
+    # (dividindo por 5) daria (100+80+0+0+0)/5=36%; corrigida ignora os 3
+    # que nunca tentaram -> (100+80)/2=90%.
+    stage1_results = [
+        {"n_events_decoded": 10, "n_events_with_reserves_and_fee": 10},  # 100%
+        {"n_events_decoded": 10, "n_events_with_reserves_and_fee": 8},  # 80%
+        {"n_events_decoded": 0, "n_events_with_reserves_and_fee": 0},
+        {"n_events_decoded": 0, "n_events_with_reserves_and_fee": 0},
+        {"n_events_decoded": 0, "n_events_with_reserves_and_fee": 0},
+    ]
+    avg, n_no_attempt = _avg_pct_decoded_with_reserves_and_fee(stage1_results)
+    assert avg == 90.0, avg
+    assert n_no_attempt == 3
+
+    # todo mundo sem tentativa -> None explicito, nunca 0.0.
+    avg_empty, n_no_attempt_empty = _avg_pct_decoded_with_reserves_and_fee(
+        [{"n_events_decoded": 0, "n_events_with_reserves_and_fee": 0}]
+    )
+    assert avg_empty is None and n_no_attempt_empty == 1
 
 
 def _self_check_stopping_rule() -> None:
