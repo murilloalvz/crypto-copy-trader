@@ -377,3 +377,38 @@ deste código nem documentado no repositório -- não determinável a
 partir daqui; ambos saudáveis agora. O circuit breaker
 `SAFETY_PAUSE_AT_CUMULATIVE_CALLS=150000` no script é um limite
 arbitrário de segurança, não uma medida real de cota.
+
+### Pergunta do operador sobre custo/velocidade (2026-10-12): causa raiz real e correção
+
+Depois de várias rodadas de 2h avançando muito pouco (3 sobreviventes em
+uma delas), o operador perguntou se o custo era alto e se dava pra
+acelerar. Investigação:
+
+- **Tentativa de batch JSON-RPC descartada por risco de dado**: empacotar
+  4 chamadas `getTransaction` num só request funcionou (4x mais rápido),
+  mas o RPC público devolveu `result: null` pra 2 das 4 transações que
+  realmente existem (confirmado contra a chamada individual). Um `null`
+  de batch seria indistinguível de "não encontrada" e violaria a regra
+  de missingness explícita -- não usado. Bônus: a Helius respondeu "max
+  usage reached" nesse teste, sugerindo cota própria também pressionada.
+- **Causa raiz real da lentidão, confirmada empiricamente**:
+  `fetch_pool_signatures_in_window` pagina `getSignaturesForAddress`
+  **de hoje para trás** até achar a janela de 80min da migração. Essas
+  migrações têm até ~53 dias. Para um pool que ficou excepcionalmente
+  ativo depois da migração (`DWrrbYP65oo33Fk83iaQVHQhytntFM1uooyJHjaxpump`:
+  99.343 assinaturas só na janela de 80min, por `n_signatures_in_window`
+  do Stage 1 original), uma sondagem real de 200 páginas (200 mil
+  assinaturas, ~270s) **ainda não tinha chegado** na janela -- custo
+  efetivamente sem limite pra esse tipo de pool, não um artefato de
+  throttling.
+- **Correção (só no script scratchpad, nada commitado/congelado
+  tocado)**: orçamento de páginas (`PAGINATION_PAGE_BUDGET=80`). Se a
+  paginação não chega na janela dentro do orçamento, o pool/sobrevivente
+  é marcado `skipped_reason=pagination_budget_exceeded...` -- EXPLÍCITO,
+  nunca um "sim"/"não" adivinhado, mantido conservador (contado como já
+  estava antes, mesmo padrão dos outros `skipped_reason`). Validado
+  antes de usar: reproduziu exatamente (`40 == 40`) o resultado já
+  gravado de um sobrevivente que tinha terminado com o método antigo.
+- **Resultado real**: o ciclo seguinte, com a correção, avançou de 34
+  para **51 de 76 sobreviventes** (o pool patológico foi pulado em
+  segundos) -- de ~1,5 sobrevivente/hora pra ~8,5/hora.
