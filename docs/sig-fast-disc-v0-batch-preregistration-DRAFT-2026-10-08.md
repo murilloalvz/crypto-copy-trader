@@ -1400,3 +1400,114 @@ tentativa no registro. Fase 4 **não rodou** (o gate corrigido ainda
 bloqueou, exatamente como desenhado para fazer). Nenhum
 retorno/EV/MFE/barreira foi calculado ou visto em nenhum momento desta
 correção.
+
+## Addendum — correção de implementação "trade vs. referência sem execução"
+(decisão do operador, 2026-10-12, aplicada ANTES de qualquer código/dado)
+
+**Natureza da correção: a causa real do critério de buckets do baseline
+(94,37%) é mais um erro de IMPLEMENTAÇÃO de duas regras já
+pré-registradas -- não a hipótese do agregador via CPI (investigada e
+descartada pela evidência real: o PumpSwap nunca aparece como
+`invoke`/`success` nos logs dessas transações, só como conta
+referenciada). Nenhum limite muda. Esta continua sendo a ÚLTIMA
+tentativa de sistema neste bloco de discovery -- teto mantido: se
+reprovar de novo, o bloco é abandonado.**
+
+### (a) Definição de "trade"
+
+**Trade** = transação bem-sucedida em que o PumpSwap **EXECUTA** um
+swap **neste pool** (muda o estado das reservas). Uma transação que só
+**referencia** a conta do pool (ex.: um agregador lendo preço/estado
+pra decidir rota, sem executar o PumpSwap) não é trade -- é a mesma
+regra já pré-registrada de "sem swap, o pool não muda de preço",
+agora aplicada corretamente: antes, o critério de cobertura contava
+qualquer transação bem-sucedida que tocasse o mint como "atividade";
+a regra em si (sem swap, sem mudança de preço) sempre existiu, só não
+estava implementada com um teste verificável.
+
+### (b) Teste verificável, por transação
+
+Comparar `preTokenBalances`/`postTokenBalances` (e `preBalances`/
+`postBalances` em lamports, para o caso da conta-cofre de quote ser
+representada diretamente em SOL nativo em vez de WSOL embrulhado) das
+**duas contas-cofre do pool** (identificadas uma vez por pool, a partir
+de uma transação já decodificada desse mesmo pool: as contas com
+`owner` igual ao endereço do pool nos saldos de token da transação de
+referência):
+
+- Saldo não mudou → **não-trade**: fora do denominador de buckets e
+  fora de qualquer contagem (nem sucesso, nem falha).
+- Saldo mudou **sem** o PumpSwap aparecer como `invoke`/`success` nos
+  logs → **missing genuíno**: conta contra a cobertura (dentro do
+  denominador, não resolvido) -- caso defensivo, esperado ser raro ou
+  inexistente.
+- Saldo mudou **com** execução do PumpSwap → **trade normal**: dentro
+  do denominador, resolvido ou não exatamente como já era (nenhuma
+  mudança na lógica de resolução de preço em si, só na definição do
+  denominador).
+
+### (c) Bucket só com não-trades
+
+Um bucket de 5s em que **todas** as transações bem-sucedidas são
+não-trades (pela definição acima) passa a ser tratado igual a um
+bucket **sem nenhuma transação**: preço carregado do anterior (regra
+já pré-registrada), reportado como "carregado" -- nunca como falha.
+Basta **uma** transação no bucket ser trade ou missing-genuíno para o
+bucket continuar no denominador.
+
+### (d) Regra de sobrevivente -- recontagem só dos 76 sobreviventes atuais
+
+A regra de sobrevivente (">=20 transações bem-sucedidas nos últimos
+5min antes do marco de 20min") sempre pretendeu contar **swaps**, não
+qualquer assinatura que toque o mint -- mesmo erro de implementação do
+item (a)/(b), agora corrigido: a contagem passa a ser só de **trades**
+pela definição (a)/(b) acima.
+
+Recontagem **só para os 76 sobreviventes atuais** (contar menos nunca
+transforma um não-sobrevivente em sobrevivente, então os 126
+não-sobreviventes não precisam ser reexaminados). Para cada um,
+reexamina as transações bem-sucedidas da janela de 5min já fixada
+(mesma janela, mesmos dados já baixados -- nenhuma nova janela, nenhum
+novo pool), classificando cada uma via (b), com **parada antecipada**
+ao atingir 20 trades confirmados (economiza chamada, não muda o
+resultado binário >=20). Quem cair abaixo de 20 trades confirmados
+**vira não-sobrevivente**.
+
+### (e) Única informação vista até aqui
+
+Só métricas de cobertura (as da rodada anterior, 95,36%/96,53%/94,37%,
+e a investigação read-only da causa raiz que descartou a hipótese do
+agregador). Nenhum retorno, EV, MFE ou barreira foi calculado ou visto
+em nenhum momento.
+
+### Implementação (próximos passos desta correção)
+
+1. Banco selado (`discovery.db`) e checkpoint permanecem intocados;
+   hash conferido antes e depois de qualquer recomputação. Resultado
+   escrito num manifesto separado
+   (`artifacts/sig_fast_h2_discovery_v0/trade_reclassification_v0.json`).
+2. Testado primeiro contra as transações reais já baixadas na
+   investigação da causa raiz anterior (referência sem execução →
+   não-trade confirmado; qualquer swap diretamente decodificado →
+   trade confirmado) antes de rodar contra o bloco inteiro.
+3. Depois de recontar: reportar quantas transações/buckets viraram
+   não-trade, quantos sobreviventes mudaram de classe, e a nova
+   contagem de sobreviventes no treino. Se cair abaixo de 30 (mínimo
+   já pré-registrado), aplicar a regra de parada por contagem já
+   existente (mais janelas da mesma sequência seeded, nunca uma nova
+   amostragem) antes de julgar o critério de sobreviventes no treino.
+4. Gate de cobertura (Fase 3) re-rodado com os critérios corrigidos da
+   rodada anterior (95% total e por grupo, pooled) sobre os números
+   recontados. PASS → segue o mandato (Fase 4 → Fase 5 se CANDIDATE →
+   Fase 6). FAIL → bloco abandonado conforme o teto já fixado,
+   relatório da causa, parar.
+
+### Nota (sem implementar agora): outros lugares que podem ter o mesmo problema
+
+Qualquer métrica do motor ao vivo (`run_live_shadow_v0`) ou de
+auditoria (`path_coverage_audit.py`) que conte **assinaturas** como
+"trade"/"atividade" sem o mesmo teste de (b) tem potencialmente o
+mesmo erro de implementação. Levantamento (sem corrigir) fica para o
+relatório desta rodada -- precisa de pré-registro próprio antes de
+qualquer correção no caminho ao vivo, especialmente antes do paper ao
+vivo (RESERVA 1 já entregue, `live_paper_log_v0.py`).

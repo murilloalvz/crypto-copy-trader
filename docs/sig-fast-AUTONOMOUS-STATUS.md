@@ -291,3 +291,21 @@ de novo, causa raiz documentada, sem mexer em limite, e parar") --
 calculado. H2 permanece aberta. Detalhe completo em
 `docs/sig-fast-disc-v0-batch-preregistration-DRAFT-2026-10-08.md`
 ("Resultado real da Fase 3 CORRIGIDA").
+
+## Investigação da causa raiz antes de corrigir o decoder (2026-10-11/12)
+
+Antes de implementar a correção de decoder pedida numa rodada anterior
+(ler `innerInstructions` em qualquer profundidade), investiguei a
+premissa (read-only, ~1200 créditos): a hipótese do agregador via CPI
+**não se confirma** -- o PumpSwap nunca aparece como `invoke`/`success`
+nos logs das 20 transações verificadas, só como conta referenciada.
+Reportado ao operador antes de tocar em qualquer código.
+
+## Decisão do operador (2026-10-12): corrigir "trade vs. referência sem execução"
+
+Causa real: erro de implementação de duas regras já pré-registradas,
+não um problema de decoder. Addendum escrito no DRAFT ANTES de
+qualquer código (ver "Addendum — correção de implementação 'trade vs.
+referência sem execução'"). Teto mantido: última tentativa de sistema
+neste bloco. Próximo: implementar o teste verificável (diff de saldo
+das contas-cofre), recontar buckets + sobreviventes, re-rodar o gate.
