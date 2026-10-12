@@ -307,5 +307,73 @@ Causa real: erro de implementação de duas regras já pré-registradas,
 não um problema de decoder. Addendum escrito no DRAFT ANTES de
 qualquer código (ver "Addendum — correção de implementação 'trade vs.
 referência sem execução'"). Teto mantido: última tentativa de sistema
-neste bloco. Próximo: implementar o teste verificável (diff de saldo
-das contas-cofre), recontar buckets + sobreviventes, re-rodar o gate.
+neste bloco. Implementado `h2_trade_verification_v0.py` (commit
+`acbf6d8`): classifica cada tx em `trade` / `not_trade` /
+`missing_genuine` via diff de saldo das 2 contas-cofre do pool,
+validado contra tx reais já diagnosticadas.
+
+## Execução real da recontagem (2026-10-12): 4 ciclos, bug de checkpoint corrigido
+
+Reclassificação de buckets por pool rodando em ciclos de 2h (mesmo
+padrão da Fase 2 original). Ciclo 1: +16 pools. Ciclo 2: +27 pools
+(43/126 acumulado). Ciclo 3: **+0 pools** -- bug real encontrado: o
+checkpoint só salvava progresso quando um pool TERMINAVA inteiro, então
+1 pool travado (`87JEX3WusGGKNXfrpViaHmgvQzLkiCN8nzbWggt5pump`) consumiu
+as 2h sem nada persistido. Corrigido: checkpoint agora salva por
+BUCKET, não só por pool (nenhum ciclo futuro pode perder progresso
+parcial de novo).
+
+### Três ajustes do operador (2026-10-12), sem mudar regra
+
+1. Prioridade: recontagem dos 76 sobreviventes (parada em 20 trades
+   confirmados) antes de continuar os pools.
+2. Parada antecipada por bucket: primeira tx `trade`/`missing_genuine`
+   já decide que o bucket fica no denominador -- não precisa checar o
+   resto (só buckets 100% `not_trade` precisam checar todas).
+3. Créditos: reportar consumo real e pausar perto do limite.
+
+### Incidente de infraestrutura (2026-10-12): cota diária da QuickNode esgotada
+
+Ao rodar a Fase 1 (prioridade) pela primeira vez com os 3 ajustes, o
+processo ficou 2h em background **sem nenhum progresso e sem erro**
+(nenhum sobrevivente salvo, hash do checkpoint inalterado). Diagnóstico
+bounded (sondas diretas, read-only, <10 créditos) achou a causa raiz:
+
+- QuickNode: cota diária gratuita **esgotada agora** (`X-Ratelimit-Remaining: 0`
+  de `X-Ratelimit-Limit: 50000, 50000;w=86400`, reset em ~43.497s / ~12h
+  a partir de ~11:55 UTC de 2026-10-12, ou seja reset perto de ~23:58 UTC).
+- RPC público (`api.mainnet-beta.solana.com`) e Helius: ambos saudáveis,
+  respondendo em <1s numa chamada direta.
+- Causa do travamento: `EndpointRotator` sempre tenta a QuickNode
+  primeiro (por desenho, pra poupar a Helius); a lógica de retry/backoff
+  de 429 (`h2_pilot_v0.install_rate_limited_rpc`) insiste até 600s num
+  endpoint antes do chamador cair pro próximo -- confirmado com uma
+  chamada real isolada: sucesso em 613,9s, só depois de cair pro RPC
+  público. Com dezenas de chamadas necessárias por sobrevivente, isso
+  tornaria a Fase 1 inviável (~50h) até a cota resetar.
+- Correção aplicada (só no script de execução, scratchpad, nada
+  congelado/commitado tocado; puramente de ritmo/custo, zero efeito na
+  classificação): `max_429_stall_seconds` reduzido de 600s pra 15s só
+  nesta execução, enquanto a QuickNode estiver esgotada -- endpoint
+  morto é abandonado em segundos, não minutos, e cai pro RPC
+  público/Helius (saudáveis) rapidamente.
+- Efeito colateral encontrado ao relançar: os 3 endpoints deram 429 ao
+  mesmo tempo por um instante (rajada transitória, não a mesma
+  exaustão de 12h da QuickNode), derrubando a execução inteira no
+  primeiro sobrevivente. Corrigido com um retry curto (3 tentativas,
+  20s de espera) só para esse padrão especifico de erro, por item
+  (sobrevivente/pool) -- não é um novo limite nem muda nenhuma
+  classificação, só evita perder o lote inteiro por um instante de
+  rajada compartilhada.
+- Relançado em background após as duas correções; hash re-verificado
+  (bate de novo com o selo). Resultado da Fase 1 ainda pendente -- ver
+  próxima seção quando disponível.
+
+**Créditos/orçamento real (item 3 do operador), honesto:** QuickNode =
+0 de 50.000/dia restante agora, reset em ~12h (número real, lido do
+cabeçalho HTTP do próprio provedor, não estimado). RPC público e
+Helius: sem número de cota mensal/diária configurado em nenhum lugar
+deste código nem documentado no repositório -- não determinável a
+partir daqui; ambos saudáveis agora. O circuit breaker
+`SAFETY_PAUSE_AT_CUMULATIVE_CALLS=150000` no script é um limite
+arbitrário de segurança, não uma medida real de cota.
