@@ -263,6 +263,9 @@ Para analisar, cole `sinais.csv` (e, se quiser, `descartados.csv`/`trades_operad
 | `O bot ja esta rodando` | rode `parar.bat`; se o PC reiniciou e sobrou um pid velho, `iniciar --forcar` |
 | `sinais.csv esta aberto em outro programa` | feche o Excel (ou abra uma cópia); o bot regrava no próximo ciclo |
 | link do Axiom/GMGN abre página errada | ajuste `links.*` e `gmgn_slug` no `config.yaml` |
+| `O relogio do PC esta ADIANTADO/ATRASADO` | sincronize a hora do Windows: a idade dos pools e a `latencia_s` dependem do relógio |
+| Telegram `409 Conflict` no log | outro programa (ou um webhook) está lendo o mesmo bot; use um bot só para este programa |
+| erros estranhos de banco/`database is locked` | não deixe a pasta dentro do **OneDrive/Dropbox/Google Drive** (sincronizam o SQLite no meio da escrita); use algo como `C:\bots\` |
 
 ## Estrutura
 

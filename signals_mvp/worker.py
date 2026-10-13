@@ -52,7 +52,8 @@ class Heartbeat:
 def make_gt(cfg: Config) -> GtClient:
     g = cfg["gt"]
     limiter = RateLimiter(g["req_por_min"], g["burst"], pause_s=g["pausa_429_s"], pause_max_s=g["pausa_429_max_s"])
-    return GtClient(HttpClient(g["base_url"], limiter, g["timeout_s"], name="GeckoTerminal"))
+    wait_s = max(5.0, cfg["ciclo"]["intervalo_s"] / 3.0)  # cada chamada pode esperar ate 1/3 do ciclo por uma ficha
+    return GtClient(HttpClient(g["base_url"], limiter, g["timeout_s"], name="GeckoTerminal"), wait_s=wait_s)
 
 
 def make_goplus(cfg: Config) -> GoPlusClient:
@@ -85,6 +86,19 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
                     telegram.notify("\u26a0 " + message)
                 except TelegramError:
                     pass
+
+
+CLOCK_SKEW_WARN_S = 10.0
+
+
+def clock_skew_message(skew: Optional[float]) -> Optional[str]:
+    if skew is None or abs(skew) <= CLOCK_SKEW_WARN_S:
+        return None
+    side = "ADIANTADO" if skew > 0 else "ATRASADO"
+    return (
+        f"O relogio do PC esta {side} {abs(skew):.0f}s em relacao a internet: a idade dos pools e a latencia_s ficam ERRADAS. "
+        "Sincronize a hora do Windows (Configuracoes > Hora e idioma > Sincronizar agora)."
+    )
 
 
 class Worker:
@@ -182,6 +196,15 @@ class Worker:
         self._config_mtime = self._mtime(self.paths.config)
         self._meta_mtime = self._mtime(meta_path(self.paths, cfg))
         validate_networks(engine, gt, telegram)
+        skew_message = clock_skew_message(gt.http.clock_skew_s())
+        if skew_message:
+            log.error(skew_message)
+            console.warning(skew_message)
+            if telegram:
+                try:
+                    telegram.notify("\u26a0 " + skew_message)
+                except TelegramError:
+                    pass
 
         poller: Optional[TelegramPoller] = None
         if telegram:

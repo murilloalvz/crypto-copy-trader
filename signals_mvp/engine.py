@@ -56,6 +56,7 @@ class CycleStats:
     postponed: int = 0
     followed_up: int = 0
     errors: int = 0
+    throttled: int = 0          # chamadas adiadas pelo limitador LOCAL (esperado quando o IP e apertado; nao e erro)
     rate_limited: bool = False
     gt_calls: int = 0
     duration_s: float = 0.0
@@ -73,6 +74,8 @@ class CycleStats:
         ]
         if self.rate_limited:
             parts.append("429!")
+        if self.throttled:
+            parts.append(f"limitado {self.throttled}")
         if self.errors:
             parts.append(f"erros {self.errors}")
         if latency_p50 is not None:
@@ -160,7 +163,7 @@ class Engine:
         limiter = getattr(getattr(self.gt, "http", None), "limiter", None)
         if limiter is None:
             return configured
-        sustainable = int(limiter.rate * self.c["ciclo"]["intervalo_s"]) + 1
+        sustainable = limiter.available_within(self.c["ciclo"]["intervalo_s"])
         return max(3, min(configured, sustainable))
 
     def run_cycle(self) -> CycleStats:
@@ -229,15 +232,29 @@ class Engine:
             budget.exhaust()
             return None
         except ApiError as exc:
+            if exc.kind == "budget":  # limitador local: sem ficha neste ciclo; a chain entra primeiro no proximo (rodizio)
+                stats.throttled += 1
+                budget.exhaust()
+                return None
             stats.errors += 1
             log.warning("GeckoTerminal %s falhou: %s", getattr(fn, "__name__", "?"), exc)
             return None
         self.heartbeat()
         return result
 
+    def _rotated(self, items: dict) -> list:
+        """Rodizio: a chain que comeca muda a cada ciclo, para nenhuma passar fome quando o orcamento e curto."""
+        keys = list(items)
+        if not keys:
+            return keys
+        shift = self.cycle_count % len(keys)
+        return keys[shift:] + keys[:shift]
+
     def _discover(self, budget: CallBudget, keep: int, stats: CycleStats, seen: dict, first_pages: bool) -> None:
         """`first_pages`: pagina 1 de cada chain. Senao: paginas 2..N (so com a sobra do orcamento)."""
-        for chain, ccfg in self.enabled_chains().items():
+        chains = self.enabled_chains()
+        for chain in self._rotated(chains):
+            ccfg = chains[chain]
             pages = [1] if first_pages else list(range(2, ccfg["paginas_new_pools"] + 1))
             for page in pages:
                 snaps = self._gt(budget, stats, self.gt.new_pools, self.ctx[chain], page, keep=keep)
@@ -260,7 +277,8 @@ class Engine:
             pools = wanted.setdefault(row["chain"], [])
             if row["pool"] not in pools:
                 pools.append(row["pool"])
-        for chain, pools in wanted.items():
+        for chain in self._rotated(wanted):
+            pools = wanted[chain]
             for start in range(0, len(pools), 30):
                 snaps = self._gt(budget, stats, self.gt.pools_multi, self.ctx[chain], pools[start : start + 30], keep=keep)
                 if snaps is None:
@@ -682,7 +700,8 @@ class Engine:
         removed = self.storage.prune(now, keep_days=3)
         if removed:
             log.info("poda do banco: %s", removed)
-        self._attempts = {k: v for k, v in self._attempts.items() if v < 1000}
+        if len(self._attempts) > 5000:  # so importam dentro da janela de 10-25 min do pool
+            self._attempts.clear()
         self._info_cache = {k: v for k, v in self._info_cache.items() if now - v[0] < INFO_CACHE_S}
 
     # ------------------------------------------------------------------ resumo / status

@@ -19,7 +19,7 @@ from .narrative import load_meta
 from .telegram import TelegramClient, TelegramError
 from .triggers import check_novo
 from .util import fmt_age, fmt_usd, load_env
-from .worker import make_goplus, make_gt, meta_path
+from .worker import CLOCK_SKEW_WARN_S, clock_skew_message, make_goplus, make_gt, meta_path
 
 
 def _line(label: str, status: str, detail: str = "") -> None:
@@ -52,6 +52,15 @@ def run_netcheck(paths: Paths) -> int:
     except ApiError as exc:
         _line("GeckoTerminal /networks", "FALHOU", str(exc))
         ids = set()
+        problems += 1
+
+    skew = gt.http.clock_skew_s()
+    if skew is None:
+        _line("Relogio do PC", "PULADO", "sem resposta do servidor para comparar")
+    elif abs(skew) <= CLOCK_SKEW_WARN_S:
+        _line("Relogio do PC", "OK", f"diferenca de {skew:+.1f}s para a internet")
+    else:
+        _line("Relogio do PC", "FALHOU", clock_skew_message(skew) or "")
         problems += 1
 
     for name, chain in cfg.enabled_chains().items():

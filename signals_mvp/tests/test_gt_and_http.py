@@ -234,6 +234,40 @@ class HttpClientTest(unittest.TestCase):
         self.assertEqual(http.calls, 1)
 
 
+class ClockSkewTest(unittest.TestCase):
+    def http(self, date_header):
+        limiter = RateLimiter(6000, 100, clock=FakeClock(0), sleep=lambda s: None)
+        session = FakeSession([("/x", FakeResponse(200, {}, headers={"Date": date_header} if date_header else {}))])
+        return HttpClient("https://a.example", limiter, session=session, name="X")
+
+    def test_skew_is_local_minus_server(self) -> None:
+        import time
+        from email.utils import formatdate
+
+        http = self.http(formatdate(time.time() - 30, usegmt=True))  # servidor 30 s atras => PC adiantado
+        self.assertIsNone(http.clock_skew_s())
+        http.get_json("x")
+        self.assertAlmostEqual(http.clock_skew_s(), 30.0, delta=2.5)
+
+    def test_missing_or_garbage_header_is_ignored(self) -> None:
+        http = self.http(None)
+        http.get_json("x")
+        self.assertIsNone(http.clock_skew_s())
+        http = self.http("isto nao e uma data")
+        http.get_json("x")
+        self.assertIsNone(http.clock_skew_s())
+
+    def test_warning_message_thresholds(self) -> None:
+        from ..worker import clock_skew_message
+
+        self.assertIsNone(clock_skew_message(None))
+        self.assertIsNone(clock_skew_message(3.0))
+        self.assertIsNone(clock_skew_message(-10.0))
+        self.assertIn("ADIANTADO", clock_skew_message(45.0))
+        self.assertIn("ATRASADO", clock_skew_message(-120.0))
+        self.assertIn("latencia_s", clock_skew_message(45.0))
+
+
 class GtClientTest(unittest.TestCase):
     def make(self, routes):
         limiter = RateLimiter(6000, 100, clock=FakeClock(0), sleep=lambda s: None)

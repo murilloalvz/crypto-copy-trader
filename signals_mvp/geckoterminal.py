@@ -28,7 +28,7 @@ log = logging.getLogger("signals_mvp.gt")
 ACCEPT = "application/json;version=20230302"
 INCLUDE = "base_token,quote_token,dex"
 MULTI_MAX = 30
-PATIENT_WAIT_S = 20.0  # chamadas de alto valor (enriquecer candidato, fechar acompanhamento) esperam o limitador ate isto
+PATIENT_WAIT_S = 30.0  # chamadas de alto valor (enriquecer candidato, fechar acompanhamento) esperam o limitador ate isto
 
 
 # ---------------------------------------------------------------------------
@@ -256,21 +256,22 @@ def parse_network_ids(data: Any) -> set[str]:
 class GtClient:
     """Chamadas ao GeckoTerminal. Levanta ApiError; quem chama decide o que fazer."""
 
-    def __init__(self, http: HttpClient, clock: Callable[[], float] = utc_now):
+    def __init__(self, http: HttpClient, clock: Callable[[], float] = utc_now, wait_s: float = 5.0):
         self.http = http
         self.clock = clock
+        self.wait_s = wait_s   # quanto uma chamada comum espera por uma ficha do limitador (as de alto valor esperam mais)
         self.http.headers.setdefault("Accept", ACCEPT)
 
     def new_pools(self, ctx: ChainCtx, page: int) -> list[PoolSnap]:
         """`observed_ts` das fotos = relogio no instante em que a resposta chegou."""
-        data = self.http.get_json(f"networks/{ctx.gt_network}/new_pools", {"page": page, "include": INCLUDE})
+        data = self.http.get_json(f"networks/{ctx.gt_network}/new_pools", {"page": page, "include": INCLUDE}, max_wait_s=self.wait_s)
         return parse_pools_response(data, ctx, self.clock())
 
     def pools_multi(self, ctx: ChainCtx, pools: Iterable[str]) -> list[PoolSnap]:
         batch = list(pools)[:MULTI_MAX]
         if not batch:
             return []
-        data = self.http.get_json(f"networks/{ctx.gt_network}/pools/multi/{','.join(batch)}", {"include": INCLUDE})
+        data = self.http.get_json(f"networks/{ctx.gt_network}/pools/multi/{','.join(batch)}", {"include": INCLUDE}, max_wait_s=self.wait_s)
         return parse_pools_response(data, ctx, self.clock())
 
     def ohlcv(self, ctx: ChainCtx, pool: str, target_side: str, start_ts: float, end_ts: float) -> list[Candle]:

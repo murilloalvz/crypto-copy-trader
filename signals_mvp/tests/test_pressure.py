@@ -47,6 +47,65 @@ class AdaptiveLimiterTest(unittest.TestCase):
         self.assertEqual(limiter.per_min, 5.0)
 
 
+class AvailableWithinTest(unittest.TestCase):
+    def test_counts_tokens_and_refill_and_respects_pause(self) -> None:
+        clock = FakeClock(0.0)
+        limiter = RateLimiter(60, 3, pause_s=30, pause_max_s=60, clock=clock, sleep=clock.advance)
+        self.assertEqual(limiter.available_within(10), 3 + 10)        # 3 fichas + 1/s durante 10 s
+        limiter.acquire()
+        limiter.acquire()
+        limiter.acquire()
+        self.assertEqual(limiter.available_within(10), 10)
+        limiter.on_429()
+        self.assertEqual(limiter.available_within(10), 0)              # em pausa por mais tempo que a janela
+        clock.advance(31)
+        self.assertGreaterEqual(limiter.available_within(10), 1)
+
+    def test_faster_recovery_after_a_429_burst(self) -> None:
+        limiter = RateLimiter(15, 2)
+        for _ in range(3):
+            limiter.on_429()
+        floor = limiter.per_min
+        self.assertEqual(floor, 3.75)
+        for _ in range(10):                    # ~10 chamadas ok (poucos ciclos) ja devolvem o ritmo cheio
+            limiter.on_success()
+        self.assertEqual(limiter.per_min, 8.75)
+        for _ in range(10):
+            limiter.on_success()
+        self.assertEqual(limiter.per_min, 13.75)
+
+
+class RoundRobinTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        self.env.close()
+
+    def test_first_chain_rotates_so_none_starves_under_a_short_budget(self) -> None:
+        self.env = Env({"gt": {"orcamento_por_ciclo": 3}})
+        order: list[str] = []
+        original = self.env.gt.new_pools
+
+        def spy(ctx, page):
+            order.append(ctx.name)
+            return original(ctx, page)
+
+        self.env.gt.new_pools = spy  # type: ignore[method-assign]
+        self.env.engine.cfg.raw["gt"]["orcamento_por_ciclo"] = 3
+        firsts = []
+        for _ in range(6):
+            order.clear()
+            self.env.cycle(1)
+            firsts.append(order[0])
+        self.assertEqual(set(firsts), {"solana", "bsc", "robinhood"})
+
+    def test_local_throttle_is_counted_but_is_not_an_error(self) -> None:
+        self.env = Env()
+        self.env.gt.fail["new_pools"] = ApiError("budget", "sem ficha")
+        stats = self.env.cycle(1)
+        self.assertGreaterEqual(stats.throttled, 1)
+        self.assertEqual(stats.errors, 0)
+        self.assertIn("limitado", stats.line())
+
+
 class CycleBudgetTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.env.close()

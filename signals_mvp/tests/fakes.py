@@ -40,10 +40,11 @@ class FakeClock:
 
 
 class FakeResponse:
-    def __init__(self, status: int = 200, payload: Any = None, raw: Optional[str] = None):
+    def __init__(self, status: int = 200, payload: Any = None, raw: Optional[str] = None, headers: Optional[dict] = None):
         self.status_code = status
         self._payload = payload
         self._raw = raw
+        self.headers = headers or {}
 
     def json(self) -> Any:
         if self._raw is not None:

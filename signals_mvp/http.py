@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Mapping
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, Mapping, Optional
 
 import requests
 
@@ -49,7 +50,7 @@ class RateLimiter:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         min_per_min: float | None = None,
-        recover_per_success: float = 0.1,
+        recover_per_success: float = 0.5,
     ):
         self.max_per_min = float(per_min)
         self.min_per_min = float(min_per_min) if min_per_min is not None else max(2.0, per_min * 0.25)
@@ -78,6 +79,15 @@ class RateLimiter:
         now = self._clock()
         self._tokens = min(self.burst, self._tokens + (now - self._stamp) * self.rate)
         self._stamp = now
+
+    def available_within(self, seconds: float) -> int:
+        """Quantas chamadas cabem nos proximos `seconds` s (fichas de hoje + as que enchem ate la). 0 se em pausa de 429."""
+        with self._lock:
+            if self.blocked_for() > seconds:
+                return 0
+            self._refill()
+            usable = max(0.0, seconds - self.blocked_for())
+            return int(min(self.burst, self._tokens) + self.rate * usable)
 
     # -- uso --------------------------------------------------------------------
     def acquire(self, max_wait_s: float = 5.0) -> None:
@@ -141,6 +151,14 @@ class HttpClient:
         self.calls = 0
         self.errors = 0
         self.rate_limited = 0
+        self.last_server_date: Optional[float] = None   # header `Date` da ultima resposta (epoch)
+        self.last_local_at_response: Optional[float] = None
+
+    def clock_skew_s(self) -> Optional[float]:
+        """Relogio local menos relogio do servidor (positivo = PC adiantado). None se ainda nao ha resposta."""
+        if self.last_server_date is None or self.last_local_at_response is None:
+            return None
+        return self.last_local_at_response - self.last_server_date
 
     def get_json(self, path: str, params: Mapping[str, Any] | None = None, max_wait_s: float = 5.0) -> Any:
         self.limiter.acquire(max_wait_s)
@@ -155,6 +173,13 @@ class HttpClient:
             self.errors += 1
             raise ApiError("network", f"{self.name}: {type(exc).__name__}") from None
         status = response.status_code
+        date_header = getattr(response, "headers", {}).get("Date") if getattr(response, "headers", None) is not None else None
+        if date_header:
+            try:
+                self.last_server_date = parsedate_to_datetime(date_header).timestamp()
+                self.last_local_at_response = time.time()
+            except (TypeError, ValueError):
+                pass
         if status == 429:
             self.errors += 1
             self.rate_limited += 1
