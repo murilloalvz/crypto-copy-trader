@@ -1,0 +1,4 @@
+# Dependencias minimas do bot de sinais (signals_mvp v0).
+# Tudo o mais e biblioteca padrao do Python (3.10 ou superior).
+requests>=2.31,<3
+PyYAML>=6.0,<7

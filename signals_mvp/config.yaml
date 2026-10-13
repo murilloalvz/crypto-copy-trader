@@ -1,0 +1,308 @@
+# =============================================================================
+# config.yaml - Bot de sinais de memecoins (signals_mvp v0)
+# =============================================================================
+# MODO: PAPER / SOMENTE LEITURA. O bot nunca executa ordem, nunca assina nem
+# envia transacao e nunca usa chave privada. Ele manda alerta no Telegram e
+# voce decide e opera manualmente no simulador (Axiom / GMGN).
+#
+# REGRA DE OURO (disciplina dos dados)
+#   Cada alteracao DESTE arquivo gera uma NOVA VERSAO (hash de 12 caracteres),
+#   gravada em toda linha dos CSVs na coluna `versao_config`. Mudou limite ou
+#   peso = outra versao = nao compare "no mesmo balaio" com o dia anterior.
+#   Comentarios e espacos nao mudam a versao; numeros, listas e chaves mudam.
+#   O bot recarrega este arquivo sozinho a cada ciclo; se voce errar a sintaxe
+#   ele avisa e continua na versao anterior (nao cai).
+#
+#   Recalibracao de pesos (v3): calibrar num periodo -> CONGELAR -> validar num
+#   periodo seguinte que o calibrador nunca viu. Nunca ajuste e avalie no mesmo
+#   dado. Os pesos abaixo sao PONTO DE PARTIDA nao validado, nao evidencia.
+#
+# Unidades: valores em USD; porcentagens em "pontos percentuais" (30 = 30%);
+# tempos em segundos (_s) ou minutos (_min).
+# =============================================================================
+
+modo: paper          # so informativo; o bot nao tem modo "live"
+
+# -----------------------------------------------------------------------------
+# Ritmo do bot
+# -----------------------------------------------------------------------------
+ciclo:
+  intervalo_s: 45          # alvo entre o inicio de dois ciclos
+  stall_guard_s: 300       # sem ciclo ha mais de N s => log de erro e reinicio do worker
+
+# -----------------------------------------------------------------------------
+# GeckoTerminal (API publica gratuita, limite oficial ~30 chamadas/min por IP)
+# -----------------------------------------------------------------------------
+gt:
+  base_url: "https://api.geckoterminal.com/api/v2"
+  # Ritmo MAXIMO. O bot reduz sozinho pela metade a cada HTTP 429 e volta a subir aos poucos (adaptativo),
+  # entao nao precisa chegar perto do limite oficial. Se seu IP e compartilhado (rede de empresa/CGNAT), baixe.
+  req_por_min: 15
+  burst: 2                 # rajada maxima de chamadas seguidas
+  orcamento_por_ciclo: 11  # teto de chamadas por ciclo (~ req_por_min x intervalo); encolhe junto apos um 429
+  timeout_s: 20
+  pausa_429_s: 30          # pausa minima apos HTTP 429 (o header retry-after vem 0 e nao e confiavel)
+  pausa_429_max_s: 240     # a pausa dobra a cada 429 seguido ate este teto
+
+# -----------------------------------------------------------------------------
+# GoPlus Security (API publica gratuita)
+# -----------------------------------------------------------------------------
+goplus:
+  base_url: "https://api.gopluslabs.io/api/v1"
+  req_por_min: 15
+  timeout_s: 20
+  lote_max: 20             # contratos por chamada
+  pausa_erro_s: 60         # pausa depois de erro/429
+
+# -----------------------------------------------------------------------------
+# Filtros gerais (aplicados antes da seguranca)
+# -----------------------------------------------------------------------------
+filtros:
+  mc_min_usd: 0                    # 0 = sem minimo
+  mc_max_usd: 50000000             # acima disso o numero e lixo/manipulado em pool recem-criado
+  dex_ignorar: []                  # ids de DEX do GeckoTerminal a ignorar, ex.: ["uniswap-v4-bsc"]
+  # DEXes em que o GeckoTerminal reporta liquidez 0/virtual (curva de bonding). Nesses, liquidez
+  # 0 e tratada como DESCONHECIDA (vazia no CSV, nao zero): o corte de liquidez minima nao se
+  # aplica e o componente de liquidez do score fica em 0 com aviso "liq desconhecida".
+  dex_liquidez_nao_confiavel: ["meteora-dbc"]
+
+# -----------------------------------------------------------------------------
+# Gatilhos - cada sinal carrega uma ETIQUETA
+# -----------------------------------------------------------------------------
+gatilhos:
+  # novo: pool com menos de `idade_max_min` e fluxo acima dos limites.
+  novo:
+    idade_max_min: 10
+    vol_m5_min_usd: 1500
+    transacoes_m5_min: 15          # compras + vendas nos ultimos 5 min
+    compras_m5_min: 10
+    compras_pct_min: 55            # % de compras (por contagem) no m5
+    compradores_unicos_m5_min: 8
+  # sobrevivente20: pool com 20-25 min, preco >= 40% do preco inicial e compras ainda ativas.
+  # ATENCAO: este e um gatilho OPERACIONAL aproximado, feito com dados de API. Nao e o gatilho
+  # H2 pre-registrado do programa de pesquisa (que usa swaps reais decodificados - v1).
+  sobrevivente20:
+    idade_min_min: 20
+    idade_max_min: 25
+    preco_min_pct_do_inicial: 40
+    primeiro_avistamento_max_s: 180   # preco inicial so vale se vimos o pool nos primeiros N s de vida
+    vol_m5_min_usd: 800
+    compras_m5_min: 8
+    compradores_unicos_m5_min: 5
+
+# -----------------------------------------------------------------------------
+# Seguranca (corte binario). Falhou = descarta e loga o motivo em descartados.csv.
+# Fonte primaria: GoPlus. "Sem dado" NUNCA vira "ok".
+# -----------------------------------------------------------------------------
+seguranca:
+  # O que fazer quando a GoPlus nao tem dado (token novo demais, chain nao coberta, API fora):
+  #   liberar_com_aviso -> segue, mostra "SEM DADO" no alerta e desconta pontos (padrao v0)
+  #   descartar         -> corta o token (modo estrito; quase nada de token novo passa)
+  # MEDIDO em 2026-10-13: ate ~12 min de vida a GoPlus tinha dado para ~1 de cada 19 tokens
+  # novos (Solana, BSC e Robinhood). Com "descartar" o gatilho `novo` praticamente nao dispara.
+  sem_dado_acao: liberar_com_aviso
+  top10_max_pct: 30                # top 10 holders (sem pool/curva/queima) acima disso corta
+  taxa_max_pct: 5                  # buy/sell tax acima disso corta (EVM)
+  cache_min: 30                    # reaproveita veredito ok/falhou do mesmo token por N min
+  recheck_tardio: true             # re-consulta a GoPlus no fim do acompanhamento p/ medir se os "sem dado" eram ruins
+  evm:
+    exigir_open_source: true
+    exigir_owner_renunciado: false # curvas (four.meme) tem o contrato gerenciador como owner; nao exija por padrao
+    bloquear_mintable: false       # true = corta token com funcao de mint
+    lp_min_travada_queimada_pct: 70
+    # LP so faz sentido em pool AMM v2 (token de LP). Em v3/v4/curva a checagem e "nao se aplica".
+    lp_aplicar_em_dex: ["pancakeswap_v2", "uniswap_v2", "uniswap-v2-robinhood", "sushiswap_v2"]
+    holders_min_contagem: 10       # abaixo disso a lista da GoPlus e incompleta => top10 = "sem dado"
+    enderecos_ignorar_top10:       # queima/nulos; o par do pool e o dono-curva tambem sao ignorados
+      - "0x0000000000000000000000000000000000000000"
+      - "0x000000000000000000000000000000000000dead"
+    tags_ignorar_top10: ["null", "dead", "burn", "pair", "pool", "router", "lock", "bonding", "four.meme", "token manager"]
+    # GoPlus devolve "1" quando o risco existe. Bloqueantes cortam; avisos so aparecem no alerta.
+    flags_bloqueantes: ["cannot_buy", "cannot_sell_all", "hidden_owner", "can_take_back_ownership",
+                        "owner_change_balance", "selfdestruct", "personal_slippage_modifiable",
+                        "transfer_pausable", "honeypot_with_same_creator"]
+    flags_aviso: ["is_proxy", "is_blacklisted", "slippage_modifiable", "external_call",
+                  "trading_cooldown", "anti_whale_modifiable"]
+  solana:
+    # O GeckoTerminal (token info) tambem informa mint/freeze authority na hora. Se a GoPlus nao
+    # tiver dado, usa o GeckoTerminal SO para esses dois itens e marca a fonte no log.
+    usar_gt_para_mint_freeze: true
+    # Top10 de holders na Solana nao vem da GoPlus de forma confiavel; fica "sem dado" na v0
+    # (v1 resolve via RPC). Por isso nao e item obrigatorio na Solana.
+
+# -----------------------------------------------------------------------------
+# Narrativa (meta do dia). Palavras-chave em meta.txt, editadas por voce.
+# -----------------------------------------------------------------------------
+narrativa:
+  arquivo: "meta.txt"
+  substring_min_len: 4     # palavra-chave com >= N letras tambem casa dentro de uma palavra maior (ex.: "agent" em "AIAgent")
+  buscar_descricao: true   # 1 chamada extra por candidato (token info) para casar tambem a descricao
+
+# -----------------------------------------------------------------------------
+# Enriquecimento dos candidatos (gastam chamadas do orcamento do GeckoTerminal)
+# -----------------------------------------------------------------------------
+enriquecimento:
+  buscar_trades: true      # valor (USD) de compras/vendas pelas ultimas ~300 trades; cobertura pode ser parcial
+
+# -----------------------------------------------------------------------------
+# Score 0-100 (simples e transparente). Pesos = tetos de cada componente.
+# -----------------------------------------------------------------------------
+score:
+  minimo_alerta: 60        # so alerta acima disso; todo token avaliado e logado de qualquer forma
+  verde_min: 75            # bolinha verde a partir daqui (abaixo: amarela)
+  pesos:                   # a soma tem que dar 100
+    narrativa: 25
+    fluxo: 35
+    distribuicao: 20
+    liquidez: 20
+  narrativa:
+    pontos_match_nome_ticker: 15   # por palavra-chave casada no nome/ticker (teto = peso da narrativa)
+    pontos_match_descricao: 8      # por palavra-chave casada so na descricao
+  fluxo:                   # sub-pesos somam o peso `fluxo`
+    pontos_volume: 12
+    vol_m5_zero_usd: 500           # volume m5 que vale 0 ponto
+    vol_m5_cheio_usd: 20000        # volume m5 que vale pontos cheios
+    pontos_aceleracao: 10
+    acel_cheia: 3.0                # aceleracao (x) que vale pontos cheios; 1.0x vale 0
+    acel_sem_base_fracao: 0.5      # pool com < 5 min nao tem base de comparacao: ganha esta fracao dos pontos
+    pontos_pressao_compra: 8
+    compras_pct_cheio: 70          # % de compras (contagem) que vale pontos cheios; 50% vale 0
+    pontos_participacao: 5
+    compradores_unicos_cheio: 30   # compradores unicos no m5 que valem pontos cheios
+  distribuicao:            # sub-pesos somam o peso `distribuicao`
+    pontos_top10: 12
+    top10_otimo_pct: 10            # top10 <= isto vale pontos cheios; >= seguranca.top10_max_pct vale 0
+    pontos_dispersao: 8
+    dispersao_cheia: 0.8           # compradores unicos / compras (m5) que vale pontos cheios
+    dispersao_zero: 0.3
+  liquidez:                # sub-pesos somam o peso `liquidez`
+    pontos_nivel: 12
+    liq_zero_usd: 3000
+    liq_cheia_usd: 50000
+    pontos_impacto: 8
+    impacto_cheio_pct: 1.0         # posicao padrao <= 1% da liquidez vale pontos cheios
+    impacto_zero_pct: 5.0          # >= 5% vale 0
+  penalidades:
+    # volume suspeito (soma das regras abaixo, limitada a `volume_suspeito_max`)
+    volume_suspeito_max: 15
+    vol_sobre_liq_max: 30          # vol_m5 / liquidez acima disso (giro absurdo)
+    pen_vol_sobre_liq: 6
+    tx_por_carteira_max: 6         # transacoes m5 / compradores unicos acima disso (mesma carteira girando)
+    tx_por_carteira_min_tx: 60     # so vale com pelo menos N transacoes
+    pen_tx_por_carteira: 6
+    sem_vendas_compras_min: 12     # compras >= N e ZERO vendas (cara de honeypot)
+    pen_sem_vendas: 15
+    ticket_medio_min_usd: 1.5      # volume m5 / transacoes abaixo disso (po, ordens minusculas)
+    pen_ticket_baixo: 4
+    # liquidez baixa: abaixo de `liq_baixa_usd`, desconta ate `pen_liq_baixa_max` (linear)
+    liq_baixa_usd: 8000
+    pen_liq_baixa_max: 10
+    # seguranca incompleta (nao e "ok"): desconta pontos
+    pen_seguranca_sem_dado: 10
+    pen_seguranca_parcial: 5
+
+# -----------------------------------------------------------------------------
+# Plano de saida (mostrado no alerta e usado para simular o resultado)
+# -----------------------------------------------------------------------------
+plano:
+  posicao_usd: 100         # posicao padrao (botao "entrei" grava este valor; define o % da liquidez)
+  tp1_pct: 60              # take profit 1: +60% sobre a entrada
+  tp1_venda_pct: 50        # vende 50% da posicao no TP1
+  sl_pct: 30               # stop loss: -30% sobre a entrada
+  tempo_min: 15            # saida a mercado neste prazo se nada disparou (o exemplo do handoff usa 5)
+  sl_apos_tp1: mantem      # mantem = stop original continua valendo para o resto | breakeven = sobe pro preco de entrada
+  taxa_terminal_pct: 1.0   # taxa do terminal (Axiom/GMGN) por perna, sobre o valor negociado
+
+# -----------------------------------------------------------------------------
+# Acompanhamento (enviados E nao enviados)
+# -----------------------------------------------------------------------------
+acompanhamento:
+  # Checkpoints FIXOS em +5, +15 e +60 min (sao as colunas mc_5m, mc_15m, mc_1h do CSV estavel).
+  # A janela do OHLCV de 1 min vai de 0 a +60 min.
+  espera_pos_janela_s: 90        # espera apos a janela fechar antes de buscar o OHLCV
+  desistir_apos_min: 360         # se o OHLCV nao vier em 6 h, fecha como "sem_dado"
+
+# -----------------------------------------------------------------------------
+# Alertas no Telegram
+# -----------------------------------------------------------------------------
+alertas:
+  ligado: true
+  max_atraso_s: 180        # alerta que nao conseguiu sair em N s e descartado (quick trade velho nao serve)
+  botoes: true             # botoes inline "entrei" / "passei"
+
+resumo_diario:
+  ligado: true
+  hora_local: "22:00"      # hora do relogio do PC (HH:MM)
+
+# -----------------------------------------------------------------------------
+# Links dos botoes. Placeholders: {pool} {token} {gmgn_slug} {dexscreener_slug}
+# Confira os links na primeira vez; se algum abrir pagina errada, ajuste aqui.
+# -----------------------------------------------------------------------------
+links:
+  axiom: "https://axiom.trade/meme/{pool}"
+  gmgn: "https://gmgn.ai/{gmgn_slug}/token/{token}"
+  dexscreener: "https://dexscreener.com/{dexscreener_slug}/{pool}"
+
+# -----------------------------------------------------------------------------
+# Chains. `terminal` decide o botao principal: axiom (Solana) ou gmgn (BSC/Robinhood).
+# `ligada: false` desliga a chain sem apagar nada. No start o bot confere no
+# GeckoTerminal se `gt_rede` existe; se nao existir, desliga a chain e avisa.
+# -----------------------------------------------------------------------------
+chains:
+  solana:
+    ligada: true
+    nome: "SOL"
+    plataforma: solana             # solana | evm
+    gt_rede: "solana"
+    goplus_id: "solana"
+    terminal: axiom
+    gmgn_slug: "sol"
+    dexscreener_slug: "solana"
+    paginas_new_pools: 2           # ~22 pools novos/min na Solana: 1 pagina (20) perde pools
+    liquidez_min_usd: 3000
+    fee_rede_usd: 0.15             # estimativa por perna (priority fee + tip)
+    sem_dado_acao: ""              # vazio = usa seguranca.sem_dado_acao; ou liberar_com_aviso | descartar
+    ativos_referencia:             # tokens-base que NAO sao a memecoin (SOL, stables)
+      - "So11111111111111111111111111111111111111112"
+      - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      - "Es9vMFrzaCERmJfrF4H2FYD4KCoNyFpq52ZjMVrvUZYB"
+      - "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"
+  bsc:
+    ligada: true
+    nome: "BSC"
+    plataforma: evm
+    gt_rede: "bsc"
+    goplus_id: "56"
+    terminal: gmgn
+    gmgn_slug: "bsc"
+    dexscreener_slug: "bsc"
+    paginas_new_pools: 1
+    liquidez_min_usd: 3000
+    fee_rede_usd: 0.20
+    sem_dado_acao: ""
+    ativos_referencia:
+      - "0x0000000000000000000000000000000000000000"
+      - "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+      - "0x55d398326f99059ff775485246999027b3197955"
+      - "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d"
+      - "0xe9e7cea3dedca5984780bafc599bd69add087d56"
+      - "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409"
+      - "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+  robinhood:
+    ligada: true                   # id "robinhood" confirmado no GeckoTerminal em 2026-10-13
+    nome: "ROBINHOOD"
+    plataforma: evm
+    gt_rede: "robinhood"
+    goplus_id: "4663"              # a GoPlus lista a chain, mas devolveu registro vazio nos testes
+    terminal: gmgn
+    gmgn_slug: "robinhood"         # CONFIRME este slug no GMGN (nao foi possivel verificar sem scraping)
+    dexscreener_slug: "robinhood"  # confirmado pela API do DexScreener em 2026-10-13
+    paginas_new_pools: 1
+    liquidez_min_usd: 3000
+    fee_rede_usd: 0.05
+    sem_dado_acao: ""
+    ativos_referencia:
+      - "0x0000000000000000000000000000000000000000"
+      - "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      - "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+      - "0x5fc5360d0400a0fd4f2af552add042d716f1d168"

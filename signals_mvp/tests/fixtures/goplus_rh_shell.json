@@ -1,0 +1,16 @@
+{
+ "code": 1,
+ "message": "OK",
+ "result": {
+  "0x659a71a904bcbb84db41e633234734ea82b9afde": {
+   "buy_tax": "",
+   "cannot_buy": "0",
+   "is_in_dex": "0",
+   "is_open_source": "0",
+   "owner_address": "",
+   "sell_tax": "",
+   "token_name": "Fat Duval",
+   "token_symbol": "DUVE"
+  }
+ }
+}
