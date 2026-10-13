@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 from . import triggers as trg
-from .alerts import AlertData, build_keyboard, format_alert_text
+from .alerts import AlertData, build_keyboard, delivery_variants, format_alert_text
 from .config import Config
 from .geckoterminal import GtClient
 from .goplus import GoPlusClient
@@ -596,15 +596,8 @@ class Engine:
         )
         text = format_alert_text(data, plan.to_dict(), cfg["score"]["verde_min"])
         keyboard = build_keyboard(data, cfg["links"], cfg["alertas"]["botoes"])
-        last_error = ""
-        for attempt in range(2):
-            try:
-                message_id = self.tg.send_message(text, keyboard)
-            except TelegramError as exc:
-                last_error = str(exc)
-                if attempt == 0:
-                    self.sleep(min(2.0, exc.retry_after or 1.0))
-                continue
+        message_id, last_error = self._deliver(text, keyboard)
+        if message_id is not None:
             alert_ts = self.clock()
             real_latency = None if snap.created_ts is None else alert_ts - snap.created_ts
             self.storage.update_signal(signal_id, enviado=1, alert_ts=alert_ts, tg_message_id=message_id, latencia_s=real_latency)
@@ -615,6 +608,27 @@ class Engine:
             return None
         log.error("falha ao enviar alerta do sinal %s: %s", signal_id, last_error)
         return f"falha_telegram: {last_error[:80]}"
+
+    def _deliver(self, text: str, keyboard: dict) -> tuple[Optional[int], str]:
+        """Envia o alerta. Telegram 400 (ex.: link de botao invalido, entidade HTML) => tenta uma variante mais simples,
+        para o alerta NUNCA deixar de sair por causa de enfeite. Erro de rede/429/5xx: 1 nova tentativa e desiste."""
+        last_error = ""
+        for variant_text, variant_keyboard, parse_mode in delivery_variants(text, keyboard):
+            bad_request = False
+            for attempt in range(2):
+                try:
+                    return self.tg.send_message(variant_text, variant_keyboard, parse_mode=parse_mode), ""
+                except TelegramError as exc:
+                    last_error = str(exc)
+                    if exc.status == 400:
+                        bad_request = True
+                        log.warning("Telegram recusou o alerta (%s); tentando uma variante mais simples", exc)
+                        break
+                    if attempt == 0:
+                        self.sleep(min(2.0, exc.retry_after or 1.0))
+            if not bad_request:
+                break
+        return None, last_error
 
     # ------------------------------------------------------------------ acompanhamento
     def _followups(self, now: float, budget: CallBudget, stats: CycleStats) -> None:

@@ -39,17 +39,19 @@ def make_stdout_safe() -> None:
             pass
 
 
-def setup_logging(paths: Paths, secrets: Iterable[str] = (), debug: bool = False, console: bool = True) -> None:
+def setup_logging(paths: Paths, secrets: Iterable[str] = (), debug: bool = False, console: bool = True, filename: str = "signals_mvp.log") -> None:
     make_stdout_safe()
     root = logging.getLogger("signals_mvp")
-    root.handlers.clear()
+    for old_handler in list(root.handlers):  # fecha (nao so descarta) os handlers de uma configuracao anterior
+        root.removeHandler(old_handler)
+        old_handler.close()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
     root.propagate = False
     secrets = tuple(secrets)
 
     paths.logs.mkdir(parents=True, exist_ok=True)
     file_handler = logging.handlers.RotatingFileHandler(
-        paths.logs / "signals_mvp.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8"
+        paths.logs / filename, maxBytes=5_000_000, backupCount=5, encoding="utf-8"
     )
     file_handler.setFormatter(RedactingFormatter("%(asctime)sZ %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S", secrets, utc=True))
     root.addHandler(file_handler)

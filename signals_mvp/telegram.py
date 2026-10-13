@@ -75,13 +75,14 @@ class TelegramClient:
         return data.get("result")
 
     # -- envio -----------------------------------------------------------------------------
-    def send_message(self, text: str, reply_markup: dict | None = None) -> int:
+    def send_message(self, text: str, reply_markup: dict | None = None, parse_mode: str | None = "HTML") -> int:
         payload: dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text[:4000],
-            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
         result = self.call("sendMessage", payload)

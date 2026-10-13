@@ -196,7 +196,8 @@ class Worker:
         self._config_mtime = self._mtime(self.paths.config)
         self._meta_mtime = self._mtime(meta_path(self.paths, cfg))
         validate_networks(engine, gt, telegram)
-        skew_message = clock_skew_message(gt.http.clock_skew_s())
+        http = getattr(gt, "http", None)
+        skew_message = clock_skew_message(http.clock_skew_s() if http is not None else None)
         if skew_message:
             log.error(skew_message)
             console.warning(skew_message)

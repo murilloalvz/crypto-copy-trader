@@ -242,7 +242,8 @@ class Supervisor:
 
 def run_supervisor(paths: Paths, force: bool = False) -> int:
     load_env(paths.env)
-    setup_logging(paths, secrets=[os.environ.get("TELEGRAM_BOT_TOKEN", "")])
+    # log proprio: no Windows dois processos nao podem rotacionar (renomear) o mesmo arquivo aberto
+    setup_logging(paths, secrets=[os.environ.get("TELEGRAM_BOT_TOKEN", "")], filename="supervisor.log")
     existing = read_pid(paths)
     if existing and pid_alive(existing) and not force:
         console.error("O bot ja esta rodando (pid %s). Use 'parar' antes, ou 'iniciar --forcar' se tiver certeza que e um pid velho.", existing)

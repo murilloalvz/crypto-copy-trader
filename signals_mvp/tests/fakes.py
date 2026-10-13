@@ -207,15 +207,26 @@ class FakeTelegram:
         self.answers: list[tuple[str, str]] = []
         self.edits: list[tuple[int, dict]] = []
         self.fail_next = 0
+        self.fail_status: Optional[int] = None
+        self.reject_urls = False
+        self.reject_html = False
+        self.attempts: list[tuple[str, Optional[dict], Optional[str]]] = []
+        self.modes: list[Optional[str]] = []
         self._next_id = 100
         self.chat_id = "42"
 
-    def send_message(self, text: str, reply_markup: Optional[dict] = None) -> int:
+    def send_message(self, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = "HTML") -> int:
+        self.attempts.append((text, reply_markup, parse_mode))
         if self.fail_next > 0:
             self.fail_next -= 1
-            raise TelegramError("falha simulada")
+            raise TelegramError("falha simulada", status=self.fail_status)
+        if self.reject_urls and reply_markup and any("url" in b for row in reply_markup.get("inline_keyboard", []) for b in row):
+            raise TelegramError("Bad Request: BUTTON_URL_INVALID", status=400)
+        if self.reject_html and parse_mode == "HTML":
+            raise TelegramError("Bad Request: can't parse entities", status=400)
         self._next_id += 1
         self.sent.append((text, reply_markup))
+        self.modes.append(parse_mode)
         return self._next_id
 
     def notify(self, text: str) -> None:

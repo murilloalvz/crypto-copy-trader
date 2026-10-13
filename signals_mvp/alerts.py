@@ -6,6 +6,7 @@ Todo texto vindo da chain (nome/ticker) e nao confiavel: e escapado para HTML e 
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -119,3 +120,19 @@ def keyboard_after_choice(data_links: list[list[dict]], label: str) -> dict:
     rows = [row for row in data_links if all("url" in b for b in row)]
     rows.append([{"text": label, "callback_data": "noop"}])
     return {"inline_keyboard": rows}
+
+
+def callbacks_only(keyboard: dict) -> dict:
+    """Teclado sem os botoes de URL (se o Telegram rejeitar um link, o alerta ainda sai com entrei/passei)."""
+    rows = [[b for b in row if "callback_data" in b] for row in keyboard.get("inline_keyboard", [])]
+    return {"inline_keyboard": [row for row in rows if row]}
+
+
+def to_plain_text(html_text: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", html_text))
+
+
+def delivery_variants(text: str, keyboard: dict) -> list[tuple[str, dict, Optional[str]]]:
+    """Do mais completo ao mais simples. So se avanca para a proxima quando o Telegram responde 400 (pedido invalido)."""
+    simple = callbacks_only(keyboard)
+    return [(text, keyboard, "HTML"), (text, simple, "HTML"), (to_plain_text(text), simple, None)]

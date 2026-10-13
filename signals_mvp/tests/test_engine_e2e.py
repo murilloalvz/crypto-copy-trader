@@ -294,6 +294,38 @@ class FunnelTest(unittest.TestCase):
         self.assertEqual(signal["enviado"], 0)
         self.assertIn("falha_telegram", signal["motivo_nao_enviado"])
 
+    def test_invalid_link_does_not_block_the_alert(self) -> None:
+        """Telegram recusa o botao de URL (400): o alerta sai mesmo assim, com os botoes entrei/passei."""
+        self.env = Env()
+        self.env.tg.reject_urls = True
+        self.env.gt.add(happy())
+        self.env.cycle(5)
+        self.assertEqual(self.env.storage.get_signal(1)["enviado"], 1)
+        _, keyboard = self.env.tg.sent[0]
+        self.assertTrue(all("callback_data" in b for row in keyboard["inline_keyboard"] for b in row))
+        self.assertEqual(self.env.tg.modes, ["HTML"])
+
+    def test_html_rejection_falls_back_to_plain_text(self) -> None:
+        self.env = Env()
+        self.env.tg.reject_html = True
+        self.env.gt.add(happy())
+        self.env.cycle(5)
+        self.assertEqual(self.env.storage.get_signal(1)["enviado"], 1)
+        text, _ = self.env.tg.sent[0]
+        self.assertNotIn("<code>", text)
+        self.assertIn("$KittyAI", text)
+        self.assertEqual(self.env.tg.modes, [None])
+
+    def test_network_errors_do_not_cascade_through_variants(self) -> None:
+        self.env = Env()
+        self.env.tg.fail_next = 10
+        self.env.gt.add(happy())
+        self.env.cycle(4)
+        signal = self.env.storage.get_signal(1)
+        self.assertEqual(signal["enviado"], 0)
+        self.assertIn("falha_telegram", signal["motivo_nao_enviado"])
+        self.assertEqual(len(self.env.tg.attempts), 2)  # 1 tentativa + 1 retry; nao sai testando variantes
+
     def test_stale_alert_is_not_sent(self) -> None:
         self.env = Env({"alertas": {"max_atraso_s": 1}})
         self.env.gt.add(happy())

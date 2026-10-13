@@ -87,6 +87,10 @@ class TelegramClientTest(unittest.TestCase):
         self.assertEqual(payload["reply_markup"], markup)
         self.assertGreater(message_id, 500)
 
+    def test_plain_text_mode_omits_parse_mode(self) -> None:
+        self.client.send_message("texto <puro>", parse_mode=None)
+        self.assertNotIn("parse_mode", self.api.requests[0][1])
+
     def test_notify_escapes_html(self) -> None:
         self.client.notify("a <b> & c")
         self.assertEqual(self.api.requests[0][1]["text"], "a &lt;b&gt; &amp; c")

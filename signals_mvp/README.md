@@ -52,7 +52,7 @@ seu `TELEGRAM_CHAT_ID`.
    `config.yaml` (tudo comentado).
 9. **Ligar (1 comando):** dois cliques em **`signals_mvp\iniciar.bat`**
    (ou `py -3 -m signals_mvp iniciar`). A janela mostra uma linha curta por ciclo; o detalhe vai para
-   `signals_mvp\logs\signals_mvp.log`.
+   `signals_mvp\logs\signals_mvp.log` (o supervisor tem o seu em `logs\supervisor.log`).
 10. **Parar (1 comando):** **`signals_mvp\parar.bat`** (ou `py -3 -m signals_mvp parar`, ou `Ctrl+C` na janela do bot).
     Ele grava os CSVs e sai com segurança.
 
