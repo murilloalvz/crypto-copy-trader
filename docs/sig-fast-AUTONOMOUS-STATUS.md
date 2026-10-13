@@ -437,3 +437,36 @@ Próximo: terminar Fase 2, então re-rodar o gate de cobertura (9
 critérios/95%) com os números corrigidos -- PASS segue pra Fase 4
 (primeiro número econômico, sem download novo), FAIL fecha o bloco
 (teto já avisado, última tentativa de sistema).
+
+## Correção do operador (2026-10-13): método de âncora recupera os 2 pulados
+
+Decisão do operador: para os 2 pools pulados por orçamento de paginação,
+usar o MESMO método de âncora já implementado e self-checked na Fase 1
+original (`h2_enumeration_no_helius_v0.find_slot_at_or_after` + `_resolve
+anchor_signature` -- busca binária de slot por `blockTime`, nunca por
+baixo, depois 1ª assinatura real desse bloco como `before`). Mesma regra
+de classificação, só busca mais eficiente -- reaproveitado, não
+reescrito.
+
+- `fetch_pool_signatures_in_window_budgeted` (scratchpad) agora semeia
+  `before` a partir desse ancora em `window_end`, em vez de `before=None`
+  (que caminha de hoje). Isso faz o orçamento cobrir só a atividade REAL
+  do pool dentro da janela de 80min, não os dias desde a migração.
+- Validado antes de confiar: reproduziu de novo o resultado já gravado
+  (`40 == 40`) de um sobrevivente são, e **recuperou exatamente**
+  `DWrrbYP65oo33Fk83iaQVHQhytntFM1uooyJHjaxpump` -- 99.343 assinaturas
+  na janela total (bate com o `n_signatures_in_window` original do
+  Stage 1, prova de correção) e 10.802 nos últimos 5min.
+- Limpos os 2 placeholders de `skipped_reason` (2 sobreviventes + 2
+  pools da Fase 2, `87JEX3WusGGKNXfrpViaHmgvQzLkiCN8nzbWggt5pump` e
+  `8LPyiTLw9thZE148H93Hn4edz4AgcoaMuK5TUJY3pump`, que tinham o mesmo
+  problema) e reprocessados com o método novo -- **todos os 4
+  recuperados com dado real**, nenhum precisou ficar no fallback
+  conservador.
+- Resultado da Fase 1 **não muda** (72/76 continuam sobreviventes, 47 no
+  treino) -- os 2 que estavam conservadoramente contados como
+  sobreviventes de fato SÃO sobreviventes reais (20 trades confirmados
+  cada). A diferença é que agora é verificado, não suposto.
+- `PAGINATION_PAGE_BUDGET` subido de 80 para 150 (cobre com folga os
+  ~100 e ~48 páginas reais que os 2 piores casos precisaram dentro da
+  janela).
