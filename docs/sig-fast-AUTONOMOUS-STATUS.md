@@ -412,3 +412,28 @@ acelerar. Investigação:
 - **Resultado real**: o ciclo seguinte, com a correção, avançou de 34
   para **51 de 76 sobreviventes** (o pool patológico foi pulado em
   segundos) -- de ~1,5 sobrevivente/hora pra ~8,5/hora.
+
+## FASE 1 completa (2026-10-13): recontagem real dos 76 sobreviventes
+
+Resultado real, 76/76 processados (2 pulados por orçamento de paginação,
+`DWrrbYP65oo33Fk83iaQVHQhytntFM1uooyJHjaxpump` e
+`kVrGb7YUhyVFyViUPcENmeK4Dw8xjhQfnJnhgE5pump`, mantidos conservadoramente
+como sobreviventes, como estavam):
+
+- total sobreviventes antes: 76
+- continuam sobreviventes: **72**
+- viraram não-sobreviventes: **4**
+- sobreviventes no treino (corrigido): **47** (mínimo pré-registrado: 30)
+
+**47 >= 30 -- a regra de parada por contagem (mais janelas) NÃO precisa
+ser aplicada.** Treino tem folga confortável acima do mínimo.
+
+Fase 2 (reclassificação de buckets dos 126 pools) já retomou
+automaticamente em seguida, com os mesmos dois fixes (orçamento de
+paginação + retry transitório) -- 47/126 pools concluídos até agora.
+Credito acumulado nesta fase: 8.337 chamadas read-only.
+
+Próximo: terminar Fase 2, então re-rodar o gate de cobertura (9
+critérios/95%) com os números corrigidos -- PASS segue pra Fase 4
+(primeiro número econômico, sem download novo), FAIL fecha o bloco
+(teto já avisado, última tentativa de sistema).
