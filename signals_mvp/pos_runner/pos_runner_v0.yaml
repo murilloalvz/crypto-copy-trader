@@ -1,0 +1,43 @@
+# POS-RUNNER-V0 — parametros do detector e das saidas (PAPER / somente leitura).
+#
+# ESTADO: RASCUNHO. Valores = os do handoff de 2026-10-15 (secao 2). So mudam no Passo 0 (calibracao com os
+# 5 exemplos), com o OK do operador. Depois disso o arquivo e CONGELADO no pre-registro (o hash vai para
+# docs/research-hypothesis-registry-v1-2026-10-04.md) e qualquer mudanca vira uma hipotese NOVA.
+# Cada linha de log/CSV carrega `versao_config` = hash destes parametros.
+# Duracoes em NUMERO DE CANDLES do timeframe (5m, 1h ou 4h). MC = preco USD x supply total.
+
+parametros:
+  # --- fase 1: runner ---------------------------------------------------------
+  runner_min_mc: 300000        # pico de MC desde a graduacao precisa chegar a isto (piso; 500k so diagnostico)
+
+  # --- fase 2: pullback e caixa -----------------------------------------------
+  drop_min: 0.80               # queda a partir do pico que inicia a fase 2 (MC <= 0,20 x pico)
+  drop_max: 0.90               # queda maior que isto = onda invalida
+  measure: wick                # pico/queda medidos por maxima/minima ("wick") ou por fechamento ("close")
+  bounce_fractal: 2            # 1o repique = 1o topo com 2 candles mais baixos de cada lado; caixa comeca depois
+  box_min_candles: 12          # maturacao minima da caixa
+  box_max_ratio: 3.0           # caixa contida: R/S <= 3
+
+  # --- wicks (martelos no suporte) ----------------------------------------------
+  wick_zone: 0.05              # minima do candle dentro de S +- 5%
+  wick_body_mult: 2.0          # pavio inferior >= 2x o corpo
+  wick_min: 1                  # minimo de wicks para armar o setup
+  wick_break: 0.02             # fechamento abaixo da minima da ultima wick -2% = setup invalidado
+
+  # --- fase 3: entrada ---------------------------------------------------------
+  breakout_vol_mult: 2.0       # volume do candle de rompimento >= 2x a media da caixa
+  atr_period: 20
+  power_atr_mult: 3.0          # power candle = amplitude >= 3x ATR(20)
+  absurd_frac: 0.50            # candle que cobre >= 50% de R ate o pico = absurdo (nao entra)
+  age_window_days:             # idade desde a graduacao no rompimento (fora = "fora da janela", so diagnostico)
+    5m: null                   # sem filtro de idade no 5m
+    1h: [2.0, 7.0]
+    4h: [2.0, 7.0]
+
+  # --- stop e saidas -------------------------------------------------------------
+  stop_below_wick: 0.03        # stop = minima da ultima wick -3%
+  tp_frac_of_peak: 0.95        # alvo = 0,95 x P_peak (ultimo topo)
+  exhaustion_gain: 0.50        # sai em power candle verde quando ja subiu >= 50% desde a entrada
+  time_stop_candles: 48        # stop de tempo
+  partial_frac: 0.50           # saida B: vende 50% no alvo e move o stop do resto para a entrada
+  trail_frac: 0.25             # saida B: resto sai em trailing de 25% a partir da maxima
