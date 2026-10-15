@@ -207,6 +207,22 @@ Estes pontos foram **medidos em 2026-10-13** (ou documentados), e estão assim d
 
 ---
 
+## Interpretações do handoff (confirme comigo se alguma estiver errada)
+
+1. **"Acompanhamento de enviados E descartados"** = enviados **e avaliados-mas-não-enviados** (score abaixo do mínimo): é o
+   que permite medir se o score separa bons de ruins. Os tokens **cortados** (segurança, liquidez, gatilho que expirou)
+   ficam em `descartados.csv`, que não tem colunas de resultado, e **não têm o preço acompanhado**. Acompanhá-los
+   (para medir falso positivo do corte) é uma extensão pequena — o `tracker.py` já faz o trabalho.
+2. **"Re-checar os pools acompanhados com até 60 min"**: o bot re-checa a cada ciclo só os pools cujo gatilho ainda pode
+   disparar (`novo`: até 10 min; `sobrevivente20`: 20–25 min). O que aconteceu até +60 min vem de **uma** consulta ao OHLCV
+   de 1 min depois que a janela fecha (MCs de +5/+15/+60, máx/mín, TP/SL) — mesma fonte, bem mais barata em chamadas.
+3. **`tempo_min` do plano = 15** (o exemplo do handoff mostra 5). Mude em `plano.tempo_min` (vira nova versão).
+4. **Unidades:** `max`/`min` e `mc_*` em **USD de MC** (não %); `resultado_liq` em **%**; `compras`/`vendas` =
+   **contagens** do m5 (o valor em USD das compras/vendas fica no alerta e em `sinais_detalhe.csv`).
+5. **Tickers sem `$`** no CSV (`token` = símbolo puro); `chain` = `solana` / `bsc` / `robinhood`.
+
+---
+
 ## O que cada CSV tem
 
 `sinais.csv` — **um token avaliado por linha** (enviado ou não). Colunas, nesta ordem (formato estável):
