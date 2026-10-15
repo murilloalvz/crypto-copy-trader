@@ -1,0 +1,348 @@
+{
+ "medidas": {
+  "BIKE": [
+   [
+    "#1",
+    {
+     "tf": "4h",
+     "rompimento": "2026-09-12T12:00:00Z",
+     "idade_d": 8.99,
+     "na_janela": true,
+     "P_peak": 1217820.9470921555,
+     "topo_maxima": 2728584.1080423696,
+     "topo_em_h_desde_graduacao": 19.7,
+     "L_bc": 42246.51813494599,
+     "queda_pct": 84.9,
+     "caixa_candles": 15,
+     "S": 184134.85607787114,
+     "R": 341259.60375398264,
+     "R_S": 1.85,
+     "n_wicks": 1,
+     "pavio_sobre_corpo_mediana": 3.3,
+     "vol_rompimento_x_media": 4.7,
+     "amplitude_rompimento_atr": 3.6,
+     "power_candle": true,
+     "cobertura_R_ate_pico": 0.11,
+     "entrada": 586053.8649707455,
+     "stop": 162141.03827741227,
+     "alvo": 2592154.902640251,
+     "subida_max_48c_pct": 1866.0,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 7,
+     "saida_A": "+71.7% liq (exaustao, 5 candles)",
+     "saida_B": "+71.7% liq (exaustao, 5 candles)"
+    }
+   ]
+  ],
+  "SOLCAT": [],
+  "ALLINU": [
+   [
+    "#1",
+    {
+     "tf": "1h",
+     "rompimento": "2026-09-13T16:00:00Z",
+     "idade_d": 1.87,
+     "na_janela": true,
+     "P_peak": 5744810.2730401065,
+     "topo_maxima": 7875926.831942812,
+     "topo_em_h_desde_graduacao": 1.0,
+     "L_bc": 48461.03952363933,
+     "queda_pct": 94.7,
+     "caixa_candles": 12,
+     "S": 303873.94962944847,
+     "R": 472625.10745289054,
+     "R_S": 1.56,
+     "n_wicks": 5,
+     "pavio_sobre_corpo_mediana": 4.9,
+     "vol_rompimento_x_media": 2.9,
+     "amplitude_rompimento_atr": 2.7,
+     "power_candle": false,
+     "cobertura_R_ate_pico": 0.02,
+     "entrada": 477380.54633961513,
+     "stop": 294861.85311205994,
+     "alvo": 7482130.490345671,
+     "subida_max_48c_pct": 1572.3,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 48,
+     "saida_A": "+132.8% liq (exaustao, 4 candles)",
+     "saida_B": "+132.8% liq (exaustao, 4 candles)"
+    }
+   ],
+   [
+    "#2",
+    {
+     "tf": "1h",
+     "rompimento": "2026-09-15T12:00:00Z",
+     "idade_d": 3.71,
+     "na_janela": true,
+     "P_peak": 5744810.2730401065,
+     "topo_maxima": 7875926.831942812,
+     "topo_em_h_desde_graduacao": 1.0,
+     "L_bc": 48461.03952363933,
+     "queda_pct": 94.7,
+     "caixa_candles": 15,
+     "S": 1006522.4134811297,
+     "R": 2423605.9020747542,
+     "R_S": 2.41,
+     "n_wicks": 2,
+     "pavio_sobre_corpo_mediana": 6.2,
+     "vol_rompimento_x_media": 2.5,
+     "amplitude_rompimento_atr": 1.9,
+     "power_candle": false,
+     "cobertura_R_ate_pico": 0.1,
+     "entrada": 2866570.095694045,
+     "stop": 997863.6070718039,
+     "alvo": 7482130.490345671,
+     "subida_max_48c_pct": 951.4,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 4,
+     "saida_A": "+149.6% liq (alvo, 4 candles)",
+     "saida_B": "+126.8% liq (exaustao, 5 candles)"
+    }
+   ]
+  ],
+  "ZILL": [
+   [
+    "#1",
+    {
+     "tf": "5m",
+     "rompimento": "2026-09-19T07:00:00Z",
+     "idade_d": 1.45,
+     "na_janela": true,
+     "P_peak": 942594.8070589366,
+     "topo_maxima": 1092585.3696030357,
+     "topo_em_h_desde_graduacao": 3.1,
+     "L_bc": 42469.52755245197,
+     "queda_pct": 88.9,
+     "caixa_candles": 18,
+     "S": 104863.82476277857,
+     "R": 140870.58324780889,
+     "R_S": 1.34,
+     "n_wicks": 2,
+     "pavio_sobre_corpo_mediana": 26.2,
+     "vol_rompimento_x_media": 2.1,
+     "amplitude_rompimento_atr": 2.1,
+     "power_candle": false,
+     "cobertura_R_ate_pico": 0.01,
+     "entrada": 144857.72602208413,
+     "stop": 100225.53841797647,
+     "alvo": 1037956.1011228838,
+     "subida_max_48c_pct": 7.4,
+     "chegou_no_alvo": false,
+     "candles_ate_alvo": null,
+     "saida_A": "-21.6% liq (tempo, 49 candles)",
+     "saida_B": "-21.6% liq (tempo, 49 candles)"
+    }
+   ],
+   [
+    "#2",
+    {
+     "tf": "5m",
+     "rompimento": "2026-09-19T08:35:00Z",
+     "idade_d": 1.52,
+     "na_janela": true,
+     "P_peak": 942594.8070589366,
+     "topo_maxima": 1092585.3696030357,
+     "topo_em_h_desde_graduacao": 3.1,
+     "L_bc": 42469.52755245197,
+     "queda_pct": 88.9,
+     "caixa_candles": 18,
+     "S": 113481.0122384133,
+     "R": 144857.72602208413,
+     "R_S": 1.28,
+     "n_wicks": 1,
+     "pavio_sobre_corpo_mediana": 3.7,
+     "vol_rompimento_x_media": 5.3,
+     "amplitude_rompimento_atr": 4.4,
+     "power_candle": true,
+     "cobertura_R_ate_pico": 0.01,
+     "entrada": 154994.53305996294,
+     "stop": 110895.12631383796,
+     "alvo": 1037956.1011228838,
+     "subida_max_48c_pct": 0.3,
+     "chegou_no_alvo": false,
+     "candles_ate_alvo": null,
+     "saida_A": "-31.7% liq (stop, 15 candles)",
+     "saida_B": "-31.7% liq (stop, 15 candles)"
+    }
+   ]
+  ],
+  "FLAME": [
+   [
+    "#1",
+    {
+     "tf": "5m",
+     "rompimento": "2026-09-12T02:35:00Z",
+     "idade_d": 0.67,
+     "na_janela": true,
+     "P_peak": 3637708.2993975473,
+     "topo_maxima": 3736433.2561761765,
+     "topo_em_h_desde_graduacao": 1.8,
+     "L_bc": 27751.65864861294,
+     "queda_pct": 84.4,
+     "caixa_candles": 52,
+     "S": 603427.6093108942,
+     "R": 1188512.1207392123,
+     "R_S": 1.97,
+     "n_wicks": 2,
+     "pavio_sobre_corpo_mediana": 3.6,
+     "vol_rompimento_x_media": 2.4,
+     "amplitude_rompimento_atr": 4.2,
+     "power_candle": true,
+     "cobertura_R_ate_pico": 0.08,
+     "entrada": 1324850.4902281014,
+     "stop": 512034.1122486486,
+     "alvo": 3549611.5933673675,
+     "subida_max_48c_pct": 0.1,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 169,
+     "saida_A": "-63.1% liq (stop, 15 candles)",
+     "saida_B": "-63.1% liq (stop, 15 candles)"
+    }
+   ],
+   [
+    "#2",
+    {
+     "tf": "5m",
+     "rompimento": "2026-09-12T08:05:00Z",
+     "idade_d": 0.9,
+     "na_janela": true,
+     "P_peak": 3637708.2993975473,
+     "topo_maxima": 3736433.2561761765,
+     "topo_em_h_desde_graduacao": 1.8,
+     "L_bc": 27751.65864861294,
+     "queda_pct": 84.4,
+     "caixa_candles": 52,
+     "S": 577566.9298731993,
+     "R": 941282.978933442,
+     "R_S": 1.63,
+     "n_wicks": 1,
+     "pavio_sobre_corpo_mediana": 1.6,
+     "vol_rompimento_x_media": 3.7,
+     "amplitude_rompimento_atr": 5.6,
+     "power_candle": true,
+     "cobertura_R_ate_pico": 0.08,
+     "entrada": 1196473.5370249648,
+     "stop": 545640.1446198004,
+     "alvo": 3549611.5933673675,
+     "subida_max_48c_pct": 57.2,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 103,
+     "saida_A": "+9.5% liq (tempo, 49 candles)",
+     "saida_B": "+9.5% liq (tempo, 49 candles)"
+    }
+   ],
+   [
+    "#3",
+    {
+     "tf": "5m",
+     "rompimento": "2026-09-12T15:30:00Z",
+     "idade_d": 1.21,
+     "na_janela": true,
+     "P_peak": 3637708.2993975473,
+     "topo_maxima": 3736433.2561761765,
+     "topo_em_h_desde_graduacao": 1.8,
+     "L_bc": 27751.65864861294,
+     "queda_pct": 84.4,
+     "caixa_candles": 14,
+     "S": 819302.4350598941,
+     "R": 1068359.426638932,
+     "R_S": 1.3,
+     "n_wicks": 1,
+     "pavio_sobre_corpo_mediana": 1.5,
+     "vol_rompimento_x_media": 11.3,
+     "amplitude_rompimento_atr": 10.9,
+     "power_candle": true,
+     "cobertura_R_ate_pico": 0.21,
+     "entrada": 1358140.3325471757,
+     "stop": 823888.397157203,
+     "alvo": 3549611.5933673675,
+     "subida_max_48c_pct": 214.6,
+     "chegou_no_alvo": true,
+     "candles_ate_alvo": 14,
+     "saida_A": "+149.8% liq (alvo, 14 candles)",
+     "saida_B": "+113.4% liq (exaustao, 15 candles)"
+    }
+   ]
+  ]
+ },
+ "solcat_geometria": {
+  "tf": "1h",
+  "topo": 1615804.7605910867,
+  "topo_em_h_desde_graduacao": 20.7,
+  "fundo_pavio": 32444.465744600533,
+  "fundo_corpo": 32444.465744600533,
+  "queda_pavio_pct": 98.0,
+  "L_bc": 43015.162725474474,
+  "fundo_abaixo_de_L_bc_pct": 24.6,
+  "fundo_em": "2026-09-24T00:00:00Z",
+  "subiu_depois_ate": 1538610.1217470646,
+  "chegou_a_95pct_do_topo": true
+ },
+ "visto": {
+  "BIKE": {
+   "queda_pavio_pct": 94.4,
+   "tf": "4h",
+   "chart": "BIKE_4h.png",
+   "overview": "BIKE_1h_visao_geral.png",
+   "handoff": [],
+   "proposta": [
+    "2026-09-12T12:00:00Z"
+   ],
+   "invalida": []
+  },
+  "SOLCAT": {
+   "queda_pavio_pct": 98.0,
+   "tf": "1h",
+   "chart": "SOLCAT_1h.png",
+   "overview": "SOLCAT_1h_visao_geral.png",
+   "handoff": [],
+   "proposta": [],
+   "invalida": [
+    [
+     "2026-09-22T20:00:00Z",
+     "queda passou de 95%"
+    ]
+   ]
+  },
+  "ALLINU": {
+   "queda_pavio_pct": 97.2,
+   "tf": "1h",
+   "chart": "ALLINU_1h.png",
+   "overview": "ALLINU_1h_visao_geral.png",
+   "handoff": [],
+   "proposta": [
+    "2026-09-13T16:00:00Z",
+    "2026-09-15T12:00:00Z"
+   ],
+   "invalida": []
+  },
+  "ZILL": {
+   "queda_pavio_pct": 90.6,
+   "tf": "5m",
+   "chart": "ZILL_5m.png",
+   "overview": "ZILL_1h_visao_geral.png",
+   "handoff": [],
+   "proposta": [
+    "2026-09-19T07:00:00Z",
+    "2026-09-19T08:35:00Z"
+   ],
+   "invalida": []
+  },
+  "FLAME": {
+   "queda_pavio_pct": 86.6,
+   "tf": "5m",
+   "chart": "FLAME_5m.png",
+   "overview": "FLAME_1h_visao_geral.png",
+   "handoff": [
+    "2026-09-12T02:35:00Z"
+   ],
+   "proposta": [
+    "2026-09-12T02:35:00Z",
+    "2026-09-12T08:05:00Z",
+    "2026-09-12T15:30:00Z"
+   ],
+   "invalida": []
+  }
+ }
+}

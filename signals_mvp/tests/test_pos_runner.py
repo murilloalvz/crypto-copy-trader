@@ -192,11 +192,15 @@ class DetectorTests(unittest.TestCase):
 
 
 class ParamsTests(unittest.TestCase):
-    def test_shipped_yaml_matches_handoff_defaults_and_has_stable_hash(self):
+    def test_shipped_yaml_is_the_documented_proposal_over_the_handoff_defaults(self):
         shipped = load_params()
-        self.assertEqual(shipped, Params())
-        self.assertEqual(shipped.version, Params().version)
-        self.assertNotEqual(shipped.version, dataclasses.replace(shipped, drop_max=0.95).version)
+        handoff = Params()
+        changed = {k for k, v in shipped.as_dict().items() if handoff.as_dict()[k] != v}
+        # so estas chaves mudam em relacao ao handoff (cada uma com motivo no yaml e no relatorio do Passo 0)
+        self.assertEqual(changed, {"drop_max", "measure", "tp_reference", "wick_body_mult", "age_window_days"})
+        self.assertEqual(shipped.version, load_params().version)          # hash estavel
+        self.assertNotEqual(shipped.version, handoff.version)
+        self.assertNotEqual(shipped.version, dataclasses.replace(shipped, drop_max=0.9).version)
 
     def test_unknown_or_invalid_params_fail(self):
         with self.assertRaises(ValueError):

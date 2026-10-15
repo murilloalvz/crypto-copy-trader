@@ -1,0 +1,614 @@
+[
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "b0d449929d5e",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "627f0ac181cc",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "ced4aa0060c7",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "dc348f320eb2",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "cda9d0445439",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "0e7bfa841fad",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "bf102fcc2565",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "682447761f4e",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "c4a84a6f4d70",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "bb8c4d45f661",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "04df6d293e77",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "400a030b46c8",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 2
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "63a9892eb1a7",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "7addf2626ff6",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": false
+  },
+  "n": 0
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "597c37eb55e3",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "af702a2bff34",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "1a566294f5e8",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": false,
+   "FLAME": true
+  },
+  "n": 1
+ },
+ {
+  "params": {
+   "measure": "wick",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "621788098c14",
+  "reconhece": {
+   "BIKE": false,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 2
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "a6331902f2a1",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 2
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "72dbae61e0f0",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 2
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "26ad76a6bfa4",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "95e61cd66d92",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "03a1e7deb4f7",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.9,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "a27faafc85c6",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": false,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "57330d2e3c00",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "7119606f9c2d",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "8c645f461368",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "c5bd42a06d5d",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "4159614eafbd",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.95,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "ad2df23ef4e4",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "194691a250c2",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 2.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "5bdefff83afe",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": false
+  },
+  "n": 3
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 3.0
+  },
+  "versao": "c10c5ca9052e",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.5,
+   "box_max_ratio": 4.0
+  },
+  "versao": "3cad37c1aa81",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 3.0
+  },
+  "versao": "f7d40290548a",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ },
+ {
+  "params": {
+   "measure": "body",
+   "drop_max": 0.97,
+   "wick_body_mult": 1.0,
+   "box_max_ratio": 4.0
+  },
+  "versao": "98e23f37ff50",
+  "reconhece": {
+   "BIKE": true,
+   "SOLCAT": false,
+   "ALLINU": true,
+   "ZILL": true,
+   "FLAME": true
+  },
+  "n": 4
+ }
+]
