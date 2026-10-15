@@ -29,6 +29,13 @@ Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal,
   - Atenção: o começo da janela grátis anda 1 dia por dia. Depois do congelamento o download do discovery precisa começar logo.
 - **Selagem**: a lista de pools do holdout e o hash dela são commitados ANTES de qualquer cálculo do discovery. O código do discovery recusa carregar um pool do holdout.
 - **Tamanho (parada por contagem, sem olhar retorno)**: janelas sorteadas são processadas na ordem do sorteio até que o MENOR número de setups primários entre os 3 timeframes chegue a 60 no discovery (ou acabem as janelas). Reportar quantos runners e quantos setups.
+- **Código e travas** (`signals_mvp/pos_runner/parte_a/`, pronto e testado com universo sintético; NÃO rodado):
+  `python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento <D>` → `selar-holdout` → `discovery` → `escolher` → `holdout` → `relatorio`.
+  O código recusa rodar se este arquivo não estiver `PRE-REGISTRADO` com o hash da config, se a selagem do holdout não estiver commitada ou com hash diferente, ou se a config/plano mudarem no meio da coleta (checkpoint SQLite guarda os hashes). O discovery recusa qualquer pool do holdout selado; o holdout nunca passa das janelas seladas e só abre se o discovery produziu candidato.
+- **Datas de exemplo** (congelamento em 2026-10-17, horizonte de 14 dias): discovery = graduações de 2026-04-23 a 2026-07-27 (95 dias), embargo 2026-07-27 a 2026-08-03, holdout = 2026-08-03 a 2026-09-23 (51 dias). Fica menor que "4 + 2 meses" porque cada token precisa de 14 dias de observação mais até 9 dias para o trade sair dentro dos 180 dias da API. Janelas de 30 min.
+- **Cobertura da enumeração (limitação declarada)**: pump.fun pela autoridade de migração do H2; LaunchLab pelo migrador `RAYpQbFN…` (53 de 60 transações amostradas são `MigrateToCpswap`; `MigrateToAmm` não apareceu); DBC pela(s) config(s) de DAMM v2 usadas nas migrações (`A8gMrEPJ…` e as que a amostragem achar) — migração da DBC para DAMM v1 não coberta. O relatório reporta as contas usadas.
+- **Linha de base**: K = 5 runners por setup, sorteio com seed derivada do setup.
+- **Holdout**: processa as janelas seladas na ordem até 30 setups primários no timeframe escolhido; veredito com no mínimo 20 trades fechados.
 - **Gates de sistema antes de qualquer número econômico**:
   1. a enumeração acha a graduação de cada um dos 5 exemplos rodando numa janela que a contém (os 3 launchpads);
   2. >= 95% das graduações enumeradas têm candles de 1h baixados, ou motivo explícito de falta;
