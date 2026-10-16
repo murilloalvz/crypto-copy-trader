@@ -123,10 +123,10 @@ resistência** da zona. Ele roda nos timeframes **5m, 1h e 4h**, nos 3 launchpad
 LaunchLab, Meteora DBC), com **o mesmo detector, simulador e custos do backtest** (Parte A). PAPER: o bot só avisa e
 simula; quem decide e opera é você, no simulador do Axiom.
 
-> **Ainda é rascunho.** As regras do padrão (as suas, de 16/10) estão em `pos_runner/pos_runner_v0.yaml` e só ficam
-> **congeladas** depois da sua confirmação (o que o detector vê nos 5 exemplos: `pos_runner/passo0_relatorio_v2/`).
-> Até lá, todo alerta mostra `config <hash> (rascunho)`. Paper ao vivo **não é validação**: a hipótese só pode virar
-> edge pelo backtest sem viés com holdout selado (Parte A) e o rito do registro de hipóteses.
+> **Congelada em 2026-10-16.** As regras do padrão estão em `pos_runner/pos_runner_v0.yaml`
+> (`PRE-REGISTRADO`, `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`); mudar qualquer parâmetro agora é
+> hipótese nova. Os alertas mostram `config <hash> (pré-registrada)`. Paper ao vivo **não é validação**: a hipótese só
+> pode virar edge pelo backtest sem viés com holdout selado (Parte A) e o rito do registro de hipóteses.
 
 **Passo a passo**
 

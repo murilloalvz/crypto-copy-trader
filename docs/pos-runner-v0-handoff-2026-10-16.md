@@ -147,9 +147,19 @@ Não testado contra o serviço real: Telegram (o cliente é o do v0, com `sendPh
   ele recusou bastante. Um RPC gratuito seu deixa a entrada no radar muito mais rápida.
 - Windows real e Telegram real não testados nesta sessão (o cliente do Telegram é o mesmo do v0, com `sendPhoto`).
 
-## 9. Próximos passos (só depois do seu OK)
+## 9. Congelamento (2026-10-16)
 
-1. No mesmo commit: a linha de status do rascunho passa a PRE-REGISTRADO com o hash `2a8bef99a917`, a linha do registro
-   vira `PRE-REGISTRADA` e entra o plano: `python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento <D>`.
-2. `selar-holdout` → commit da selagem (hash) ANTES do discovery.
-3. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.
+Confirmado pelo operador: Passo 0 v2 e a config `2a8bef99a917`. Pré-registro passou a `PRE-REGISTRADO`
+(`D` = 2026-10-16; commit `dbbcea1` fixa o código da regra, SHA256 no documento), registro `PRE-REGISTRADA`, plano
+gerado (`docs/pos-runner-v0/plano_parte_a.json`, versão `8a2387a3e185`): discovery 2026-04-22 a 2026-07-26 (4.560
+janelas), embargo até 2026-08-02, holdout 2026-08-02 a 2026-09-22 (2.448 janelas). L_bc fica na definição atual (1º
+open de 1h): a confirmação cobriu a config como está e L_bc não é parâmetro do YAML.
+
+Daqui em diante nenhuma regra muda (§4 do pré-registro). Próximos passos, cada um com seu commit:
+
+1. `selar-holdout` → commit da selagem (lista + hash) ANTES de qualquer cálculo do discovery.
+2. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.
+
+RPC: a Parte A usa `POS_RUNNER_RPC_URLS`, vazia neste ambiente; defino para o próprio processo da coleta com o
+endpoint QuickNode de `H2_BACKFILL_RPC_URLS` (presente neste ambiente, grátis), em vez do RPC público (lento e mais
+recusado, medido no teste de fumaça da Parte B).

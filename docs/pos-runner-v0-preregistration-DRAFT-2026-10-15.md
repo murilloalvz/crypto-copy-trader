@@ -1,10 +1,20 @@
-# Pré-registro — POS-RUNNER-V0 — RASCUNHO — 2026-10-15 (revisado em 2026-10-16 com as decisões do operador)
+# Pré-registro — POS-RUNNER-V0 — 2026-10-15 (revisado em 2026-10-16 com as decisões do operador; congelado em 2026-10-16)
 
-Status: **RASCUNHO PRONTO PARA CONGELAR — NÃO CONGELADO.** As regras abaixo são as do operador (decisões de 2026-10-16 sobre o relatório do Passo 0); os pontos que ele não respondeu seguem a opção mais conservadora (§5). Falta só a **confirmação do operador** (§7). Com ela, este arquivo vira `PRE-REGISTRADO` com o hash da config, é commitado e **só então** o backtest da Parte A pode baixar dado de resultado. Nenhum backtest foi rodado. Nenhum dado de resultado de universo sem viés foi lido.
+Status: **PRE-REGISTRADO** (congelado em 2026-10-16, confirmação do operador sobre o Passo 0 v2 e a config `2a8bef99a917`). A partir daqui nenhuma regra, grade, período, linha de base, corte ou custo muda (§4); uma mudança é hipótese nova. Ainda NENHUM dado de resultado de universo sem viés foi lido neste commit — o backtest da Parte A começa depois dele.
 
 Regras do programa: `docs/research-hypothesis-registry-v1-2026-10-04.md`. Modelo seguido: `docs/templates/batch-preregistration-template-v1.md` (aqui K = 1 hipótese com uma grade de 6 variantes).
 
-Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal, simulador, custos, gráficos, Passo 0). Config: `signals_mvp/pos_runner/pos_runner_v0.yaml` — **hash candidato `2a8bef99a917`** (vira o hash congelado com a confirmação; qualquer mudança depois disso é hipótese nova).
+Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal, simulador, custos, gráficos, Passo 0). Config: `signals_mvp/pos_runner/pos_runner_v0.yaml` — **hash congelado `2a8bef99a917`**. Regra congelada = este hash **+** o código em `detector.py`/`simulate.py`/`costs.py`/`params.py` no commit `dbbcea1` (SHA256 abaixo); qualquer mudança em qualquer um dos dois depois deste commit é hipótese nova.
+
+| arquivo | SHA256 (commit `dbbcea1`) |
+|---|---|
+| `signals_mvp/pos_runner/detector.py` | `df995c39db3db0297c6423ecdb35e23ee382414440f0e536d63e3e0d2b200496` |
+| `signals_mvp/pos_runner/simulate.py` | `5d7144f32488e8d7f9e0a621ebd8194de7fa6b400e8947dbf19cf019b9732693` |
+| `signals_mvp/pos_runner/costs.py` | `c42e8cb83c466ba2b7cdc415f3168794a5a4ffb0ea60654e87d0005edcc362b9` |
+| `signals_mvp/pos_runner/params.py` | `b42c4f51b2a12e39fe13b91c81a91ed77bb3d40f6d53b86488932e3f97dcd3f6` |
+| `signals_mvp/pos_runner/pos_runner_v0.yaml` | `e04c1c3ae7afeb3c9a8b43d0a95a3c758ff2996755821c1fa729c3dc32934361` |
+
+**Decisão do operador sobre o L_bc (§7, pendência 3):** a confirmação cobriu a config `2a8bef99a917` como está; L_bc não é parâmetro do YAML (é calculado do dado: MC no open do 1º candle de 1h do pool de graduação), e a alternativa on-chain não foi pedida. Fica a definição atual — a limitação do STREAM continua registrada em §1 como fato medido, não como filtro a mudar.
 
 ## 0. O que é e o que não é
 
@@ -26,9 +36,9 @@ Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal,
 - **Enumeração**: método de âncora sem Helius COPIADO do H2 (`benchmarks/sig_fast_v0/h2_enumeration_no_helius_v0.py`, branch `research/rust-signal-plane-live-shadow-v0`, commit `da37ce6`) para `signals_mvp/pos_runner/solana_rpc.py`: busca binária do slot no fim da janela, assinatura âncora, `getSignaturesForAddress` da conta de migração de cada launchpad paginando para trás até o início da janela, `getTransaction` confirma a instrução. RPC: `POS_RUNNER_RPC_URLS` (do operador) ou o RPC público oficial (o `publicnode` apaga blocos com mais de ~2 dias e é recusado automaticamente).
 - **Criação do token (idade)**: transação bem-sucedida mais antiga do mint, paginando `getSignaturesForAddress(mint)` para trás a partir da assinatura da migração (`lineage.creation_time`; bateu ao segundo com o Passo 0 nos 5 exemplos). Só para runners. Teto de 100 páginas (100 mil assinaturas; o SOLCAT teve ~10 mil): acima disso a criação é **desconhecida** — o token não tem idade, nenhum setup dele é primário e ele fica fora da linha de base; a contagem sai no relatório (`runners_sem_criacao`). Falha de RPC para a coleta (retoma do checkpoint), nunca vira "sem criação".
 - **Preço**: OHLCV do GeckoTerminal do **pool de graduação**, pedido **em token de cotação** (`currency=token`) e convertido para USD com uma série de referência da cotação (SOL/USDC Orca; ZEC/USDC; etc.). Motivo: no exemplo ZILLIONS o USD do próprio GeckoTerminal ficou travado num valor errado por 24 h. Candle sem cotação/USD no instante fica de fora (nunca inventado). Buracos de download são conferidos contra a série de 1h (`missing_windows`) e rebaixados. A conversão usa a cotação/USD do **fechamento** de cada candle (limitação medida no Passo 0 v2: com cotação exótica que sobe junto com o token, a máxima do 1h/4h distorce — FLAME/EMBER: mesmo topo em EMBER, 3,3M no 5m e 5,7M no 1h; por isso o relatório corta por tipo de cotação).
-- **L_bc** (nível em que a curva terminou) = MC no open do 1º candle de 1h do pool de graduação (Parte A e B). Limitação medida no teste de fumaça de 2026-10-16: quando a curva é comprada inteira na criação e o 1º negócio no pool sai muito acima dela, L_bc fica alto (STREAM, pump.fun, criado e migrado no mesmo segundo em 14/10: 1º open ~362k, mínima do mesmo candle ~52k) e a regra S >= 0,75 × L_bc fica mais dura para esse token; nos 5 exemplos e nos outros tokens do teste L_bc deu 28–51k. Alternativa não adotada (aguarda o operador, §7): reservas iniciais do pool na própria transação de migração.
+- **L_bc** (nível em que a curva terminou) = MC no open do 1º candle de 1h do pool de graduação (Parte A e B). Limitação medida no teste de fumaça de 2026-10-16: quando a curva é comprada inteira na criação e o 1º negócio no pool sai muito acima dela, L_bc fica alto (STREAM, pump.fun, criado e migrado no mesmo segundo em 14/10: 1º open ~362k, mínima do mesmo candle ~52k) e a regra S >= 0,75 × L_bc fica mais dura para esse token; nos 5 exemplos e nos outros tokens do teste L_bc deu 28–51k. Alternativa não adotada (decisão do operador no congelamento, §7): reservas iniciais do pool na própria transação de migração.
 - **Estágios**: (1) 1h de cada pool, de graduação até graduação + 14 dias, para achar quem chegou a MC >= 300k (runner) e buscar a criação dos runners; (2) só esses recebem 5m e 4h do mesmo período. Limite da API pública: ~30 req/min e 180 dias de histórico. Checkpoint e retomada em disco.
-- **Período**: janela grátis de 180 dias contada da data do congelamento `D`. Discovery = primeiro trecho; **embargo de 1 semana**; holdout SELADO = último terço do trecho usável, terminando antes de `D` o bastante para os trades do holdout terem candles de saída. Cada token pertence ao período da sua **graduação**. Datas exatas no plano (`plano --congelamento D`, commitado junto). Exemplo com `D` = 2026-10-17: discovery = graduações de 2026-04-23 a 2026-07-27 (95 dias, 4.560 janelas de 30 min), embargo até 2026-08-03, holdout = 2026-08-03 a 2026-09-23 (51 dias, 2.448 janelas).
+- **Período**: janela grátis de 180 dias contada da data do congelamento `D` = **2026-10-16**. Discovery = primeiro trecho; **embargo de 1 semana**; holdout SELADO = último terço do trecho usável, terminando antes de `D` o bastante para os trades do holdout terem candles de saída. Cada token pertence ao período da sua **graduação**. Plano gerado e commitado junto (`docs/pos-runner-v0/plano_parte_a.json`, versão `8a2387a3e185`): discovery = graduações de 2026-04-22 a 2026-07-26 (95 dias, 4.560 janelas de 30 min, ordem `bba2e0f3d591cf50`), embargo até 2026-08-02, holdout = 2026-08-02 a 2026-09-22 (51 dias, 2.448 janelas, ordem `32edc0024c93b521`).
   - Atenção: o começo da janela grátis anda 1 dia por dia. Depois do congelamento o download do discovery precisa começar logo.
 - **Selagem**: a lista de pools do holdout e o hash dela são commitados ANTES de qualquer cálculo do discovery. O código do discovery recusa carregar um pool do holdout.
 - **Tamanho (parada por contagem, sem olhar retorno)**: janelas sorteadas são processadas na ordem do sorteio até que o MENOR número de setups primários entre os 3 timeframes chegue a **60** no discovery (ou acabem as janelas). No holdout: até **40** setups primários no timeframe escolhido (folga para chegar aos 30 trades fechados do veredito), nunca além das janelas seladas. Reportar quantos runners e quantos setups.
@@ -75,15 +85,16 @@ Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal,
 - PASS no holdout → `PASS (aguarda replicação)` → replicação sozinha (paper ao vivo, regra congelada, pré-registro próprio).
 - FAIL/KILL → fecha. Ideia derivada = hipótese nova.
 
-## 3.1 Parte B (bot ao vivo) rodando antes do congelamento
+## 3.1 Parte B (bot ao vivo)
 
-O handoff pede a Parte B em paralelo. Ela roda com a config em RASCUNHO (os alertas mostram `(rascunho)` e o hash) e
-grava paper A/B + base pareada em `pos_runner.csv`. Regras: (a) os parâmetros finais saem SÓ das regras do operador e
-da calibração da detecção (Passo 0); mudar qualquer parâmetro depois de olhar resultado do paper ao vivo conta como
-ajuste em dado de resultado e é proibido (§4); (b) linhas com `versao_config` diferente do hash congelado não entram em
-nenhuma avaliação; (c) o paper ao vivo com a regra congelada só vira "replicação" com pré-registro próprio (§3).
-Mecânica que garante isso no código: uma decisão só vira sinal de uma `versao_config` se aconteceu depois do 1º ciclo
-dela (refazer o detector com candles congelados nunca cria sinal retroativo); paper aberto de outra versão vira
+A Parte B rodou em paralelo com a config em RASCUNHO antes deste commit (os alertas mostravam `(rascunho)` e o hash);
+daqui em diante os alertas mostram `(pré-registrada)` (`config_status` lê este arquivo) — a config é a mesma, só o
+rótulo muda. Grava paper A/B + base pareada em `pos_runner.csv`. Regras: (a) os parâmetros não mudam mais (§4); (b)
+linhas com `versao_config` diferente do hash congelado não entram em nenhuma avaliação; (c) o paper ao vivo com a
+regra congelada só vira "replicação" com pré-registro próprio (§3) — o paper gravado antes deste commit (rascunho)
+nunca é usado como se fosse essa replicação. Mecânica que garante isso no código: uma decisão só vira sinal de uma
+`versao_config` se aconteceu depois do início da execução contínua dela (refazer o detector com candles congelados
+nunca cria sinal retroativo; voltar a uma versão recomeça a contagem); paper aberto de outra versão vira
 `descontinuado`; a idade sai da data de criação on-chain (pool sem ela não entra no radar).
 
 ## 4. Proibido depois de ver dado de resultado
@@ -118,15 +129,14 @@ O item 8 da mensagem do operador chegou cortado ("Pendência do relatório sem r
 
 ## 6. Atualização do registro
 
-Linha `POS-RUNNER-V0` em `docs/research-hypothesis-registry-v1-2026-10-04.md` com status `RASCUNHO` agora; `PRE-REGISTRADA` no commit do congelamento; resultado no mesmo commit que o registrar.
+Linha `POS-RUNNER-V0` em `docs/research-hypothesis-registry-v1-2026-10-04.md`: `PRE-REGISTRADA` neste commit; resultado entra no mesmo commit que o registrar (discovery/holdout).
 
-## 7. Falta para congelar (só a confirmação do operador)
+## 7. Congelamento
 
-1. Confirmar a leitura do item 8 (opção mais conservadora) e as escolhas da §5 — em especial a medida pelos **extremos**.
-2. Conferir no Passo 0 v2 se o detector "vê" as fases que o professor mostrou.
-3. L_bc: manter a definição atual (1º open de 1h; §1) ou trocar pela medida on-chain na migração antes de congelar.
-4. Dizer o dia do congelamento `D` (as datas dos períodos saem do plano gerado nesse dia).
+Confirmado pelo operador em 2026-10-16: Passo 0 v2 (o detector vê as fases dos 5 exemplos) e a config `2a8bef99a917` como está. `D` (dia do congelamento, usado no plano da Parte A) = **2026-10-16**.
 
-O hash `2a8bef99a917` cobre só os parâmetros do YAML. No congelamento entram também o **commit** e o SHA256 de `detector.py`, `simulate.py`, `costs.py` e `params.py` (o código da regra), para que a regra congelada seja o código + os parâmetros.
+Deste commit em diante: nenhuma mudança de parâmetro, grade, critério, período, linha de base, corte ou custo (§4). Próximos passos, na ordem, cada um com seu próprio commit:
 
-Com o OK, no mesmo commit: a linha de status deste arquivo passa a PRE-REGISTRADO com o hash `2a8bef99a917`, a linha do registro vira `PRE-REGISTRADA` e entra o plano da Parte A (`plano --congelamento D`); depois `selar-holdout` (commit) e só então o discovery. A trava do código lê só a linha de status (a primeira que começa com "Status:").
+1. (este commit) status → `PRE-REGISTRADO`, registro → `PRE-REGISTRADA`, plano da Parte A (`plano --congelamento 2026-10-16`).
+2. `selar-holdout` → commit da selagem (lista + hash), ANTES de qualquer cálculo do discovery.
+3. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.

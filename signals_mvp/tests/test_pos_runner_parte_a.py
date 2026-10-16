@@ -310,11 +310,12 @@ class GateTests(unittest.TestCase):
             cli_mod.check_preregistration(doc, "abc123")
             self.assertEqual(config_status("abc123", doc), "pre-registrada")
 
-    def test_shipped_preregistration_is_still_a_draft(self):
+    def test_shipped_preregistration_is_frozen_with_the_live_config_hash(self):
+        """Congelado em 2026-10-16: o pre-registro do repo abre a trava com o hash da config em uso, mas continua
+        recusando qualquer outro hash (protege contra config e pre-registro saindo de sincronia)."""
+        cli_mod.check_preregistration(cli_mod.PREREG, Params().version)
         with self.assertRaises(SystemExit):
-            cli_mod.check_preregistration(cli_mod.PREREG, "qualquer")
-        with self.assertRaises(SystemExit):              # nem com o hash candidato, que o rascunho ja cita
-            cli_mod.check_preregistration(cli_mod.PREREG, Params().version)
+            cli_mod.check_preregistration(cli_mod.PREREG, "outro_hash_qualquer")
 
 
 if __name__ == "__main__":

@@ -41,9 +41,12 @@ of truth; CSVs are regenerated atomically) · `telegram.py`/`alerts.py`/`summary
 
 ## POS-RUNNER-V0 (`pos_runner/`)
 Hypothesis POS-RUNNER-V0. The rules are the operator's (2026-10-16 decisions; unanswered points took the most
-conservative option, listed in the draft pre-registration §5). The pre-registration is still a DRAFT until the operator
-confirms: do not freeze, mark PRE-REGISTRADO or run Part A without that OK. The examples only calibrate phase
-DETECTION (Passo 0 v2: no parameter sweep, no trade results). One detector/simulator/cost model shared by Passo 0,
+conservative option, listed in the pre-registration §5). **Frozen (PRE-REGISTRADO) on 2026-10-16**, config hash
+`2a8bef99a917` + the rule code (`detector.py`/`simulate.py`/`costs.py`/`params.py`) at commit `dbbcea1` (SHA256 in the
+pre-registration). From that commit on, no parameter/grid/period/baseline/cut/cost change — a change is a new
+hypothesis (§4). The examples only calibrate phase DETECTION (Passo 0 v2: no parameter sweep, no trade results). Part
+A is the unbiased collection that judges it; run it in commit-sized steps exactly as `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`
+§7 orders (seal the holdout and commit it before any discovery call). One detector/simulator/cost model shared by Passo 0,
 Part A (`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Age = days since token CREATION
 (on-chain: oldest successful mint signature before the migration, `lineage.creation_time`); unknown creation = no age
 = never primary. The pre-registration gate (`params.is_preregistered`) reads ONLY the status line (the first line
