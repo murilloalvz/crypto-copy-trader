@@ -35,6 +35,7 @@ from typing import Any, Optional
 import os
 
 from ...http import HttpClient, RateLimiter
+from ...util import iso_utc, utc_now
 from ..candles import OhlcvStore
 from ..lineage import creation_time
 from ..params import is_preregistered, load_params
@@ -98,14 +99,20 @@ def build_context(work: Path, plan: PeriodPlan) -> tuple[Context, SolanaRpc, Htt
 
 
 def _track_usage(ctx: Context, rpc: SolanaRpc, http: HttpClient) -> None:
-    """Consumo acumulado (RPC pago + GeckoTerminal) desta Store, por chamada de comando -- nao e o % real do plano
-    gratis da QuickNode (o operador ve isso no painel dela); so ajuda a decidir quando checar o painel."""
+    """Consumo acumulado (RPC pago + GeckoTerminal) desta Store, por chamada de comando E por dia UTC -- nao e o %
+    real do plano gratis da QuickNode (o operador ve isso no painel dela); so ajuda a decidir quando checar o
+    painel e a medir o gasto diario real (decisao operacional de 2026-10-16)."""
     total_rpc = int(ctx.store.get("rpc_calls_total") or 0) + rpc.calls
     total_gt = int(ctx.store.get("gt_calls_total") or 0) + http.calls
     ctx.store.set("rpc_calls_total", str(total_rpc))
     ctx.store.set("gt_calls_total", str(total_gt))
-    logging.info("creditos: RPC %d nesta execucao (%d acumulado nesta Store) | GeckoTerminal %d nesta execucao (%d acumulado)",
-                rpc.calls, total_rpc, http.calls, total_gt)
+    dia = iso_utc(utc_now())[:10]
+    dia_rpc = int(ctx.store.get(f"rpc_calls_dia:{dia}") or 0) + rpc.calls
+    dia_gt = int(ctx.store.get(f"gt_calls_dia:{dia}") or 0) + http.calls
+    ctx.store.set(f"rpc_calls_dia:{dia}", str(dia_rpc))
+    ctx.store.set(f"gt_calls_dia:{dia}", str(dia_gt))
+    logging.info("creditos: RPC %d nesta execucao (%d hoje %s, %d acumulado) | GeckoTerminal %d nesta execucao (%d hoje, %d acumulado)",
+                rpc.calls, dia_rpc, dia, total_rpc, http.calls, dia_gt, total_gt)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -144,8 +151,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         ctx.sealed_holdout = load_seal(seal_path, ctx)
         if args.comando == "baixar-bruto":
+            total_janelas = len(ctx.plan.windows(args.periodo))
+            t0 = utc_now()
             resumo = prefetch_period(ctx, args.periodo, args.max_janelas, progress=lambda c: logging.info("%s", c))
-            print(json.dumps(resumo, indent=1))
+            elapsed_min = max((utc_now() - t0) / 60.0, 1e-9)
+            ritmo = resumo["janelas"] / elapsed_min            # janelas/min NESTA execucao (ja inclui RPC + GT)
+            faltam = max(total_janelas - resumo["janelas"], 0)
+            resumo["ritmo_janelas_por_min"] = round(ritmo, 2)
+            resumo["janelas_restantes_no_periodo"] = faltam
+            resumo["eta_dias_no_ritmo_atual"] = round(faltam / ritmo / 60.0 / 24.0, 1) if ritmo > 0 else None
+            print(json.dumps(resumo, indent=1, ensure_ascii=False))
+            if resumo["fora_do_alcance_gratis"]:
+                print(f"\nATENCAO: {len(resumo['fora_do_alcance_gratis'])} data(s) ja fora do alcance gratis do "
+                     f"GeckoTerminal (missing explicito, nunca silencioso): {resumo['fora_do_alcance_gratis']}")
+            if resumo["eta_dias_no_ritmo_atual"] is not None:
+                print(f"Ritmo medido nesta execucao: {resumo['ritmo_janelas_por_min']:.2f} janelas/min -> "
+                     f"~{resumo['eta_dias_no_ritmo_atual']:.1f} dia(s) para as {faltam} janelas restantes do periodo "
+                     f"'{args.periodo}' neste ritmo (QuickNode pode pausar e voltar sozinha no limite diario).")
             return 0
         if args.comando == "discovery":
             counts = run_period(ctx, "discovery", args.alvo or DISCOVERY_TARGET, args.max_janelas, progress=lambda c: logging.info("%s", c))

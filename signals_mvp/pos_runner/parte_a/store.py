@@ -82,10 +82,16 @@ class Store:
                 self.db.execute("INSERT OR IGNORE INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
                                 (g.pool, g.mint, g.quote_mint, g.launchpad, g.block_time, g.signature, period, ord_, g.status))
 
-    def graduations(self, period: str, max_ord: Optional[int] = None) -> list[sqlite3.Row]:
+    def graduations(self, period: str, max_ord: Optional[int] = None, exact_ord: Optional[int] = None) -> list[sqlite3.Row]:
         self.db.row_factory = sqlite3.Row
-        q = "SELECT * FROM graduations WHERE period=?" + (" AND ord<=?" if max_ord is not None else "") + " ORDER BY ord, grad_ts, pool"
-        args: tuple = (period, max_ord) if max_ord is not None else (period,)
+        where, args = ["period=?"], [period]
+        if max_ord is not None:
+            where.append("ord<=?")
+            args.append(max_ord)
+        if exact_ord is not None:
+            where.append("ord=?")
+            args.append(exact_ord)
+        q = f"SELECT * FROM graduations WHERE {' AND '.join(where)} ORDER BY ord, grad_ts, pool"
         rows = self.db.execute(q, args).fetchall()
         self.db.row_factory = None
         return rows

@@ -34,6 +34,12 @@ DEFAULT_ENDPOINTS = ("https://api.mainnet-beta.solana.com",)
 # erros JSON-RPC de "slot sem bloco" (slot pulado): um FATO sobre o slot, nao falha de transporte
 SKIPPED_SLOT_CODES = {-32004, -32007, -32009}
 PRUNED_CODE = -32001
+# limite DIARIO do plano (ex.: QuickNode "daily request limit reached") -- NAO e um 429 passageiro (a
+# AIMD normal nao se recupera num dia inteiro parado): o endpoint sai do rodizio por uma pausa longa, mas
+# limitada, para sondar sozinho quando o provedor liberar de novo, sem travar as janelas que ainda nao
+# foram tentadas no outro endpoint (decisao operacional de 2026-10-16: "nao esperar parado").
+DAILY_LIMIT_CODE = -32003
+DAILY_LIMIT_PAUSE_S = 3600.0
 
 AVG_SLOT_SECONDS = 0.4
 MAX_SKIPPED_SLOT_NUDGE = 50
@@ -91,18 +97,27 @@ class SolanaRpc:
         self.timeout = (10.0, timeout_s)
         self.max_attempts = max_attempts
         self.session = session or requests.Session()
+        self._clock = clock
         self._sleep = sleep
         self._post = post
         self._next = 0
         self.calls = 0
         self.failures = 0
         self.pruned: set[str] = set()   # endpoints sem o historico pedido (saem do rodizio)
+        self.daily_limited: dict[str, float] = {}   # endpoint -> ate quando fica de fora do rodizio
 
     def _send(self, url: str, payload: dict) -> Any:
         if self._post is not None:
             return self._post(url, payload)
         response = self.session.post(url, json=payload, timeout=self.timeout)
         if response.status_code == 429:
+            code = None
+            try:
+                code = (response.json() or {}).get("error", {}).get("code")
+            except ValueError:
+                pass
+            if code == DAILY_LIMIT_CODE:
+                raise RpcError("transport", "limite diario do plano", DAILY_LIMIT_CODE)
             raise RpcError("transport", "HTTP 429", 429)
         if response.status_code >= 400:
             raise RpcError("transport", f"HTTP {response.status_code}", response.status_code)
@@ -111,11 +126,20 @@ class SolanaRpc:
         except ValueError:
             raise RpcError("transport", "resposta nao e JSON") from None
 
+    def _pause_daily_limit(self, url: str) -> None:
+        self.daily_limited[url] = self._clock() + DAILY_LIMIT_PAUSE_S
+        log.warning("rpc: %s bateu o limite diario do plano -- pausado %.0f min (outros endpoints seguem; retomo sozinho)",
+                    host_of(url), DAILY_LIMIT_PAUSE_S / 60.0)
+
     def call_raw(self, method: str, params: list) -> dict:
         """Resposta JSON-RPC inteira ({result} ou {error}). Erro de transporte -> rodizio e nova tentativa."""
         last: Optional[Exception] = None
         for attempt in range(self.max_attempts):
-            live = [u for u in self.endpoints if u not in self.pruned]
+            now = self._clock()
+            live = [u for u in self.endpoints if u not in self.pruned and self.daily_limited.get(u, 0.0) <= now]
+            if not live:
+                # todos podados ou no limite diario agora: tenta mesmo assim o que nao foi podado (a pausa expira sozinha)
+                live = [u for u in self.endpoints if u not in self.pruned]
             if not live:
                 raise RpcError("exhausted", f"{method}: nenhum endpoint com o historico pedido")
             url = live[(self._next + attempt) % len(live)]
@@ -135,7 +159,9 @@ class SolanaRpc:
                 self.failures += 1
                 last = exc
                 code = getattr(exc, "code", None)
-                if code == 429:
+                if code == DAILY_LIMIT_CODE:
+                    self._pause_daily_limit(url)
+                elif code == 429:
                     limiter.on_429()
                 else:
                     limiter.on_error_pause(2.0 * (attempt + 1))
@@ -146,6 +172,11 @@ class SolanaRpc:
                 last = RpcError("transport", "corpo inesperado")
                 continue
             error = body.get("error")
+            if isinstance(error, dict) and error.get("code") == DAILY_LIMIT_CODE:
+                self.failures += 1
+                self._pause_daily_limit(url)
+                last = RpcError("transport", "limite diario do plano", DAILY_LIMIT_CODE)
+                continue
             if isinstance(error, dict) and error.get("code") in (429, -32429):
                 self.failures += 1
                 limiter.on_429()

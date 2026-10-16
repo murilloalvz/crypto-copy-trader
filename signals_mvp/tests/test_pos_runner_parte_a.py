@@ -21,6 +21,7 @@ from ..pos_runner.parte_a.pipeline import Context, enumerate_windows, load_seal,
 from ..pos_runner.parte_a.plan import DAY, PeriodPlan, load_plan, write_plan
 from ..pos_runner.parte_a.store import Store
 from ..pos_runner.quotes import stable_series
+from ..util import iso_utc
 from .test_pos_runner import textbook
 
 SUPPLY = 1e9
@@ -356,6 +357,37 @@ class PrefetchTests(unittest.TestCase):
         run_period(ctx, "discovery", target_min_setups=10**9, max_windows=total)   # mesmas janelas, ordem sorteada
         self.assertEqual(ctx.enumerate_calls, enum_calls_before)   # enumerate_windows pulou tudo (window_done)
         self.assertEqual(ctx.ohlcv.calls, gt_calls_before)         # stage1 veio 100% do cache do estagio
+        ctx.store.close()
+
+    def test_stage1_stage2_are_interleaved_per_window_not_only_after_all_enumeration(self):
+        """Reforco de 2026-10-16 (prioridade do discovery antigo): o OHLCV da janela mais antiga precisa comecar
+        ANTES de terminar a enumeracao do periodo inteiro -- senao "mais antiga primeiro" so vale pra enumeracao
+        (RPC, sem o limite de ~180 dias), e o que realmente tem o limite (o OHLCV) só comecaria depois de
+        enumerar tudo, tarde demais pras janelas mais proximas do limite."""
+        tmp = Path(tempfile.mkdtemp())
+        windows = plan().windows("discovery")
+        lo = min(w[0] for w in windows)                       # cronologicamente a 1a (nao a 1a do sorteio)
+        runners = {f"P_pump_{lo}_0"}
+        ctx = make_ctx(tmp, runners, per_window=1)
+        eventos: list[dict] = []
+        captured: list[tuple[int, int, int]] = []
+        prefetch_period(ctx, "discovery", max_windows=5,
+                        progress=lambda e: (eventos.append(e), captured.append((e["janelas_feitas"], e["de"], ctx.ohlcv.calls))))
+        first_feita, first_de, first_calls = captured[0]
+        self.assertEqual(first_feita, 1)
+        self.assertLess(first_feita, first_de)       # ainda faltam janelas
+        self.assertGreater(first_calls, 0)           # o OHLCV do runner da 1a janela JA rodou
+        self.assertIn("dias_restantes_gt", eventos[0])
+        ctx.store.close()
+
+    def test_prefetch_reports_dates_lost_to_the_free_window_explicitly(self):
+        tmp = Path(tempfile.mkdtemp())
+        windows = plan().windows("discovery")
+        lo = min(w[0] for w in windows)                       # cronologicamente a 1a (nao a 1a do sorteio)
+        target = f"P_pump_{lo}_0"
+        ctx = make_ctx(tmp, set(), per_window=1, fail_401={target})
+        resumo = prefetch_period(ctx, "discovery", max_windows=1)
+        self.assertEqual(resumo["fora_do_alcance_gratis"], [iso_utc(lo + 60)])
         ctx.store.close()
 
     @staticmethod

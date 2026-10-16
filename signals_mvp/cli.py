@@ -16,6 +16,8 @@ comandos:
   selfcheck                   testa tudo com dados falsos, sem rede
   teste-rede                  testa as APIs reais (GeckoTerminal, GoPlus, Telegram getMe), sem enviar mensagem
   teste-telegram              envia UMA mensagem de teste (confirma token e chat id do .env)
+  teste-pos-runner            envia 1 alerta de ENTRADA de mentira (com mini-grafico) + 1 resumo de banca de
+                               mentira, pro Telegram -- confirma a Parte B antes de ligar pra valer
   config                      valida o config.yaml e mostra a versao (hash)
   resumo                      mostra o resumo de hoje (le o banco, sem rede)
   exportar                    regrava os CSVs a partir do banco
@@ -65,7 +67,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="signals_mvp", description="Bot de sinais de memecoins (PAPER / somente leitura)", epilog=COMMANDS,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("comando", nargs="?", default="iniciar",
-                        choices=["iniciar", "run", "parar", "stop", "selfcheck", "teste-rede", "teste-telegram", "config", "resumo", "exportar", "worker"])
+                        choices=["iniciar", "run", "parar", "stop", "selfcheck", "teste-rede", "teste-telegram",
+                                "teste-pos-runner", "config", "resumo", "exportar", "worker"])
     parser.add_argument("--forcar", action="store_true", help="iniciar mesmo com um pid antigo no arquivo (so se tiver certeza)")
     args = parser.parse_args(argv)
     paths = make_paths()
@@ -95,6 +98,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from .netcheck import run_telegram_test
 
         return run_telegram_test(paths)
+    if command == "teste-pos-runner":
+        from .netcheck import run_pos_runner_telegram_test
+
+        return run_pos_runner_telegram_test(paths)
     if command == "config":
         return _cmd_config(paths)
     if command == "resumo":

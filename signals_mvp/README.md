@@ -128,17 +128,31 @@ simula; quem decide e opera é você, no simulador do Axiom.
 > hipótese nova. Os alertas mostram `config <hash> (pré-registrada)`. Paper ao vivo **não é validação**: a hipótese só
 > pode virar edge pelo backtest sem viés com holdout selado (Parte A) e o rito do registro de hipóteses.
 
-**Passo a passo**
+**Passo a passo mínimo (depois dos passos 1–6 do início deste README: Python, `.env` com
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, bot criado no @BotFather, `/start` mandado)**
 
 1. Rode de novo o `instalar.bat` (instala o `matplotlib`, usado no mini-gráfico; sem ele o alerta sai só em texto).
-2. Confira no `config.yaml` a seção `pos_runner:` — vem **ligada** (`ligado: true`). Para desligar, troque para
+2. (Opcional, recomendado) Ponha um RPC gratuito seu (Helius/QuickNode) em `POS_RUNNER_RPC_URLS=` no `.env`
+   (`signals_mvp\.env`, uma URL completa por linha ou separadas por vírgula). Sem ele o bot usa o RPC público da
+   Solana, que é lento: a conferência on-chain de cada token novo leva minutos. Com QuickNode, um dia de uso errado
+   pode bater o **limite diário do plano** — o bot percebe (HTTP 429 com `"daily request limit reached"`), pausa
+   só aquele endpoint por 1h e continua no RPC público sozinho; ele volta a tentar a QuickNode depois, sem precisar
+   reiniciar nada.
+3. **Teste a entrega antes de ligar pra valer** — manda 1 alerta de ENTRADA de mentira (com mini-gráfico) e 1 resumo
+   de banca de mentira pro seu Telegram:
+   ```
+   py -3 -m signals_mvp teste-pos-runner
+   ```
+   Se os dois chegaram no celular (claramente marcados "TESTE"/"mentira"), token, chat id e o mini-gráfico estão
+   certos.
+4. Confira no `config.yaml` a seção `pos_runner:` — vem **ligada** (`ligado: true`). Para desligar, troque para
    `false` e salve (o bot recarrega sozinho). Os outros itens dizem **quais tokens** acompanhar (`max_pools`, `fontes`,
    `idade_max_dias`) e **quais alertas** mandar; as regras do padrão ficam no arquivo `parametros` (mudar esse arquivo
    exige reiniciar o bot).
-3. (Opcional, recomendado) Ponha um RPC gratuito seu (Helius/QuickNode) em `POS_RUNNER_RPC_URLS=` no `.env`. Sem ele
-   o bot usa o RPC público da Solana, que é lento: a conferência on-chain de cada token novo leva minutos.
-4. Ligue o bot normalmente (`iniciar.bat`). O console mostra `POS-RUNNER ligado | config <hash> (rascunho)` e, ao
-   longo do dia, `POS-RUNNER: acompanhando $TICKER`. `/status` no Telegram mostra quantos tokens estão no radar.
+5. **Ligar (1 comando):** `signals_mvp\iniciar.bat` (ou `py -3 -m signals_mvp iniciar`). O console mostra
+   `POS-RUNNER ligado | config <hash> (rascunho)` e, ao longo do dia, `POS-RUNNER: acompanhando $TICKER`.
+   `/status` no Telegram mostra quantos tokens estão no radar.
+6. **Parar (1 comando):** `signals_mvp\parar.bat` (ou `py -3 -m signals_mvp parar`, ou `Ctrl+C` na janela do bot).
 
 **Como os tokens entram no radar:** a cada 3 min o bot lê uma lista do GeckoTerminal (em rodízio: *trending* e os
 pools de maior volume 24h do PumpSwap, Meteora DAMM v2 e Raydium) e também olha os pools novos que o v0 já busca.
@@ -186,6 +200,13 @@ recomeça a contagem dela).
 resultado bruto e com custo 2×, R múltiplo, base pareada e edge sobre ela, se o alerta saiu e com que atraso, faixa do
 pico, S ≥ 100k, R/S, idade desde a graduação e a máxima atingida antes da saída em % do caminho até o pico.
 Os mini-gráficos ficam em `dados\pos_runner\graficos\`.
+
+**Gestão de banca** (addendum de relatório, 2026-10-16): `dados\pos_runner_banca.csv` — uma linha por entrada real
+fechada de cada ajuste (tf × saída), simulando uma banca de US$100 por ajuste (posição 5%, até 3 abertas, stop
+diário −10%/3 perdas, stop semanal −20%; sinais bloqueados pela gestão aparecem como `pulado: limite/stop
+diário/stop semanal`). É a MESMA tabela que a Parte A gera no backtest (`docs/pos-runner-v0/trades/`), só que com
+os sinais reais. Resumo diário por ajuste sai no Telegram no mesmo horário do resumo diário do bot v0
+(`resumo_diario.hora_local`).
 
 **Limitações (leia):**
 - candle não mostra a ordem dos preços dentro dele: stop e alvo no mesmo candle contam como **stop**;

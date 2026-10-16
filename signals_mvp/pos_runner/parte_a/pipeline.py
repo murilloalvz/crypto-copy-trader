@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from ...http import ApiError
-from ...util import short_hash
+from ...util import iso_utc, short_hash, utc_now
 from ..candles import Bar, OhlcvStore, fill_gaps, missing_windows, tf_seconds
 from ..costs import CostModel
 from ..detector import Event, run
@@ -272,29 +272,38 @@ def prefetch_period(ctx: Context, period: str, max_windows: Optional[int] = None
     por dia; uma janela antiga que so fosse visitada tarde na ordem sorteada (a que decide o resultado, em
     `run_period`) correria o risco de sair do alcance antes de ser baixada. So GRAVA dado bruto, com checkpoint
     (retomavel): nao roda o detector nem decide parada por contagem. Depois de um prefetch completo, `run_period`
-    na ordem sorteada nao faz NENHUMA chamada de rede nova — so le o que ja esta em cache/checkpoint."""
+    na ordem sorteada nao faz NENHUMA chamada de rede nova — so le o que ja esta em cache/checkpoint.
+
+    Decisao operacional de 2026-10-16 (reforco): o estagio 1/2 (que de fato consome o OHLCV do GeckoTerminal) e
+    feito JANELA POR JANELA, intercalado com a enumeracao, em vez de so depois de enumerar TODAS as janelas do
+    periodo -- senao o "mais antigo primeiro" vale so para a enumeracao (RPC, sem o limite de ~180 dias) e o
+    OHLCV das graduacoes mais antigas so comecaria a ser baixado depois de terminar a enumeracao inteira do
+    periodo (podendo ser tarde demais para as mais proximas do limite)."""
     windows = ctx.plan.windows(period)
     order = sorted(range(len(windows)), key=lambda k: windows[k][0])      # cronologico, mais antiga primeiro
     if max_windows is not None:
         order = order[:max_windows]
+    total_grads = 0
+    total_runners = 0
     for i, k in enumerate(order, start=1):
         enumerate_windows(ctx, period, [k])
+        rows = sorted((r for r in ctx.store.graduations(period, exact_ord=k) if r["status"] == "ok"), key=lambda r: r["grad_ts"])
+        for row in rows:
+            total_grads += 1
+            status, runner = stage1(ctx, row)
+            if status == "ok" and runner:
+                total_runners += 1
+                stage2_bars(ctx, row)
         if progress:
-            progress({"fase": "enumeracao", "periodo": period, "janelas_feitas": i, "de": len(order),
-                      "janela_inicio": windows[k][0]})
-    rows = sorted((r for r in ctx.store.graduations(period) if r["status"] == "ok"), key=lambda r: r["grad_ts"])
-    runners: list[Any] = []
-    for i, row in enumerate(rows, start=1):
-        status, runner = stage1(ctx, row)
-        if status == "ok" and runner:
-            runners.append(row)
-        if progress:
-            progress({"fase": "estagio1", "periodo": period, "pools_feitos": i, "de": len(rows), "runners": len(runners)})
-    for i, row in enumerate(runners, start=1):
-        stage2_bars(ctx, row)
-        if progress:
-            progress({"fase": "estagio2", "periodo": period, "runners_feitos": i, "de": len(runners)})
-    return {"janelas": len(order), "graduacoes": len(rows), "runners": len(runners)}
+            dias_restantes_gt = (windows[k][0] + ctx.plan.free_days * DAY - utc_now()) / DAY
+            progress({"fase": "janela", "periodo": period, "janelas_feitas": i, "de": len(order),
+                      "janela_inicio": windows[k][0], "pools_feitos": total_grads, "runners": total_runners,
+                      "dias_restantes_gt": round(dias_restantes_gt, 1)})
+    perdidas = ctx.store.db.execute(
+        "SELECT DISTINCT g.grad_ts FROM stage1 s JOIN graduations g ON g.pool = s.pool "
+        "WHERE g.period=? AND s.status='fora_do_alcance_gratis'", (period,)).fetchall()
+    return {"janelas": len(order), "graduacoes": total_grads, "runners": total_runners,
+            "fora_do_alcance_gratis": sorted(iso_utc(r[0]) for r in perdidas)}
 
 
 # ---------------------------------------------------------------------------
