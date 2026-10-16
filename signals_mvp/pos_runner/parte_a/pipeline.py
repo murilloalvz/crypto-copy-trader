@@ -420,9 +420,16 @@ def seal_holdout(ctx: Context, n_windows: int, path: Path) -> dict[str, Any]:
 
 
 def load_seal(path: Path, ctx: Context, require_commit: bool = True) -> set[str]:
+    """`versao_plano` tem que bater (janelas sorteadas diferentes = selo de outro periodo). `versao_config` so e
+    provenance/auditoria (log se mudou) -- a selagem e so enumeracao on-chain (`seal_holdout`, sem ler `ctx.params`);
+    uma emenda que amplia a grade (EMENDA 2026-10-16, pre-registro secao 10: "a selecao de janelas nao depende da
+    regra") NUNCA invalida um selo ja comitado."""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    if doc["versao_plano"] != ctx.plan.version or doc["versao_config"] != ctx.params.version:
-        raise RuntimeError("selagem do holdout e de outro plano/config")
+    if doc["versao_plano"] != ctx.plan.version:
+        raise RuntimeError("selagem do holdout e de outro plano")
+    if doc["versao_config"] != ctx.params.version:
+        log.info("selo do holdout foi gravado sob outra versao_config (%s != %s atual) -- aceito: a selagem e so "
+                "enumeracao on-chain, nao depende da regra (pre-registro secao 10)", doc["versao_config"], ctx.params.version)
     pools = sorted({g["pool"] for g in doc["graduacoes"]})
     if short_hash(pools, 32) != doc["hash_pools"]:
         raise RuntimeError("lista do holdout alterada depois de selada (hash nao bate)")

@@ -204,6 +204,22 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_seal(self.tmp / "selo.json", ctx, require_commit=False)
 
+    def test_seal_from_an_older_config_version_is_still_accepted_same_plan(self):
+        """EMENDA 2026-10-16 (pre-registro secao 10): `seal_holdout` so enumera janelas on-chain (nunca le
+        `ctx.params`) -- um selo gravado sob a versao_config ANTERIOR a uma emenda de grade continua valido (so
+        o plano/periodo das janelas importa). Um plano diferente (janelas sorteadas diferentes) continua rejeitado."""
+        ctx = self.ctx(self.tmp, set())
+        seal_holdout(ctx, 1, self.tmp / "selo.json")
+        doc = json.loads((self.tmp / "selo.json").read_text())
+        doc["versao_config"] = "outra_config_antiga"
+        (self.tmp / "selo.json").write_text(json.dumps(doc))
+        pools = load_seal(self.tmp / "selo.json", ctx, require_commit=False)   # nao levanta: so provenance mudou
+        self.assertTrue(pools)
+        doc["versao_plano"] = "outro_plano"
+        (self.tmp / "selo.json").write_text(json.dumps(doc))
+        with self.assertRaises(RuntimeError):
+            load_seal(self.tmp / "selo.json", ctx, require_commit=False)
+
     def test_count_based_stop_resume_metrics_and_baseline(self):
         windows = plan().windows("discovery")
         runners = {f"P_{lp[:4]}_{windows[w][0]}_{k}" for w in range(3) for lp in ("pumpfun", "raydium_launchlab") for k in range(2)}
