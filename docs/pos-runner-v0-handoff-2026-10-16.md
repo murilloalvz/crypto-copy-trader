@@ -1,104 +1,125 @@
-# Handoff — POS-RUNNER-V0 (estratégia pós-runner) — 2026-10-16
+# Handoff — POS-RUNNER-V0 (estratégia pós-runner) — 2026-10-16 (rev. 2: regras do operador aplicadas)
 
 Branch `signals-mvp` (espelho em `claude/pensive-wright-62usq8`, PR #6). Modo PAPER / READ ONLY: nenhuma chave, nenhuma
 assinatura, nenhuma ordem. Kernel Rust, branch do H2, `benchmarks/sig_fast_v0/` e `artifacts/sig_fast_h2_*` intocados
 (a enumeração de migrações por âncora foi COPIADA para `signals_mvp/pos_runner/solana_rpc.py`, com a origem citada).
 
-## 1. Onde está cada entrega do handoff (§7)
+## 1. Onde está cada entrega
 
 | entrega | estado |
 |---|---|
-| Passo 0 — relatório com os 5 gráficos, ANTES de congelar | **feito e enviado** — `signals_mvp/pos_runner/passo0_relatorio/relatorio_passo0.md` (+ PNGs, medidas, dados brutos com SHA256) |
-| Pré-registro `POS-RUNNER-V0` commitado ANTES do backtest (depois do OK) | **rascunho commitado** — `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`; linha `RASCUNHO` no registro. Vira `PRE-REGISTRADO` (com o hash da config) só depois do seu OK |
-| Parte A — backtest sem viés (cobertura → discovery → holdout) | **código pronto e testado, NÃO executado** — `signals_mvp/pos_runner/parte_a/`. O próprio código recusa rodar enquanto o pré-registro não estiver `PRE-REGISTRADO` com o hash certo e com o holdout selado e commitado |
-| Parte B — sinal ao vivo no bot, com passo a passo | **ligada** (config em rascunho) — `signals_mvp/pos_runner/live.py`; passo a passo no `signals_mvp/README.md`, seção "POS-RUNNER ao vivo" |
+| Passo 0 | v1 (15/10, proposta com varredura) em `signals_mvp/pos_runner/passo0_relatorio/`. **v2 (16/10)**: o que o detector vê nos 5 exemplos com as suas regras — `signals_mvp/pos_runner/passo0_relatorio_v2/relatorio_passo0_v2.md` (+ gráficos, `fases.json`, hashes; mesmos candles do v1, reprodutível sem rede). Sem varredura e sem resultado de trade |
+| Pré-registro | rascunho **revisado com as suas decisões e pronto para congelar** — `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`; config candidata `2a8bef99a917`; linha do registro atualizada (continua `RASCUNHO`) |
+| Parte A — backtest sem viés | código atualizado às regras (idade desde a criação, base pareada pela mesma idade, cortes por faixa/testes/cotação…), testado com universo sintético, **NÃO executado**. A trava continua fechada até o pré-registro virar `PRE-REGISTRADO` com o hash |
+| Parte B — sinal ao vivo no bot | ligada com as regras novas (config em rascunho); passo a passo no `signals_mvp/README.md` |
 
-## 2. O que preciso de você (o portão)
+## 2. O que preciso de você (para congelar)
 
-Do relatório do Passo 0 (as respostas destravam o congelamento):
+1. **Item 8 chegou cortado** ("Pendência do relatório sem resposta do operador: escolher a opção mais…") — igual nas duas
+   vezes em que a mensagem chegou. Li como **"a opção mais conservadora"**. Confirma? O que essa leitura decidiu está na
+   tabela da §5 do rascunho (medida pelos extremos, holdout com ≥ 30 trades, caminho 2 da regra de parada, R/S e volume
+   só como atributo, sem comando manual de radar…).
+2. **Medida da queda pelos extremos** (máxima/mínima) — a escolha conservadora. Nos exemplos, 7 ondas do timeframe
+   principal morrem pelos extremos (queda > 90%) e sobreviveriam pelos corpos (Passo 0 v2, §2). Confirma os extremos?
+3. **Passo 0 v2**: o detector vê as fases que o professor mostrou? Resumo: fase 2 detectada nos 5 exemplos em pelo
+   menos um timeframe; o SOLCAT aparece com zona madura (👀) nas duas ondas antes de morrer; 26 das 43 ondas que chegaram
+   à fase 2 morreram por queda > 90%; 1 entrada dos exemplos seria primária (FLAME 5m, 15/09 06:20, idade 3,9 dias) — as
+   outras ficaram fora de 2–7 dias desde a criação (BIKE sempre com mais de 8 dias; nos outros, as primeiras entradas
+   vieram com menos de 2 dias e as de ondas posteriores com mais de 7) ou vieram depois da primária no mesmo timeframe.
+4. **L_bc (limitação nova, medida no teste de fumaça)**: L_bc = open do 1º candle de 1h do pool de graduação. O STREAM
+   (pump.fun) foi criado e migrado no mesmo segundo (14/10 19:18:29Z, pela busca on-chain do teste) e o 1º negócio no
+   PumpSwap saiu a ~362k de MC, enquanto a curva terminou a ~52k (a mínima do mesmo candle); L_bc ficou ~7× alto e a
+   regra S ≥ 0,75 × L_bc ficaria mais dura para esse token (nos 5 exemplos e nos outros 3 tokens do teste, L_bc deu
+   28–51k, coerente). Alternativa mais exata: ler L_bc on-chain nas reservas do
+   pool na própria transação de migração (mais código, sobretudo para DAMM v2). **Mantive a definição atual**. Quer a
+   troca antes do congelamento?
+5. O dia do congelamento `D` (as datas dos períodos saem do plano gerado nesse dia; ex.: D = 17/10 → discovery de 23/04
+   a 27/07, holdout de 03/08 a 23/09).
 
-1. Os gráficos são os tokens do professor? Em especial **SOLCAT** (MC ~30k hoje, não ~575k) e **ZILLIONS** (qual trecho/data?).
-2. Em cada gráfico, qual é o setup do professor (número da entrada `#n` ou a data do rompimento)?
-3. **SOLCAT**: a base ficou ~25% abaixo do `L_bc`. "Fundo acima da bonding curve" vale sem tolerância (SOLCAT fica de fora)?
-4. "Tokens de 2–7 dias em fase 2": idade desde a graduação ou tempo na fase 2? Pode ficar só como atributo (proposta)?
-5. Saída por exaustão: "+50% desde a entrada" (handoff) ou "perto do último topo"?
-6. Aprova a proposta (corpos, queda até 95%, martelo ≥ 1,5× corpo, alvo no topo real)?
-7. Parte A: horizonte de 14 dias depois da graduação e mínimo de 20 trades no holdout — ok?
-8. O POS-RUNNER ocupa o "caminho 2" da regra de parada do programa?
+## 3. O que mudou com as suas decisões
 
-Da Parte B (interpretações que tomei; diga se alguma está errada):
+- **Detector** (`pos_runner/detector.py`, o mesmo no Passo 0, na Parte A e no bot): zona da fase 2 aberta quando a queda
+  chega a 80%; moeda morta acima de 90%; fundo ≥ 0,75 × L_bc; R = máxima das subidas depois do fundo **incluindo o 1º
+  repique** (que nunca é comprado: ele forma R e não há teste antes dele); **teste de suporte** de 1 ou muitos candles
+  (mínima ≤ S × 1,10 e depois fechamento ≥ min((S+R)/2, S × 1,25)); setup morto se fechar abaixo do último teste −2%;
+  stop no último teste −3%; zona madura = 12 candles + 1 teste; entrada = fechamento acima de R, sem volume; veto de
+  candle absurdo (≥ 50% de R → pico); **idade de 2–7 dias desde a criação** do token.
+- **Atributos** (nenhum é filtro): faixa do pico (300–500k, 500k–1M, 1–5M, >5M), S ≥ 100k, nº de testes, R/S, volume
+  do rompimento, power candle, idade desde a graduação, máxima atingida antes da saída em % do caminho até o pico.
+- **Saídas**: alvo 0,95 × pico (A: 100%; B: 50% + stop do resto na entrada + trailing de 25%); exaustão = power candle
+  com máxima ≥ 0,85 × pico; stop de tempo 48 candles.
+- **Criação do token**: transação bem-sucedida mais antiga do mint, paginando para trás a partir da migração (bateu ao
+  segundo com o Passo 0 nos 5 exemplos). Parte A: só para runners; Parte B: na thread de linhagem, antes de o token
+  entrar no radar. Sem criação = sem idade = nunca primário.
+- **Parte A**: base pareada pela mesma idade desde a criação; resultado completo por faixa de pico; cortes por testes,
+  launchpad, tipo de cotação, S ≥ 100k, R/S, volume e power candle; holdout com ≥ 30 trades fechados (parada em 40
+  setups); contagem dos runners sem data de criação no relatório.
+- **Parte B**: alertas com zona/testes/idade desde a criação; um sinal só conta para uma `versao_config` se foi decidido
+  depois do 1º ciclo dela (refazer o detector a partir dos candles congelados nunca cria sinal retroativo); paper aberto
+  de outra versão vira `descontinuado`; tokens já no radar sem data de criação voltam para a fila até a thread buscá-la.
 
-9. **👀 WATCHLIST** sai quando a fase 2 fica **armada** (caixa com tamanho mínimo e ≥ 1 wick no suporte), não no
-   instante em que a queda chega a 80% — só a partir daí existem S, R e nº de wicks, que o handoff pede no alerta.
-10. **Só o 1º setup de cada token/timeframe gera 👀/🟢** (`so_primario: true`); reentradas viram só paper (no CSV).
-    O 5m gera muitas micro-caixas; com `false` você recebe todas.
-11. **Radar**: entra quem está com **MC ≥ 300k no momento** em que aparece nas listas do GeckoTerminal (trending + top
-    volume de PumpSwap/DAMM v2/Raydium) ou nos pools novos do v0. Runner que aconteceu com o bot desligado não entra
-    depois. Quer um comando para você pôr um token no radar à mão?
-
-## 3. Como a Parte B funciona (resumo; detalhe no README)
+## 4. Como a Parte B funciona (resumo; detalhe no README)
 
 - Mesmo detector, simulador, custos e conversão para USD do backtest. Candle consumido só **fechado** (+90 s para o
   GeckoTerminal indexar) e **congelado** no SQLite: reiniciar o bot refaz exatamente o mesmo estado.
 - Um token só entra no radar depois da **prova on-chain** de que o pool nasceu da migração de um dos 3 launchpads, para
-  aquele mint (mesmo critério da enumeração da Parte A; roda numa thread própria, com o RPC público ou o seu em
-  `POS_RUNNER_RPC_URLS`).
-- Chamadas ao GeckoTerminal saem de uma fatia reservada do orçamento do v0 (`chamadas_por_ciclo`, padrão 3); candidato do
-  v0 continua com prioridade, mas o POS-RUNNER nunca fica sem pelo menos 1 chamada por ciclo.
-- Alertas: 👀 (fase 2 armada), 🟢 (entrada + mini-gráfico + Axiom), ⚪ (candle absurdo: não entrar), 🔴 (invalidado),
-  🟡 (saída sugerida, como resposta ao 🟢), 📊 (resultado do paper com custos e base pareada).
-- Paper A/B de **toda** entrada (custo 1× e 2×) e base pareada (até 5 outros runners do radar na mesma idade, mesmo
-  colchete). CSVs `dados\pos_runner.csv` (colunas exatas do handoff) e `dados\pos_runner_detalhe.csv`.
-- **Regra científica**: enquanto a config estiver em rascunho, o paper ao vivo é só operacional. Mudar parâmetro
-  depois de olhar resultado dele = ajuste em dado de resultado (proibido); linhas de outra `versao_config` ficam fora de
-  qualquer avaliação (§3.1 do rascunho do pré-registro).
+  aquele mint, e da **data de criação** do token (RPC público ou o seu em `POS_RUNNER_RPC_URLS`, numa thread própria).
+- Chamadas ao GeckoTerminal saem de uma fatia reservada do orçamento do v0 (`chamadas_por_ciclo`, padrão 3).
+- Alertas: 👀 (zona madura), 🟢 (entrada + mini-gráfico + Axiom), ⚪ (candle absurdo: não entrar), 🔴 (setup morto ou
+  onda descartada), 🟡 (saída sugerida, como resposta ao 🟢), 📊 (resultado do paper com custos e base pareada).
+- Paper A/B de **toda** entrada (custo 1× e 2×) e base pareada. CSVs `dados\pos_runner.csv` (colunas do handoff:
+  `idade_h` agora em horas desde a criação, `n_wicks` = nº de testes) e `dados\pos_runner_detalhe.csv` (+ faixa do
+  pico, S ≥ 100k, R/S, idade desde a graduação, máxima em % do caminho até o pico).
+- **Regra científica**: com a config em rascunho, o paper ao vivo é só operacional; mudar parâmetro depois de olhar
+  resultado dele = ajuste em dado de resultado (proibido); linhas de outra `versao_config` ficam fora de qualquer
+  avaliação (§3.1 do rascunho).
 
-## 4. Verificações feitas nesta sessão
+## 5. Verificações feitas
 
-- 236 testes offline (`python -m unittest discover -s signals_mvp/tests -t .`) em Python 3.13 e 3.10 (o mínimo do
-  README; sem matplotlib o teste do gráfico é pulado). Os novos usam respostas **reais**: a lista *trending* do
-  GeckoTerminal e as 3 transações de migração (pump.fun/SOLCAT, LaunchLab/ZILLIONS, DBC/FLAME).
-- Testes da Parte B: fluxo completo (descoberta → linhagem → carga → 👀 → 🟢 → paper → 🟡 → 📊 → CSV), candle em
-  andamento nunca consumido, reinício sem alerta repetido, bot desligado no rompimento (paper gravado, sem alerta
-  velho), histórico antes do radar fora do paper, orçamento (nunca passa da fatia nem toca as chamadas guardadas), 429,
-  erro de um pool sem travar os outros, multi-timeframe com cotação em SOL, integração com o engine.
-- Teste de fumaça contra **GeckoTerminal e RPC reais** (somente leitura, sem Telegram): ver §6.
-- **Acompanhamento +60 min do v0** refeito contra o OHLCV real nos 16 sinais do teste ao vivo de 13/10, pelo caminho real
-  do engine: 16/16 fechados e **0 divergência** numa conferência independente (MC +5/+15/+60, máx., mín.). Achado: o 1º
-  open do minuto seguinte ficou a ~7% (mediana) do preço da foto da decisão, e a mais de 20% em 6 de 16 — registrado no
-  README do v0 como limitação medida.
+- **246 testes offline** (`python -m unittest discover -s signals_mvp/tests -t .`) em Python 3.13 e 3.10 (o mínimo do
+  README; sem matplotlib o teste do gráfico é pulado) e `compileall` em 3.11.
+- Detector: entrada de livro (com a zona e o teste esperados), mesmas decisões em todo prefixo da série (sem lookahead),
+  moeda morta > 90%, fundo abaixo de 0,75 × L_bc, sem exigência de volume, maturidade, precisa de teste, 1º repique
+  nunca comprado, teste de vários candles, descida sem recuperação, invalidação, veto de absurdo, idade desde a criação
+  (dentro, jovem demais, desconhecida).
+- Parte A (universo sintético): parada por contagem e retomada idempotente, base pareada pela idade desde a criação,
+  resultado por faixa e os cortes, token sem data de criação nunca primário e fora da base, trava do pré-registro.
+- Parte B: fluxo completo (descoberta → linhagem → criação → 👀 → 🟢 → paper → 🟡 → 📊 → CSV), busca da criação (ok,
+  teto de páginas, falha de RPC), pool antigo sem criação volta para a fila, troca de versão sem sinal retroativo, além
+  dos testes anteriores (candle em andamento nunca consumido, reinício sem alerta repetido, orçamento, 429, erro de um
+  pool sem travar os outros, multi-timeframe com cotação em SOL, integração com o engine).
+- Passo 0 v2 rodado duas vezes a partir do instantâneo: mesmo texto (fora a data) e `fases.json` idêntico.
 
-## 5. Bugs achados e corrigidos
+## 6. Bugs achados e corrigidos
 
-- **Config do v0**: o endereço do USDT da Solana em `ativos_referencia` estava errado (GeckoTerminal responde 404); o
-  correto é `Es9vMFrz…NkY11McCe8BenwNYB`. Isso gera uma **nova versão do config** (`versao_config` muda).
-- **Carga de candles com poucas chamadas por ciclo podia nunca terminar** (páginas vazias de confirmação não entravam no
-  checkpoint). Corrigido no `OhlcvStore` (usado também pela Parte A): checkpoint de toda página e início alinhado ao candle.
-- **Linhagem**: paginar o histórico do próprio pool não serve para pool quente (DOPE: ~500 transações/s logo depois da
-  graduação). A conferência agora lê a conta-chave do launchpad numa janela de ±10 min e abre primeiro a transação mais
-  próxima da criação.
-- URL de RPC (que pode levar chave) não aparece mais em log: só o host.
+- **Trava do pré-registro** (achado pelo teste nesta rodada): o rascunho novo cita a linha de status final e o hash
+  candidato, e a trava antiga procurava o padrão em qualquer lugar do texto — teria aberto. Agora só a linha de status
+  (a 1ª que começa com "Status:") conta, num único helper (`params.is_preregistered`) usado pela Parte A e pelo bot.
+- (rodada anterior) Config do v0 com o endereço errado do USDT; carga de candles que podia não terminar; linhagem de
+  pool quente; URL de RPC fora dos logs.
 
-## 6. Teste de fumaça contra as APIs reais
+## 7. Teste de fumaça contra as APIs reais (somente leitura, sem Telegram)
 
 (preenchido abaixo depois da execução)
 
-## 7. Limitações declaradas
+## 8. Limitações declaradas
 
 - Candle não mostra a ordem dos preços dentro dele (stop e alvo no mesmo candle = stop). Entrada do paper = open do candle
   seguinte ao sinal; o clique real chega depois do alerta (pesa mais no 5m).
+- Conversão para USD pela cotação do **fechamento** do candle: com cotação exótica que sobe junto com o token, a máxima
+  do 1h/4h distorce (FLAME/EMBER: mesmo topo em EMBER, 3,3M no 5m e 5,7M no 1h). A Parte A corta por tipo de cotação.
+- L_bc pelo 1º open de 1h (ver §2, item 4).
+- Data de criação: até 100 mil assinaturas do mint antes da migração; acima disso o token fica sem idade (contado).
 - Fee dos pools Raydium CPMM e Meteora DAMM v2 não confirmada (1% conservador por perna); supply atual (queima posterior
-  distorce o passado); cotação/USD pelo fechamento horário anterior.
-- Cobertura da enumeração da DBC: só a config de DAMM v2 `A8gMrEPJ…` (amostra de 78 migrações: todas com ela; migração
-  para DAMM v1 não coberta). A LaunchLab só por `MigrateToCpswap`.
-- O RPC público é lento e limita `getTransaction`; neste ambiente (IP de saída compartilhado) ele recusou bastante. Um RPC
-  gratuito seu deixa a entrada no radar muito mais rápida.
-- Windows real e Telegram real não testados nesta sessão (o cliente do Telegram é o mesmo do v0, com `sendPhoto` novo).
+  distorce o passado).
+- Cobertura da enumeração da DBC: só a config de DAMM v2 `A8gMrEPJ…`; a LaunchLab só por `MigrateToCpswap`.
+- O RPC público é lento e limita `getTransaction`/`getSignaturesForAddress`; neste ambiente (IP de saída compartilhado)
+  ele recusou bastante. Um RPC gratuito seu deixa a entrada no radar muito mais rápida.
+- Windows real e Telegram real não testados nesta sessão (o cliente do Telegram é o mesmo do v0, com `sendPhoto`).
 
-## 8. Próximos passos (só depois do seu OK)
+## 9. Próximos passos (só depois do seu OK)
 
-1. Ajustar `pos_runner_v0.yaml` às respostas, congelar, pôr o hash no pré-registro, trocar o status para
-   `PRE-REGISTRADO` e atualizar a linha do registro — tudo no mesmo commit, antes de qualquer coleta.
-2. `python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento <data>` → commit.
-3. `selar-holdout` → commit da selagem (hash) ANTES do discovery.
-4. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.
+1. No mesmo commit: a linha de status do rascunho passa a PRE-REGISTRADO com o hash `2a8bef99a917`, a linha do registro
+   vira `PRE-REGISTRADA` e entra o plano: `python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento <D>`.
+2. `selar-holdout` → commit da selagem (hash) ANTES do discovery.
+3. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.

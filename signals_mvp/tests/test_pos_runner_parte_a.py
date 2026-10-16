@@ -197,6 +197,19 @@ class PipelineTests(unittest.TestCase):
         for pool, tf, n, _prim, _ts, ev in ctx.store.setups("discovery"):
             self.assertTrue(2.0 <= json.loads(ev)["data"]["idade_dias"] <= 7.0, (tf, json.loads(ev)["data"]["idade_dias"]))
 
+    def test_report_has_the_bands_the_cuts_and_the_sampled_trades(self):
+        from ..pos_runner.parte_a.report import write_report
+        windows = plan().windows("discovery")
+        runners = {f"P_{lp[:4]}_{windows[w][0]}_{k}" for w in range(2) for lp in ("pumpfun", "raydium_launchlab") for k in range(2)}
+        ctx = self.ctx(self.tmp, runners)
+        run_period(ctx, "discovery", target_min_setups=4, max_windows=10)
+        run_baselines(ctx, "discovery")
+        text = write_report(ctx, self.tmp / "rel").read_text(encoding="utf-8")
+        for needle in ("## 2. Discovery — as 6 variantes", "Por faixa de pico do runner (resultado completo):", "por_testes",
+                       "por_cotacao", "por_S_100k", "por_R_S", "por_volume", "por_power_candle", "sem data de criação on-chain: 0",
+                       "teste(s) de suporte", "do caminho até o pico"):
+            self.assertIn(needle, text)
+
     def test_runner_without_creation_date_has_no_primary_setup(self):
         windows = plan().windows("discovery")
         pools = [f"P_{lp[:4]}_{windows[0][0]}_{k}" for lp in ("pumpfun", "raydium_launchlab", "meteora_dbc") for k in range(2)]

@@ -153,8 +153,8 @@ def write_report(ctx: Context, docs: Path) -> Path:
         lo = max(0, ev.data["peak_idx"] - 10)
         hi = min(len(bars) - 1, ev.idx + ctx.params.time_stop_candles + 5)
         name = f"trade_{k}_{r[0][:8]}_{r[1]}.png"
-        charts.plot_setup(out / name, bars, r[1], f"Trade {k}: {r[0][:8]}… {r[1]} — líquido A {_pct(100 * (r[5] or 0))}",
-                          f"{g['launchpad']} · saída: {r[10]}", ctx.store.stage1(r[0])[3], ev, det.events, (), (lo, hi))
+        chart = charts.plot_setup(out / name, bars, r[1], f"Trade {k}: {r[0][:8]}… {r[1]} — líquido A {_pct(100 * (r[5] or 0))}",
+                                  f"{g['launchpad']} · saída: {r[10]}", st1[3], ev, det.events, (), (lo, hi))
         info = json.loads(r[11])
         L.append(f"### Trade {k} — `{r[0]}` ({g['launchpad']}, {r[1]}) — {_pct(100 * (r[5] or 0))} ({r[10]})")
         L.append("")
@@ -162,7 +162,7 @@ def write_report(ctx: Context, docs: Path) -> Path:
                  f"R {ev.data['R']:,.0f}, {ev.data['n_testes']} teste(s) de suporte, zona de {ev.data['box_len']} candles, "
                  f"idade {_num(ev.data['idade_dias'])} d; máxima antes da saída: {_pct(info.get('max_caminho_pct'))} do caminho até o pico.")
         L.append("")
-        L.append(f"![trade {k}]({name})")
+        L.append(f"![trade {k}]({name})" if chart else "(gráfico indisponível: matplotlib não instalado)")
         L.append("")
     path = out / "relatorio_parte_a.md"
     path.write_text("\n".join(L), encoding="utf-8")
