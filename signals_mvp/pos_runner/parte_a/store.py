@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -37,6 +38,8 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 """
 
+log = logging.getLogger("signals_mvp.pos_runner.parte_a.store")
+
 
 class Store:
     def __init__(self, path: Path):
@@ -65,6 +68,23 @@ class Store:
             self.set(key, value)
         elif old != value:
             raise RuntimeError(f"{key} mudou no meio da coleta ({old} -> {value}): use outro arquivo de checkpoint")
+
+    def restamp_versao_config(self, new_value: str, reason: str) -> str:
+        """Re-grava SO a chave `versao_config` do meta (provenance) -- NUNCA na mao. Permitido apenas quando
+        stage1/stage2/setups/trades estao todos vazios (nada que dependa de `ctx.params` foi gravado ainda; so
+        `graduations`, que e enumeracao on-chain pura, independente da config). Usado para emendas de grade
+        (EMENDA 2026-10-16, pre-registro secao 10) que trocam o hash sem mudar nenhuma regra de deteccao/trade.
+        Devolve o valor antigo; levanta RuntimeError se alguma tabela dependente de params tiver linha."""
+        for t in ("stage1", "stage2", "setups", "trades"):
+            n = self.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            if n:
+                raise RuntimeError(f"restamp recusado: tabela '{t}' tem {n} linha(s) dependente(s) de versao_config")
+        old = self.get("versao_config")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('versao_config', ?)", (new_value,))
+        log.info("versao_config re-gravada (provenance, nenhum dado dependente de params existia): %s -> %s | motivo: %s",
+                old, new_value, reason)
+        return old or ""
 
     # -- janelas e graduacoes ---------------------------------------------------------
     def window_done(self, period: str, ord_: int, launchpad: str) -> bool:

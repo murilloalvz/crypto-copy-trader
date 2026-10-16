@@ -220,6 +220,22 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_seal(self.tmp / "selo.json", ctx, require_commit=False)
 
+    def test_restamp_versao_config_refuses_when_params_dependent_tables_are_not_empty(self):
+        """`restamp_versao_config` (store.py) e a UNICA forma permitida de trocar a versao_config gravada no meio
+        de uma coleta (nunca editar o SQLite na mao). So e aceito quando stage1/stage2/setups/trades estao vazios
+        (nada dependente de `ctx.params` existe ainda -- so `graduations`, enumeracao on-chain pura)."""
+        ctx = self.ctx(self.tmp, set())
+        ctx.store.require("versao_config", ctx.params.version)   # como build_context() faz no cli.py real
+        seal_holdout(ctx, 1, self.tmp / "selo.json")   # so grava graduations (period=holdout), nada dependente de params
+        self.assertTrue(ctx.store.graduations("holdout"))
+        old = ctx.store.restamp_versao_config("nova_config_emendada", "teste: emenda de grade")
+        self.assertEqual(old, ctx.params.version)
+        self.assertEqual(ctx.store.get("versao_config"), "nova_config_emendada")
+        self.assertTrue(ctx.store.graduations("holdout"))   # graduations (params-independente) nao foi tocado
+        ctx.store.save_setups("qualquer_pool", "1h", [{"kind": "ENTRADA", "idx": 1, "ts": 1, "decision_ts": 1, "data": {}}])
+        with self.assertRaises(RuntimeError):
+            ctx.store.restamp_versao_config("outra_config", "nao deveria passar: ha setup gravado")
+
     def test_count_based_stop_resume_metrics_and_baseline(self):
         windows = plan().windows("discovery")
         runners = {f"P_{lp[:4]}_{windows[w][0]}_{k}" for w in range(3) for lp in ("pumpfun", "raydium_launchlab") for k in range(2)}
