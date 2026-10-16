@@ -194,8 +194,8 @@ class DiscoveryTest(unittest.TestCase):
 
 
 class LineageTest(unittest.TestCase):
-    """Transacoes REAIS de migracao (getTransaction jsonParsed) dos exemplos SOLCAT, ZILLIONS e FLAME, lidas pelo mesmo
-    metodo da enumeracao da Parte A (conta-chave do launchpad numa janela em volta da criacao)."""
+    """Transacoes REAIS de migracao (getTransaction jsonParsed) dos exemplos SOLCAT, ZILLIONS e FLAME, conferidas pelo
+    mesmo criterio da enumeracao da Parte A (conta-chave do launchpad numa janela em volta da criacao)."""
 
     CASES = {
         "pumpfun": ("rpc_tx_migrate_pumpfun.json", "9Hr6NXw5WSffxNQnqxwZyhRw81uz3PpB7RF9J3i9nMt1", "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"),
@@ -204,60 +204,65 @@ class LineageTest(unittest.TestCase):
     }
 
     class Rpc:
-        """A conta-chave do launchpad teve, na janela, uma transacao com falha e a migracao (real)."""
+        """Na janela, a conta-chave teve: uma transacao com falha, uma de outro pool (longe da criacao) e a migracao."""
 
-        def __init__(self, tx: dict, fail: Optional[Exception] = None):
+        def __init__(self, tx: dict, other: Optional[dict] = None, fail: Optional[Exception] = None):
             self.tx = tx
+            self.other = other
             self.fail = fail
             self.accounts: list[str] = []
+            self.opened: list[str] = []
 
         def signatures(self, address, before=None, until=None, limit=1000):
             if self.fail:
                 raise self.fail
             self.accounts.append(address)
             bt = self.tx["blockTime"]
-            return [{"signature": "FALHOU", "blockTime": bt + 5, "err": {"x": 1}}, {"signature": "MIGRACAO", "blockTime": bt, "err": None}]
+            return [{"signature": "FALHOU", "blockTime": bt + 5, "err": {"x": 1}},
+                    {"signature": "OUTRA", "blockTime": bt + 400, "err": None},
+                    {"signature": "MIGRACAO", "blockTime": bt, "err": None}]
 
         def call(self, method, params):
-            assert method == "getTransaction" and params[0] == "MIGRACAO"
-            return self.tx
+            assert method == "getTransaction"
+            self.opened.append(params[0])
+            return self.tx if params[0] == "MIGRACAO" else self.other
 
         def token_supply(self, mint):
             return 975_188_456.39
 
     @staticmethod
-    def enumerate_fn(rpc, spec, start, end):
-        from ..pos_runner.enumerate import enumerate_window
-        return enumerate_window(rpc, spec, start, end, anchor_fn=lambda r, t: ("ANCORA", 1, t))
+    def anchor(rpc, t):
+        return "ANCORA", 1, t
 
     def tx(self, name: str) -> dict:
         return load_fixture(name)["result"]
 
-    def test_the_three_real_migrations_are_accepted(self) -> None:
+    def test_the_three_real_migrations_are_accepted_opening_the_closest_transaction_first(self) -> None:
         from ..pos_runner.enumerate import LAUNCHPADS
         for launchpad, (fixture, pool, mint) in self.CASES.items():
             tx = self.tx(fixture)
-            rpc = self.Rpc(tx)
-            res = verify_lineage(rpc, pool, mint, tx["blockTime"] + 30, launchpad, enumerate_fn=self.enumerate_fn)
+            rpc = self.Rpc(tx, other=tx)
+            res = verify_lineage(rpc, pool, mint, tx["blockTime"] + 30, launchpad, anchor_fn=self.anchor)
             self.assertEqual(res.status, "ok", (launchpad, res.motivo))
             self.assertEqual(res.launchpad, launchpad)
             self.assertEqual(res.grad_ts, float(tx["blockTime"]))
             self.assertEqual(rpc.accounts, list(LAUNCHPADS[launchpad].accounts))   # so a conta-chave, nunca o pool
+            self.assertEqual(rpc.opened, ["MIGRACAO"])                              # a mais proxima da criacao, e so ela
 
     def test_other_pool_other_token_non_migration_and_wrong_launchpad_are_rejected(self) -> None:
         fixture, pool, mint = self.CASES["pumpfun"]
         tx = self.tx(fixture)
-        res = verify_lineage(self.Rpc(tx), "OUTROPOOL", mint, tx["blockTime"], "pumpfun", enumerate_fn=self.enumerate_fn)
+        res = verify_lineage(self.Rpc(tx), "OUTROPOOL", mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor)
         self.assertEqual(res.status, "rejeitado")
         self.assertIn("nenhuma migracao pumpfun criou este pool", res.motivo)
         self.assertIn("outro token", verify_lineage(self.Rpc(tx), pool, "OUTROMINT", tx["blockTime"], "pumpfun",
-                                                    enumerate_fn=self.enumerate_fn).motivo)
+                                                    anchor_fn=self.anchor).motivo)
         swap = copy.deepcopy(tx)
         swap["meta"]["logMessages"] = [m.replace("Instruction: MigrateV2", "Instruction: Buy") for m in swap["meta"]["logMessages"]]
-        self.assertEqual(verify_lineage(self.Rpc(swap), pool, mint, tx["blockTime"], "pumpfun", enumerate_fn=self.enumerate_fn).status,
+        self.assertEqual(verify_lineage(self.Rpc(swap), pool, mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor).status,
                          "rejeitado")
-        # pool do PumpSwap conferido como se fosse da DBC: a migracao da DBC nao criou este pool
-        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "meteora_dbc", enumerate_fn=self.enumerate_fn).status,
+        # pool do PumpSwap conferido como se fosse da DBC: nenhuma migracao da DBC criou este pool
+        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "meteora_dbc", anchor_fn=self.anchor).status,
                          "rejeitado")
         self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], None).status, "rejeitado")
 
@@ -265,16 +270,13 @@ class LineageTest(unittest.TestCase):
         fixture, pool, mint = self.CASES["pumpfun"]
         tx = self.tx(fixture)
         res = verify_lineage(self.Rpc(tx, fail=RpcError("exhausted", "getSignaturesForAddress: 4 tentativas sem resposta")),
-                             pool, mint, tx["blockTime"], "pumpfun", enumerate_fn=self.enumerate_fn)
+                             pool, mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor)
         self.assertEqual(res.status, "erro")
 
         def broken(rpc, t):
             raise RpcError("exhausted", "getBlock: 4 tentativas sem resposta")
 
-        from ..pos_runner.enumerate import enumerate_window
-        res = verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "pumpfun",
-                             enumerate_fn=lambda rpc, spec, a, b: enumerate_window(rpc, spec, a, b, anchor_fn=broken))
-        self.assertEqual(res.status, "erro")
+        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "pumpfun", anchor_fn=broken).status, "erro")
 
     def test_verifier_status_flow_backoff_and_dex_mismatch(self) -> None:
         h = LiveHarness()

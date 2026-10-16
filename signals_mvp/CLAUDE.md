@@ -39,9 +39,24 @@ of truth; CSVs are regenerated atomically) · `telegram.py`/`alerts.py`/`summary
 - Real-network smoke (read-only): `python -m signals_mvp teste-rede`.
 - Test doubles live in `tests/fakes.py` (fake clock/HTTP/GT/GoPlus/Telegram + a simulated pool "world").
 
+## POS-RUNNER-V0 (`pos_runner/`)
+Hypothesis POS-RUNNER-V0 (pre-registration still a DRAFT until the operator OKs Passo 0; do not freeze, mark
+PRE-REGISTRADO or run Part A without that OK). One detector/simulator/cost model shared by Passo 0, Part A
+(`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Part B invariants:
+- candles are consumed only when CLOSED (+`LAG_S`) and are frozen in `pr_bars`; a restart replays them (never rewrite);
+- USD conversion uses only closed reference hours; a candle without USD waits, never converted by guess;
+- a pool is tracked only after on-chain lineage (same key-account enumeration as Part A, +-10 min window) — never by
+  paging the pool's own history (hot pools have ~500 tx/s right after graduation);
+- GT calls come from a reserved slice of the v0 cycle budget (`BudgetedHttp`); v0 candidates keep priority minus 1 call;
+- every ENTRADA after tracking started is a paper A/B signal (alerts gated by recency and `so_primario`);
+  live paper results must never be used to tune the draft parameters.
+
 ## Measured facts worth remembering (2026-10-13)
 - GeckoTerminal public API returns 429 with `retry-after: 0`; the limiter is adaptive (AIMD) for that reason.
 - `new_pools` page 1 spans only ~1 min of Solana launches; DEXes `meteora-dbc` report liquidity 0 (unknown, not zero).
 - GoPlus Robinhood (chain id 4663) returns an empty shell record; EVM holder lists lag (`holder_count` ~0) for fresh tokens.
 - Network ids: `solana`, `bsc`, `robinhood` (GeckoTerminal); DexScreener slug for Robinhood is `robinhood`.
 - Unverified: GMGN slug for Robinhood, Axiom link template, Telegram against the real service, Windows runtime.
+- (2026-10-15/16) GT dex ids of graduation pools: `pumpswap`, `raydium` (CPMM pools show as `raydium`),
+  `meteora-damm-v2`. The Solana USDT mint is `Es9vMFrz…NkY11McCe8BenwNYB` (the old config value returned 404).
+  Public RPC `api.mainnet-beta.solana.com` is the only free endpoint with old history and rate-limits getTransaction.

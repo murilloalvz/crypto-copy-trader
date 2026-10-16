@@ -117,7 +117,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner")
     live.alerts_on = cfg.raw["alertas"]["ligado"]
-    rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=4)
+    rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=6)
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
     console.info("POS-RUNNER %s | config %s (%s) | RPC: %s", "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",

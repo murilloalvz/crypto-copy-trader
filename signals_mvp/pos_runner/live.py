@@ -37,14 +37,14 @@ from . import charts
 from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
 from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
-from .enumerate import LAUNCHPADS as MIGRATIONS, enumerate_window
+from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
 from .params import Params
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
 from .parte_a.quotebook import QuoteBook
 from .quotes import SOL_MINT, STABLES, UsdSeries, stable_series, to_mc_bars
 from .simulate import TradeResult, simulate
-from .solana_rpc import RpcError
+from .solana_rpc import SIGNATURES_PAGE_SIZE, RpcError, anchor_at_or_after
 
 log = logging.getLogger("signals_mvp.pos_runner.live")
 console = logging.getLogger("signals_mvp.console")
@@ -53,7 +53,7 @@ TFS = ("5m", "1h", "4h")
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 LINEAGE_MARGIN_S = 600       # janela da linhagem: +-10 min em volta da criacao informada pelo GT
-VERIFY_MAX_ATTEMPTS = 4      # falha de RPC repetida: o pool sai (nunca entra sem linhagem)
+VERIFY_MAX_ATTEMPTS = 8      # falha de RPC repetida (espera 4, 8, 16, 30 min...): o pool sai (nunca entra sem linhagem)
 QUEUE_MAX = 60               # pools pendentes/verificados esperando vaga
 # listas do GeckoTerminal usadas na descoberta ("novos e top pools Solana" do handoff)
 SOURCES: dict[str, tuple[str, dict[str, Any]]] = {
@@ -144,32 +144,50 @@ class Lineage:
 
 
 def verify_lineage(rpc: Any, pool: str, mint: str, created_ts: float, launchpad: Optional[str],
-                   enumerate_fn: Callable[..., Any] = enumerate_window, margin_s: int = LINEAGE_MARGIN_S) -> Lineage:
-    """O pool tem de ter nascido de uma instrucao de migracao do launchpad da sua DEX, para ESTE mint — o mesmo metodo
-    da enumeracao da Parte A: as transacoes da conta-chave do launchpad (autoridade/migrador/config) numa janela de
-    +-`margin_s` em volta da criacao informada pelo GT. Nao pagina o historico do pool: pool quente tem centenas de
-    transacoes por segundo (medido em 2026-10-16: ~500/s no DOPE logo depois da graduacao)."""
+                   anchor_fn: Callable[..., Any] = anchor_at_or_after, margin_s: int = LINEAGE_MARGIN_S,
+                   max_fetch: int = 12, max_pages: int = 20) -> Lineage:
+    """O pool tem de ter nascido de uma instrucao de migracao do launchpad da sua DEX, para ESTE mint — o mesmo criterio
+    da enumeracao da Parte A (`resolve_graduation` sobre as transacoes da conta-chave do launchpad), numa janela de
+    +-`margin_s` em volta da criacao informada pelo GT. As transacoes da janela sao abertas da mais proxima da criacao
+    para a mais distante (a migracao e o proprio instante da criacao): em geral 1 ou 2 `getTransaction`, que e o metodo
+    mais limitado do RPC publico. Nunca pagina o historico do pool: pool quente tem centenas de transacoes por segundo
+    (medido em 2026-10-16: ~500/s no DOPE logo depois da graduacao)."""
     spec = MIGRATIONS.get(launchpad or "")
     if spec is None:
         return Lineage("rejeitado", f"DEX sem launchpad de graduacao conhecido ({launchpad})")
+    lo, hi = int(created_ts) - margin_s, int(created_ts) + margin_s
     try:
-        res = enumerate_fn(rpc, spec, int(created_ts) - margin_s, int(created_ts) + margin_s)
-        if res.error:
-            return Lineage("erro", f"enumeracao {spec.name}: {res.error[:160]}")
-        match = [g for g in res.graduations if g.pool == pool]
-        if not match:
-            unresolved = sum(1 for g in res.graduations if g.status != "ok")
-            extra = f", {unresolved} com layout desconhecido" if unresolved else ""
-            return Lineage("rejeitado", f"nenhuma migracao {spec.name} criou este pool em +-{margin_s // 60} min da criacao "
-                                        f"({len(res.graduations)} migracoes na janela{extra})")
-        g = match[0]
-        if g.mint != mint:
-            return Lineage("rejeitado", f"a migracao deste pool e de outro token ({g.mint})")
-        supply = rpc.token_supply(mint)
-        if not supply:
-            return Lineage("erro", "supply do token indisponivel no RPC")
-        return Lineage("ok", "", spec.name, float(g.block_time) if g.block_time else None, g.quote_mint, float(supply),
-                       g.signature, g.instruction)
+        anchor, _slot, _bt = anchor_fn(rpc, hi)
+        rows: list[dict] = []
+        for account in spec.accounts:
+            before = anchor
+            for _ in range(max_pages):
+                page = rpc.signatures(account, before=before, limit=SIGNATURES_PAGE_SIZE)
+                if not page:
+                    break
+                rows += [r for r in page if r.get("blockTime") is not None and lo <= r["blockTime"] < hi and r.get("err") is None]
+                if len(page) < SIGNATURES_PAGE_SIZE or any((r.get("blockTime") or hi) < lo for r in page):
+                    break
+                before = page[-1]["signature"]
+            else:
+                return Lineage("erro", f"conta-chave {account[:8]} com transacoes demais na janela")
+        rows.sort(key=lambda r: (abs(r["blockTime"] - created_ts), r["signature"]))
+        seen = 0
+        for row in rows[:max_fetch]:
+            tx = rpc.call("getTransaction", [row["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}])
+            seen += 1
+            g = resolve_graduation(tx, spec, row["signature"]) if tx else None
+            if g is None or g.pool != pool:
+                continue
+            if g.mint != mint:
+                return Lineage("rejeitado", f"a migracao deste pool e de outro token ({g.mint})")
+            supply = rpc.token_supply(mint)
+            if not supply:
+                return Lineage("erro", "supply do token indisponivel no RPC")
+            return Lineage("ok", "", spec.name, float(g.block_time) if g.block_time else None, g.quote_mint, float(supply),
+                           g.signature, g.instruction)
+        return Lineage("rejeitado", f"nenhuma migracao {spec.name} criou este pool em +-{margin_s // 60} min da criacao "
+                                    f"({seen} de {len(rows)} transacoes da conta-chave abertas, das mais proximas)")
     except (RpcError, RuntimeError) as exc:
         return Lineage("erro", f"{type(exc).__name__}: {str(exc)[:160]}")
 
@@ -196,7 +214,7 @@ class LineageVerifier:
         if row["checked_ts"] is None:
             return True
         tries = self._info(row).get("tentativas", 0)
-        return now - row["checked_ts"] >= 120.0 * (2 ** tries)
+        return now - row["checked_ts"] >= min(1800.0, 120.0 * (2 ** tries))
 
     def step(self) -> bool:
         now = self.clock()

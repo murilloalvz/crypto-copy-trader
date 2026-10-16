@@ -272,7 +272,11 @@ Estes pontos foram **medidos em 2026-10-13** (ou documentados), e estão assim d
    (candidato já disparado) antes de procurar pools novos. Num IP compartilhado/apertado o bot degrada com elegância
    (candidatos adiados aparecem no `descartados.csv` como etapa `adiado`) — veja a latência.
 8. **Acompanhamento = simulação causal, otimista em alguns pontos e conservadora em outros:**
-   - entrada no preço da foto da decisão; **sem slippage e sem o seu atraso** de operador;
+   - entrada no preço da foto da decisão; **sem slippage e sem o seu atraso** de operador. **Medido em 2026-10-16**
+     nos 16 sinais do teste ao vivo de 13/10 (acompanhamento refeito contra o OHLCV real, 0 divergência numa conferência
+     independente): o 1º open do minuto seguinte ficou a **~7% (mediana)** do preço da foto, e a **mais de 20% em 6 de
+     16** (de −54% a +32%). Em pool de poucos minutos o `resultado_liq` é muito sensível a esse instante — leia como
+     ordem de grandeza, não como o que você teria conseguido;
    - só entram candles de 1 min que **começam depois da decisão** (até ~59 s de movimento são ignorados);
    - TP e SL no **mesmo candle** ⇒ `ambiguo`, e o `resultado_liq` assume o **pior caso (SL primeiro)**;
    - stop com **gap** (candle abre abaixo do stop) sai na abertura; TP sai exatamente no nível;
