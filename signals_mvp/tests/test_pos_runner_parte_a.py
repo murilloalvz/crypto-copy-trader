@@ -254,7 +254,8 @@ class PipelineTests(unittest.TestCase):
         text = write_report(ctx, self.tmp / "rel").read_text(encoding="utf-8")
         for needle in ("## 2. Discovery — as 6 variantes", "Por faixa de pico do runner (resultado completo):", "por_testes",
                        "por_cotacao", "por_S_100k", "por_R_S", "por_volume", "por_power_candle", "sem data de criação on-chain: 0",
-                       "teste(s) de suporte", "do caminho até o pico"):
+                       "teste(s) de suporte", "do caminho até o pico",
+                       "por_hora_brt", "por_vol_teste"):   # EMENDA 2026-10-16: atributos secundarios (hora BRT, vol. do teste)
             self.assertIn(needle, text)
 
     def test_runner_without_creation_date_has_no_primary_setup(self):

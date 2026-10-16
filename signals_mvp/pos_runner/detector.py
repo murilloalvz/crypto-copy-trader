@@ -225,6 +225,10 @@ class Detector:
             vol_ratio=(bar.volume / mean_vol) if mean_vol > 0 else None, atr=atr, amp_atr=(amp / atr) if atr else None,
             power_candle=power, cobertura=coverage, idade_dias=age, idade_grad_dias=self.grad_age_days(i),
             na_janela=in_window, drop_idx=self.drop_idx,
+            # EMENDA 2026-10-16 (atributo secundario, nunca filtro): volume do candle do ultimo teste de suporte
+            # (candle que fixou a minima testada) / media de volume dos candles da zona madura (mesma zona_bars/
+            # mean_vol do vol_ratio do rompimento acima -- so troca o candle do numerador).
+            teste_vol_ratio=((last.get("low_vol") / mean_vol) if (mean_vol > 0 and last.get("low_vol") is not None) else None),
         )
         # uma decisao por zona: depois dela a zona recomeca (setup seguinte = diagnostico; so o 1o setup elegivel por
         # token e timeframe e primario)
@@ -294,9 +298,9 @@ class Detector:
         else:
             if z.state == "dentro" and bar.low <= region:
                 z.state = "testando"
-                z.cur = {"start": i, "low": bar.low, "low_idx": i}
+                z.cur = {"start": i, "low": bar.low, "low_idx": i, "low_vol": bar.volume}
             elif z.state == "testando" and z.cur is not None and bar.low < z.cur["low"]:
-                z.cur["low"], z.cur["low_idx"] = bar.low, i
+                z.cur["low"], z.cur["low_idx"], z.cur["low_vol"] = bar.low, i, bar.volume
             if z.state == "testando" and z.cur is not None and self._recovered(z, bar.close):
                 test = dict(z.cur, end=i)
                 z.tests.append(test)

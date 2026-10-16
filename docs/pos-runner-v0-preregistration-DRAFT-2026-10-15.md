@@ -302,6 +302,35 @@ pareada) só para `pos_runner_detalhe.csv` (nunca entra em `pos_runner.csv`, con
 `storage._pos_runner_rows`), nunca manda alerta Telegram, nunca toca a banca de US$100 da Parte B. Serve só para
 comparar depois com o paper da Parte A sobre o mesmo dado real.
 
+### 10.1b EMENDA de 2026-10-16 — 3 atributos secundários (sem mudar regra primária nem a grade de 24)
+
+A pedido do operador, ANTES de qualquer cálculo do discovery: 3 atributos secundários gravados em todo setup, só
+descritivos (nunca filtro, nunca mudam a escolha/veredito/parada por contagem; **sem novo hash de config** — nenhum
+campo de `Params` mudou, só novos campos no dicionário que o detector já emite). Relatório: estratificação completa
+(`CUTS`) por cada atributo, sem filtrar, igual aos cortes já existentes (`por_testes`, `por_launchpad`, etc.) — inclui
+automaticamente a combinação escolhida (holdout) e todas as 24 do discovery, porque `_cut_lines`/`CUTS` já são
+genéricos.
+
+1. **Hora da entrada em BRT (UTC−3, sem horário de verão)**, faixa **8h–14h vs. resto** (`metrics._hora_brt`, a
+   partir de `entry_ts` — o open do candle seguinte ao sinal, já gravado em `trade_info`). Corte novo `por_hora_brt`.
+2. **Origem/launchpad** (pump.fun / Raydium LaunchLab / Meteora DBC) — **já existia** como corte `por_launchpad`
+   (`r[12]` = `graduations.launchpad`); nenhuma mudança de código, só confirmação.
+3. **Razão volume do candle do último teste de suporte / média de volume dos candles da zona madura**
+   (`detector.py`: `teste_vol_ratio` no dicionário de dados da ENTRADA — numerador = volume do candle que fixou a
+   mínima do último teste completo, `z.cur["low_vol"]`/`z.tests[-1]["low_vol"]`, novo campo só de leitura, nunca usado
+   em nenhuma decisão; denominador = o MESMO `mean_vol` da zona já usado pelo `vol_ratio` do candle de rompimento —
+   só troca o candle do numerador). Corte novo `por_vol_teste` (mesmo limiar 2× do `por_volume` existente, só para
+   comparar com a mesma régua).
+
+**Holders/authority/liquidez** (pedido do operador, registrado para o futuro): só como colunas descritivas no
+**forward/ao vivo** (`live.py`, se/quando uma fonte de dado for escolhida), **nunca no backtest** (Parte A) — nada
+implementado nesta emenda (nenhuma fonte/API foi especificada); é só uma restrição registrada de antemão para
+quando essa fonte existir, para não entrar por engano no cálculo do backtest.
+
+Testado: `test_primary_under_window_is_recomputed_independently_per_idade_faixa` (já existente) e
+`test_report_has_the_bands_the_cuts_and_the_sampled_trades` (estendido com `por_hora_brt`/`por_vol_teste`); suíte
+offline completa 276/276.
+
 ### 10.4 Registro
 
 Linha `POS-RUNNER-V0` em `docs/research-hypothesis-registry-v1-2026-10-04.md` atualizada no mesmo commit desta

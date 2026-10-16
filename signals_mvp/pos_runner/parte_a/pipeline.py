@@ -315,7 +315,9 @@ def trade_info(e: Any, res: Any) -> dict[str, Any]:
             "ambiguo": res.ambiguous, "P_peak": d["P_peak"], "faixa_pico": d["faixa_pico"], "n_testes": d["n_testes"],
             "S_acima_100k": d["S_acima_100k"], "R_S": d["R_S"], "S_sobre_Lbc": d["S_sobre_Lbc"], "vol_ratio": d["vol_ratio"],
             "power_candle": d["power_candle"], "idade_d": d["idade_dias"], "idade_grad_d": d["idade_grad_dias"],
-            "zona_candles": d["box_len"], "max_caminho_pct": res.max_path_pct}
+            "zona_candles": d["box_len"], "max_caminho_pct": res.max_path_pct,
+            # EMENDA 2026-10-16 (3 atributos secundarios, nunca filtro -- so estratificacao descritiva no relatorio):
+            "teste_vol_ratio": d.get("teste_vol_ratio")}
 
 
 # ---------------------------------------------------------------------------

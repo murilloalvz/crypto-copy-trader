@@ -87,6 +87,29 @@ def _vol(i: dict[str, Any]) -> str:
     return "sem dado" if v is None else (f">= {VOL_CUT:g}x" if v >= VOL_CUT else f"< {VOL_CUT:g}x")
 
 
+# EMENDA 2026-10-16: 3 atributos secundarios (nunca filtro, so estratificacao descritiva no relatorio -- igual aos
+# cortes acima, registrados ANTES de calcular o discovery). (1) hora da entrada em BRT (UTC-3, sem horario de verao);
+# (2) origem/launchpad -- ja existia como `por_launchpad` (r[12] = g.launchpad: pumpfun/raydium_launchlab/
+# meteora_dbc); (3) volume do candle do ultimo teste de suporte / media de volume da zona madura (`teste_vol_ratio`,
+# mesmo corte de 2x do `vol_ratio` do rompimento, para comparar com a mesma régua).
+BRT_OFFSET_S = 3 * 3600
+BRT_JANELA = (8, 14)   # 8h-14h inclusive vs resto
+
+
+def _hora_brt(i: dict[str, Any]) -> str:
+    ts = i.get("entry_ts")
+    if ts is None:
+        return "sem dado"
+    hour = int((ts - BRT_OFFSET_S) // 3600) % 24
+    lo, hi = BRT_JANELA
+    return f"{lo}-{hi}h" if lo <= hour <= hi else "resto"
+
+
+def _teste_vol(i: dict[str, Any]) -> str:
+    v = i.get("teste_vol_ratio")
+    return "sem dado" if v is None else (f">= {VOL_CUT:g}x" if v >= VOL_CUT else f"< {VOL_CUT:g}x")
+
+
 # (nome, chave do grupo a partir de (info do trade, linha do trade))
 CUTS: tuple[tuple[str, Callable[[dict[str, Any], tuple], str]], ...] = (
     ("por_testes", lambda i, r: _testes(i)),
@@ -96,6 +119,8 @@ CUTS: tuple[tuple[str, Callable[[dict[str, Any], tuple], str]], ...] = (
     ("por_R_S", lambda i, r: _rs(i)),
     ("por_volume", lambda i, r: _vol(i)),
     ("por_power_candle", lambda i, r: _yes_no(i.get("power_candle"))),
+    ("por_hora_brt", lambda i, r: _hora_brt(i)),
+    ("por_vol_teste", lambda i, r: _teste_vol(i)),
 )
 
 
