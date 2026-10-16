@@ -14,7 +14,9 @@ from .. import charts
 from ..detector import run
 from .bankroll import write_bankroll_reports
 from .metrics import CUTS, variant_table
-from .pipeline import Context, load_bars
+from .pipeline import IDADE_FAIXAS, Context, load_bars, primary_under_window, real_tf
+
+PRIMARY_TF = "1h"   # tf real da combinacao primaria original (1h/A/extremos/2-7)
 
 
 def _pct(v: Any) -> str:
@@ -124,9 +126,10 @@ def write_report(ctx: Context, docs: Path) -> Path:
         L.extend(_variant_lines({h["variante"]: s}))
         L.append("")
         L.extend(_cut_lines(s))
-    # 5 trades sorteados do discovery (ganhos e perdas) com as fases marcadas
-    rows = [r for r in ctx.store.trades("discovery", "setup") if r[3] == "A" and r[4] == "fechado"]
-    prim = {(p, tf, n) for p, tf, n, *_ in ctx.store.setups("discovery", primary_only=True)}
+    # 5 trades sorteados do discovery (ganhos e perdas) com as fases marcadas -- da combinacao PRIMARIA original
+    # (1h/A/extremos/2-7); as outras 23 da grade (emenda 2026-10-16) nao entram nesta amostra
+    rows = [r for r in ctx.store.trades("discovery", "setup") if r[1] == PRIMARY_TF and r[3] == "A" and r[4] == "fechado"]
+    prim = primary_under_window(ctx, "discovery", PRIMARY_TF, *IDADE_FAIXAS["2-7"])
     rows = [r for r in rows if (r[0], r[1], r[2]) in prim]
     rng = random.Random(f"{ctx.plan.seed}:relatorio")
     wins = [r for r in rows if (r[5] or 0) > 0]
@@ -144,9 +147,9 @@ def write_report(ctx: Context, docs: Path) -> Path:
         g = grads.get(r[0])
         if g is None:
             continue
-        bars = load_bars(ctx, g, r[1])
+        bars = load_bars(ctx, g, real_tf(r[1]))
         st1 = ctx.store.stage1(r[0])
-        det = run(bars, ctx.params, r[1], st1[3], g["grad_ts"], st1[6])
+        det = run(bars, ctx.params, real_tf(r[1]), st1[3], g["grad_ts"], st1[6])
         entries = [e for e in det.events if e.kind == "ENTRADA"]
         ev = entries[r[2] - 1] if len(entries) >= r[2] else None
         if ev is None:

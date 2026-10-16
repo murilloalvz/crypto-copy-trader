@@ -221,12 +221,13 @@ class PipelineTests(unittest.TestCase):
         pool, tf, n, *_ = ctx.store.setups("discovery", "1h")[0]
         self.assertIsNotNone(baseline_mean(ctx, pool, tf, n, "A"))
         table = variant_table(ctx, "discovery")
-        self.assertEqual(set(table), {f"{tf}/{v}" for tf in ("5m", "1h", "4h") for v in ("A", "B")})
-        self.assertGreater(table["1h/A"]["n"], 0)
-        self.assertIn("edge_sobre_base_pct", table["1h/A"])
-        self.assertIn("custo_2x", table["1h/A"])
+        self.assertEqual(set(table), {f"{tf}/{v}/{m}/{a}" for tf in ("5m", "1h", "4h") for v in ("A", "B")
+                                      for m in ("extremos", "fechamentos") for a in ("2-7", "1-10")})
+        self.assertGreater(table["1h/A/extremos/2-7"]["n"], 0)
+        self.assertIn("edge_sobre_base_pct", table["1h/A/extremos/2-7"])
+        self.assertIn("custo_2x", table["1h/A/extremos/2-7"])
         # resultado completo por faixa de pico e os cortes pre-registrados (atributos)
-        st = table["1h/A"]
+        st = table["1h/A/extremos/2-7"]
         self.assertEqual(list(st["por_pico"]), ["1-5M"])                    # o padrao de livro tem pico de 1M
         self.assertEqual(st["por_pico"]["1-5M"]["n"], st["n"])
         self.assertIn("custo_2x", st["por_pico"]["1-5M"])
@@ -266,7 +267,8 @@ class PipelineTests(unittest.TestCase):
         mine = [row for row in ctx.store.setups("discovery", primary_only=False) if row[0] == pools[0]]
         self.assertTrue(mine)                                               # o detector ve o setup (diagnostico)...
         self.assertTrue(all(row[3] == 0 for row in mine))                   # ...mas sem idade nenhum e primario
-        self.assertEqual(counts["setups_primarios"], {tf: len(pools) - 1 for tf in ("5m", "1h", "4h")})
+        self.assertEqual(counts["setups_primarios"],
+                         {tf: len(pools) - 1 for tf in ("5m", "1h", "4h", "5m_fecham", "1h_fecham", "4h_fecham")})
         run_baselines(ctx, "discovery")
         for pool, tf, n, *_ in ctx.store.setups("discovery"):
             rows = json.loads(ctx.store.get(f"base:{pool}:{tf}:{n}"))
@@ -460,7 +462,7 @@ class BankrollTests(unittest.TestCase):
         ctx = self._four_simultaneous_entries()
         # desliga o stop diario/semanal para isolar so a trava de 3 posicoes abertas
         folgado = BankrollParams(stop_diario_frac=1.0, stop_diario_perdas_seguidas=99, stop_semanal_frac=1.0)
-        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "A", folgado)
+        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "extremos", "2-7", "A", folgado)
         self.assertEqual(len(rows), 4)                       # 4 entradas identicas no tempo (mesmo pool pattern)
         self.assertEqual(set(rows[0]), set(COLUMNS))
         motivos = [r["motivo_saida"] for r in rows]
@@ -484,7 +486,7 @@ class BankrollTests(unittest.TestCase):
         from ..pos_runner.parte_a.bankroll import simulate_bankroll
 
         ctx = self._four_simultaneous_entries()
-        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "A")   # parametros padrao: 3 perdas seguidas
+        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "extremos", "2-7", "A")   # parametros padrao: 3 perdas seguidas
         reais = [r for r in rows if r["resultado_usd"] is not None]
         self.assertEqual(len(reais), 3)
         self.assertTrue(all(r["resultado_usd"] < 0 for r in reais), reais)   # o padrao sintetico perde aqui (saida "tempo")
@@ -499,7 +501,7 @@ class BankrollTests(unittest.TestCase):
         ctx = self.ctx(self.tmp, runners)
         run_period(ctx, "discovery", target_min_setups=1, max_windows=1)
         out = write_bankroll_reports(ctx, self.tmp / "docs")
-        self.assertEqual(len(out["arquivos_csv"]), len(AJUSTES))              # so discovery (holdout nao rodou)
+        self.assertEqual(len(out["arquivos_csv"]), len(AJUSTES) + 2)          # 24 combinacoes + 2 de diagnostico; so discovery
         self.assertTrue(all("discovery_" in p for p in out["arquivos_csv"]))
         path = Path(out["arquivos_csv"][0])
         self.assertTrue(path.exists())

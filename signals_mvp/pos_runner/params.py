@@ -46,6 +46,11 @@ class Params:
     power_atr_mult: float = 3.0                # power candle = amplitude >= isto x ATR(20 candles anteriores)
     absurd_frac: float = 0.50                  # candle que cobre >= 50% de R ate P_peak = absurdo (veto)
     age_window_days: tuple = (2.0, 7.0)        # idade desde a CRIACAO do token na entrada (filtro primario, todos os tf)
+    # EMENDA 2026-10-16 (grade de 24 combinacoes, ANTES de qualquer calculo do discovery): como medir pico/queda
+    # (fase 1-2) -- "extremos" (maxima/minima, a escolha conservadora original) ou "fechamentos" (so o fechamento
+    # do candle). So afeta a deteccao do pico/onda/queda (fases 0-2); zona (S/R/teste) e decisoes de rompimento
+    # continuam pelo fechamento/extremos como ja eram.
+    queda_medida: str = "extremos"
     # saidas
     tp_frac_of_peak: float = 0.95              # alvo = 0,95 x P_peak
     exhaustion_peak_frac: float = 0.85         # exaustao = power candle com maxima >= 0,85 x P_peak -> sai no open seguinte
@@ -64,6 +69,8 @@ class Params:
             raise ValueError("atr_period >= 2 e time_stop_candles >= 1")
         if len(self.age_window_days) != 2 or self.age_window_days[0] > self.age_window_days[1]:
             raise ValueError("age_window_days = [minimo, maximo]")
+        if self.queda_medida not in ("extremos", "fechamentos"):
+            raise ValueError("queda_medida tem que ser 'extremos' ou 'fechamentos'")
         if list(self.peak_bands) != sorted(self.peak_bands) or not self.peak_bands or self.peak_bands[0] <= self.runner_min_mc:
             raise ValueError("peak_bands: limites crescentes acima de runner_min_mc")
 

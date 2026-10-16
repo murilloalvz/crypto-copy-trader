@@ -17,7 +17,8 @@ from typing import Any, Optional
 from ..candles import tf_seconds
 from ..detector import Event
 from ..simulate import simulate
-from .pipeline import DEX_OF_LAUNCHPAD, Context, load_bars
+from .pipeline import (DEX_OF_LAUNCHPAD, IDADE_FAIXAS, QUEDA_MEDIDAS, Context, load_bars, primary_under_window,
+                       real_tf, tf_variant)
 
 K_BASELINE = 5
 
@@ -44,7 +45,8 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
     stop_pct = 1.0 - info["stop"] / info["entrada"]
     tp_pct = info["alvo"] / info["entrada"] - 1.0
     peak_mult = info["P_peak"] / info["entrada"]
-    step = tf_seconds(tf)
+    tf_real = real_tf(tf)
+    step = tf_seconds(tf_real)
     rng = random.Random(f"{ctx.plan.seed}:base:{pool}:{tf}:{n}")
     pool_list = [r for r in candidates if r["pool"] != pool]
     rng.shuffle(pool_list)
@@ -58,7 +60,7 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
         r_created = st[6] if st is not None else None
         if r_created is None:
             continue
-        bars = load_bars(ctx, r, tf)
+        bars = load_bars(ctx, r, tf_real)
         if not bars or not runner_by_age(bars, r_created, age, ctx.params.runner_min_mc, step):
             continue
         target = r_created + age
@@ -78,18 +80,28 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
 
 
 def run_baselines(ctx: Context, period: str) -> int:
-    """Calcula (e grava em `meta`) a base de cada setup primario do periodo. Devolve quantos setups receberam base."""
+    """Calcula (e grava em `meta`) a base de cada setup primario do periodo -- EMENDA 2026-10-16: primario sob
+    QUALQUER combinacao da grade de 24 (a janela de idade e reclassificada depois da coleta, sem rodar o detector
+    de novo; ver `pipeline.primary_under_window`). Devolve quantos setups receberam base."""
     runners = [r for r in ctx.store.graduations(period)
                if (st := ctx.store.stage1(r["pool"])) is not None and st[0] == "ok" and st[2] == 1 and st[6] is not None]
     done = 0
-    for pool, tf, n, _prim, _ts, _ev in ctx.store.setups(period, primary_only=True):
-        key = f"base:{pool}:{tf}:{n}"
-        if ctx.store.get(key) is not None:
-            done += 1
-            continue
-        rows = baseline_for_setup(ctx, period, pool, tf, n, runners)
-        ctx.store.set(key, json.dumps(rows))
-        done += 1
+    seen: set[tuple[str, str, int]] = set()
+    for tf in ("5m", "1h", "4h"):
+        for medida in QUEDA_MEDIDAS:
+            label = tf_variant(tf, medida)
+            for lo, hi in IDADE_FAIXAS.values():
+                for pool, tf_, n in primary_under_window(ctx, period, label, lo, hi):
+                    if (pool, tf_, n) in seen:
+                        continue
+                    seen.add((pool, tf_, n))
+                    key = f"base:{pool}:{tf_}:{n}"
+                    if ctx.store.get(key) is not None:
+                        done += 1
+                        continue
+                    rows = baseline_for_setup(ctx, period, pool, tf_, n, runners)
+                    ctx.store.set(key, json.dumps(rows))
+                    done += 1
     return done
 
 

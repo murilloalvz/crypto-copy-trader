@@ -225,8 +225,62 @@ def stage2_bars(ctx: Context, row: Any) -> dict[str, list[Bar]]:
     return out
 
 
+# EMENDA 2026-10-16 (ANTES de qualquer calculo do discovery, novo hash de config): grade ampliada para 24
+# combinacoes (tf x saida x medida da queda x idade), pre-registrada como nova hipotese -- motivo: "ampliar a
+# grade antes de ver dado". A medida "extremos" mantem o rotulo de tf IGUAL ao de antes (compatibilidade: a parada
+# por contagem e a combinacao primaria original -- 1h, A, extremos, 2-7d -- continuam identicas sem nenhuma
+# mudanca no codigo que decide a parada); "fechamentos" usa o MESMO candle (nenhuma chamada de rede nova), so com
+# outro Params do detector, guardado num rotulo de tf separado.
+QUEDA_MEDIDAS = ("extremos", "fechamentos")
+
+
+def tf_variant(tf: str, medida: str) -> str:
+    return tf if medida == "extremos" else f"{tf}_fecham"
+
+
+def real_tf(label: str) -> str:
+    """Rotulo de tf guardado (pode levar o sufixo da medida 'fechamentos') -> tf REAL (5m/1h/4h), o unico que
+    `tf_seconds`/o cache de candles conhece -- os dois usam o MESMO candle, so o detector muda."""
+    return label[: -len("_fecham")] if label.endswith("_fecham") else label
+
+
+# idade (EMENDA 2026-10-16): dimensao da grade reclassificada DEPOIS da coleta, a partir do `idade_dias` ja
+# gravado em cada evento -- nunca precisa rodar o detector de novo (a idade nao muda o caminho de preco nem a
+# decisao de ENTRADA/zona, so se ela conta como "primaria"). "2-7" e a janela original (a mesma que o detector
+# usa em `ctx.params.age_window_days`, e por isso a regra de parada por contagem, que conta `primary_flag`
+# gravado na coleta, continua sendo exatamente a combinacao primaria original sem nenhuma mudanca de codigo).
+IDADE_FAIXAS: dict[str, tuple[float, float]] = {"2-7": (2.0, 7.0), "1-10": (1.0, 10.0)}
+PRIMARY_COMBO = "1h/A/extremos/2-7"   # combinacao primaria original; tambem o desempate da escolha
+
+
+def combo_key(tf: str, variant: str, medida: str, idade_label: str) -> str:
+    return f"{tf}/{variant}/{medida}/{idade_label}"
+
+
+def primary_under_window(ctx: Context, period: str, tf_label: str, idade_min: float, idade_max: float) -> set[tuple[str, str, int]]:
+    """(pool, tf_label, n) do 1o setup de cada pool nesse tf_label cuja idade cai em [idade_min, idade_max] --
+    reclassifica a PARTIR dos atributos ja gravados (nunca roda o detector de novo), replicando a mesma regra
+    ("1o setup elegivel por token e timeframe e primario") que o detector aplica na coleta para a janela original."""
+    rows = sorted(ctx.store.setups(period, tf_label, primary_only=False), key=lambda r: (r[0], r[2]))
+    done: set[str] = set()
+    out: set[tuple[str, str, int]] = set()
+    for pool, tf_, n, _prim, _ts, ev in rows:
+        if pool in done:
+            continue
+        idade = json.loads(ev)["data"].get("idade_dias")
+        if idade is not None and idade_min <= idade <= idade_max:
+            out.add((pool, tf_, n))
+            done.add(pool)
+    return out
+
+
+def params_for_medida(params: Params, medida: str) -> Params:
+    return params if medida == "extremos" else dataclasses.replace(params, queda_medida="fechamentos")
+
+
 def detect_and_trade(ctx: Context, row: Any, bars: dict[str, list[Bar]]) -> dict[str, int]:
-    """Detector em cada tf (so sinais ate graduacao + horizonte) + trades A/B (custo 1x e 2x) de cada entrada."""
+    """Detector em cada (tf, medida da queda) -- so sinais ate graduacao + horizonte -- + trades A/B (custo 1x e
+    2x) de cada entrada."""
     st = ctx.store.stage1(row["pool"])
     l_bc = st[3]
     sol = ctx.usd("So11111111111111111111111111111111111111112", row["period"])
@@ -236,17 +290,21 @@ def detect_and_trade(ctx: Context, row: Any, bars: dict[str, list[Bar]]) -> dict
     counts = {}
     for tf, tf_bars in bars.items():
         if ctx.store.stage2(row["pool"], tf)[0] != "ok":
-            counts[tf] = 0
+            for medida in QUEDA_MEDIDAS:
+                counts[tf_variant(tf, medida)] = 0
             continue
-        det = run(tf_bars, ctx.params, tf, l_bc, row["grad_ts"], st[6])
-        entries = [e for e in det.events if e.kind == "ENTRADA" and e.decision_ts <= limit]
-        ctx.store.save_setups(row["pool"], tf, [{"kind": e.kind, "idx": e.idx, "ts": e.ts, "decision_ts": e.decision_ts, "data": e.data} for e in entries])
-        for n, e in enumerate(entries, start=1):
-            for variant in ("A", "B"):
-                for kind, costs in (("setup", ctx.costs), ("setup_custo2x", dataclasses.replace(ctx.costs, multiplier=2.0))):
-                    res = simulate(tf_bars, e, variant, ctx.params, costs, dex, l_bc, sol_at)
-                    ctx.store.save_trade(row["pool"], tf, n, variant, kind, res, trade_info(e, res))
-        counts[tf] = sum(1 for e in entries if e.data.get("primario"))
+        for medida in QUEDA_MEDIDAS:
+            label = tf_variant(tf, medida)
+            params = params_for_medida(ctx.params, medida)
+            det = run(tf_bars, params, tf, l_bc, row["grad_ts"], st[6])
+            entries = [e for e in det.events if e.kind == "ENTRADA" and e.decision_ts <= limit]
+            ctx.store.save_setups(row["pool"], label, [{"kind": e.kind, "idx": e.idx, "ts": e.ts, "decision_ts": e.decision_ts, "data": e.data} for e in entries])
+            for n, e in enumerate(entries, start=1):
+                for variant in ("A", "B"):
+                    for kind, costs in (("setup", ctx.costs), ("setup_custo2x", dataclasses.replace(ctx.costs, multiplier=2.0))):
+                        res = simulate(tf_bars, e, variant, params, costs, dex, l_bc, sol_at)
+                        ctx.store.save_trade(row["pool"], label, n, variant, kind, res, trade_info(e, res))
+            counts[label] = sum(1 for e in entries if e.data.get("primario"))
     return counts
 
 

@@ -226,3 +226,44 @@ de ~180 dias do GeckoTerminal) → `discovery` (parada por contagem, ≥60 setup
 `getTransaction`/`getSlot` e trava o progresso sem travar o processo (fica "dormindo" em retry); se isso se
 repetir, `curl`/`requests.post` direto no endpoint com `getSlot` mostra na hora se é limite diário (HTTP 429,
 `-32003 "daily request limit reached"`) — não é só questão de baixar o `POS_RUNNER_RPC_PER_MIN`.
+
+## 12. Commit `c06aebd` (RPC limite diário + teste de entrega da Parte B) e EMENDA ao pré-registro (este commit)
+
+**`c06aebd`** (já commitado): `solana_rpc.py` passou a distinguir rate-limit transitório (429 comum, backoff AIMD
+de sempre) de limite DIÁRIO do provedor (HTTP 429 + código JSON-RPC `-32003`) — o endpoint fica excluído da rotação
+por até 1h (autoprovado, nunca precisa reiniciar o processo) em vez de continuar tentando ou de travar a coleta;
+`prefetch_period` corrigido para baixar OHLCV por pool intercalado com a enumeração por janela (antes baixava todo
+o bruto de TODAS as janelas antes de buscar o 1º candle — o risco real era o lado mais antigo do calendário, o mais
+ameaçado pelo limite móvel de ~180 dias do GeckoTerminal, ficar para o fim). Também: comando
+`python -m signals_mvp teste-pos-runner` (manda 1 alerta 🟢 falso com mini-gráfico + 1 resumo de banca falso pro
+Telegram do operador, pra confirmar entrega no celular) e passo a passo mínimo de Windows no `README.md`.
+
+**EMENDA ao pré-registro (este commit, ANTES de qualquer cálculo do discovery — nenhum foi feito)**: a pedido do
+operador, grade ampliada de 6 para 24 combinações — `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md` §10 tem
+o texto completo (motivo, grade, regra de escolha/veredito, regra de parada, tabelas de diagnóstico, Parte B). Hash
+novo `0de2333a7f63` (era `2a8bef99a917`); único campo de config que mudou é `Params.queda_medida`
+(`"extremos"`/`"fechamentos"`). **O holdout selado (processo em segundo plano, PID 490) continua válido** — a
+selagem só enumera janelas on-chain, nunca chama o detector. Resumo técnico (código, não regra):
+- `pipeline.tf_variant`/`real_tf`: a 2ª medida da queda vira um rótulo pseudo-tf (`"1h_fecham"`) dentro da MESMA
+  coluna `tf`, sem schema novo; a regra de parada por contagem só olha tf reais, nunca muda.
+- `pipeline.primary_under_window`: a dimensão idade (2–7 vs. 1–10 dias) é reclassificação pós-hoc do
+  `idade_dias` já gravado — nenhuma nova chamada de rede nem de detector por causa dela.
+- `metrics.variant_table`/`choose_variant`: 24 chaves (`combo_key`); filtra `>= 30 trades` ANTES de escolher o
+  maior EV líquido; empate → `PRIMARY_COMBO` (`1h/A/extremos/2-7`).
+- `parte_a/bankroll.py`: 24 CSVs de trade (+XLSX) + 2 abas de diagnóstico (`fora_de_qualquer_janela_de_idade`,
+  `reentradas_apos_1o_setup`), que nunca contam para o veredito.
+- `live.py`: detector `fechamentos` roda ao vivo em paralelo sobre os mesmos candles só para
+  `pos_runner_detalhe.csv` (`_detector_fecham`/`_on_event_fecham`), nunca alerta, nunca banca real; filtrado do
+  contrato estável `pos_runner.csv` (`storage._pos_runner_rows`).
+- Registro (`docs/research-hypothesis-registry-v1-2026-10-04.md`) e `signals_mvp/CLAUDE.md` atualizados no mesmo
+  commit.
+
+**Testado**: suíte offline completa rodada depois de todas as mudanças de código e doc acima — 275 testes, 0 falha
+(inclusive o teste novo do Part B `test_second_queda_medida_is_logged_without_any_alert_and_excluded_from_the_stable_csv`
+e a trava `test_shipped_preregistration_is_frozen_with_the_live_config_hash`, que só abre depois do hash novo
+aparecer no pré-registro).
+
+**Próximo passo, na ordem** (inalterado em espírito, só a grade mudou): esperar `selar-holdout` chegar a 400/400 →
+commitar a selagem → `baixar-bruto --periodo discovery` (agora sob o hash `0de2333a7f63`) → `discovery` (avalia as
+24 combinações) → `escolher` → commit → `holdout` (se houver candidato) → commit → `relatorio` (24 tabelas +
+2 diagnósticos).

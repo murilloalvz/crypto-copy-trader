@@ -90,6 +90,13 @@ class Detector:
         self.armed = False
         self._new_wave(0)
 
+    # -- medida do pico/queda (EMENDA 2026-10-16: "extremos" ou "fechamentos") -----------
+    def _hi(self, bar: Bar) -> float:
+        return bar.close if self.p.queda_medida == "fechamentos" else bar.high
+
+    def _lo(self, bar: Bar) -> float:
+        return bar.close if self.p.queda_medida == "fechamentos" else bar.low
+
     # -- estado da onda -------------------------------------------------------
     def _new_wave(self, start: int) -> None:
         self.wave_no += 1
@@ -98,8 +105,8 @@ class Detector:
         self.peak: Optional[float] = None
         self.peak_idx: Optional[int] = None
         if self.bars and start < len(self.bars):
-            j = max(range(start, len(self.bars)), key=lambda k: self.bars[k].high)
-            self.peak, self.peak_idx = self.bars[j].high, j
+            j = max(range(start, len(self.bars)), key=lambda k: self._hi(self.bars[k]))
+            self.peak, self.peak_idx = self._hi(self.bars[j]), j
         self.trough: Optional[float] = None
         self.trough_idx: Optional[int] = None
         self.drop_idx: Optional[int] = None
@@ -185,7 +192,7 @@ class Detector:
         z = self.zone
         assert z is not None
         assert self.peak is not None
-        if bar.high <= self.peak and self._kills_wave(bar.low):
+        if self._hi(bar) <= self.peak and self._kills_wave(self._lo(bar)):
             return                         # a onda morre neste candle (ONDA_INVALIDA logo a seguir): nao ha decisao
         last = z.last_test
         if last is not None and bar.close < last["low"] * (1.0 - self.p.test_break):
@@ -233,11 +240,12 @@ class Detector:
 
     def _update_wave(self, i: int) -> None:
         bar = self.bars[i]
-        if self.peak is None or bar.high > self.peak:
+        hi, lo = self._hi(bar), self._lo(bar)
+        if self.peak is None or hi > self.peak:
             if self.phase == PHASE_PULLBACK:
                 # passou do pico: a onda anterior acabou (com ou sem entrada); nova onda a partir daqui
                 self._new_wave(self.wave_start)
-            self.peak, self.peak_idx = bar.high, i
+            self.peak, self.peak_idx = hi, i
             self.trough, self.trough_idx = None, None
             if self.phase == PHASE_NONE and self.peak >= self.p.runner_min_mc:
                 self.phase = PHASE_RUNNER
@@ -245,8 +253,8 @@ class Detector:
             return
         if self.phase == PHASE_NONE:
             return
-        if self.trough is None or bar.low < self.trough:
-            self.trough, self.trough_idx = bar.low, i
+        if self.trough is None or lo < self.trough:
+            self.trough, self.trough_idx = lo, i
         drop = 1.0 - self.trough / self.peak
         if self.phase == PHASE_RUNNER and drop >= self.p.drop_min:
             self.phase = PHASE_PULLBACK

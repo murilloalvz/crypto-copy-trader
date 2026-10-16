@@ -425,6 +425,29 @@ class LiveFlowTest(unittest.TestCase):
         self.assertAlmostEqual(ledger_a.state.banca, banca_antes["A"], places=6)
         self.assertEqual(ledger_a.state.n_trades, 1)
 
+    def test_second_queda_medida_is_logged_without_any_alert_and_excluded_from_the_stable_csv(self) -> None:
+        """EMENDA 2026-10-16 (grade de 24 combinacoes): a 2a medida da queda (fechamentos) roda em paralelo, nos
+        MESMOS candles, so para CSV -- nunca manda alerta, nunca entra no contrato estavel (pos_runner.csv)."""
+        h = self.h
+        start_tracking(h)
+        h.run_hours(18)                                       # rompimento (candle 25, igual ao teste acima)
+        signals_before = h.storage.pr_signals()
+        self.assertEqual({s["tf"] for s in signals_before}, {"1h", "1h_fecham"})
+        fecham = next(s for s in signals_before if s["tf"] == "1h_fecham")
+        self.assertIsNone(fecham["tg_message_id"])
+        h.run_hours(50)                                       # fecha os dois (stop de tempo)
+        fecham = h.storage.pr_signal(fecham["id"])
+        self.assertEqual(fecham["status"], "fechado")
+        self.assertIsNone(fecham["tg_message_id"])
+        self.assertEqual(json.loads(fecham["base_json"] or "{}").get("n", 0), 0)   # sem base pareada (so a primaria tem)
+        # nenhum alerta (👀/🟢/🟡/📊) cita o rotulo da 2a medida
+        self.assertFalse(any("1h_fecham" in t for t in h.texts()))
+        h.storage.export_csvs()
+        stable = read_csv(h.paths.dados / "pos_runner.csv")
+        self.assertEqual({r["tf"] for r in stable}, {"1h"})             # nunca "1h_fecham" no contrato estavel
+        detail = read_csv(h.paths.dados / "pos_runner_detalhe.csv")
+        self.assertEqual({r["tf"] for r in detail}, {"1h", "1h_fecham"})  # mas registrada no detalhe, pra comparar depois
+
     def test_frozen_bars_are_the_final_candles_never_the_one_in_progress(self) -> None:
         h = self.h
         start_tracking(h)
@@ -450,7 +473,7 @@ class LiveFlowTest(unittest.TestCase):
         h.tick(live=live2)
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), bars + 1)
         self.assertEqual([t for t, _ in tg2.sent if t.startswith(("👀", "🟢"))], [])
-        self.assertEqual(len(h.storage.pr_signals()), 1)
+        self.assertEqual(len(h.storage.pr_signals()), 2)       # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
         self.assertEqual(before, h.texts())
 
     def test_bot_off_during_the_breakout_records_paper_but_sends_no_stale_alert(self) -> None:
@@ -461,9 +484,9 @@ class LiveFlowTest(unittest.TestCase):
         h.tick()
         self.assertEqual([t for t in h.texts() if t.startswith("🟢")], [])
         signals = h.storage.pr_signals()
-        self.assertEqual(len(signals), 1)
-        self.assertIsNone(signals[0]["tg_message_id"])
-        self.assertEqual(signals[0]["status"], "aberto")
+        self.assertEqual(len(signals), 2)                      # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
+        self.assertTrue(all(s["tg_message_id"] is None for s in signals))
+        self.assertEqual({s["status"] for s in signals}, {"aberto"})
 
     def test_history_before_tracking_is_not_a_paper_signal(self) -> None:
         h = self.h
@@ -573,7 +596,8 @@ class CreationAndVersionTest(unittest.TestCase):
         start_tracking(h)
         h.run_hours(24)                                       # rompimento (candle 25) decidido com a versao 1
         old = h.storage.pr_signals()
-        self.assertEqual([s["versao_config"] for s in old], [h.params.version])
+        self.assertEqual(len(old), 2)                          # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
+        self.assertEqual([s["versao_config"] for s in old], [h.params.version] * 2)
         self.assertTrue(h.storage.pr_alert_seen(f"e:{h.params.version}:POOL1:1h:1"))   # chave de alerta por versao
         sent = len(h.texts())
         import dataclasses
@@ -582,8 +606,8 @@ class CreationAndVersionTest(unittest.TestCase):
         h.clock.advance(H)
         h.tick(live=live2)
         signals = h.storage.pr_signals()
-        self.assertEqual(len(signals), 1)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
-        self.assertEqual(signals[0]["status"], "descontinuado")
+        self.assertEqual(len(signals), 2)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
+        self.assertEqual({s["status"] for s in signals}, {"descontinuado"})
         self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
@@ -604,7 +628,8 @@ class CreationAndVersionTest(unittest.TestCase):
         live3 = h.new_live()                                  # volta para a v1: o inicio dela recomeca agora
         h.clock.advance(H)
         h.tick(live=live3)
-        self.assertEqual([s["versao_config"] for s in h.storage.pr_signals()], [dataclasses.replace(v1, time_stop_candles=47).version])
+        self.assertEqual([s["versao_config"] for s in h.storage.pr_signals()],
+                         [dataclasses.replace(v1, time_stop_candles=47).version] * 2)  # primaria + 2a medida
         self.assertGreater(live3.version_start, live2.version_start)
 
 

@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 
 from ..quotes import SOL_MINT, STABLES
 from .baseline import baseline_mean
-from .pipeline import Context
+from .pipeline import IDADE_FAIXAS, PRIMARY_COMBO, QUEDA_MEDIDAS, Context, combo_key, primary_under_window, real_tf, tf_variant
 
 TF_HOURS = {"5m": 5 / 60, "1h": 1.0, "4h": 4.0}
 BAND_ORDER = ("300-500k", "500k-1M", "1-5M", ">5M", "?")
@@ -109,7 +109,7 @@ def _stats(ctx: Context, tf: str, variant: str, sel: list[tuple], rows2: dict[tu
     rs = [r[7] for r in sel if r[7] is not None]
     s["R_medio"] = sum(rs) / len(rs) if rs else None
     s["R_mediano"] = statistics.median(rs) if rs else None
-    s["tempo_medio_h"] = sum((r[9] or 0) * TF_HOURS[tf] for r in sel) / len(sel)
+    s["tempo_medio_h"] = sum((r[9] or 0) * TF_HOURS[real_tf(tf)] for r in sel) / len(sel)
     s["caminho_max"] = path_stats(info)
     cost2 = [rows2[k][5] for k in ((r[0], r[1], r[2], r[3]) for r in sel) if k in rows2 and rows2[k][4] == "fechado"]
     s["custo_2x"] = summarize(cost2)
@@ -126,40 +126,49 @@ def _stats(ctx: Context, tf: str, variant: str, sel: list[tuple], rows2: dict[tu
 
 
 def variant_table(ctx: Context, period: str) -> dict[str, Any]:
+    """Grade de 24 combinacoes (EMENDA 2026-10-16, ANTES de qualquer calculo do discovery, hash novo): tf x saida
+    x medida da queda (extremos/fechamentos, detector diferente) x faixa de idade (2-7/1-10, reclassificada dos
+    atributos ja gravados, sem detector novo). Chave: `combo_key(tf, saida, medida, faixa)`, ex. "1h/A/extremos/2-7"
+    (a combinacao primaria original, `PRIMARY_COMBO`)."""
     rows = ctx.store.trades(period, "setup")
     rows2 = {(r[0], r[1], r[2], r[3]): r for r in ctx.store.trades(period, "setup_custo2x")}
-    prim = {(p, tf, n) for p, tf, n, *_ in ctx.store.setups(period, primary_only=True)}
     out: dict[str, Any] = {}
     for tf in ("5m", "1h", "4h"):
-        for variant in ("A", "B"):
-            mine = [r for r in rows if r[1] == tf and r[3] == variant and (r[0], r[1], r[2]) in prim]
-            sel = sorted((r for r in mine if r[4] == "fechado"), key=lambda r: json.loads(r[11]).get("entry_ts") or 0)
-            s = _stats(ctx, tf, variant, sel, rows2)
-            s["status_dos_trades"] = {st: sum(1 for r in mine if r[4] == st) for st in sorted({r[4] for r in mine})}
-            if s["n"]:
-                info = [json.loads(r[11]) for r in sel]
-                # faixa de pico: o resultado COMPLETO por faixa (regra do operador)
-                bands: dict[str, list[tuple]] = {}
-                for i, r in zip(info, sel):
-                    bands.setdefault(i.get("faixa_pico") or "?", []).append(r)
-                s["por_pico"] = {b: _stats(ctx, tf, variant, bands[b], rows2) for b in BAND_ORDER if b in bands}
-                for name, key in CUTS:
-                    groups: dict[str, list[float]] = {}
-                    for i, r in zip(info, sel):
-                        groups.setdefault(key(i, r), []).append(r[5])
-                    s[name] = {g: summarize(v) for g, v in sorted(groups.items())}
-            out[f"{tf}/{variant}"] = s
+        for medida in QUEDA_MEDIDAS:
+            label = tf_variant(tf, medida)
+            for idade_label, (lo, hi) in IDADE_FAIXAS.items():
+                prim = primary_under_window(ctx, period, label, lo, hi)
+                for variant in ("A", "B"):
+                    key = combo_key(tf, variant, medida, idade_label)
+                    mine = [r for r in rows if r[1] == label and r[3] == variant and (r[0], r[1], r[2]) in prim]
+                    sel = sorted((r for r in mine if r[4] == "fechado"), key=lambda r: json.loads(r[11]).get("entry_ts") or 0)
+                    s = _stats(ctx, label, variant, sel, rows2)
+                    s["status_dos_trades"] = {st: sum(1 for r in mine if r[4] == st) for st in sorted({r[4] for r in mine})}
+                    if s["n"]:
+                        info = [json.loads(r[11]) for r in sel]
+                        # faixa de pico: o resultado COMPLETO por faixa (regra do operador)
+                        bands: dict[str, list[tuple]] = {}
+                        for i, r in zip(info, sel):
+                            bands.setdefault(i.get("faixa_pico") or "?", []).append(r)
+                        s["por_pico"] = {b: _stats(ctx, label, variant, bands[b], rows2) for b in BAND_ORDER if b in bands}
+                        for name, ckey in CUTS:
+                            groups: dict[str, list[float]] = {}
+                            for i, r in zip(info, sel):
+                                groups.setdefault(ckey(i, r), []).append(r[5])
+                            s[name] = {g: summarize(v) for g, v in sorted(groups.items())}
+                    out[key] = s
     return out
 
 
-def choose_variant(table: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
-    """Maior EV liquido; empate -> 1h/A (handoff secao 4)."""
-    scored = [(v["ev_liq_pct"], k) for k, v in table.items() if v.get("n")]
+def choose_variant(table: dict[str, Any], min_trades: int = MIN_TRADES_DISCOVERY) -> tuple[Optional[str], dict[str, Any]]:
+    """EMENDA 2026-10-16: maior EV liquido ENTRE as combinacoes com >= `min_trades` trades (o filtro de elegibilidade
+    agora entra na escolha, nao so depois); empate -> combinacao primaria original (1h/A/extremos/2-7)."""
+    scored = [(v["ev_liq_pct"], k) for k, v in table.items() if v.get("n", 0) >= min_trades]
     if not scored:
         return None, {}
     best = max(s for s, _ in scored)
     ties = [k for s, k in scored if abs(s - best) < 1e-9]
-    pick = "1h/A" if "1h/A" in ties else sorted(ties)[0]
+    pick = PRIMARY_COMBO if PRIMARY_COMBO in ties else sorted(ties)[0]
     return pick, table[pick]
 
 

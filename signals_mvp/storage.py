@@ -683,8 +683,11 @@ class Storage:
         return value if isinstance(value, dict) else {}
 
     def _pos_runner_rows(self) -> list[list[Any]]:
+        """EMENDA 2026-10-16 (grade de 24 combinacoes): o contrato ESTAVEL do handoff continua so a combinacao
+        primaria (extremos); a 2a medida da queda (fechamentos) vai so em `pos_runner_detalhe.csv` (fora do
+        contrato), nunca aqui."""
         out = []
-        for r in self._all("SELECT * FROM pr_signals ORDER BY decision_ts, id"):
+        for r in self._all("SELECT * FROM pr_signals WHERE tf NOT LIKE '%\\_fecham' ESCAPE '\\' ORDER BY decision_ts, id"):
             d = self._pr_json(r["event_json"]).get("data", {})
             det = self._pr_json(r["detail_json"])
             entry = det.get("entrada") or d.get("close")      # entrada do paper (open seguinte); antes dele, o fechamento do sinal

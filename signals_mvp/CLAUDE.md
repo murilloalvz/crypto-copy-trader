@@ -43,7 +43,8 @@ of truth; CSVs are regenerated atomically) · `telegram.py`/`alerts.py`/`summary
 Hypothesis POS-RUNNER-V0. The rules are the operator's (2026-10-16 decisions; unanswered points took the most
 conservative option, listed in the pre-registration §5). **Frozen (PRE-REGISTRADO) on 2026-10-16**, config hash
 `2a8bef99a917` + the rule code (`detector.py`/`simulate.py`/`costs.py`/`params.py`) at commit `dbbcea1` (SHA256 in the
-pre-registration). From that commit on, no parameter/grid/period/baseline/cut/cost change — a change is a new
+pre-registration), **amended the same day to hash `0de2333a7f63`** (pre-registration §10, BEFORE any discovery
+calculation — see the "grade ampliada" paragraph below). From that commit on, no parameter/grid/period/baseline/cut/cost change — a change is a new
 hypothesis (§4). The examples only calibrate phase DETECTION (Passo 0 v2: no parameter sweep, no trade results). Part
 A is the unbiased collection that judges it; run it in commit-sized steps exactly as `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`
 §7 orders (seal the holdout and commit it before any discovery call). Operational decisions (§8, infra only, no rule
@@ -66,7 +67,24 @@ pool lookup (failure → `None`, never a crash). Part B: `live.py` steps the SAM
 (`PosRunnerLive._update_bankroll`, called from `_update_paper`'s closed branch) and writes `pos_runner_banca.csv`
 (`storage.py`'s `pr_bankroll_state`/`pr_bankroll_trades` tables; state keyed by `(tf, variant, versao_config)`, so
 switching config version starts a fresh $100 bankroll, same as the rest of the paper); `engine.maybe_send_daily_summary`
-also sends `PosRunnerLive.daily_bankroll_summary()` on the same daily Telegram schedule. One detector/simulator/cost model shared by Passo 0,
+also sends `PosRunnerLive.daily_bankroll_summary()` on the same daily Telegram schedule. **Amendment 2026-10-16 (§10
+of the pre-registration, config hash `0de2333a7f63`, BEFORE any discovery/holdout calculation — the sealed holdout
+window list stays valid, it is pure on-chain enumeration and never depended on the rule): grid widened 6 → 24**
+(tf 5m/1h/4h × exit A/B × drop measure {extremos, fechamentos} × age window {2–7 days, 1–10 days}). Selection in
+discovery: highest net EV among combos with >= 30 trades; tie → 1h/A/extremos/2–7 (the original primary combo).
+Holdout verdict comes ONLY from the chosen combo; the other 23 are comparison/diagnostic only. The count-based stop
+rule still applies to the original primary combo alone; the other 23 reuse the exact same seeded windows (zero new
+network calls). Mechanics (no rule change): `queda_medida` ("extremos"/"fechamentos") is a new `Params` field, run
+through the detector again over the SAME already-downloaded candles and stored under a pseudo-tf label (e.g.
+`"1h_fecham"`) inside the existing `tf` column (`pipeline.tf_variant`/`real_tf`) — zero schema change, count-based
+stop logic untouched (it only ever looks at real tf names). The age dimension needs NO new detector run: "primary"
+per age window is a post-hoc reclassification straight from the already-stored `idade_dias` attribute, replaying the
+same "first qualifying entry per pool wins" rule (`pipeline.primary_under_window`). Report: one trade-table tab/CSV
+per combination (24) + 2 diagnostic tabs that never count toward any verdict — entries outside any tested age
+window, and re-entries in the same pool/tf after the 1st setup (`parte_a/bankroll.py: diagnostics`). Part B: alerts
+and the real $100 bankroll stay primary-combo-only; the `fechamentos` detector runs live in parallel on the same
+candles purely for `pos_runner_detalhe.csv` comparison (`live.py: _detector_fecham`/`_on_event_fecham`) — it never
+alerts and is filtered out of the stable `pos_runner.csv` contract (`storage._pos_runner_rows`). One detector/simulator/cost model shared by Passo 0,
 Part A (`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Age = days since token CREATION
 (on-chain: oldest successful mint signature before the migration, `lineage.creation_time`); unknown creation = no age
 = never primary. The pre-registration gate (`params.is_preregistered`) reads ONLY the status line (the first line

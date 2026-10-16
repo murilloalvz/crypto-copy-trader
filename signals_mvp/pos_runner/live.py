@@ -26,6 +26,7 @@ import logging
 import random
 import re
 import threading
+import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -499,6 +500,10 @@ class PosRunnerLive:
         self.chart_dir = self.work_dir / "graficos"
         self.status = config_status(params.version)
         self.dets: dict[tuple[str, str], Detector] = {}
+        # EMENDA 2026-10-16 (grade de 24 combinacoes): 2a medida da queda ("fechamentos"), MESMOS candles, so
+        # paper/CSV -- nunca alerta (a combinacao primaria original, extremos, continua a unica com alerta).
+        self.dets_fecham: dict[tuple[str, str], Detector] = {}
+        self.params_fecham = dataclasses.replace(params, queda_medida="fechamentos")
         self.sched: dict[tuple[str, str], dict[str, float]] = {}
         self.next_discovery = 0.0
         self.source_idx = 0
@@ -729,6 +734,21 @@ class PosRunnerLive:
         self.dets[key] = det
         return det
 
+    def _detector_fecham(self, row: Any, tf: str, now: float) -> Optional[Detector]:
+        """2a medida da queda (EMENDA 2026-10-16): MESMOS candles (`pr_bars`), so Params diferente -- so
+        paper/CSV, nunca alerta (ver `_on_event_fecham`/`_entry(..., alerts=False)`)."""
+        key = (row["pool"], tf)
+        det = self.dets_fecham.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        label = f"{tf}_fecham"
+        det = Detector(self.params_fecham, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        for ts, o, h, l, c, v, filled in self.storage.pr_bars(row["pool"], tf):
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event_fecham(row, label, det, ev, now)
+        self.dets_fecham[key] = det
+        return det
+
     @staticmethod
     def _created(row: Any) -> Optional[float]:
         value = LineageVerifier._info(row).get("criado_ts")
@@ -758,6 +778,7 @@ class PosRunnerLive:
         pool = row["pool"]
         info = json.loads(row["info"] or "{}")
         det = self._detector(row, tf, now)
+        det_fecham = self._detector_fecham(row, tf, now)
         last = det.bars[-1] if det is not None and det.bars else None
         # cotacao/USD antes dos candles: sem ela nada e consumido (renova no maximo a cada 15 min; estavel nao custa)
         usd = self.quotes.series(row["quote"], last.ts + step if last else int(row["grad_ts"]), now)
@@ -778,13 +799,21 @@ class PosRunnerLive:
                 self.storage.pr_upsert_pool(pool, l_bc=seq[0].open)
                 row = self.storage.pr_pool(pool)
                 det = self._detector(row, tf, now)
+                det_fecham = self._detector_fecham(row, tf, now)
             assert det is not None
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq])
             for b in seq:
                 for ev in det.update(b):
                     self._on_event(row, tf, det, ev, now)
+            if det_fecham is not None:
+                label = f"{tf}_fecham"
+                for b in seq:
+                    for ev in det_fecham.update(b):
+                        self._on_event_fecham(row, label, det_fecham, ev, now)
             self._watch(row, tf, det, now, on_arrival=first_load)
             self._update_paper(row, tf, det, now)
+            if det_fecham is not None:
+                self._update_paper(row, f"{tf}_fecham", det_fecham, now, alerts=False)
         if len(ok) < len(fresh):
             self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
         else:
@@ -881,13 +910,25 @@ class PosRunnerLive:
                            f"cobriu {_num(None if cov is None else 100 * min(cov, 9.99), 0)}% do caminho de R até o topo (desequilíbrio)",
                            self._keyboard(row))
 
-    def _entry(self, row: Any, tf: str, det: Detector, ev: Event, now: float) -> None:
+    def _on_event_fecham(self, row: Any, tf_label: str, det: Detector, ev: Event, now: float) -> None:
+        """EMENDA 2026-10-16: 2a medida da queda, so paper/CSV -- so a ENTRADA interessa (sem alerta de
+        watchlist/invalidado/absurdo; `_entry(..., alerts=False)` grava o sinal sem mandar nada no Telegram)."""
+        if ev.kind != "ENTRADA":
+            return
+        tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+                  and self.version_start is not None and ev.decision_ts >= self.version_start)
+        if tracked:
+            self._entry(row, tf_label, det, ev, now, alerts=False)
+
+    def _entry(self, row: Any, tf: str, det: Detector, ev: Event, now: float, alerts: bool = True) -> None:
         pool, n = row["pool"], int(ev.data["n_entrada"])
         self.storage.pr_insert_signal({
             "pool": pool, "tf": tf, "n": n, "primario": int(bool(ev.data.get("primario"))), "decision_ts": float(ev.decision_ts),
             "mint": row["mint"], "symbol": row["symbol"], "launchpad": row["launchpad"], "dex": row["dex"],
             "versao_config": self.version, "event_json": event_to_json(ev), "status": "aberto",
         })
+        if not alerts:
+            return
         signal = self.storage.pr_signal_by_key(pool, tf, n, self.version)
         if signal is None or not self.settings.alerta_entrada:
             return
@@ -930,7 +971,10 @@ class PosRunnerLive:
         dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
         return {v: simulate(bars, ev, v, self.params, costs, dex, row["l_bc"], self._sol_at()) for v in ("A", "B")}
 
-    def _update_paper(self, row: Any, tf: str, det: Detector, now: float) -> None:
+    def _update_paper(self, row: Any, tf: str, det: Detector, now: float, alerts: bool = True) -> None:
+        """`alerts=False` (EMENDA 2026-10-16, 2a medida da queda): grava o paper (resultado, motivo, detalhe) para
+        comparar depois, mas nunca manda alerta de saida/resultado, nunca calcula a base pareada (so da
+        combinacao primaria) e nunca avanca a gestao de banca (que continua so da combinacao primaria)."""
         step = det.step
         for signal in self.storage.pr_signals(status="aberto", pool=row["pool"], tf=tf):
             if signal["versao_config"] != self.version:
@@ -947,19 +991,21 @@ class PosRunnerLive:
                 "pernas_A": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in a.legs],
                 "pernas_B": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in b.legs],
             }
-            self._exit_alerts(row, tf, signal, res, det, now)
+            if alerts:
+                self._exit_alerts(row, tf, signal, res, det, now)
             if a.status == "cancelado":
                 self.storage.pr_update_signal(signal["id"], status="cancelado", reason_a=a.reason, reason_b=b.reason,
                                               detail_json=json.dumps(detail), closed_ts=now)
                 continue
             if a.status == "fechado" and b.status == "fechado":
-                base = self._baseline(signal, row, tf, a)
+                base = self._baseline(signal, row, tf, a) if alerts else {"n": 0}
                 self.storage.pr_update_signal(
                     signal["id"], status="fechado", result_a=a.net_ret, result_b=b.net_ret, reason_a=a.reason, reason_b=b.reason,
                     tempo_h=None if a.bars_held is None else a.bars_held * step / 3600.0, detail_json=json.dumps(detail),
                     base_json=json.dumps(base), closed_ts=now)
-                self._result_alert(row, tf, signal, a, b, base)
-                self._update_bankroll(row, tf, det, signal, now)
+                if alerts:
+                    self._result_alert(row, tf, signal, a, b, base)
+                    self._update_bankroll(row, tf, det, signal, now)
                 continue
             self.storage.pr_update_signal(signal["id"], detail_json=json.dumps(detail))
 
@@ -1044,9 +1090,10 @@ class PosRunnerLive:
         return out
 
     def _refresh_baselines(self, now: float) -> None:
-        """Base de sinais fechados com menos de K comparaveis e fechados ha < 14 dias: recalcula (so medicao, sem chamada)."""
+        """Base de sinais fechados com menos de K comparaveis e fechados ha < 14 dias: recalcula (so medicao, sem chamada).
+        EMENDA 2026-10-16: so a combinacao primaria (extremos) tem base pareada; a 2a medida (fechamentos) nunca entra aqui."""
         for signal in self.storage.pr_signals(status="fechado"):
-            if signal["versao_config"] != self.version:
+            if signal["versao_config"] != self.version or signal["tf"].endswith("_fecham"):
                 continue
             base = json.loads(signal["base_json"] or "{}")
             if base.get("n", 0) >= K_BASELINE or now - (signal["closed_ts"] or now) > 14 * 86400.0:

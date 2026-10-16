@@ -217,3 +217,83 @@ Parte A (`parte_a/bankroll.py`: `simulate_bankroll`/`write_bankroll_reports`, ch
 comando `relatorio`) e Parte B ao vivo (`live.py`: `PosRunnerLive._update_bankroll`, chamado assim que um sinal
 real fecha; grava `pos_runner_banca.csv`, estado persistido em `pr_bankroll_state` por `(tf, variante,
 versao_config)`; resumo diário por ajuste enviado no Telegram no mesmo horário do resumo diário do bot v0).
+
+## 10. EMENDA de 2026-10-16 — grade ampliada para 24 combinações (ANTES de qualquer cálculo do discovery; nenhum foi
+## feito neste repositório até este commit)
+
+Pedido do operador, verbatim: "ampliar a grade antes de ver dado". Motivo documentado: a grade de 6 variantes do §2
+(tf × saída) deixava de fora duas dimensões que o operador quer comparar — a medida da queda/zona (extremos vs.
+fechamentos, já discutida como leitura conservadora em §5) e a janela de idade (2–7 dias vs. uma janela mais larga,
+1–10 dias) — e o operador prefere decidir isso agora, ampliando a grade, do que depois de ver qualquer resultado
+(o que seria `p-hacking` e está proibido por §4). **Nenhum cálculo de discovery/holdout foi feito antes desta
+emenda**: o `selar-holdout` já rodado só enumera janelas on-chain (RPC), nunca chama o detector nem lê resultado de
+trade — por isso a seleção de janelas não depende da regra e o holdout selado **continua válido** sem precisar
+refazer a selagem.
+
+**Config**: novo hash `0de2333a7f63` (era `2a8bef99a917`). O campo novo (`Params.queda_medida`, default
+`"extremos"`, validado contra `{"extremos", "fechamentos"}`) é o único campo de parâmetro que mudou — o hash muda
+automaticamente porque `Params.version` cobre `self.as_dict()` inteiro; nenhum outro valor de `pos_runner_v0.yaml`
+foi tocado. Regra congelada a partir de agora = este hash **+** o código em `detector.py`/`simulate.py`/`costs.py`/
+`params.py`/`pos_runner/parte_a/{pipeline,baseline,metrics,report,bankroll}.py`/`pos_runner/live.py` no commit desta
+emenda; qualquer mudança depois dele é hipótese nova. A linha de `Status:` no topo deste arquivo não muda (continua
+`**PRE-REGISTRADO**`) — esta emenda é uma versão do MESMO pré-registro, não uma hipótese nova, porque é uma
+ampliação da grade decidida antes de qualquer dado de resultado, exatamente o caso previsto para emenda (ao
+contrário de retune depois do dado, que §4 proíbe).
+
+### 10.1 Grade (24 combinações)
+
+`tf {5m, 1h, 4h} × saída {A, B} × medida da queda {extremos, fechamentos} × idade {2–7 dias, 1–10 dias}` = 3 × 2 × 2
+× 2 = **24 combinações**. Tudo o mais em §2 continua congelado como está (zona, teste de suporte, invalidação,
+exaustão, custos, linha de base pareada, veto de candle absurdo, etc.) — a medida da queda só troca extremos por
+fechamentos no pico/queda/S/R (rompimento, recuperação e invalidação já eram pelo fechamento nos dois casos, §5); a
+idade só troca a janela do filtro de sinal primário (§2, "2–7 dias" → também "1–10 dias"), sem tocar a regra de
+detecção.
+
+- **Mecânica (implementação, não muda regra)**: a medida da queda é uma dimensão NOVA do detector (`Params` com
+  `queda_medida` diferente) — precisa rodar o detector de novo, mas sobre os MESMOS candles já baixados (nenhuma
+  chamada de rede nova; `tf_variant()` guarda o resultado sob um rótulo pseudo-tf, ex. `"1h_fecham"`, na MESMA coluna
+  `tf` das tabelas `setups`/`trades`, sem mudar o schema nem a regra de parada por contagem, que só olha tf reais).
+  A idade NÃO precisa de nenhuma nova execução do detector: "primário" por janela de idade é reclassificado depois
+  da coleta, direto do atributo `idade_dias` já gravado em cada setup, repetindo a MESMA regra do detector ("1º
+  setup elegível por token/tf vence"), só filtrando por outra janela (`primary_under_window`).
+- **Escolha no discovery**: maior EV líquido entre as combinações com **>= 30 trades**; empate → **1h, A, extremos,
+  2–7 dias** (a combinação primária original). Combinação sem 30 trades nunca é escolhida, mesmo com EV alto.
+- **Holdout**: só a combinação escolhida decide o veredito (EV líquido > 0, PF > 1, **>= 30 trades fechados**;
+  abaixo disso = INCONCLUSIVE, igual a antes). As outras 23 são medidas no mesmo holdout só para comparação/relatório,
+  nunca para o veredito. **Multiplicidade registrada**: 24 comparações no mesmo discovery (era 6); o relatório e o
+  registro (§6/§10.4) citam esse número.
+- **Regra de parada por contagem**: aplica-se à combinação primária original (1h, A, extremos, 2–7 dias) — é ela
+  quem decide quando o discovery/holdout para de coletar (§7/§8). As outras 23 combinações usam exatamente as MESMAS
+  janelas de calendário sorteadas (nenhuma janela extra é sorteada ou baixada por elas).
+
+### 10.2 Tabela de trades (substitui a estrutura do §9 — mesmo conteúdo por linha, agora por combinação)
+
+Uma aba/CSV por combinação (24, nomeadas `{periodo}_{tf}_{medida}_{idade}_{saida}`), com o resumo no topo (uma linha
+por combinação: nº de trades, % com lucro, lucro líquido médio %, banca final US$, maior queda US$ e %) — mesma
+estrutura e mesmas colunas do §9, só que 24 vezes em vez de 6. Mais **2 abas de DIAGNÓSTICO** que nunca contam para
+o veredito nem para a escolha da combinação:
+
+- `{periodo}_diag_fora_de_qualquer_janela_de_idade`: entradas cuja idade desde a criação é desconhecida, < 1 dia ou
+  > 10 dias (fora das duas janelas testadas nas duas direções) — mostra o que a ampliação da janela (1–10) ainda
+  deixa de fora.
+- `{periodo}_diag_reentradas_apos_1o_setup`: setups do mesmo token/tf com `n_entrada` > 1, ou seja, zonas que
+  reabriram depois do 1º setup elegível (o detector só deixa o 1º virar "primário"; esta aba só documenta quantas
+  reentradas existiram, sem gerar trade nem contar para nenhuma métrica oficial).
+
+A gestão de banca de cada combinação é independente (banca US$100 própria, nunca preço médio entre combinações).
+
+### 10.3 Parte B ao vivo
+
+Alertas (👀/🟢/🟡/📊) e paper A/B com gestão de banca real continuam só da combinação PRIMÁRIA (1h, A, extremos,
+2–7 dias) — nenhuma mudança de comportamento visível ao operador. As outras 23 combinações: só a dimensão "medida da
+queda" precisa rodar ao vivo (a dimensão "idade" é reclassificação pós-hoc, não existe em tempo real) — o detector
+`fechamentos` roda em paralelo sobre os MESMOS candles do mesmo pool/tf, grava o sinal (entrada/fechamento, sem base
+pareada) só para `pos_runner_detalhe.csv` (nunca entra em `pos_runner.csv`, contrato estável — filtrado por
+`storage._pos_runner_rows`), nunca manda alerta Telegram, nunca toca a banca de US$100 da Parte B. Serve só para
+comparar depois com o paper da Parte A sobre o mesmo dado real.
+
+### 10.4 Registro
+
+Linha `POS-RUNNER-V0` em `docs/research-hypothesis-registry-v1-2026-10-04.md` atualizada no mesmo commit desta
+emenda: emenda registrada, grade 6 → 24, multiplicidade 24, hash novo `0de2333a7f63`, holdout selado permanece
+válido.

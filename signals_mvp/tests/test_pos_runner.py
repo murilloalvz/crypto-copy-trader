@@ -288,6 +288,51 @@ class DetectorTests(unittest.TestCase):
             det.update(flat(T0, 1.0))
 
 
+class QuedaMedidaTests(unittest.TestCase):
+    """EMENDA 2026-10-16 (grade de 24 combinacoes): "extremos" (pico/queda pela maxima/minima, o padrao -- nenhuma
+    mudanca de comportamento default) x "fechamentos" (so o fechamento do candle, ignora pavio). So a fase 1-2
+    muda; zona/teste/rompimento continuam pelos mesmos criterios de antes."""
+
+    def test_default_is_unchanged_extremos_behaviour(self):
+        self.assertEqual(Params().queda_medida, "extremos")
+
+    def test_fechamentos_ignores_the_wick_that_extremos_would_count(self):
+        s = Series()
+        s.add(300_000, 400_000, 290_000, 300_000)                 # pico: extremos=400k, fechamentos=300k (os dois >= runner_min_mc)
+        s.add(300_000, 310_000, 50_000, 295_000)                   # pavio profundo (87,5% de queda pelo extremo), fecha quase no mesmo lugar
+        s.add(295_000, 296_000, 294_000, 295_000)
+
+        extremos = run(s.bars, Params(), "1h", L_BC, s.bars[0].ts)
+        fechamentos = run(s.bars, Params(queda_medida="fechamentos"), "1h", L_BC, s.bars[0].ts)
+
+        self.assertTrue(any(e.kind == "FASE2" for e in extremos.events), "o pavio deveria disparar a fase 2 pelos extremos")
+        self.assertFalse(any(e.kind == "FASE2" for e in fechamentos.events), "o fechamento quase nao caiu: fase 2 nao deveria disparar")
+        fase2 = next(e for e in extremos.events if e.kind == "FASE2")
+        self.assertAlmostEqual(fase2.data["P_peak"], 400_000.0)
+        self.assertAlmostEqual(fase2.data["queda_pct"], 100.0 * (1.0 - 50_000.0 / 400_000.0), places=3)
+
+    def test_fechamentos_still_detects_a_real_close_based_drop(self):
+        """A mesma onda, so que agora a queda acontece de verdade no FECHAMENTO -- fechamentos tambem detecta."""
+        s = Series()
+        s.add(300_000, 310_000, 295_000, 300_000)
+        s.add(290_000, 292_000, 55_000, 58_000)                    # fecha em 58k: queda real de 80,7% pelo fechamento
+        s.add(58_000, 60_000, 56_000, 58_000)
+
+        fechamentos = run(s.bars, Params(queda_medida="fechamentos"), "1h", L_BC, s.bars[0].ts)
+        self.assertTrue(any(e.kind == "FASE2" for e in fechamentos.events))
+        fase2 = next(e for e in fechamentos.events if e.kind == "FASE2")
+        self.assertAlmostEqual(fase2.data["P_peak"], 300_000.0)
+        self.assertAlmostEqual(fase2.data["queda_pct"], 100.0 * (1.0 - 58_000.0 / 300_000.0), places=3)
+
+    def test_rejects_unknown_value(self):
+        with self.assertRaises(ValueError):
+            Params(queda_medida="media_movel")
+
+    def test_the_hash_changes_with_the_amendment_but_not_between_runs_of_the_same_value(self):
+        self.assertNotEqual(Params().version, Params(queda_medida="fechamentos").version)
+        self.assertEqual(Params(queda_medida="fechamentos").version, Params(queda_medida="fechamentos").version)
+
+
 class ParamsTests(unittest.TestCase):
     def test_shipped_yaml_is_the_operator_rule_set(self):
         shipped = load_params()
