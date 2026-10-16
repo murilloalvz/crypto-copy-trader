@@ -58,8 +58,10 @@ def plot_setup(
     power_period: int = 20,
     power_mult: float = 3.0,
     small: bool = False,
+    pad_right: int = 0,
 ) -> Optional[Path]:
-    """Desenha e salva. `window` = (indice inicial, indice final) dos candles mostrados."""
+    """Desenha e salva. `window` = (indice inicial, indice final) dos candles mostrados. `pad_right`: espaco vazio a
+    direita (alerta ao vivo: o grafico acaba no candle do sinal e as linhas de stop/alvo seguem para o futuro)."""
     if not available() or not bars:
         return None
     import matplotlib
@@ -90,20 +92,22 @@ def plot_setup(
         axv.bar(i, b.volume, width=width, color=color)
     ax.set_yscale("log")
 
+    x_end = hi_i + pad_right
+
     def hline(y: float, x0: int, x1: int, color: str, style: str, label: str, lw: float = 1.2) -> None:
-        ax.plot([max(x0, lo_i), min(x1, hi_i)], [y, y], color=color, ls=style, lw=lw, zorder=5)
-        ax.text(min(x1, hi_i) + 0.5, y, f" {label} {_fmt_mc(y)}", color=color, fontsize=7 if small else 8, va="center", zorder=6)
+        ax.plot([max(x0, lo_i), min(x1, x_end)], [y, y], color=color, ls=style, lw=lw, zorder=5)
+        ax.text(min(x1, x_end) + 0.5, y, f" {label} {_fmt_mc(y)}", color=color, fontsize=7 if small else 8, va="center", zorder=6)
 
     if l_bc:
-        hline(l_bc, lo_i, hi_i, "#777777", "--", "L_bc")
+        hline(l_bc, lo_i, x_end, "#777777", "--", "L_bc")
     if entry_event is not None:
         d = entry_event.data
         e_idx = entry_event.idx
-        hline(d["P_peak"], d["peak_idx"], hi_i, "#1b7f3b", ":", "pico")
-        hline(d["tp"], e_idx, hi_i, "#1b7f3b", "-", "alvo")
+        hline(d["P_peak"], d["peak_idx"], x_end, "#1b7f3b", ":", "pico")
+        hline(d["tp"], e_idx, x_end, "#1b7f3b", "-", "alvo")
         hline(d["S"], d["box_start"], e_idx, "#1f5fbf", "-", "S", 1.6)
         hline(d["R"], d["box_start"], e_idx, "#1f5fbf", "-", "R", 1.6)
-        hline(d["stop"], e_idx, hi_i, "#c62828", "--", "stop")
+        hline(d["stop"], e_idx, x_end, "#c62828", "--", "stop")
         ax.axvspan(d["box_start"] - 0.5, d["box_end"] + 0.5, color="#1f5fbf", alpha=0.06, zorder=1)
         pk = d["peak_idx"]
         if lo_i <= pk <= hi_i:
@@ -138,6 +142,8 @@ def plot_setup(
                 ax.scatter([leg.idx], [leg.price], marker="x" if tr.variant == "A" else "+", color="#000000", s=50, zorder=8)
                 ax.annotate(f"{tr.variant}:{leg.reason}", (leg.idx, leg.price), xytext=(5, -10 if tr.variant == "A" else 8),
                             textcoords="offset points", fontsize=7)
+    if pad_right:
+        ax.set_xlim(lo_i - 1, x_end + 4)
     ticks = list(range(lo_i, hi_i + 1, max(1, (hi_i - lo_i) // 8)))
     axv.set_xticks(ticks)
     axv.set_xticklabels([datetime.fromtimestamp(bars[t].ts, tz=timezone.utc).strftime("%d/%m %H:%M") for t in ticks], fontsize=7)

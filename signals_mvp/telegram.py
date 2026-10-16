@@ -75,7 +75,8 @@ class TelegramClient:
         return data.get("result")
 
     # -- envio -----------------------------------------------------------------------------
-    def send_message(self, text: str, reply_markup: dict | None = None, parse_mode: str | None = "HTML") -> int:
+    def send_message(self, text: str, reply_markup: dict | None = None, parse_mode: str | None = "HTML",
+                     reply_to: int | None = None) -> int:
         payload: dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": text[:4000],
@@ -85,12 +86,38 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
         result = self.call("sendMessage", payload)
         return int(result["message_id"])
 
     def notify(self, text: str) -> None:
         """Aviso simples (texto puro escapado)."""
         self.send_message(html.escape(text, quote=False))
+
+    def send_photo(self, png: bytes, caption: str, reply_markup: dict | None = None, parse_mode: str | None = "HTML",
+                   reply_to: int | None = None) -> int:
+        """Foto (mini-grafico) com legenda (ate 1024 caracteres). Quem chama cai para `send_message` se isto falhar."""
+        url = f"{self._base}/bot{self._token}/sendPhoto"
+        data: dict[str, Any] = {"chat_id": self.chat_id, "caption": caption[:1024]}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        if reply_to:
+            data["reply_parameters"] = json.dumps({"message_id": int(reply_to), "allow_sending_without_reply": True})
+        try:
+            response = self.session.post(url, data=data, files={"photo": ("grafico.png", png, "image/png")},
+                                         timeout=(5.0, self.timeout_s))
+        except requests.RequestException as exc:
+            raise TelegramError(f"rede: {type(exc).__name__}") from None  # nunca repassa a mensagem (tem a URL/token)
+        try:
+            body = response.json()
+        except ValueError:
+            raise TelegramError(f"resposta invalida (HTTP {response.status_code})", status=response.status_code) from None
+        if not isinstance(body, dict) or not body.get("ok"):
+            raise TelegramError(str((body or {}).get("description", "erro desconhecido"))[:200], status=response.status_code)
+        return int(body["result"]["message_id"])
 
     def edit_reply_markup(self, message_id: int, reply_markup: dict) -> None:
         self.call("editMessageReplyMarkup", {"chat_id": self.chat_id, "message_id": message_id, "reply_markup": reply_markup})
@@ -240,9 +267,17 @@ class OperatorHandler:
             return error or "Nao consegui descobrir a chain."
         signals = self.storage.signals_for_contract(contract, chain)
         signal = signals[0] if signals else None
-        self.storage.add_operator_trade(self.clock(), chain, contract, action, value, signal["id"] if signal else None, "comando")
+        trade_id = self.storage.add_operator_trade(self.clock(), chain, contract, action, value, signal["id"] if signal else None, "comando")
+        pr_signal = None if signal else self.storage.pr_signal_for_contract(contract)
+        if pr_signal is not None:
+            self.storage.pr_link_trade(trade_id, pr_signal["id"])
         self.storage.export_csvs()
-        related = f" | sinal: ${clean_text(signal['symbol'], 20)} ({signal['etiqueta']})" if signal else " | sem sinal relacionado"
+        if signal:
+            related = f" | sinal: ${clean_text(signal['symbol'], 20)} ({signal['etiqueta']})"
+        elif pr_signal is not None:
+            related = f" | sinal POS-RUNNER: ${clean_text(pr_signal['symbol'], 20)} ({pr_signal['tf']})"
+        else:
+            related = " | sem sinal relacionado"
         amount = f" | US$ {fmt_money(value)}" if value is not None else ""
         return f"✅ {action} registrado: {cfg.chain(chain)['nome']} {short_contract(contract)}{amount}{related}"
 

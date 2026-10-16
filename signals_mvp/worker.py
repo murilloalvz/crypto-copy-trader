@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .config import Config, ConfigError, Paths, load_config
+from .config import PACKAGE_DIR, Config, ConfigError, Paths, load_config
 from .engine import Engine
 from .geckoterminal import GtClient
 from .goplus import GoPlusClient
@@ -86,6 +86,43 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
                     telegram.notify("\u26a0 " + message)
                 except TelegramError:
                     pass
+
+
+def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine, gt: GtClient,
+                    telegram: Optional[TelegramClient], stop: threading.Event) -> Optional[object]:
+    """POS-RUNNER-V0 ao vivo (Parte B). Sem a secao `pos_runner` no config.yaml, ou com o arquivo de parametros
+    invalido, o bot v0 roda normalmente sem ele (avisa no console). A linhagem on-chain roda numa thread propria."""
+    raw = cfg.raw.get("pos_runner")
+    if not raw:
+        return None
+    from .pos_runner.live import LineageVerifier, LiveSettings, PosRunnerLive
+    from .pos_runner.params import load_params
+    from .pos_runner.solana_rpc import SolanaRpc, endpoints_from_env, host_of
+
+    settings = LiveSettings.from_config(raw)
+    path = Path(settings.parametros)
+    if not path.is_absolute():
+        path = paths.base / path if (paths.base / path).exists() else PACKAGE_DIR / path
+    try:
+        params = load_params(path)
+    except (OSError, ValueError, TypeError) as exc:
+        console.warning("POS-RUNNER desligado: parametros invalidos em %s (%s)", path, exc)
+        return None
+    ctx = engine.ctx.get("solana")
+    http = getattr(gt, "http", None)
+    if ctx is None or http is None:
+        console.warning("POS-RUNNER desligado: falta a chain solana no config.yaml (ou o cliente do GeckoTerminal)")
+        return None
+    chain = cfg.raw["chains"]["solana"]
+    live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
+                         paths.dados / "pos_runner")
+    live.alerts_on = cfg.raw["alertas"]["ligado"]
+    rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=4)
+    verifier = LineageVerifier(storage, rpc)
+    threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
+    console.info("POS-RUNNER %s | config %s (%s) | RPC: %s", "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
+                 params.version, live.status, ", ".join(host_of(u) for u in rpc.endpoints))
+    return live
 
 
 CLOCK_SKEW_WARN_S = 10.0
@@ -193,6 +230,7 @@ class Worker:
         gt = make_gt(cfg)
         meta = load_meta(meta_path(self.paths, cfg))
         engine = Engine(cfg, meta, storage, gt, make_goplus(cfg), telegram, heartbeat=heartbeat.beat)
+        engine.pos_runner = make_pos_runner(cfg, self.paths, storage, engine, gt, telegram, self.stop)
         self._config_mtime = self._mtime(self.paths.config)
         self._meta_mtime = self._mtime(meta_path(self.paths, cfg))
         validate_networks(engine, gt, telegram)

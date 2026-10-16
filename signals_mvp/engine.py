@@ -102,8 +102,10 @@ class Engine:
         clock: Callable[[], float] = utc_now,
         heartbeat: Callable[[], None] = lambda: None,
         sleep: Callable[[float], None] = time.sleep,
+        pos_runner: Any = None,
     ):
         self.sleep = sleep
+        self.pos_runner = pos_runner      # POS-RUNNER-V0 ao vivo (Parte B), opcional
         self.started_at = clock()
         self.disabled_chains: set[str] = set()
         self._carry: set[tuple[str, str]] = set()   # candidatos adiados: sao os primeiros do proximo ciclo
@@ -136,6 +138,9 @@ class Engine:
             reference = frozenset(norm_addr(chain["plataforma"], a) for a in chain["ativos_referencia"])
             self.ctx[name] = ChainCtx(name, chain["plataforma"], chain["gt_rede"], reference, liq_unreliable)
         self.storage.register_config_version(cfg.version, cfg.raw, self.clock())
+        if getattr(self, "pos_runner", None) is not None:
+            from .pos_runner.live import LiveSettings
+            self.pos_runner.update_settings(LiveSettings.from_config(cfg.raw.get("pos_runner")), cfg.raw["alertas"]["ligado"], cfg.raw["links"])
         return changed
 
     def set_meta(self, meta: MetaSet, text: str) -> None:
@@ -171,8 +176,10 @@ class Engine:
         1. re-checar e enriquecer os candidatos ADIADOS no ciclo anterior;
         2. descoberta (pagina 1 de cada chain) e re-checagem dos pools jovens, mais ativos primeiro;
         3. paginas extras de descoberta com a sobra;
-        4. acompanhamento (OHLCV) dos sinais vencidos.
-        Reservas no orcamento garantem que descoberta/refresh nunca deixem o enriquecimento e o acompanhamento sem chamadas.
+        4. POS-RUNNER (se ligado): a fatia reservada para ele (candles que fecharam, descoberta propria);
+        5. acompanhamento (OHLCV) dos sinais vencidos.
+        Reservas no orcamento garantem que descoberta/refresh nunca deixem o enriquecimento, o POS-RUNNER e o
+        acompanhamento sem chamadas. Candidato do v0 (alerta com prazo curto) vem antes do POS-RUNNER.
         """
         self.cycle_count += 1
         started = self.clock()
@@ -182,19 +189,23 @@ class Engine:
         budget = CallBudget(limit)
         due = len(self.storage.signals_due(started, limit=5))
         keep_follow = 1 if due else 0
-        keep_early = keep_follow + min(4, limit // 3)
+        # fatia do POS-RUNNER: nunca tira do v0 o essencial (3 chamadas: pagina 1 das chains + acompanhamento)
+        keep_pr = min(self._pos_runner_wanted(started), max(0, limit - 3 - keep_follow))
+        keep_early = keep_follow + keep_pr + min(4, limit // 3)
+        keep_v0 = keep_follow + min(1, keep_pr)      # candidato do v0 (prazo curto) usa a fatia do POS-RUNNER, menos 1
         seen: dict[tuple[str, str], PoolSnap] = {}
         decided: set[tuple[str, str]] = set()
         carry, self._carry = self._carry, set()
         try:
             if carry:
-                self._refresh(started, budget, keep_follow, stats, seen, only=carry)
-                self._decide(seen, decided, budget, keep_follow, stats)
+                self._refresh(started, budget, keep_v0, stats, seen, only=carry)
+                self._decide(seen, decided, budget, keep_v0, stats)
             self._discover(budget, keep_early, stats, seen, first_pages=True)
             self._refresh(started, budget, keep_early, stats, seen)
             self._discover(budget, keep_early, stats, seen, first_pages=False)
             self._expire(self.clock(), stats)
-            self._decide(seen, decided, budget, keep_follow, stats)
+            self._decide(seen, decided, budget, keep_v0, stats)
+            self._pos_runner_tick(seen, budget, keep_follow, stats)
             self._followups(self.clock(), budget, stats)
             self._late_security(self.clock(), stats)
             self._maybe_prune(self.clock())
@@ -211,6 +222,33 @@ class Engine:
             log.exception("falha ao exportar CSVs")
         self.last_stats = stats
         return stats
+
+    # ------------------------------------------------------------------ POS-RUNNER (Parte B)
+    def _pos_runner_wanted(self, now: float) -> int:
+        if self.pos_runner is None:
+            return 0
+        try:
+            return int(self.pos_runner.wanted(now))
+        except Exception:  # noqa: BLE001 - o POS-RUNNER nunca derruba o ciclo do v0
+            log.exception("POS-RUNNER: erro ao montar a agenda")
+            return 0
+
+    def _pos_runner_tick(self, seen: dict, budget: CallBudget, keep: int, stats: CycleStats) -> None:
+        if self.pos_runner is None or not self.pos_runner.enabled():
+            return
+        now = self.clock()
+        try:
+            self.pos_runner.offer([s for s in seen.values() if s.chain == "solana"], now, fonte="bot_v0")
+            out = self.pos_runner.tick(now, budget, keep)
+        except Exception:  # noqa: BLE001
+            stats.errors += 1
+            log.exception("POS-RUNNER: erro no ciclo")
+            return
+        if out.get("rate_limited"):
+            stats.rate_limited = True
+        stats.errors += int(out.get("erros", 0))
+        if out.get("chamadas"):
+            self.heartbeat()
 
     def _decide(self, seen: dict, decided: set, budget: CallBudget, keep: int, stats: CycleStats) -> None:
         """Gatilhos + candidatos para as fotos ainda nao decididas neste ciclo."""
@@ -761,4 +799,9 @@ class Engine:
         ]
         if p50 is not None:
             lines.append(f"Latencia evento->alerta p50: {fmt_age(p50)} (n={len(self.latencies)})")
+        if self.pos_runner is not None:
+            try:
+                lines.append(self.pos_runner.status_line())
+            except Exception:  # noqa: BLE001
+                log.exception("POS-RUNNER: erro no status")
         return "\n".join(lines)

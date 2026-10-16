@@ -26,6 +26,19 @@ SINAIS_COLUMNS = [
 ]
 DESCARTADOS_COLUMNS = ["data", "chain", "token", "contrato", "etapa", "motivo", "valor", "versao_config"]
 TRADES_COLUMNS = ["data", "chain", "contrato", "acao", "valor", "sinal_relacionado"]
+# POS-RUNNER-V0 (Parte B): colunas exatas do handoff de 2026-10-15
+POS_RUNNER_COLUMNS = [
+    "data", "token", "contrato", "launchpad", "tf", "idade_h", "P_peak", "L_bc", "queda_pct", "S", "R", "n_wicks",
+    "entrada_mc", "stop_mc", "tp_mc", "rr", "power_candle", "resultado_A", "resultado_B", "tempo_trade_h", "motivo_saida",
+    "versao_config",
+]
+# extras do POS-RUNNER (custo 2x, base pareada, atraso do alerta...): CSV de detalhe, fora do contrato do handoff
+POS_RUNNER_DETALHE_COLUMNS = [
+    "id", "data", "token", "contrato", "pool", "launchpad", "dex", "tf", "n_entrada", "primario", "onda", "alerta_enviado",
+    "atraso_alerta_s", "entrada_ts", "entrada_mc_paper", "ambiguo_A", "ambiguo_B", "bruto_A", "bruto_B", "custo2x_A", "custo2x_B",
+    "R_A", "R_B", "tempo_B_h", "base_n", "base_A", "base_B", "edge_A", "edge_B", "vol_ratio_rompimento", "cobertura_ate_topo",
+    "status", "versao_config",
+]
 
 SCHEMA_VERSION = 1
 SCHEMA = """
@@ -70,6 +83,27 @@ CREATE TABLE IF NOT EXISTS operator_trades (
   signal_id INTEGER, via TEXT
 );
 CREATE INDEX IF NOT EXISTS trades_signal ON operator_trades (signal_id, acao);
+-- POS-RUNNER-V0 ao vivo (tabelas novas; bancos antigos ganham elas sem migracao)
+-- status do pool: pendente (falta linhagem) -> verificado (fila) -> ativo -> encerrado | rejeitado
+CREATE TABLE IF NOT EXISTS pr_pools (
+  pool TEXT PRIMARY KEY, mint TEXT, symbol TEXT, quote TEXT, launchpad TEXT, dex TEXT, grad_ts REAL, l_bc REAL,
+  supply REAL, status TEXT NOT NULL, found_ts REAL, added_ts REAL, checked_ts REAL, mc_found REAL, motivo TEXT, info TEXT
+);
+CREATE INDEX IF NOT EXISTS pr_pools_status ON pr_pools (status);
+-- candles de MC (USD) que o detector ja consumiu: CONGELADOS (so acrescenta; reiniciar refaz o mesmo estado)
+CREATE TABLE IF NOT EXISTS pr_bars (
+  pool TEXT NOT NULL, tf TEXT NOT NULL, ts INTEGER NOT NULL, o REAL, h REAL, l REAL, c REAL, v REAL, filled INTEGER,
+  PRIMARY KEY (pool, tf, ts)
+);
+CREATE TABLE IF NOT EXISTS pr_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, tf TEXT NOT NULL, n INTEGER NOT NULL, primario INTEGER,
+  decision_ts REAL, mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config TEXT, event_json TEXT,
+  status TEXT NOT NULL DEFAULT 'aberto', result_a REAL, result_b REAL, reason_a TEXT, reason_b TEXT, tempo_h REAL,
+  detail_json TEXT, base_json TEXT, tg_message_id INTEGER, alert_ts REAL, closed_ts REAL, UNIQUE (pool, tf, n)
+);
+CREATE INDEX IF NOT EXISTS pr_signals_open ON pr_signals (status);
+CREATE TABLE IF NOT EXISTS pr_alerts (key TEXT PRIMARY KEY, ts REAL);
+CREATE TABLE IF NOT EXISTS pr_trade_links (trade_id INTEGER PRIMARY KEY, pr_signal_id INTEGER NOT NULL);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -110,7 +144,8 @@ class Storage:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             elif current > SCHEMA_VERSION:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
-        self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True}
+        self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
+                       "pos_runner_detalhe": True}
         self._warned: set[str] = set()
 
     def close(self) -> None:
@@ -367,12 +402,18 @@ class Storage:
 
     def _trades_rows(self) -> list[list[Any]]:
         sql = (
-            "SELECT t.*, s.decision_ts AS sdt, s.etiqueta AS setq FROM operator_trades t "
-            "LEFT JOIN signals s ON s.id=t.signal_id ORDER BY t.ts, t.id"
+            "SELECT t.*, s.decision_ts AS sdt, s.etiqueta AS setq, p.decision_ts AS pdt, p.tf AS ptf FROM operator_trades t "
+            "LEFT JOIN signals s ON s.id=t.signal_id LEFT JOIN pr_trade_links l ON l.trade_id=t.id "
+            "LEFT JOIN pr_signals p ON p.id=l.pr_signal_id ORDER BY t.ts, t.id"
         )
         out = []
         for r in self._all(sql):
-            related = f"{iso_utc(r['sdt'])}|{r['setq']}" if r["sdt"] is not None else ""
+            if r["sdt"] is not None:
+                related = f"{iso_utc(r['sdt'])}|{r['setq']}"
+            elif r["pdt"] is not None:
+                related = f"{iso_utc(r['pdt'])}|pos_runner_{r['ptf']}"
+            else:
+                related = ""
             out.append([iso_utc(r["ts"]), r["chain"], r["contract"], r["acao"], "" if r["valor"] is None else round(r["valor"], 2), related])
         return out
 
@@ -392,6 +433,8 @@ class Storage:
             "descartados": (self.paths.descartados_csv, lambda: (DESCARTADOS_COLUMNS, self._descartados_rows())),
             "trades": (self.paths.trades_csv, lambda: (TRADES_COLUMNS, self._trades_rows())),
             "detalhe": (self.paths.detalhe_csv, self._detalhe_rows),
+            "pos_runner": (self.paths.pos_runner_csv, lambda: (POS_RUNNER_COLUMNS, self._pos_runner_rows())),
+            "pos_runner_detalhe": (self.paths.pos_runner_detalhe_csv, self._pos_runner_detail_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -421,3 +464,171 @@ class Storage:
                 self._dirty[name] = True
             log.error("falha ao gravar %s: %s", path.name, exc)
             return False
+
+    # -- POS-RUNNER-V0 ao vivo ------------------------------------------------------------------
+    def pr_pool(self, pool: str) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_pools WHERE pool=?", (pool,))
+
+    def pr_upsert_pool(self, pool: str, **fields: Any) -> None:
+        """Atualiza so os campos dados (pool existente) ou insere (pool novo: `status` obrigatorio)."""
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM pr_pools WHERE pool=?", (pool,)).fetchone() is not None:
+                if fields:
+                    self._db.execute(f"UPDATE pr_pools SET {', '.join(f'{k}=?' for k in fields)} WHERE pool=?", [*fields.values(), pool])
+                return
+            cols = ["pool", *fields]
+            self._db.execute(f"INSERT INTO pr_pools ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [pool, *fields.values()])
+
+    def pr_pools(self, *statuses: str) -> list[sqlite3.Row]:
+        """Pools nos status pedidos (todos se nenhum), na ordem em que foram achados."""
+        if not statuses:
+            return self._all("SELECT * FROM pr_pools ORDER BY found_ts, pool")
+        marks = ", ".join("?" * len(statuses))
+        return self._all(f"SELECT * FROM pr_pools WHERE status IN ({marks}) ORDER BY found_ts, pool", statuses)
+
+    def pr_pool_for_mint(self, mint: str) -> Optional[sqlite3.Row]:
+        """Pool ja acompanhado (ou na fila/verificacao) do mesmo token: um pool por token."""
+        return self._one("SELECT * FROM pr_pools WHERE mint=? AND status NOT IN ('rejeitado') LIMIT 1", (mint,))
+
+    def pr_bars(self, pool: str, tf: str) -> list[tuple]:
+        """(ts, open, high, low, close, volume, preenchido) em ordem de tempo."""
+        rows = self._all("SELECT ts, o, h, l, c, v, filled FROM pr_bars WHERE pool=? AND tf=? ORDER BY ts", (pool, tf))
+        return [tuple(r) for r in rows]
+
+    def pr_append_bars(self, pool: str, tf: str, rows: Sequence[tuple]) -> None:
+        """Acrescenta candles consumidos (ts, o, h, l, c, v, filled). Candle ja gravado nunca e reescrito."""
+        if not rows:
+            return
+        with self._lock:
+            self._db.execute("BEGIN")
+            try:
+                self._db.executemany(
+                    "INSERT OR IGNORE INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(pool, tf, int(r[0]), r[1], r[2], r[3], r[4], r[5], int(bool(r[6]))) for r in rows],
+                )
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def pr_insert_signal(self, row: dict) -> Optional[int]:
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+            )
+            self._dirty["pos_runner"] = self._dirty["pos_runner_detalhe"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", [*fields.values(), signal_id])
+            self._dirty["pos_runner"] = self._dirty["pos_runner_detalhe"] = True
+
+    def pr_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_signals WHERE id=?", (signal_id,))
+
+    def pr_signal_by_key(self, pool: str, tf: str, n: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_signals WHERE pool=? AND tf=? AND n=?", (pool, tf, n))
+
+    def pr_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY decision_ts, id"
+        return self._all(sql, args)
+
+    def pr_signal_for_contract(self, contract: str) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_signals WHERE mint=? ORDER BY decision_ts DESC, id DESC LIMIT 1", (contract,))
+
+    def pr_alert_once(self, key: str, ts: float) -> bool:
+        """True na 1a vez que a chave aparece (alerta ainda nao enviado); False depois (nunca repete alerta)."""
+        with self._lock:
+            cur = self._db.execute("INSERT OR IGNORE INTO pr_alerts (key, ts) VALUES (?, ?)", (key, ts))
+            return bool(cur.rowcount)
+
+    def pr_alert_seen(self, prefix: str) -> bool:
+        """Ja houve alerta com chave comecando por `prefix`? (ex.: um 👀 daquela onda antes de mandar o 🔴)."""
+        # substr (e nao LIKE): endereco base58 diferencia maiuscula de minuscula
+        return self._one("SELECT 1 FROM pr_alerts WHERE substr(key, 1, ?)=? LIMIT 1", (len(prefix), prefix)) is not None
+
+    def pr_link_trade(self, trade_id: int, pr_signal_id: int) -> None:
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO pr_trade_links (trade_id, pr_signal_id) VALUES (?, ?)", (trade_id, pr_signal_id))
+            self._dirty["trades"] = True
+
+    def pr_counts(self) -> dict[str, int]:
+        pools = {r[0]: r[1] for r in self._all("SELECT status, COUNT(*) FROM pr_pools GROUP BY status")}
+        signals = {r[0]: r[1] for r in self._all("SELECT status, COUNT(*) FROM pr_signals GROUP BY status")}
+        return {"pools_" + k: v for k, v in pools.items()} | {"sinais_" + k: v for k, v in signals.items()}
+
+    def pr_prune(self, now: float, keep_days: float = 21.0) -> dict:
+        """Candles de pools encerrados/rejeitados ha mais de `keep_days` (a base pareada usa os recentes) e chaves de
+        alerta velhas. Sinais e pools nunca sao apagados."""
+        cutoff = now - keep_days * 86400.0
+        with self._lock:
+            bars = self._db.execute(
+                "DELETE FROM pr_bars WHERE pool IN (SELECT pool FROM pr_pools WHERE status IN ('encerrado', 'rejeitado') "
+                "AND COALESCE(checked_ts, found_ts, 0) < ?)", (cutoff,)).rowcount
+            alerts = self._db.execute("DELETE FROM pr_alerts WHERE ts < ?", (now - 60 * 86400.0,)).rowcount
+        return {"pr_bars": bars, "pr_alerts": alerts} if (bars or alerts) else {}
+
+    @staticmethod
+    def _pr_json(text: Optional[str]) -> dict:
+        try:
+            value = json.loads(text or "{}")
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _pos_runner_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all("SELECT * FROM pr_signals ORDER BY decision_ts, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            det = self._pr_json(r["detail_json"])
+            entry = det.get("entrada") or d.get("close")      # entrada do paper (open seguinte); antes dele, o fechamento do sinal
+            stop, tp = d.get("stop"), d.get("tp")
+            rr = ((tp - entry) / (entry - stop)) if entry and stop and tp and entry > stop else None
+            if r["status"] == "aberto":
+                reason = "em_aberto"
+            elif r["reason_a"] or r["reason_b"]:
+                reason = f"A={r['reason_a'] or '-'}; B={r['reason_b'] or '-'}"
+            else:
+                reason = r["status"]
+            age = d.get("idade_dias")
+            out.append([
+                iso_utc(r["decision_ts"]), csv_safe(r["symbol"]), r["mint"], r["launchpad"], r["tf"],
+                _num(None if age is None else age * 24, 1), _num(d.get("P_peak_topo") or d.get("P_peak")),
+                _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(d.get("S")), _num(d.get("R")), d.get("n_wicks", ""),
+                _num(entry), _num(stop), _num(tp), _num(rr, 2), "sim" if d.get("power_candle") else "nao",
+                _num(None if r["result_a"] is None else 100 * r["result_a"], 2), _num(None if r["result_b"] is None else 100 * r["result_b"], 2),
+                _num(r["tempo_h"], 1), reason, r["versao_config"],
+            ])
+        return out
+
+    def _pos_runner_detail_rows(self) -> tuple[list[str], list[list[Any]]]:
+        rows = []
+        for r in self._all("SELECT * FROM pr_signals ORDER BY decision_ts, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            det = self._pr_json(r["detail_json"])
+            base = self._pr_json(r["base_json"])
+
+            def pct(v: Any) -> Any:
+                return _num(None if v is None else 100 * v, 2)
+
+            edge = {v: (r[f"result_{v.lower()}"] - base[v]) if r[f"result_{v.lower()}"] is not None and base.get(v) is not None else None
+                    for v in ("A", "B")}
+            rows.append([
+                r["id"], iso_utc(r["decision_ts"]), csv_safe(r["symbol"]), r["mint"], r["pool"], r["launchpad"], r["dex"] or "", r["tf"],
+                r["n"], r["primario"], d.get("onda", ""), 1 if r["tg_message_id"] else 0,
+                _num(None if r["alert_ts"] is None else r["alert_ts"] - r["decision_ts"], 1), iso_utc(det.get("entrada_ts")),
+                _num(det.get("entrada")), det.get("ambiguo_A", ""), det.get("ambiguo_B", ""), pct(det.get("bruto_A")), pct(det.get("bruto_B")),
+                pct(det.get("custo2x_A")), pct(det.get("custo2x_B")), _num(det.get("R_A"), 2), _num(det.get("R_B"), 2),
+                _num(det.get("tempo_B_h"), 1), base.get("n", ""), pct(base.get("A")), pct(base.get("B")), pct(edge["A"]), pct(edge["B"]),
+                _num(d.get("vol_ratio"), 2), _num(d.get("cobertura"), 3), r["status"], r["versao_config"],
+            ])
+        return POS_RUNNER_DETALHE_COLUMNS, rows

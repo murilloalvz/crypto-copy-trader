@@ -2,3 +2,5 @@
 # Tudo o mais e biblioteca padrao do Python (3.10 ou superior).
 requests>=2.31,<3
 PyYAML>=6.0,<7
+# Grafico (PNG) do alerta de entrada do POS-RUNNER. Sem ele o alerta sai so em texto.
+matplotlib>=3.7,<4

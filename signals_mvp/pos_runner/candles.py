@@ -98,8 +98,13 @@ class OhlcvStore:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         max_retries: int = 12,
+        patient: bool = True,
+        wait_s: float = 600.0,
     ):
+        """`patient=False` (bot ao vivo): 429 ou falta de ficha no limitador sobem na hora, sem dormir."""
         self.http = http
+        self.patient = patient
+        self.wait_s = wait_s
         self.http.headers.setdefault("Accept", "application/json;version=20230302")
         self.cache_dir = Path(cache_dir)
         self.network = network
@@ -138,14 +143,16 @@ class OhlcvStore:
         for attempt in range(self.max_retries):
             try:
                 self.calls += 1
-                data = self.http.get_json(path, params, max_wait_s=600.0)
+                data = self.http.get_json(path, params, max_wait_s=self.wait_s)
                 return [Bar(int(c.ts), c.open, c.high, c.low, c.close, c.volume) for c in parse_ohlcv(data)]
             except RateLimited as exc:
+                if not self.patient:
+                    raise
                 wait = max(exc.wait_s, self.http.limiter.blocked_for(), 5.0)
                 log.info("GT 429 em %s %s: aguardando %.0fs", pool[:8], tf, wait)
                 self.sleep(wait)
             except ApiError as exc:
-                if exc.kind in ("timeout", "network") or (exc.kind == "http" and (exc.status or 0) >= 500):
+                if self.patient and (exc.kind in ("timeout", "network") or (exc.kind == "http" and (exc.status or 0) >= 500)):
                     self.sleep(min(60.0, 5.0 * (attempt + 1)))
                     continue
                 raise
@@ -160,15 +167,19 @@ class OhlcvStore:
         bars: dict[str, list],
         currency: str,
         side: str,
-        progress: Optional[Callable[[int], None]] = None,
+        progress: Optional[Callable[[int, int, int], None]] = None,
+        empties: int = 0,
+        jump: Optional[int] = None,
     ) -> None:
         """Pagina de `cursor` (inclusivo) para tras ate passar de `stop_ts`, juntando em `bars`.
 
-        `progress(cursor)` e chamado depois de cada pagina com dados (checkpoint para retomar).
+        `progress(cursor, vazias, salto)` e chamado depois de CADA pagina (checkpoint para retomar). As paginas vazias
+        tambem entram no checkpoint: com poucas chamadas por vez (bot ao vivo), a confirmacao de "vazio" avanca entre
+        uma retomada e outra em vez de recomecar do zero (sem isso a caminhada podia nunca terminar).
         """
         step = tf_seconds(tf)
-        empties = 0
-        jump = max(step, EMPTY_STEP_S)
+        base_jump = max(step, EMPTY_STEP_S)
+        jump = base_jump if jump is None else int(jump)
         while cursor >= stop_ts:
             page = [b for b in self._page(pool, tf, cursor, currency, side) if b.ts <= cursor]
             if page:
@@ -176,33 +187,33 @@ class OhlcvStore:
                     bars[str(b.ts)] = [b.open, b.high, b.low, b.close, b.volume]
                 cursor = page[0].ts - 1
                 empties = 0
-                jump = max(step, EMPTY_STEP_S)
-                if progress is not None:
-                    progress(cursor)
-                continue
-            empties += 1
-            if empties <= EMPTY_RETRIES:
-                # pagina vazia pode ser falha passageira (ou resposta vazia em cache): repete com outra URL
-                cursor -= 1
-                self.sleep(2.0 * empties)
-                continue
-            # vazio confirmado: anda para tras em passos que dobram (6h, 12h, 1d...), sem pular 13 dias de cara;
-            # se mesmo assim pular dados por falha da API, `missing_windows` + `repair` acham e buscam de novo
-            cursor -= jump
-            jump = min(jump * 2, 12 * 86400)
-            empties = 0
+                jump = base_jump
+            else:
+                empties += 1
+                if empties <= EMPTY_RETRIES:
+                    # pagina vazia pode ser falha passageira (ou resposta vazia em cache): repete com outra URL
+                    cursor -= 1
+                    self.sleep(2.0 * empties)
+                else:
+                    # vazio confirmado: anda para tras em passos que dobram (6h, 12h, 1d...), sem pular 13 dias de cara;
+                    # se mesmo assim pular dados por falha da API, `missing_windows` + `repair` acham e buscam de novo
+                    cursor -= jump
+                    jump = min(jump * 2, 12 * 86400)
+                    empties = 0
+            if progress is not None:
+                progress(cursor, empties, jump)
 
     def _run_walk(self, path: Path, data: dict[str, Any], pool: str, tf: str, cursor: int, stop: int, currency: str, side: str,
-                  set_from: Optional[int], set_to: Optional[int]) -> None:
-        """Executa uma caminhada com checkpoint em disco: se o processo cair, a proxima chamada retoma do cursor."""
-        data["pending"] = {"cursor": cursor, "stop": stop, "set_from": set_from, "set_to": set_to}
+                  set_from: Optional[int], set_to: Optional[int], empties: int = 0, jump: Optional[int] = None) -> None:
+        """Executa uma caminhada com checkpoint em disco: se o processo cair (ou faltar chamada), a proxima retoma dali."""
+        data["pending"] = {"cursor": cursor, "stop": stop, "set_from": set_from, "set_to": set_to, "empties": empties, "jump": jump}
         self._save(path, data)
 
-        def progress(c: int) -> None:
-            data["pending"]["cursor"] = c
+        def progress(c: int, e: int, j: int) -> None:
+            data["pending"].update(cursor=c, empties=e, jump=j)
             self._save(path, data)
 
-        self._walk(pool, tf, cursor, stop, data["bars"], currency, side, progress)
+        self._walk(pool, tf, cursor, stop, data["bars"], currency, side, progress, empties, jump)
         if set_from is not None:
             data["covered_from"] = set_from if data.get("covered_from") is None else min(int(data["covered_from"]), set_from)
         if set_to is not None:
@@ -219,19 +230,21 @@ class OhlcvStore:
         currency: str = "usd",
         side: str = "base",
     ) -> list[Bar]:
-        """Candles com inicio em [start_ts - step, end_ts) em ordem crescente, SEM preencher lacunas.
+        """Candles com inicio em [inicio do candle que contem start_ts, end_ts) em ordem crescente, SEM preencher lacunas.
 
-        `start_ts` deve ser a criacao do pool (ou o comeco do periodo de interesse).
+        `start_ts` deve ser a criacao do pool (ou o comeco do periodo de interesse). Os candles do GeckoTerminal sao
+        alinhados ao timeframe, entao nada anterior ao candle que contem a criacao pode existir: a caminhada para ali
+        (sem gastar chamadas confirmando paginas vazias antes do pool nascer).
         """
         step = tf_seconds(tf)
         end = int(end_ts if end_ts is not None else self.clock())
-        start = int(start_ts) - step
+        start = int(start_ts) // step * step
         path = self._path(pool, tf, currency, side)
         data = self._load(path)
         pending = data.get("pending")
         if pending:   # caminhada interrompida: termina antes de qualquer outra coisa
             self._run_walk(path, data, pool, tf, int(pending["cursor"]), int(pending["stop"]), currency, side,
-                           pending.get("set_from"), pending.get("set_to"))
+                           pending.get("set_from"), pending.get("set_to"), int(pending.get("empties") or 0), pending.get("jump"))
         cov_from, cov_to = data.get("covered_from"), data.get("covered_to")
         if cov_from is None or cov_to is None:
             self._run_walk(path, data, pool, tf, end, start, currency, side, start, end)

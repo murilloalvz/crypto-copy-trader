@@ -3,7 +3,7 @@ chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
 cd /d "%~dp0.."
 title Instalar o bot de sinais
-echo Instalando dependencias (requests e PyYAML)...
+echo Instalando dependencias (requests, PyYAML e matplotlib)...
 where py >nul 2>nul
 if %errorlevel%==0 (
   py -3 -m pip install -r signals_mvp\requirements.txt

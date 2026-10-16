@@ -18,6 +18,8 @@ import os
 import time
 from typing import Any, Callable, Optional, Sequence
 
+from urllib.parse import urlsplit
+
 import requests
 
 from ..http import RateLimiter
@@ -51,6 +53,11 @@ class RpcError(Exception):
 
 class SlotTimeUnresolvable(RuntimeError):
     """Nao deu para resolver um blockTime/assinatura real (falha explicita, nunca um valor por baixo)."""
+
+
+def host_of(url: str) -> str:
+    """So o host do endpoint para log: URL de RPC pago costuma levar a chave no caminho ou na query."""
+    return urlsplit(url).hostname or "?"
 
 
 def endpoints_from_env(env: Optional[dict] = None) -> list[str]:
@@ -132,7 +139,7 @@ class SolanaRpc:
                     limiter.on_429()
                 else:
                     limiter.on_error_pause(2.0 * (attempt + 1))
-                log.debug("rpc %s %s falhou em %s: %s", method, params[:1], url, type(exc).__name__)
+                log.debug("rpc %s %s falhou em %s: %s", method, params[:1], host_of(url), type(exc).__name__)
                 continue
             if not isinstance(body, dict):
                 self.failures += 1
@@ -147,7 +154,7 @@ class SolanaRpc:
             if isinstance(error, dict) and error.get("code") == PRUNED_CODE and "cleaned up" in str(error.get("message", "")):
                 self.failures += 1
                 self.pruned.add(url)
-                log.warning("rpc: %s nao tem o historico pedido (bloco apagado) — fora do rodizio", url)
+                log.warning("rpc: %s nao tem o historico pedido (bloco apagado) — fora do rodizio", host_of(url))
                 last = RpcError("transport", "historico apagado no endpoint", PRUNED_CODE)
                 continue
             limiter.on_success()

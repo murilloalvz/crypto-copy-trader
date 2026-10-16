@@ -54,6 +54,10 @@ class TradeResult:
     r_mult: Optional[float] = None
     bars_held: Optional[int] = None
     reason: str = ""
+    # saida JA decidida no fechamento do candle `pending_idx` (exaustao/tempo), esperando o open do candle seguinte:
+    # o bot ao vivo avisa nesse fechamento, sem esperar o proximo candle existir
+    pending_exit: str = ""
+    pending_idx: Optional[int] = None
 
 
 def _atr(bars: list[Bar], j: int, n: int) -> Optional[float]:
@@ -112,6 +116,7 @@ def simulate(
     def exit_next_open(j: int, reason: str) -> bool:
         """Sai do restante no open do candle j+1. False se ainda nao existe esse candle."""
         if j + 1 >= len(bars):
+            res.pending_exit, res.pending_idx = reason, j
             return False
         exit_leg(j + 1, bars[j + 1].open, remaining, reason)
         return True

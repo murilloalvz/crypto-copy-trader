@@ -244,6 +244,31 @@ links:
   dexscreener: "https://dexscreener.com/{dexscreener_slug}/{pool}"
 
 # -----------------------------------------------------------------------------
+# POS-RUNNER-V0 ao vivo (Parte B): token que ja correu (runner >= 300k de MC), caiu 80-90%, consolidou acima do
+# nivel da curva com wicks no suporte e rompe a lateralizacao. Mesmo detector/config do backtest (Parte A).
+# PAPER: o bot so alerta e simula; quem decide e opera e voce (simulador do Axiom).
+# As regras do padrao ficam no arquivo `parametros` (hash proprio = `versao_config` do pos_runner.csv);
+# o que esta aqui so decide QUAIS tokens acompanhar e QUAIS alertas mandar.
+# -----------------------------------------------------------------------------
+pos_runner:
+  ligado: true
+  parametros: "pos_runner/pos_runner_v0.yaml"   # mudar este arquivo exige reiniciar o bot
+  timeframes: ["5m", "1h", "4h"]
+  max_pools: 15              # tokens acompanhados ao mesmo tempo (o resto espera na fila, maior MC primeiro)
+  chamadas_por_ciclo: 3      # fatia do orcamento do GeckoTerminal (gt.orcamento_por_ciclo) reservada para o POS-RUNNER
+  descoberta_min: 3          # a cada N min le UMA lista do GT (em rodizio pelas fontes abaixo)
+  fontes: ["trending", "pumpswap", "meteora-damm-v2", "raydium"]   # trending + top por volume 24h de cada DEX de graduacao
+  mc_max_usd: 50000000       # acima disso o numero e lixo/manipulado
+  idade_max_dias: 14         # acompanha cada token ate 14 dias depois da graduacao (o mesmo horizonte da Parte A)
+  alertas:
+    watchlist: true          # WATCHLIST: fase 2 armada (caixa com S, R e wick no suporte)
+    entrada: true            # ENTRADA: rompimento valido (com mini-grafico) e NAO ENTRAR: candle absurdo
+    invalidado: true         # INVALIDADO: perdeu a ultima wick, furou L_bc ou caiu demais (so de quem teve WATCHLIST)
+    saida: true              # SAIDA SUGERIDA (stop, alvo, trailing, exaustao, tempo) e o resultado do paper
+    so_primario: true        # true = alerta so o 1o setup de cada token/tf (reentradas viram so paper, no CSV)
+  grafico: true              # mini-grafico PNG no alerta de entrada (precisa do matplotlib; sem ele vai so o texto)
+
+# -----------------------------------------------------------------------------
 # Chains. `terminal` decide o botao principal: axiom (Solana) ou gmgn (BSC/Robinhood).
 # `ligada: false` desliga a chain sem apagar nada. No start o bot confere no
 # GeckoTerminal se `gt_rede` existe; se nao existir, desliga a chain e avisa.
@@ -265,7 +290,7 @@ chains:
     ativos_referencia:             # tokens-base que NAO sao a memecoin (SOL, stables)
       - "So11111111111111111111111111111111111111112"
       - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-      - "Es9vMFrzaCERmJfrF4H2FYD4KCoNyFpq52ZjMVrvUZYB"
+      - "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"   # USDT (corrigido em 2026-10-15: o anterior dava 404)
       - "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"
   bsc:
     ligada: true

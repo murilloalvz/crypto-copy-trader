@@ -125,11 +125,12 @@ def enumerate_window(
     window_end: int,
     extra_accounts: Iterable[str] = (),
     max_pages: int = 200,
+    anchor_fn: Any = anchor_at_or_after,
 ) -> WindowResult:
     accounts = tuple(spec.accounts) + tuple(extra_accounts)
     res = WindowResult(spec.name, window_start, window_end, accounts=accounts)
     try:
-        anchor, _slot, _bt = anchor_at_or_after(rpc, window_end)
+        anchor, _slot, _bt = anchor_fn(rpc, window_end)
     except (RpcError, RuntimeError) as exc:
         res.error = f"ancora: {exc}"
         return res

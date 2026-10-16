@@ -33,7 +33,7 @@ Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal,
   `python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento <D>` → `selar-holdout` → `discovery` → `escolher` → `holdout` → `relatorio`.
   O código recusa rodar se este arquivo não estiver `PRE-REGISTRADO` com o hash da config, se a selagem do holdout não estiver commitada ou com hash diferente, ou se a config/plano mudarem no meio da coleta (checkpoint SQLite guarda os hashes). O discovery recusa qualquer pool do holdout selado; o holdout nunca passa das janelas seladas e só abre se o discovery produziu candidato.
 - **Datas de exemplo** (congelamento em 2026-10-17, horizonte de 14 dias): discovery = graduações de 2026-04-23 a 2026-07-27 (95 dias), embargo 2026-07-27 a 2026-08-03, holdout = 2026-08-03 a 2026-09-23 (51 dias). Fica menor que "4 + 2 meses" porque cada token precisa de 14 dias de observação mais até 9 dias para o trade sair dentro dos 180 dias da API. Janelas de 30 min.
-- **Cobertura da enumeração (limitação declarada)**: pump.fun pela autoridade de migração do H2; LaunchLab pelo migrador `RAYpQbFN…` (53 de 60 transações amostradas são `MigrateToCpswap`; `MigrateToAmm` não apareceu); DBC pela(s) config(s) de DAMM v2 usadas nas migrações (`A8gMrEPJ…` e as que a amostragem achar) — migração da DBC para DAMM v1 não coberta. O relatório reporta as contas usadas.
+- **Cobertura da enumeração (limitação declarada)**: pump.fun pela autoridade de migração do H2; LaunchLab pelo migrador `RAYpQbFN…` (53 de 60 transações amostradas são `MigrateToCpswap`; `MigrateToAmm` não apareceu); DBC pela config de DAMM v2 `A8gMrEPJ…` (amostra de 2026-10-15: 78 migrações `MigrationDammV2` lidas a partir do keeper `GZjYfGy…` e da própria config, todas com `A8gMrEPJ…` na conta 25; a amostra é parcialmente circular e outra config não apareceu) — migração da DBC para DAMM v1 não coberta. O relatório reporta as contas usadas.
 - **Linha de base**: K = 5 runners por setup, sorteio com seed derivada do setup.
 - **Holdout**: processa as janelas seladas na ordem até 30 setups primários no timeframe escolhido; veredito com no mínimo 20 trades fechados.
 - **Gates de sistema antes de qualquer número econômico**:
@@ -70,6 +70,14 @@ Código: branch `signals-mvp`, pasta `signals_mvp/pos_runner/` (detector causal,
 - PASS no holdout → `PASS (aguarda replicação)` → replicação sozinha (paper ao vivo, regra congelada, pré-registro próprio).
 - FAIL/KILL → fecha. Ideia derivada = hipótese nova.
 - Pergunta ao operador: o POS-RUNNER ocupa o "caminho 2" reservado da regra de parada do programa (1 discovery + 1 confirmação)?
+
+## 3.1 Parte B (bot ao vivo) rodando antes do congelamento
+
+O handoff pede a Parte B em paralelo. Ela roda com a config em RASCUNHO (os alertas mostram `(rascunho)` e o hash) e
+grava paper A/B + base pareada em `pos_runner.csv`. Regras: (a) os parâmetros finais saem SÓ do Passo 0 (5 exemplos);
+mudar qualquer parâmetro depois de olhar resultado do paper ao vivo conta como ajuste em dado de resultado e é
+proibido (§4); (b) linhas com `versao_config` diferente do hash congelado não entram em nenhuma avaliação; (c) o paper
+ao vivo com a regra congelada só vira "replicação" com pré-registro próprio (§3).
 
 ## 4. Proibido depois de ver dado de resultado
 

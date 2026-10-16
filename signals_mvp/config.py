@@ -41,6 +41,8 @@ class Paths:
     descartados_csv: Path
     trades_csv: Path
     detalhe_csv: Path
+    pos_runner_csv: Path
+    pos_runner_detalhe_csv: Path
     heartbeat: Path
     stop_flag: Path
     pid_file: Path
@@ -66,6 +68,8 @@ def make_paths(base: Path | None = None) -> Paths:
         descartados_csv=dados / "descartados.csv",
         trades_csv=dados / "trades_operador.csv",
         detalhe_csv=dados / "sinais_detalhe.csv",
+        pos_runner_csv=dados / "pos_runner.csv",
+        pos_runner_detalhe_csv=dados / "pos_runner_detalhe.csv",
         heartbeat=dados / "heartbeat.json",
         stop_flag=dados / "PARAR",
         pid_file=dados / "supervisor.pid",
@@ -205,6 +209,37 @@ class _Checker:
         return value
 
 
+PR_TIMEFRAMES = ("5m", "1h", "4h")
+PR_SOURCES = ("trending", "pumpswap", "meteora-damm-v2", "raydium")
+
+
+def _validate_pos_runner(cfg: Mapping[str, Any], c: "_Checker") -> None:
+    """Secao OPCIONAL `pos_runner` (Parte B do POS-RUNNER-V0). Sem ela, o POS-RUNNER fica desligado."""
+    section = get_path(cfg, "pos_runner", _MISSING)
+    if section is _MISSING:
+        return
+    if not isinstance(section, dict):
+        c.errors.append("`pos_runner` precisa ser um mapa (chave: valor)")
+        return
+    c.flag("pos_runner.ligado")
+    c.text("pos_runner.parametros")
+    tfs = c.str_list("pos_runner.timeframes", allow_empty=False)
+    if tfs is not None and not set(tfs) <= set(PR_TIMEFRAMES):
+        c.errors.append(f"`pos_runner.timeframes` so aceita {list(PR_TIMEFRAMES)} (veio {tfs})")
+    c.num("pos_runner.max_pools", 1, 60, integer=True)
+    # o teto real e dinamico: o engine nunca reserva para o POS-RUNNER mais que (orcamento do ciclo - 3)
+    c.num("pos_runner.chamadas_por_ciclo", 1, 20, integer=True)
+    c.num("pos_runner.descoberta_min", 1, 1440)
+    sources = c.str_list("pos_runner.fontes")
+    if sources is not None and not set(sources) <= set(PR_SOURCES):
+        c.errors.append(f"`pos_runner.fontes` so aceita {list(PR_SOURCES)} (veio {sources})")
+    c.num("pos_runner.mc_max_usd", 1)
+    c.num("pos_runner.idade_max_dias", 1, 60)
+    for key in ("watchlist", "entrada", "invalidado", "saida", "so_primario"):
+        c.flag(f"pos_runner.alertas.{key}")
+    c.flag("pos_runner.grafico")
+
+
 def validate(cfg: Mapping[str, Any]) -> list[str]:
     c = _Checker(cfg)
 
@@ -335,6 +370,8 @@ def validate(cfg: Mapping[str, Any]) -> list[str]:
                 template.format(**_LINK_KEYS)
             except (KeyError, IndexError, ValueError) as exc:
                 c.errors.append(f"`links.{key}` usa placeholder invalido ({exc}); permitidos: {sorted(_LINK_KEYS)}")
+
+    _validate_pos_runner(cfg, c)
 
     # --- chains ----------------------------------------------------------------
     chains = get_path(cfg, "chains")

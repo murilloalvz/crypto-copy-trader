@@ -1,0 +1,968 @@
+"""POS-RUNNER-V0 ao vivo no bot (Parte B): o MESMO detector, simulador, custos e conversao para USD do backtest.
+
+A cada ciclo do bot, dentro de uma fatia reservada do orcamento de chamadas do GeckoTerminal:
+  1. descoberta: pools de graduacao (PumpSwap, Raydium CPMM, Meteora DAMM v2) com MC >= piso do runner, vindos das
+     listas do GT (trending e top por volume de cada DEX) e das fotos de pools novos que o bot v0 ja busca;
+  2. linhagem on-chain (RPC, numa thread propria): o pool tem de ter nascido da instrucao de migracao do launchpad
+     da sua DEX, com o mesmo mint e o mesmo pool (metodo da enumeracao da Parte A). Sem isso nao entra (falha fechada);
+  3. candles 5m/1h/4h em token de cotacao x cotacao/USD (igual a Parte A), consumidos so depois de FECHADOS (+ folga de
+     indexacao do GT) e CONGELADOS no banco: o detector ve cada candle uma vez, em ordem; reiniciar o bot refaz o mesmo
+     estado a partir dos candles congelados (nada e reescrito com dado posterior);
+  4. alertas: 👀 caixa armada (fase 2 com S, R e wick), 🟢 entrada com mini-grafico, 🔴 invalidado, ⚪ nao entrar
+     (candle absurdo), 🟡 saida sugerida (pernas do paper) e 📊 resultado do paper;
+  5. paper A/B de TODA entrada (custo 1x e 2x) e linha de base pareada (mesma idade, mesmo colchete), nos CSVs
+     `pos_runner.csv` (colunas do handoff) e `pos_runner_detalhe.csv`.
+Somente leitura: nenhuma chave, nenhuma assinatura, nenhuma ordem.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import logging
+import random
+import re
+import threading
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from ..alerts import delivery_variants
+from ..geckoterminal import INCLUDE, parse_pools_response
+from ..http import ApiError, CallBudget, RateLimited
+from ..models import ChainCtx, PoolSnap
+from ..telegram import TelegramError
+from ..util import clean_text, fmt_usd, iso_utc, utc_now
+from . import charts
+from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
+from .costs import CostModel
+from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
+from .enumerate import LAUNCHPADS as MIGRATIONS, enumerate_window
+from .params import Params
+from .parte_a.baseline import K_BASELINE, runner_by_age
+from .parte_a.pipeline import DEX_OF_LAUNCHPAD
+from .parte_a.quotebook import QuoteBook
+from .quotes import SOL_MINT, STABLES, UsdSeries, stable_series, to_mc_bars
+from .simulate import TradeResult, simulate
+from .solana_rpc import RpcError
+
+log = logging.getLogger("signals_mvp.pos_runner.live")
+console = logging.getLogger("signals_mvp.console")
+
+TFS = ("5m", "1h", "4h")
+LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
+QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
+LINEAGE_MARGIN_S = 600       # janela da linhagem: +-10 min em volta da criacao informada pelo GT
+VERIFY_MAX_ATTEMPTS = 4      # falha de RPC repetida: o pool sai (nunca entra sem linhagem)
+QUEUE_MAX = 60               # pools pendentes/verificados esperando vaga
+# listas do GeckoTerminal usadas na descoberta ("novos e top pools Solana" do handoff)
+SOURCES: dict[str, tuple[str, dict[str, Any]]] = {
+    "trending": ("networks/solana/trending_pools", {"page": 1, "include": INCLUDE}),
+    "pumpswap": ("networks/solana/dexes/pumpswap/pools", {"page": 1, "sort": "h24_volume_usd_desc", "include": INCLUDE}),
+    "meteora-damm-v2": ("networks/solana/dexes/meteora-damm-v2/pools", {"page": 1, "sort": "h24_volume_usd_desc", "include": INCLUDE}),
+    "raydium": ("networks/solana/dexes/raydium/pools", {"page": 1, "sort": "h24_volume_usd_desc", "include": INCLUDE}),
+}
+# DEX (id do GeckoTerminal) onde nasce o pool de graduacao de cada launchpad; a linhagem on-chain confirma
+GRAD_DEX = {"pumpswap": "pumpfun", "raydium": "raydium_launchlab", "meteora-damm-v2": "meteora_dbc"}
+LAUNCHPAD_NAME = {"pumpfun": "pump.fun", "raydium_launchlab": "Raydium LaunchLab", "meteora_dbc": "Meteora DBC"}
+PREREG = Path(__file__).resolve().parents[2] / "docs" / "pos-runner-v0-preregistration-DRAFT-2026-10-15.md"
+
+
+# ---------------------------------------------------------------------------
+# configuracao (secao `pos_runner` do config.yaml)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LiveSettings:
+    ligado: bool = False
+    parametros: str = "pos_runner/pos_runner_v0.yaml"
+    timeframes: tuple[str, ...] = TFS
+    max_pools: int = 15
+    chamadas_por_ciclo: int = 3
+    descoberta_min: float = 3.0
+    fontes: tuple[str, ...] = tuple(SOURCES)
+    mc_max_usd: float = 50_000_000.0
+    idade_max_dias: float = 14.0
+    alerta_watchlist: bool = True
+    alerta_entrada: bool = True
+    alerta_invalidado: bool = True
+    alerta_saida: bool = True
+    so_primario: bool = True
+    grafico: bool = True
+
+    @classmethod
+    def from_config(cls, raw: Optional[dict]) -> "LiveSettings":
+        """Sem a secao no config.yaml o POS-RUNNER fica desligado (a validacao do formato e do config.py)."""
+        if not raw:
+            return cls()
+        alerts = raw.get("alertas") or {}
+        d = cls()
+        return cls(
+            ligado=bool(raw.get("ligado", d.ligado)),
+            parametros=str(raw.get("parametros", d.parametros)),
+            timeframes=tuple(tf for tf in TFS if tf in (raw.get("timeframes") or d.timeframes)),
+            max_pools=int(raw.get("max_pools", d.max_pools)),
+            chamadas_por_ciclo=int(raw.get("chamadas_por_ciclo", d.chamadas_por_ciclo)),
+            descoberta_min=float(raw.get("descoberta_min", d.descoberta_min)),
+            fontes=tuple(raw.get("fontes", d.fontes)),
+            mc_max_usd=float(raw.get("mc_max_usd", d.mc_max_usd)),
+            idade_max_dias=float(raw.get("idade_max_dias", d.idade_max_dias)),
+            alerta_watchlist=bool(alerts.get("watchlist", d.alerta_watchlist)),
+            alerta_entrada=bool(alerts.get("entrada", d.alerta_entrada)),
+            alerta_invalidado=bool(alerts.get("invalidado", d.alerta_invalidado)),
+            alerta_saida=bool(alerts.get("saida", d.alerta_saida)),
+            so_primario=bool(alerts.get("so_primario", d.so_primario)),
+            grafico=bool(raw.get("grafico", d.grafico)),
+        )
+
+
+def config_status(version: str, prereg: Path = PREREG) -> str:
+    """'pre-registrada' se o pre-registro esta congelado com este hash; senao 'rascunho' (aparece nos alertas)."""
+    try:
+        text = prereg.read_text(encoding="utf-8")
+    except OSError:
+        return "rascunho"
+    return "pre-registrada" if re.search(r"Status:\s*\*\*PRE-REGISTRADO", text) and version in text else "rascunho"
+
+
+# ---------------------------------------------------------------------------
+# linhagem on-chain (RPC)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Lineage:
+    status: str                       # ok | rejeitado | erro (erro = tenta de novo depois)
+    motivo: str = ""
+    launchpad: Optional[str] = None
+    grad_ts: Optional[float] = None
+    quote: Optional[str] = None
+    supply: Optional[float] = None
+    signature: Optional[str] = None
+    instruction: Optional[str] = None
+
+
+def verify_lineage(rpc: Any, pool: str, mint: str, created_ts: float, launchpad: Optional[str],
+                   enumerate_fn: Callable[..., Any] = enumerate_window, margin_s: int = LINEAGE_MARGIN_S) -> Lineage:
+    """O pool tem de ter nascido de uma instrucao de migracao do launchpad da sua DEX, para ESTE mint — o mesmo metodo
+    da enumeracao da Parte A: as transacoes da conta-chave do launchpad (autoridade/migrador/config) numa janela de
+    +-`margin_s` em volta da criacao informada pelo GT. Nao pagina o historico do pool: pool quente tem centenas de
+    transacoes por segundo (medido em 2026-10-16: ~500/s no DOPE logo depois da graduacao)."""
+    spec = MIGRATIONS.get(launchpad or "")
+    if spec is None:
+        return Lineage("rejeitado", f"DEX sem launchpad de graduacao conhecido ({launchpad})")
+    try:
+        res = enumerate_fn(rpc, spec, int(created_ts) - margin_s, int(created_ts) + margin_s)
+        if res.error:
+            return Lineage("erro", f"enumeracao {spec.name}: {res.error[:160]}")
+        match = [g for g in res.graduations if g.pool == pool]
+        if not match:
+            unresolved = sum(1 for g in res.graduations if g.status != "ok")
+            extra = f", {unresolved} com layout desconhecido" if unresolved else ""
+            return Lineage("rejeitado", f"nenhuma migracao {spec.name} criou este pool em +-{margin_s // 60} min da criacao "
+                                        f"({len(res.graduations)} migracoes na janela{extra})")
+        g = match[0]
+        if g.mint != mint:
+            return Lineage("rejeitado", f"a migracao deste pool e de outro token ({g.mint})")
+        supply = rpc.token_supply(mint)
+        if not supply:
+            return Lineage("erro", "supply do token indisponivel no RPC")
+        return Lineage("ok", "", spec.name, float(g.block_time) if g.block_time else None, g.quote_mint, float(supply),
+                       g.signature, g.instruction)
+    except (RpcError, RuntimeError) as exc:
+        return Lineage("erro", f"{type(exc).__name__}: {str(exc)[:160]}")
+
+
+class LineageVerifier:
+    """Confere os pools `pendente` um por vez. O RPC publico e lento, entao roda numa thread propria (`run`) para nao
+    atrasar o ciclo do bot; os testes chamam `step()` direto."""
+
+    def __init__(self, storage: Any, rpc: Any, clock: Callable[[], float] = utc_now, verify: Callable[..., Lineage] = verify_lineage):
+        self.storage = storage
+        self.rpc = rpc
+        self.clock = clock
+        self.verify = verify
+
+    @staticmethod
+    def _info(row: Any) -> dict:
+        try:
+            value = json.loads(row["info"] or "{}")
+        except ValueError:
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    def _ready(self, row: Any, now: float) -> bool:
+        if row["checked_ts"] is None:
+            return True
+        tries = self._info(row).get("tentativas", 0)
+        return now - row["checked_ts"] >= 120.0 * (2 ** tries)
+
+    def step(self) -> bool:
+        now = self.clock()
+        ready = [r for r in self.storage.pr_pools("pendente") if self._ready(r, now)]
+        if not ready:
+            return False
+        row = min(ready, key=lambda r: (r["checked_ts"] or 0.0, -(r["mc_found"] or 0.0)))
+        info = self._info(row)
+        res = self.verify(self.rpc, row["pool"], row["mint"], float(info.get("created_ts") or 0.0), GRAD_DEX.get(row["dex"]))
+        info["tentativas"] = info.get("tentativas", 0) + 1
+        info["linhagem"] = asdict(res)
+        fields: dict[str, Any] = {"checked_ts": self.clock(), "info": json.dumps(info, ensure_ascii=False)}
+        if res.status == "ok" and GRAD_DEX.get(row["dex"]) != res.launchpad:
+            res = Lineage("rejeitado", f"DEX {row['dex']} nao e a de graduacao de {res.launchpad}")
+        if res.status == "ok" and res.quote and row["quote"] and res.quote != row["quote"]:
+            res = Lineage("rejeitado", f"cotacao on-chain ({res.quote}) difere da do GT ({row['quote']})")
+        if res.status == "ok" and not res.grad_ts:
+            res = Lineage("erro", "migracao sem horario de bloco")
+        if res.status == "ok":
+            fields.update(status="verificado", launchpad=res.launchpad, grad_ts=res.grad_ts, supply=res.supply, motivo="")
+            log.info("POS-RUNNER: linhagem ok %s (%s, %s)", row["symbol"], res.launchpad, row["pool"][:8])
+        elif res.status == "rejeitado" or info["tentativas"] >= VERIFY_MAX_ATTEMPTS:
+            fields.update(status="rejeitado", motivo=res.motivo[:200])
+            log.info("POS-RUNNER: %s fora (%s)", row["symbol"], res.motivo[:120])
+        else:
+            fields.update(motivo=res.motivo[:200])
+        self.storage.pr_upsert_pool(row["pool"], **fields)
+        return True
+
+    def run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                worked = self.step()
+            except Exception:  # noqa: BLE001 - a thread nunca morre por um pool
+                log.exception("POS-RUNNER: erro na verificacao de linhagem")
+                worked = False
+            stop.wait(1.0 if worked else 15.0)
+
+
+# ---------------------------------------------------------------------------
+# orcamento compartilhado com o bot e cotacoes
+# ---------------------------------------------------------------------------
+
+
+class BudgetedHttp:
+    """O HttpClient do GeckoTerminal do bot, mas cada GET gasta 1 chamada do orcamento do ciclo (o limite do GT e por
+    IP: o POS-RUNNER divide o mesmo limitador com o bot v0). Fora de um ciclo armado nao ha chamada."""
+
+    def __init__(self, http: Any, max_wait_s: float = 15.0):
+        self.http = http
+        self.headers = http.headers
+        self.limiter = http.limiter
+        self.max_wait_s = max_wait_s
+        self._budget: Optional[CallBudget] = None
+        self._keep = 0
+        self._cap = 0
+        self.used = 0
+
+    def arm(self, budget: CallBudget, keep: int, cap: int) -> None:
+        self._budget, self._keep, self._cap, self.used = budget, keep, cap, 0
+
+    def disarm(self) -> int:
+        self._budget = None
+        return self.used
+
+    def get_json(self, path: str, params: Any = None, max_wait_s: float = 5.0) -> Any:
+        if self._budget is None or self.used >= self._cap or not self._budget.take(1, keep=self._keep):
+            raise ApiError("budget", "POS-RUNNER: sem chamada no orcamento deste ciclo")
+        self.used += 1
+        return self.http.get_json(path, params, max_wait_s=min(max_wait_s, self.max_wait_s))
+
+
+class LiveQuotes:
+    """Cotacao/USD de 1h de cada moeda de cotacao (estavel = 1; SOL = Orca SOL/USDC; outra = pool de referencia
+    escolhido e REGISTRADO como na Parte A), renovada no maximo a cada `refresh_s`. So usa horas fechadas."""
+
+    def __init__(self, ohlcv: OhlcvStore, registry: Path, refresh_s: float = QUOTE_REFRESH_S):
+        self.ohlcv = ohlcv
+        self.refresh_s = refresh_s
+        self.book = QuoteBook(ohlcv, registry, fetch_pools=lambda mint: ohlcv.http.get_json(
+            f"networks/{ohlcv.network}/tokens/{mint}/pools", {"page": 1}, max_wait_s=15.0))
+        self._cache: dict[str, tuple[float, int, UsdSeries]] = {}
+
+    def no_reference(self, quote: str) -> bool:
+        """True quando a busca ja concluiu que a cotacao NAO tem referencia em USD (o pool sai, nunca e convertido no chute)."""
+        return quote not in STABLES and quote in self.book.registry and self.book.registry[quote] is None
+
+    def peek(self, quote: str) -> Optional[UsdSeries]:
+        if quote in STABLES:
+            return stable_series()
+        hit = self._cache.get(quote)
+        return hit[2] if hit else None
+
+    def series(self, quote: str, since_ts: float, now: float) -> Optional[UsdSeries]:
+        if quote in STABLES:
+            return stable_series()
+        hit = self._cache.get(quote)
+        if hit and now - hit[0] < self.refresh_s and hit[1] <= since_ts:
+            return hit[2]
+        ref = self.book.reference(quote, int(now))
+        if ref is None:
+            return None
+        start = int(min(since_ts, hit[1] if hit else since_ts)) - 3 * 3600
+        # so horas FECHADAS da referencia: a hora em andamento vale o ultimo fechamento (estritamente causal; a cotacao
+        # anda < ~1% numa hora, perto do movimento de uma memecoin). A Parte A interpola dentro da hora ja fechada.
+        bars = [b for b in self.ohlcv.history(ref[0], "1h", start, int(now), currency="usd", side=ref[1]) if b.ts + 3600 <= now]
+        series = UsdSeries([b.ts for b in bars], [b.open for b in bars], [b.close for b in bars])
+        self._cache[quote] = (now, start, series)
+        return series
+
+
+# ---------------------------------------------------------------------------
+# textos
+# ---------------------------------------------------------------------------
+
+
+def _esc(value: Any, limit: int = 40) -> str:
+    return html.escape(clean_text(value, limit), quote=False)
+
+
+def _pct(value: Optional[float], digits: int = 0) -> str:
+    if value is None:
+        return "s/d"
+    text = f"{value:+.{digits}f}%".replace("-", "−")
+    return text.replace(".", ",")
+
+
+def _num(value: Optional[float], digits: int = 1) -> str:
+    return "s/d" if value is None else f"{value:.{digits}f}".replace(".", ",")
+
+
+def _head(emoji: str, title: str, tf: str, symbol: str, launchpad: Optional[str]) -> str:
+    lp = LAUNCHPAD_NAME.get(launchpad or "", launchpad or "?")
+    return f"{emoji} {title} [{tf}] | ${_esc(symbol, 20)} | {_esc(lp)}"
+
+
+def watch_text(symbol: str, launchpad: Optional[str], tf: str, mint: str, d: dict, on_arrival: bool) -> str:
+    lines = [
+        _head("👀", "WATCHLIST POS-RUNNER", tf, symbol, launchpad),
+        f"Pico {fmt_usd(d['P_peak'])} → queda {_num(d['queda_pct'], 0)}% | L_bc {fmt_usd(d['L_bc'])} | idade {_num(d['idade_dias'])} d",
+        f"Caixa S {fmt_usd(d['S'])} – R {fmt_usd(d['R'])} (R/S {_num(d['R'] / d['S'] if d['S'] else None)}) | {d['n_wicks']} wick(s) | {d['box_len']} candles",
+        "Entrada se FECHAR acima de R com volume ≥ 2× a média da caixa",
+    ]
+    if on_arrival:
+        lines.append("(a caixa ja estava armada quando o token entrou no radar)")
+    lines.append(f"<code>{_esc(mint, 60)}</code>")
+    return "\n".join(lines)
+
+
+def entry_text(symbol: str, launchpad: Optional[str], tf: str, mint: str, d: dict, version: str, status: str,
+               breakout_mult: float) -> str:
+    entry, stop, tp = d["close"], d["stop"], d["tp"]
+    rr = (tp - entry) / (entry - stop) if entry > stop else None
+    n = d.get("n_entrada", 1)
+    kind = "primário" if d.get("primario") else "reentrada: diagnóstico, fora da métrica primária"
+    lines = [
+        _head("🟢", "ENTRADA POS-RUNNER", tf, symbol, launchpad),
+        f"Entrada ~MC {fmt_usd(entry)} (open do próximo candle) | Stop {fmt_usd(stop)} ({_pct(100 * (stop / entry - 1))}) | "
+        f"Alvo {fmt_usd(tp)} ({_pct(100 * (tp / entry - 1))}) | R:R {_num(rr)}",
+        f"Wicks {d['n_wicks']} | volume do rompimento {_num(d.get('vol_ratio'))}× a média da caixa (mín. {_num(breakout_mult)}×)",
+    ]
+    if d.get("power_candle"):
+        lines.append("⚡ Power candle no rompimento (ignição)")
+    lines += [
+        f"Pico {fmt_usd(d.get('P_peak_topo') or d['P_peak'])} | queda {_num(d.get('queda_pct'), 0)}% | L_bc {fmt_usd(d['L_bc'])} | "
+        f"S {fmt_usd(d['S'])} | R {fmt_usd(d['R'])} | idade {_num(d.get('idade_dias'))} d",
+        f"Sinal #{n} ({kind}) · paper A/B automático · config {version} ({status})",
+        f"<code>{_esc(mint, 60)}</code>",
+    ]
+    return "\n".join(lines)
+
+
+EXIT_TEXT = {
+    "stop": "STOP atingido",
+    "alvo": "ALVO (perto do último topo) atingido — A vende tudo",
+    "alvo_parcial": "ALVO atingido — B vende metade e o resto segue com trailing",
+    "trailing": "B: trailing atingido — vende o resto",
+    "stop_na_entrada": "B: voltou ao preço de entrada — vende o resto",
+    "exaustao": "power candle de EXAUSTÃO — sair no próximo candle",
+    "tempo": "stop de TEMPO (sem alvo nem stop) — sair a mercado",
+}
+
+
+def exit_text(symbol: str, launchpad: Optional[str], tf: str, reasons: list[str], variants: str, price: float, entry: float) -> str:
+    if set(reasons) == {"alvo", "alvo_parcial"}:
+        what = "ALVO (perto do último topo) atingido — A vende tudo; B vende metade e segue com trailing"
+    else:
+        what = "; ".join(EXIT_TEXT.get(r, r) for r in reasons)
+    return (f"{_head('🟡', 'SAÍDA SUGERIDA', tf, symbol, launchpad)}\n{what}\n"
+            f"MC ~{fmt_usd(price)} ({_pct(100 * (price / entry - 1))} desde a entrada) · vale para: {variants}")
+
+
+# ---------------------------------------------------------------------------
+# o modulo ao vivo
+# ---------------------------------------------------------------------------
+
+
+def event_to_json(ev: Event) -> str:
+    return json.dumps({"kind": ev.kind, "idx": ev.idx, "ts": ev.ts, "decision_ts": ev.decision_ts, "data": ev.data}, default=float)
+
+
+def event_from_json(text: str) -> Event:
+    d = json.loads(text)
+    return Event(d["kind"], int(d["idx"]), int(d["ts"]), int(d["decision_ts"]), d.get("data") or {})
+
+
+class PosRunnerLive:
+    def __init__(
+        self,
+        settings: LiveSettings,
+        params: Params,
+        storage: Any,
+        gt_http: Any,
+        ctx: ChainCtx,
+        telegram: Any,
+        links: dict,
+        dexscreener_slug: str,
+        work_dir: Path,
+        clock: Callable[[], float] = utc_now,
+        costs: CostModel = CostModel(),
+    ):
+        self.settings = settings
+        self.params = params
+        self.storage = storage
+        self.ctx = ctx
+        self.tg = telegram
+        self.links = links
+        self.dexscreener_slug = dexscreener_slug
+        self.clock = clock
+        self.costs = costs
+        self.costs2 = CostModel(costs.position_sol, costs.terminal_pct, costs.network_sol, multiplier=2.0)
+        self.alerts_on = True
+        self.http = BudgetedHttp(gt_http)
+        self.work_dir = Path(work_dir)
+        self.ohlcv = OhlcvStore(self.http, self.work_dir / "ohlcv", network=ctx.gt_network, sleep=lambda s: None,
+                                patient=False, wait_s=15.0)
+        self.quotes = LiveQuotes(self.ohlcv, self.work_dir / "referencias_cotacao.json")
+        self.chart_dir = self.work_dir / "graficos"
+        self.status = config_status(params.version)
+        self.dets: dict[tuple[str, str], Detector] = {}
+        self.sched: dict[tuple[str, str], dict[str, float]] = {}
+        self.next_discovery = 0.0
+        self.source_idx = 0
+        self.last_prune = 0.0
+        self.last_baselines = 0.0
+        self.last_tick: dict[str, Any] = {}
+
+    # -- controle -----------------------------------------------------------------------------
+    def enabled(self) -> bool:
+        return self.settings.ligado
+
+    def update_settings(self, settings: LiveSettings, alerts_on: bool, links: dict) -> None:
+        """Recarga do config.yaml. Os parametros do detector (arquivo separado, hash proprio) so mudam reiniciando."""
+        self.settings = settings
+        self.alerts_on = alerts_on
+        self.links = links
+
+    def tfs(self) -> tuple[str, ...]:
+        return self.settings.timeframes or TFS
+
+    def lbc_tf(self) -> str:
+        """L_bc sai do 1o candle de 1h (como no estagio 1 da Parte A); sem o 1h na config, do 1o tf ligado."""
+        return "1h" if "1h" in self.tfs() else self.tfs()[0]
+
+    # -- descoberta -------------------------------------------------------------------------------
+    def offer(self, snaps: list[PoolSnap], now: float, fonte: str = "bot") -> int:
+        """Candidatos: pool de graduacao (DEX certa), MC >= piso do runner, idade <= maxima. Entram como `pendente`
+        (a linhagem on-chain decide). Um pool por token."""
+        if not self.enabled():
+            return 0
+        queued = len(self.storage.pr_pools("pendente", "verificado"))
+        added = 0
+        for s in sorted(snaps, key=lambda x: -((x.mcap_usd or x.fdv_usd) or 0.0)):
+            if s.chain != self.ctx.name or s.dex not in GRAD_DEX or s.both_reference:
+                continue
+            mc = s.mcap_usd or s.fdv_usd
+            if mc is None or mc < self.params.runner_min_mc or mc > self.settings.mc_max_usd:
+                continue
+            if s.created_ts is None or now - s.created_ts > self.settings.idade_max_dias * 86400.0:
+                continue
+            if self.storage.pr_pool(s.pool) is not None or self.storage.pr_pool_for_mint(s.token) is not None:
+                continue
+            if queued >= QUEUE_MAX:
+                break
+            info = {"fonte": fonte, "created_ts": s.created_ts, "side": s.target_side, "nome": s.name}
+            self.storage.pr_upsert_pool(s.pool, mint=s.token, symbol=s.symbol, quote=s.other_token, dex=s.dex, status="pendente",
+                                        found_ts=now, mc_found=mc, info=json.dumps(info, ensure_ascii=False))
+            queued += 1
+            added += 1
+            log.info("POS-RUNNER: candidato %s (%s, MC %s, via %s)", s.symbol, s.dex, fmt_usd(mc), fonte)
+        return added
+
+    def _discover(self, now: float, out: dict[str, Any]) -> None:
+        fontes = [f for f in self.settings.fontes if f in SOURCES]
+        if not fontes or now < self.next_discovery:
+            return
+        name = fontes[self.source_idx % len(fontes)]
+        path, query = SOURCES[name]
+        try:
+            data = self.http.get_json(path, query, max_wait_s=15.0)
+            snaps = parse_pools_response(data, self.ctx, now)
+        except RateLimited:
+            raise
+        except ApiError as exc:
+            if exc.kind == "budget":
+                raise
+            out["erros"] += 1
+            self.source_idx += 1                     # a lista que falhou vai para o fim do rodizio
+            self.next_discovery = now + 60.0
+            log.warning("POS-RUNNER: lista %s do GT falhou (%s)", name, exc)
+            return
+        self.source_idx += 1
+        self.next_discovery = now + self.settings.descoberta_min * 60.0
+        self.offer(snaps, now, fonte=name)
+
+    def _promote(self, now: float) -> None:
+        """Verificado -> ativo enquanto houver vaga (maior MC na descoberta primeiro)."""
+        active = len(self.storage.pr_pools("ativo"))
+        waiting = sorted(self.storage.pr_pools("verificado"), key=lambda r: -(r["mc_found"] or 0.0))
+        for row in waiting:
+            if row["grad_ts"] is None or now - row["grad_ts"] > self.settings.idade_max_dias * 86400.0:
+                self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="passou da idade maxima na fila")
+                continue
+            if active >= self.settings.max_pools:
+                break
+            self.storage.pr_upsert_pool(row["pool"], status="ativo", added_ts=now)
+            active += 1
+            console.info("POS-RUNNER: acompanhando $%s (%s)", row["symbol"], LAUNCHPAD_NAME.get(row["launchpad"], row["launchpad"]))
+
+    def _retire(self, now: float) -> None:
+        for row in self.storage.pr_pools("ativo"):
+            if now - (row["grad_ts"] or now) <= self.settings.idade_max_dias * 86400.0:
+                continue
+            if self.storage.pr_signals(status="aberto", pool=row["pool"]):
+                continue           # trade de paper aberto: segue acompanhando ate fechar
+            self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="idade maxima")
+            for tf in TFS:
+                self.dets.pop((row["pool"], tf), None)
+                self.sched.pop((row["pool"], tf), None)
+
+    # -- agenda ------------------------------------------------------------------------------------
+    def _heat(self, pool: str, tf: str) -> int:
+        """0 = quente (fase 2 ou trade aberto: atualiza a cada candle), 1 = morno (runner), 2 = frio, -1 = sem carga."""
+        det = self.dets.get((pool, tf))
+        if det is None:
+            return -1
+        if det.phase == PHASE_PULLBACK or self.storage.pr_signals(status="aberto", pool=pool, tf=tf):
+            return 0
+        return 1 if det.phase == PHASE_RUNNER else 2
+
+    def _interval(self, tf: str, heat: int) -> float:
+        step = float(tf_seconds(tf))
+        return step if heat <= 0 else max(step, 900.0 if heat == 1 else 1800.0)
+
+    def _due_list(self, now: float) -> list[tuple[int, float, Any, str]]:
+        out = []
+        for row in self.storage.pr_pools("ativo"):
+            for tf in self.tfs():
+                if row["l_bc"] is None and tf != self.lbc_tf():
+                    continue
+                st = self.sched.get((row["pool"], tf))
+                if st is not None and now < st["next"]:
+                    continue
+                heat = self._heat(row["pool"], tf)
+                rank = 0 if heat == 0 else (1 if heat < 0 else 2 + heat)
+                out.append((rank, st["next"] if st else 0.0, row, tf))
+        order = {"1h": 0, "4h": 1, "5m": 2}
+        out.sort(key=lambda x: (x[0], x[1], order.get(x[3], 9)))
+        return out
+
+    def wanted(self, now: float) -> int:
+        """Quantas chamadas o POS-RUNNER quer neste ciclo (o bot reserva isso antes do refresh dos pools jovens)."""
+        if not self.enabled():
+            return 0
+        n = len(self._due_list(now)) + (1 if now >= self.next_discovery and self.settings.fontes else 0)
+        return min(n, self.settings.chamadas_por_ciclo)
+
+    # -- ciclo -------------------------------------------------------------------------------------
+    def tick(self, now: float, budget: CallBudget, keep: int) -> dict[str, Any]:
+        out: dict[str, Any] = {"chamadas": 0, "erros": 0, "rate_limited": False}
+        if not self.enabled():
+            return out
+        self.http.arm(budget, keep, self.settings.chamadas_por_ciclo)
+        try:
+            self._promote(now)
+            due = self._due_list(now)
+            for rank, _next, row, tf in due:
+                if rank == 0:
+                    self._refresh_safe(row, tf, now, out)
+            self._discover(now, out)
+            for rank, _next, row, tf in due:
+                if rank > 0:
+                    self._refresh_safe(row, tf, now, out)
+        except RateLimited:
+            out["rate_limited"] = True
+            budget.exhaust()
+        except ApiError as exc:
+            if exc.kind != "budget":
+                out["erros"] += 1
+                log.warning("POS-RUNNER: GeckoTerminal falhou: %s", exc)
+        finally:
+            out["chamadas"] = self.http.disarm()
+        self._retire(now)
+        if now - self.last_baselines >= 3600.0:
+            self.last_baselines = now
+            self._refresh_baselines(now)
+        if now - self.last_prune >= 3600.0:
+            self.last_prune = now
+            removed = self.storage.pr_prune(now)
+            if removed:
+                log.info("POS-RUNNER poda: %s", removed)
+        self.last_tick = out
+        return out
+
+    def _refresh_safe(self, row: Any, tf: str, now: float, out: dict[str, Any]) -> None:
+        key = (row["pool"], tf)
+        try:
+            self._refresh(self.storage.pr_pool(row["pool"]), tf, now)
+        except (RateLimited, TelegramError):
+            raise
+        except ApiError as exc:
+            if exc.kind == "budget":
+                raise
+            out["erros"] += 1
+            st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
+            st["erros"] += 1
+            st["next"] = now + min(1800.0, 60.0 * (2 ** st["erros"]))
+            log.warning("POS-RUNNER: candles de %s %s falharam (%s)", row["symbol"], tf, exc)
+            if exc.kind == "not_found" and st["erros"] >= 3:
+                self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="pool nao existe mais no GT (404)")
+        except Exception:  # noqa: BLE001 - um pool com problema nunca trava os outros
+            out["erros"] += 1
+            st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
+            st["erros"] += 1
+            st["next"] = now + min(3600.0, 120.0 * (2 ** st["erros"]))
+            log.exception("POS-RUNNER: erro inesperado em %s %s (pool em espera)", row["symbol"], tf)
+
+    # -- candles e detector ------------------------------------------------------------------------
+    def _detector(self, row: Any, tf: str, now: float) -> Optional[Detector]:
+        key = (row["pool"], tf)
+        det = self.dets.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        det = Detector(self.params, tf, row["l_bc"], row["grad_ts"])
+        for ts, o, h, l, c, v, filled in self.storage.pr_bars(row["pool"], tf):
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event(row, tf, det, ev, now)
+        self.dets[key] = det
+        return det
+
+    def _usd_prefix(self, bars: list[Bar], tf: str, usd: UsdSeries) -> list[Bar]:
+        """Candles ate o 1o sem cotacao/USD no fechamento (esse e os seguintes esperam: nunca convertidos no chute)."""
+        step = tf_seconds(tf)
+        out = []
+        for b in bars:
+            f = usd.at(b.ts + step)
+            if f is None or f <= 0:
+                break
+            out.append(b)
+        return out
+
+    def _schedule(self, pool: str, tf: str, now: float) -> None:
+        """Proxima busca: no proximo fechamento de candle (+ folga) se quente; a cada 15/30 min se morno/frio."""
+        interval = self._interval(tf, self._heat(pool, tf))
+        nxt = (int((now - LAG_S) // interval) + 1) * interval + LAG_S
+        self.sched[(pool, tf)] = {"next": nxt, "erros": 0.0}
+
+    def _refresh(self, row: Any, tf: str, now: float) -> None:
+        if row is None or row["status"] != "ativo":
+            return
+        step = tf_seconds(tf)
+        pool = row["pool"]
+        info = json.loads(row["info"] or "{}")
+        det = self._detector(row, tf, now)
+        last = det.bars[-1] if det is not None and det.bars else None
+        # cotacao/USD antes dos candles: sem ela nada e consumido (renova no maximo a cada 15 min; estavel nao custa)
+        usd = self.quotes.series(row["quote"], last.ts + step if last else int(row["grad_ts"]), now)
+        if usd is None:
+            if self.quotes.no_reference(row["quote"]):
+                self.storage.pr_upsert_pool(pool, status="encerrado", checked_ts=now, motivo=f"cotacao {row['quote']} sem referencia USD")
+            else:
+                self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}
+            return
+        raw = self.ohlcv.history(pool, tf, int(row["grad_ts"]), int(now), currency="token", side=info.get("side", "base"))
+        first_load = last is None
+        fresh = [b for b in raw if b.ts + step <= now - LAG_S and (last is None or b.ts > last.ts)]
+        ok = self._usd_prefix(fresh, tf, usd)
+        mc, _missing = to_mc_bars(ok, tf, usd, row["supply"])
+        if mc:
+            seq = fill_gaps(([last] if last else []) + mc, step)[1 if last else 0:]
+            if row["l_bc"] is None:
+                self.storage.pr_upsert_pool(pool, l_bc=seq[0].open)
+                row = self.storage.pr_pool(pool)
+                det = self._detector(row, tf, now)
+            assert det is not None
+            self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq])
+            for b in seq:
+                for ev in det.update(b):
+                    self._on_event(row, tf, det, ev, now)
+            self._watch(row, tf, det, now, on_arrival=first_load)
+            self._update_paper(row, tf, det, now)
+        if len(ok) < len(fresh):
+            self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
+        else:
+            self._schedule(pool, tf, now)
+
+    # -- alertas -------------------------------------------------------------------------------------
+    def _keyboard(self, row: Any) -> dict:
+        fields = {"pool": row["pool"], "token": row["mint"], "gmgn_slug": "sol", "dexscreener_slug": self.dexscreener_slug}
+        buttons = []
+        for label, key in (("Axiom", "axiom"), ("DexScreener", "dexscreener")):
+            template = self.links.get(key)
+            if template:
+                try:
+                    buttons.append({"text": label, "url": template.format(**fields)})
+                except (KeyError, IndexError, ValueError):
+                    continue
+        return {"inline_keyboard": [buttons]} if buttons else {}
+
+    def _send(self, text: str, keyboard: Optional[dict] = None, png: Optional[bytes] = None, reply_to: Optional[int] = None) -> Optional[int]:
+        """O alerta nunca deixa de sair por enfeite: foto recusada -> texto; Telegram 400 -> variante mais simples."""
+        if self.tg is None or not self.alerts_on:
+            return None
+        if png is not None:
+            try:
+                return int(self.tg.send_photo(png, text, keyboard or None, reply_to=reply_to))
+            except TelegramError as exc:
+                log.warning("POS-RUNNER: foto recusada (%s); mandando so o texto", exc)
+        for variant_text, variant_kb, mode in delivery_variants(text, keyboard or {"inline_keyboard": []}):
+            try:
+                return int(self.tg.send_message(variant_text, variant_kb if variant_kb.get("inline_keyboard") else None,
+                                                parse_mode=mode, reply_to=reply_to))
+            except TelegramError as exc:
+                if exc.status == 400:
+                    continue
+                log.warning("POS-RUNNER: falha ao enviar alerta (%s)", exc)
+                return None
+        return None
+
+    @staticmethod
+    def _late(now: float, known_ts: float, limit_s: float) -> bool:
+        return now - known_ts > limit_s
+
+    def _watched(self, pool: str, tf: str, wave: Any) -> bool:
+        return self.storage.pr_alert_seen(f"w:{pool}:{tf}:{wave}:")
+
+    def _watch(self, row: Any, tf: str, det: Detector, now: float, on_arrival: bool) -> None:
+        """👀 quando a fase 2 esta ARMADA agora (caixa com tamanho minimo e wick no suporte): so ai S, R e wicks existem."""
+        box = det.box
+        if not (self.settings.alerta_watchlist and det.phase == PHASE_PULLBACK and det.armed and not det.decided and box):
+            return
+        if self.settings.so_primario:
+            window = self.params.age_window(tf)
+            age = det.age_days(len(det.bars) - 1)
+            in_window = window is None or (age is not None and window[0] <= age <= window[1])
+            if det.primary_done or not in_window:
+                return            # so sairia reentrada/diagnostico: sem 👀 quando o operador pediu so primarios
+        decided_at = det.bars[-1].ts + det.step
+        if self._late(now, decided_at, max(900.0, float(det.step))):
+            return
+        if not self.storage.pr_alert_once(f"w:{row['pool']}:{tf}:{det.wave_no}:{det.box_floor}", now):
+            return
+        d = {"P_peak": det.peak, "queda_pct": 100.0 * (1.0 - (det.trough or det.peak) / det.peak), "L_bc": det.l_bc,
+             "idade_dias": det.age_days(len(det.bars) - 1), "S": box.S, "R": box.R, "n_wicks": len(box.wicks), "box_len": box.length}
+        self._send(watch_text(row["symbol"], row["launchpad"], tf, row["mint"], d, on_arrival), self._keyboard(row))
+
+    def _on_event(self, row: Any, tf: str, det: Detector, ev: Event, now: float) -> None:
+        pool = row["pool"]
+        tracked = row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+        if ev.kind == "ENTRADA":
+            if tracked:
+                self._entry(row, tf, det, ev, now)
+            return
+        if not tracked or not self._watched(pool, tf, ev.data.get("onda")):
+            return
+        late = self._late(now, ev.decision_ts, max(900.0, float(det.step)))
+        if ev.kind in ("INVALIDADO", "ONDA_INVALIDA") and self.settings.alerta_invalidado and not late:
+            if self.storage.pr_alert_once(f"x:{pool}:{tf}:{ev.data.get('onda')}:{ev.idx}", now):
+                if ev.kind == "INVALIDADO":
+                    why = f"fechou abaixo da mínima da última wick (MC {fmt_usd(det.bars[ev.idx].close)} < {fmt_usd(ev.data['wick_low'])})"
+                else:
+                    why = str(ev.data.get("motivo", "onda invalidada")).replace("minima furou L_bc", "a mínima furou L_bc")
+                self._send(f"{_head('🔴', 'INVALIDADO', tf, row['symbol'], row['launchpad'])}\n{_esc(why, 160)}", self._keyboard(row))
+        elif ev.kind == "ABSURDO" and self.settings.alerta_entrada and not late:
+            if self.storage.pr_alert_once(f"a:{pool}:{tf}:{ev.data.get('onda')}:{ev.idx}", now):
+                cov = ev.data.get("cobertura")
+                self._send(f"{_head('⚪', 'NÃO ENTRAR', tf, row['symbol'], row['launchpad'])}\nCandle absurdo no rompimento: já "
+                           f"cobriu {_num(None if cov is None else 100 * min(cov, 9.99), 0)}% do caminho de R até o topo (desequilíbrio)",
+                           self._keyboard(row))
+
+    def _entry(self, row: Any, tf: str, det: Detector, ev: Event, now: float) -> None:
+        pool, n = row["pool"], int(ev.data["n_entrada"])
+        self.storage.pr_insert_signal({
+            "pool": pool, "tf": tf, "n": n, "primario": int(bool(ev.data.get("primario"))), "decision_ts": float(ev.decision_ts),
+            "mint": row["mint"], "symbol": row["symbol"], "launchpad": row["launchpad"], "dex": row["dex"],
+            "versao_config": self.params.version, "event_json": event_to_json(ev), "status": "aberto",
+        })
+        signal = self.storage.pr_signal_by_key(pool, tf, n)
+        if signal is None or not self.settings.alerta_entrada:
+            return
+        if self.settings.so_primario and not ev.data.get("primario"):
+            return
+        if self._late(now, ev.decision_ts, max(300.0, det.step / 2.0)):
+            return
+        if not self.storage.pr_alert_once(f"e:{pool}:{tf}:{n}", now):
+            return
+        data = dict(ev.data, n_entrada=n)
+        text = entry_text(row["symbol"], row["launchpad"], tf, row["mint"], data, self.params.version, self.status,
+                          self.params.breakout_vol_mult)
+        mid = self._send(text, self._keyboard(row), self._chart(row, tf, det, ev))
+        if mid is not None:
+            self.storage.pr_update_signal(signal["id"], tg_message_id=mid, alert_ts=self.clock())
+            console.info("POS-RUNNER ENTRADA [%s] $%s #%s", tf, row["symbol"], n)
+
+    def _chart(self, row: Any, tf: str, det: Detector, ev: Event) -> Optional[bytes]:
+        if not self.settings.grafico or not charts.available():
+            return None
+        d = ev.data
+        lo = max(0, min(d.get("topo_idx") or d["peak_idx"], d["peak_idx"]) - 10)
+        name = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{iso_utc(ev.decision_ts)[:16]}_{row['symbol'] or row['pool'][:8]}_{tf}_{d['n_entrada']}.png")
+        try:
+            path = charts.plot_setup(
+                self.chart_dir / name, det.bars, tf, f"POS-RUNNER {tf} — ${clean_text(row['symbol'], 20)} — entrada #{d['n_entrada']}",
+                f"{LAUNCHPAD_NAME.get(row['launchpad'], row['launchpad'])} · stop {fmt_usd(d['stop'])} · alvo {fmt_usd(d['tp'])}",
+                row["l_bc"], ev, [e for e in det.events if e.idx >= lo], (), (lo, ev.idx), self.params.atr_period,
+                self.params.power_atr_mult, small=True, pad_right=6)
+            return path.read_bytes() if path else None
+        except Exception:  # noqa: BLE001 - grafico e enfeite: o alerta sai sem ele
+            log.exception("POS-RUNNER: falha ao desenhar o grafico")
+            return None
+
+    # -- paper ---------------------------------------------------------------------------------------
+    def _sol_at(self) -> Callable[[float], Optional[float]]:
+        sol = self.quotes.peek(SOL_MINT)
+        return sol.at if sol is not None else (lambda t: None)
+
+    def _simulate(self, bars: list[Bar], ev: Event, row: Any, costs: CostModel) -> dict[str, TradeResult]:
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        return {v: simulate(bars, ev, v, self.params, costs, dex, row["l_bc"], self._sol_at()) for v in ("A", "B")}
+
+    def _update_paper(self, row: Any, tf: str, det: Detector, now: float) -> None:
+        step = det.step
+        for signal in self.storage.pr_signals(status="aberto", pool=row["pool"], tf=tf):
+            ev = event_from_json(signal["event_json"])
+            res = self._simulate(det.bars, ev, row, self.costs)
+            res2 = self._simulate(det.bars, ev, row, self.costs2)
+            a, b = res["A"], res["B"]
+            detail = {
+                "entrada": a.entry_price, "entrada_ts": a.entry_ts, "ambiguo_A": int(a.ambiguous), "ambiguo_B": int(b.ambiguous),
+                "bruto_A": a.gross_ret, "bruto_B": b.gross_ret, "custo2x_A": res2["A"].net_ret, "custo2x_B": res2["B"].net_ret,
+                "R_A": a.r_mult, "R_B": b.r_mult, "tempo_B_h": None if b.bars_held is None else b.bars_held * step / 3600.0,
+                "pernas_A": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in a.legs],
+                "pernas_B": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in b.legs],
+            }
+            self._exit_alerts(row, tf, signal, res, det, now)
+            if a.status == "cancelado":
+                self.storage.pr_update_signal(signal["id"], status="cancelado", reason_a=a.reason, reason_b=b.reason,
+                                              detail_json=json.dumps(detail), closed_ts=now)
+                continue
+            if a.status == "fechado" and b.status == "fechado":
+                base = self._baseline(signal, row, tf, a)
+                self.storage.pr_update_signal(
+                    signal["id"], status="fechado", result_a=a.net_ret, result_b=b.net_ret, reason_a=a.reason, reason_b=b.reason,
+                    tempo_h=None if a.bars_held is None else a.bars_held * step / 3600.0, detail_json=json.dumps(detail),
+                    base_json=json.dumps(base), closed_ts=now)
+                self._result_alert(row, tf, signal, a, b, base)
+                continue
+            self.storage.pr_update_signal(signal["id"], detail_json=json.dumps(detail))
+
+    def _exit_alerts(self, row: Any, tf: str, signal: Any, res: dict[str, TradeResult], det: Detector, now: float) -> None:
+        """🟡 no fechamento do candle em que a saida foi decidida (stop/alvo/trailing dentro do candle; exaustao e tempo
+        saem no open seguinte, mas o aviso vai no fechamento que os decidiu). A e B iguais viram uma mensagem so."""
+        reply = signal["tg_message_id"]
+        if not (self.settings.alerta_saida and reply):
+            return
+        a = res["A"]
+        if a.status == "cancelado":
+            if self.storage.pr_alert_once(f"s:{signal['id']}:cancelado", now):
+                self._send(f"{_head('🟡', 'NÃO ENTRAR', tf, row['symbol'], row['launchpad'])}\nO candle seguinte abriu fora do "
+                           f"plano ({_esc(a.reason, 60)}): paper cancelado", reply_to=reply)
+            return
+        decided: dict[int, dict[str, Any]] = {}
+        for v, r in res.items():
+            items = [(leg.idx - 1 if leg.reason in ("exaustao", "tempo") else leg.idx, leg.reason, leg.price) for leg in r.legs]
+            if r.pending_exit and r.pending_idx is not None:
+                items.append((r.pending_idx, r.pending_exit, det.bars[r.pending_idx].close))
+            for idx, reason, price in items:
+                slot = decided.setdefault(idx, {"reasons": set(), "variants": set(), "price": price})
+                slot["reasons"].add(reason)
+                slot["variants"].add(v)
+        for idx in sorted(decided):
+            slot = decided[idx]
+            key = f"s:{signal['id']}:{idx}:" + "+".join(sorted(slot["reasons"]))
+            if self._late(now, det.bars[idx].ts + det.step, max(900.0, float(det.step))) or not self.storage.pr_alert_once(key, now):
+                continue
+            self._send(exit_text(row["symbol"], row["launchpad"], tf, sorted(slot["reasons"]), "/".join(sorted(slot["variants"])),
+                                 slot["price"], a.entry_price or slot["price"]), self._keyboard(row), reply_to=reply)
+
+    def _result_alert(self, row: Any, tf: str, signal: Any, a: TradeResult, b: TradeResult, base: dict) -> None:
+        reply = signal["tg_message_id"]
+        if not (self.settings.alerta_saida and reply):
+            return
+        if not self.storage.pr_alert_once(f"r:{signal['id']}", self.clock()):
+            return
+        base_txt = (f"base pareada A {_pct(None if base.get('A') is None else 100 * base['A'], 1)} (n={base.get('n', 0)})"
+                    if base.get("n") else "base pareada: sem pools comparaveis ainda")
+        self._send(f"📊 POS-RUNNER [{tf}] ${_esc(row['symbol'], 20)} — paper com custos: A {_pct(100 * (a.net_ret or 0), 1)} "
+                   f"({_esc(a.reason, 20)}) | B {_pct(100 * (b.net_ret or 0), 1)} ({_esc(b.reason, 20)}) | {base_txt}", reply_to=reply)
+
+    # -- linha de base pareada -------------------------------------------------------------------------
+    def _baseline(self, signal: Any, row: Any, tf: str, a: TradeResult) -> dict[str, Any]:
+        """Mesma regra da Parte A: ate K outros runners acompanhados que ja eram runners na mesma idade, entrada no 1o
+        candle com idade >= a do sinal, mesmo colchete (% do stop e do alvo), mesmas saidas e custos."""
+        if a.entry_ts is None or not a.entry_price or a.stop is None or a.tp is None:
+            return {"n": 0}
+        step = tf_seconds(tf)
+        age = a.entry_ts - row["grad_ts"]
+        stop_pct, tp_pct = 1.0 - a.stop / a.entry_price, a.tp / a.entry_price - 1.0
+        others = [q for q in self.storage.pr_pools("ativo", "encerrado")
+                  if q["pool"] != row["pool"] and q["grad_ts"] is not None and q["l_bc"] is not None]
+        rng = random.Random(f"base:{signal['pool']}:{tf}:{signal['n']}")
+        rng.shuffle(others)
+        rows = []
+        for q in others:
+            if len(rows) >= K_BASELINE:
+                break
+            bars = [Bar(int(t), o, h, l, c, v, bool(f)) for t, o, h, l, c, v, f in self.storage.pr_bars(q["pool"], tf)]
+            if not bars or not runner_by_age(bars, q["grad_ts"], age, self.params.runner_min_mc, step):
+                continue
+            target = q["grad_ts"] + age
+            j = next((i for i, x in enumerate(bars) if x.ts >= target), None)
+            if j is None or j == 0 or j + self.params.time_stop_candles >= len(bars):
+                continue
+            entry = bars[j].open
+            ev = Event("ENTRADA", j - 1, bars[j - 1].ts, bars[j].ts, {"stop": entry * (1 - stop_pct), "tp": entry * (1 + tp_pct)})
+            res = self._simulate(bars, ev, q, self.costs)
+            rows.append({"pool": q["pool"], **{v: (r.net_ret if r.status == "fechado" else None) for v, r in res.items()}})
+        out: dict[str, Any] = {"n": len(rows), "pools": rows}
+        for v in ("A", "B"):
+            vals = [r[v] for r in rows if r[v] is not None]
+            out[v] = sum(vals) / len(vals) if vals else None
+        return out
+
+    def _refresh_baselines(self, now: float) -> None:
+        """Base de sinais fechados com menos de K comparaveis e fechados ha < 14 dias: recalcula (so medicao, sem chamada)."""
+        for signal in self.storage.pr_signals(status="fechado"):
+            base = json.loads(signal["base_json"] or "{}")
+            if base.get("n", 0) >= K_BASELINE or now - (signal["closed_ts"] or now) > 14 * 86400.0:
+                continue
+            row = self.storage.pr_pool(signal["pool"])
+            detail = json.loads(signal["detail_json"] or "{}")
+            if row is None or not detail.get("entrada"):
+                continue
+            ev = event_from_json(signal["event_json"])
+            fake = TradeResult("A", "fechado", ev.idx + 1, entry_ts=detail.get("entrada_ts"), entry_price=detail["entrada"],
+                               stop=ev.data["stop"], tp=ev.data["tp"])
+            new = self._baseline(signal, row, signal["tf"], fake)
+            if new.get("n", 0) > base.get("n", 0):
+                self.storage.pr_update_signal(signal["id"], base_json=json.dumps(new))
+
+    # -- status ----------------------------------------------------------------------------------------
+    def status_line(self) -> str:
+        if not self.enabled():
+            return "POS-RUNNER: desligado (config.yaml > pos_runner.ligado)"
+        c = self.storage.pr_counts()
+        hot = sum(1 for (pool, tf) in self.dets if self._heat(pool, tf) == 0)
+        return (f"POS-RUNNER: config {self.params.version} ({self.status}) | pools {c.get('pools_ativo', 0)}/{self.settings.max_pools} "
+                f"(fila {c.get('pools_verificado', 0)}, conferindo {c.get('pools_pendente', 0)}, em fase 2: {hot}) | "
+                f"sinais abertos {c.get('sinais_aberto', 0)}, fechados {c.get('sinais_fechado', 0)}")

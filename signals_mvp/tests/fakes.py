@@ -214,9 +214,14 @@ class FakeTelegram:
         self.modes: list[Optional[str]] = []
         self._next_id = 100
         self.chat_id = "42"
+        self.replies: list[Optional[int]] = []
+        self.photos: list[tuple[bytes, str, Optional[dict], Optional[int]]] = []
+        self.fail_photo = False
 
-    def send_message(self, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = "HTML") -> int:
+    def send_message(self, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = "HTML",
+                     reply_to: Optional[int] = None) -> int:
         self.attempts.append((text, reply_markup, parse_mode))
+        self.replies.append(reply_to)
         if self.fail_next > 0:
             self.fail_next -= 1
             raise TelegramError("falha simulada", status=self.fail_status)
@@ -227,6 +232,14 @@ class FakeTelegram:
         self._next_id += 1
         self.sent.append((text, reply_markup))
         self.modes.append(parse_mode)
+        return self._next_id
+
+    def send_photo(self, png: bytes, caption: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = "HTML",
+                   reply_to: Optional[int] = None) -> int:
+        if self.fail_photo:
+            raise TelegramError("Bad Request: PHOTO_INVALID_DIMENSIONS", status=400)
+        self._next_id += 1
+        self.photos.append((png, caption, reply_markup, reply_to))
         return self._next_id
 
     def notify(self, text: str) -> None:
