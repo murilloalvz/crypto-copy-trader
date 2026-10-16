@@ -12,6 +12,7 @@ from typing import Any
 from ...util import iso_utc, utc_now
 from .. import charts
 from ..detector import run
+from .bankroll import write_bankroll_reports
 from .metrics import CUTS, variant_table
 from .pipeline import Context, load_bars
 
@@ -164,6 +165,29 @@ def write_report(ctx: Context, docs: Path) -> Path:
         L.append("")
         L.append(f"![trade {k}]({name})" if chart else "(gráfico indisponível: matplotlib não instalado)")
         L.append("")
+    # addendum de relatorio (operador, 2026-10-16): tabela de trades + gestao de banca por ajuste, banca US$100,
+    # posicao 5%, max 3 abertas, stop diario -10%/3 perdas, stop semanal -20% -- NAO muda regra nem escolha
+    bankroll = write_bankroll_reports(ctx, out)
+    L.append("## 5. Tabela de trades e gestão de banca (US$100, posição 5%, até 3 abertas, stop diário/semanal)")
+    L.append("")
+    L.append("Uma linha por entrada que o bot faria pelas regras congeladas, em ordem cronológica real; sinais "
+              "bloqueados pela gestão de banca aparecem marcados (\"pulado: limite/stop diário/stop semanal\"). "
+              "Taxas e slippage pelo tamanho real da posição (recalculadas; a escolha da variante usa o custo fixo "
+              "de 0,15 SOL do handoff, inalterado). Só trades fechados; cancelado/em aberto ficam fora desta tabela "
+              "ilustrativa (limitação documentada).")
+    L.append("")
+    L.append("| ajuste | nº trades | % com lucro | lucro líquido médio | banca final | maior queda |")
+    L.append("|---|---|---|---|---|---|")
+    for k, s in bankroll["resumo"].items():
+        if not s["n_trades"]:
+            L.append(f"| {k} | 0 | — | — | US$ {s['banca_final_usd']:.2f} | — |")
+            continue
+        L.append(f"| {k} | {s['n_trades']} | {s['pct_com_lucro']:.0f}% | {_pct(s['lucro_liq_medio_pct'])} | "
+                 f"US$ {s['banca_final_usd']:.2f} | US$ {s['maior_queda_usd']:.2f} ({s['maior_queda_pct']:.0f}%) |")
+    L.append("")
+    L.append(f"CSV por ajuste em `trades/`; XLSX com todas as abas: `{Path(bankroll['arquivo_xlsx']).name}`"
+              if bankroll.get("arquivo_xlsx") else "CSV por ajuste em `trades/` (XLSX não gerado: `openpyxl` não instalado).")
+    L.append("")
     path = out / "relatorio_parte_a.md"
     path.write_text("\n".join(L), encoding="utf-8")
     return path

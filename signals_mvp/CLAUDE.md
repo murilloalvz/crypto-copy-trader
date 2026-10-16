@@ -53,7 +53,13 @@ slides forward daily — a seeded-late window could age out before ever being fe
 governs the actual stop-by-count judgment, which makes zero new network calls once prefetch is done. A window whose
 date has aged past GT's free range is HTTP 401 → explicit per-pool status `fora_do_alcance_gratis` (never silent,
 never `sem_dados`). RPC pace is configurable via `POS_RUNNER_RPC_PER_MIN` (default 100, unchanged) — only raise it for
-a dedicated paid RPC (QuickNode), never the shared public one. One detector/simulator/cost model shared by Passo 0,
+a dedicated paid RPC (QuickNode), never the shared public one. Report addendum (§9 of the pre-registration,
+2026-10-16, supersedes the operator's original item 1 "simulação de banca"; reporting only, no rule/grid/variant
+change): `parte_a/bankroll.py` builds, per grid adjustment (tf×exit), a CSV+XLSX trade table (one row per CLOSED
+primary entry, chronological) with a $100-bankroll simulation (5% position, max 3 concurrent, daily/weekly stop)
+— costs are re-simulated at the REAL position size (the handoff's 0.15-SOL `CostModel` still decides
+`choose_variant`, untouched); token display name comes from a cached, best-effort GeckoTerminal pool lookup
+(failure → `None`, never a crash). `report.write_report` calls it automatically. One detector/simulator/cost model shared by Passo 0,
 Part A (`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Age = days since token CREATION
 (on-chain: oldest successful mint signature before the migration, `lineage.creation_time`); unknown creation = no age
 = never primary. The pre-registration gate (`params.is_preregistered`) reads ONLY the status line (the first line

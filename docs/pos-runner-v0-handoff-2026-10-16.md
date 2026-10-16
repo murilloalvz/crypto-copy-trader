@@ -163,3 +163,20 @@ Daqui em diante nenhuma regra muda (§4 do pré-registro). Próximos passos, cad
 RPC: a Parte A usa `POS_RUNNER_RPC_URLS`, vazia neste ambiente; defino para o próprio processo da coleta com o
 endpoint QuickNode de `H2_BACKFILL_RPC_URLS` (presente neste ambiente, grátis), em vez do RPC público (lento e mais
 recusado, medido no teste de fumaça da Parte B).
+
+## 10. Decisões operacionais e addendum de relatório (2026-10-16, pós-congelamento)
+
+Três pontos de operação antes de rodar (infraestrutura, nenhuma regra mudou; detalhe completo no pré-registro
+§8): (1) `baixar-bruto` baixa o bruto do discovery em ordem cronológica (mais antiga primeiro) para nunca perder
+dado por causa do limite móvel de ~180 dias do GeckoTerminal; a ordem sorteada que decide a parada por contagem
+não muda; (2) confirmado que a exclusão dos 5 exemplos já valia em discovery E holdout; (3) créditos de
+RPC/GeckoTerminal acumulados e logados por execução; ritmo do RPC pago configurável
+(`POS_RUNNER_RPC_PER_MIN`, só para o endpoint dedicado). Selagem do holdout relançada com ritmo maior no QuickNode
+dedicado (antes limitada pelo teto autoimposto de 100/min, não pelo provedor).
+
+**Addendum de relatório** (§9 do pré-registro; substitui o item 1, "simulação de banca", da mensagem original do
+operador): tabela de trades (CSV + XLSX) por ajuste da grade (tf×saída), com simulação de banca de US$100 (posição
+5%, até 3 abertas, stop diário/semanal) — custo recalculado pelo tamanho real da posição; a escolha da variante
+continua vindo só do custo fixo de 0,15 SOL. Gerada automaticamente pelo comando `relatorio`
+(`parte_a/bankroll.py`). A Parte B ao vivo vai gravar a mesma tabela com os sinais reais e mandar o resumo diário
+no Telegram (próximo passo, ainda não implementado nesta rodada).

@@ -395,6 +395,93 @@ class RpcPaceTests(unittest.TestCase):
                 os.environ[ENV_RPC_PER_MIN] = old_env
 
 
+class BankrollTests(unittest.TestCase):
+    """Addendum de relatorio (2026-10-16): tabela de trades + gestao de banca por ajuste -- banca US$100, posicao
+    5%, no maximo 3 abertas, stop diario/semanal. NAO muda regra nem escolha da variante (so uma leitura extra
+    dos MESMOS trades fechados, com o tamanho real da posicao)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ctxs: list[Context] = []
+
+    def tearDown(self):
+        for c in self.ctxs:
+            c.store.close()
+
+    def ctx(self, *a, **k) -> Context:
+        c = make_ctx(*a, **k)
+        self.ctxs.append(c)
+        return c
+
+    def _four_simultaneous_entries(self):
+        """4 pools com a MESMA graduacao (mesmo padrao sintetico): entradas identicas no tempo, 1h/A."""
+        windows = plan().windows("discovery")
+        lo = windows[0][0]
+        runners = {f"P_pump_{lo}_{k}" for k in range(4)}
+        ctx = self.ctx(self.tmp, runners, per_window=4)
+        run_period(ctx, "discovery", target_min_setups=1, max_windows=1)
+        return ctx
+
+    def test_limit_of_three_open_positions_and_bankroll_compounding(self):
+        from ..pos_runner.parte_a.bankroll import COLUMNS, BankrollParams, simulate_bankroll
+
+        ctx = self._four_simultaneous_entries()
+        # desliga o stop diario/semanal para isolar so a trava de 3 posicoes abertas
+        folgado = BankrollParams(stop_diario_frac=1.0, stop_diario_perdas_seguidas=99, stop_semanal_frac=1.0)
+        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "A", folgado)
+        self.assertEqual(len(rows), 4)                       # 4 entradas identicas no tempo (mesmo pool pattern)
+        self.assertEqual(set(rows[0]), set(COLUMNS))
+        motivos = [r["motivo_saida"] for r in rows]
+        self.assertEqual(motivos.count("pulado: limite"), 1)   # so 3 cabem ao mesmo tempo
+        reais = [r for r in rows if r["resultado_usd"] is not None]
+        self.assertEqual(len(reais), 3)
+        self.assertEqual(resumo["n_trades"], 3)
+        banca = 100.0
+        for r in reais:
+            self.assertAlmostEqual(r["tamanho_posicao_usd"], banca * 0.05, places=6)
+            banca += r["resultado_usd"]
+            self.assertAlmostEqual(r["banca_depois_usd"], banca, places=6)
+        self.assertAlmostEqual(resumo["banca_final_usd"], banca, places=6)
+        self.assertEqual(resumo["pct_com_lucro"], 100.0 * sum(r["resultado_usd"] > 0 for r in reais) / 3)
+        # a linha pulada nao entra no resumo nem muda a banca
+        pulada = next(r for r in rows if r["motivo_saida"] == "pulado: limite")
+        self.assertIsNone(pulada["resultado_usd"])
+        self.assertIsNone(pulada["banca_depois_usd"])
+
+    def test_daily_stop_after_three_losses_pauses_the_rest_of_the_day(self):
+        from ..pos_runner.parte_a.bankroll import simulate_bankroll
+
+        ctx = self._four_simultaneous_entries()
+        rows, resumo = simulate_bankroll(ctx, "discovery", "1h", "A")   # parametros padrao: 3 perdas seguidas
+        reais = [r for r in rows if r["resultado_usd"] is not None]
+        self.assertEqual(len(reais), 3)
+        self.assertTrue(all(r["resultado_usd"] < 0 for r in reais), reais)   # o padrao sintetico perde aqui (saida "tempo")
+        self.assertEqual(rows[3]["motivo_saida"], "pulado: stop diário")     # 3 perdas seguidas pausaram o dia
+        self.assertEqual(resumo["n_trades"], 3)
+
+    def test_write_bankroll_reports_only_for_periods_already_run(self):
+        from ..pos_runner.parte_a.bankroll import AJUSTES, write_bankroll_reports
+
+        windows = plan().windows("discovery")
+        runners = {f"P_{lp[:4]}_{windows[0][0]}_{k}" for lp in ("pumpfun", "raydium_launchlab") for k in range(2)}
+        ctx = self.ctx(self.tmp, runners)
+        run_period(ctx, "discovery", target_min_setups=1, max_windows=1)
+        out = write_bankroll_reports(ctx, self.tmp / "docs")
+        self.assertEqual(len(out["arquivos_csv"]), len(AJUSTES))              # so discovery (holdout nao rodou)
+        self.assertTrue(all("discovery_" in p for p in out["arquivos_csv"]))
+        path = Path(out["arquivos_csv"][0])
+        self.assertTrue(path.exists())
+        header = path.read_text(encoding="utf-8").splitlines()[0]
+        self.assertIn("lucro_liquido_%", header)
+        self.assertIn("banca_depois_usd", header)
+
+    def test_token_name_fetch_failure_is_explicit_never_a_crash(self):
+        from ..pos_runner.parte_a.bankroll import _token_name
+
+        ctx = self.ctx(self.tmp, set())
+        self.assertIsNone(_token_name(ctx, "qualquer_pool"))   # FakeOhlcv nao tem .http: cai no fallback, sem crash
+
+
 class GateTests(unittest.TestCase):
     def test_preregistration_gate(self):
         with tempfile.TemporaryDirectory() as d:

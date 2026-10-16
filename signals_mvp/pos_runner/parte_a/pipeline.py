@@ -58,6 +58,8 @@ class Context:
     costs: CostModel = field(default_factory=CostModel)
     sealed_holdout: set[str] = field(default_factory=set)
     _usd: dict[tuple[str, str], Optional[UsdSeries]] = field(default_factory=dict)
+    # cache em memoria do nome/simbolo do token por pool (so exibicao no relatorio de banca; nunca filtro)
+    _token_names: dict[str, Optional[str]] = field(default_factory=dict)
 
     def period_span(self, period: str) -> tuple[int, int]:
         lo, hi = self.plan.periods()[period]

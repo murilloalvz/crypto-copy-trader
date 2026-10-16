@@ -4,3 +4,5 @@ requests>=2.31,<3
 PyYAML>=6.0,<7
 # Grafico (PNG) do alerta de entrada do POS-RUNNER. Sem ele o alerta sai so em texto.
 matplotlib>=3.7,<4
+# XLSX da tabela de trades/banca da Parte A (addendum de relatorio, 2026-10-16). Sem ele so o CSV e gerado.
+openpyxl>=3.1,<4

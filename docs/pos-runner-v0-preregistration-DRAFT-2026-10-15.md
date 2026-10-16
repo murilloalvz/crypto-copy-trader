@@ -178,3 +178,40 @@ limitador é adaptativo (cai pela metade a cada 429, sobe aos poucos) e só é s
 acesso programático ao painel/API de cota da QuickNode — não dá para calcular o % real do plano gratuito mensal
 consumido sem o operador informar o limite do plano ou checar o painel. Reportarei os totais acumulados medidos a
 cada marco; se o operador disser o limite mensal, calculo o % e paro com checkpoint em 90%, como pedido.
+
+## 9. Addendum de RELATÓRIO de 2026-10-16 — tabela de trades + gestão de banca (SUBSTITUI o item 1, "simulação de
+## banca", da mensagem original do operador; pré-registrado ANTES de qualquer cálculo do discovery)
+
+Nova entrega do relatório (nenhuma mudança de hipótese, grade, período, linha de base, corte, custo ou escolha da
+variante — §2 e §4 continuam intocados; a escolha da variante em `metrics.choose_variant` continua vindo só do
+custo FIXO de 0,15 SOL do handoff): para CADA ajuste da grade (tf 5m/1h/4h × saída A/B), uma **tabela de trades**
+(CSV sempre; XLSX com uma aba por ajuste/período + aba `resumo`, se `openpyxl` estiver instalado) — uma linha por
+entrada primária FECHADA que o bot faria pelas regras congeladas, em ordem cronológica real:
+
+`data_entrada, token, contrato, launchpad, tf, saida, mc_entrada, mc_saida, motivo_saida (TP/stop/exaustão/tempo),
+tempo_no_trade_h, lucro_bruto_%, taxas_%, lucro_liquido_%, tamanho_posicao_usd, resultado_usd, banca_depois_usd`.
+
+**Gestão de banca** (separada por ajuste, nunca preço médio): banca inicial US$100; posição = 5% da banca NO
+MOMENTO da entrada; no máximo 3 posições abertas ao mesmo tempo (a 4ª entrada marcada `"pulado: limite"`); stop
+diário (banca cai ≥10% desde o início do dia UTC OU 3 perdas seguidas) pausa o resto do dia
+(`"pulado: stop diário"`); stop semanal (banca cai ≥20% desde o início da semana ISO/UTC) pausa o resto da semana
+(`"pulado: stop semanal"`); taxas e slippage **recalculados pelo tamanho real da posição** (o `CostModel` do
+handoff é calibrado a 0,15 SOL fixo — aqui o mesmo evento/caminho de preço é resimulado com um `CostModel` do
+tamanho real em SOL daquele instante; o evento, o detector e a decisão de ENTRADA são os mesmos, só o custo muda
+com o tamanho).
+
+**Resumo no topo** (uma linha por ajuste): nº de trades, % que deu lucro, lucro líquido médio %, banca final US$,
+maior queda da banca US$ e %.
+
+**Limitação documentada**: só trades com status `fechado` entram nesta tabela ilustrativa e na contagem de
+posições abertas; `cancelado` (abriu fora do plano, nunca uma posição real) e `em_aberto` (sem desfecho até o fim
+da janela de dados) ficam fora — não afeta a métrica oficial (`variant_table`/`choose_variant`/`candidate`/
+`holdout_verdict`), que já trata esses status separadamente. `token` vem de um lookup (cacheado, só leitura) no
+GeckoTerminal (`networks/solana/pools/{pool}`); falha ou indisponibilidade vira `sem dado` (nunca trava o
+relatório, nunca filtro).
+
+Feito no discovery e, se houver candidato, no holdout (abas/arquivos separados por período). Os 5 exemplos do
+professor ficam fora (mesma exclusão de sempre). Implementação: `signals_mvp/pos_runner/parte_a/bankroll.py`
+(`simulate_bankroll`, `write_bankroll_reports`), chamado por `report.write_report` (comando `relatorio`).
+A Parte B ao vivo (`live.py`) grava a mesma tabela com os sinais reais e envia o resumo diário no Telegram
+(decisão registrada aqui; implementação na branch `signals-mvp` junto do paper A/B existente).
