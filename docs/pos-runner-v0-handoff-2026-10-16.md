@@ -100,7 +100,24 @@ assinatura, nenhuma ordem. Kernel Rust, branch do H2, `benchmarks/sig_fast_v0/` 
 
 ## 7. Teste de fumaça contra as APIs reais (somente leitura, sem Telegram)
 
-(preenchido abaixo depois da execução)
+Com o código desta rodada (config `2a8bef99a917`), 2026-10-16 05:18–05:36 UTC, GeckoTerminal público + RPC público da
+Solana, 6 ciclos com `chamadas_por_ciclo: 4` e no máximo 4 pools:
+
+- **Descoberta**: 18 candidatos reais das listas do GeckoTerminal, todos pools do PumpSwap com MC ≥ 300k (a linhagem
+  decide se são pools de graduação).
+- **Linhagem + data de criação (RPC)**: 3 aceitos e postos no radar, todos pump.fun, com a criação on-chain — STREAM
+  (criado e migrado no mesmo segundo, 14/10 19:18:29Z), FTR (criado 15/10 01:59, migrado 02:08) e DOPE (criado 11/10
+  13:28, migrado 13:33); 3 recusados com motivo explícito (DGAI, PULT e um 2º pool "FTR": nenhuma migração do pump.fun
+  criou esses pools em ±10 min da criação); 12 ainda na fila quando o teste acabou — o gargalo é o RPC público
+  (266 chamadas em 6 ciclos).
+- **Candles**: STREAM e DOPE carregados nos 3 timeframes (DOPE: 1.344 de 5m, 112 de 1h, 28 de 4h); FTR com o 1h e o
+  resto ainda na fila do orçamento. 17 chamadas ao GeckoTerminal, 0 erro, 0 *rate limit*.
+- **Detector**: os 3 em fase 1 (runner, sem zona ainda) → nenhum alerta, como esperado. L_bc: DOPE 45k, FTR 46k e STREAM
+  362k (o caso do §2, item 4).
+- Rodada anterior (15–16/10, regras antigas): VEIL, DOPE, STREAM e CLAUDIA verificados e carregados; mesmo padrão de
+  recusas.
+
+Não testado contra o serviço real: Telegram (o cliente é o do v0, com `sendPhoto`) e Windows.
 
 ## 8. Limitações declaradas
 
