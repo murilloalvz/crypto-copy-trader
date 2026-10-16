@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from ..pos_runner.parte_a import cli as cli_mod
 from ..pos_runner.parte_a.baseline import baseline_mean, run_baselines
 from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, holdout_verdict, path_stats,
                                           summarize, variant_table)
-from ..pos_runner.parte_a.pipeline import Context, enumerate_windows, load_seal, prefetch_period, run_period, seal_holdout
+from ..pos_runner.parte_a.pipeline import (IDADE_FAIXAS, Context, enumerate_windows, load_seal, prefetch_period,
+                                            primary_under_window, run_period, seal_holdout)
 from ..pos_runner.parte_a.plan import DAY, PeriodPlan, load_plan, write_plan
 from ..pos_runner.parte_a.store import Store
 from ..pos_runner.quotes import stable_series
@@ -273,6 +275,33 @@ class PipelineTests(unittest.TestCase):
         for pool, tf, n, *_ in ctx.store.setups("discovery"):
             rows = json.loads(ctx.store.get(f"base:{pool}:{tf}:{n}"))
             self.assertNotIn(pools[0], {r["pool"] for r in rows})           # sem criacao tambem nao entra na base
+
+    def test_primary_under_window_is_recomputed_independently_per_idade_faixa(self):
+        """EMENDA 2026-10-16 (grade de 24): 'primeiro setup por token' NAO herda a primaria de uma faixa de idade
+        para outra -- cada janela de idade reclassifica do zero a partir do `idade_dias` ja gravado no setup (nunca
+        roda o detector de novo). Um pool com uma entrada no dia 1,5 (fora de 2-7, dentro de 1-10) e outra no dia 3
+        (dentro das duas, na mesma zona/tf): sob 2-7 a primaria e a do dia 3 (a de 1,5 nem conta, fica de fora);
+        sob 1-10 a primaria passa a ser a do dia 1,5 -- a do dia 3 NUNCA e herdada como primaria, vira reentrada
+        sob essa janela mais larga."""
+        period = "discovery"
+        pool, tf_label = "P_pool_idade_x", "1h"
+        store = Store(self.tmp / "primary_window.sqlite")
+        self.addCleanup(store.close)
+        with store.db:
+            store.db.execute("INSERT INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                             (pool, "MINTX", USDC, "pumpfun", 0, "sig", period, 0, "ok"))
+        store.save_setups(pool, tf_label, [
+            {"kind": "ENTRADA", "idx": 1, "ts": 1, "decision_ts": 1, "data": {"idade_dias": 1.5}},  # dia 1,5
+            {"kind": "ENTRADA", "idx": 2, "ts": 2, "decision_ts": 2, "data": {"idade_dias": 3.0}},  # dia 3
+        ])
+        stub = types.SimpleNamespace(store=store)
+        lo27, hi27 = IDADE_FAIXAS["2-7"]
+        lo110, hi110 = IDADE_FAIXAS["1-10"]
+        prim_27 = primary_under_window(stub, period, tf_label, lo27, hi27)
+        prim_110 = primary_under_window(stub, period, tf_label, lo110, hi110)
+        self.assertEqual(prim_27, {(pool, tf_label, 2)})       # 1,5 fica fora de [2,7]: a primaria e a do dia 3
+        self.assertEqual(prim_110, {(pool, tf_label, 1)})      # 1,5 entra em [1,10] e e a 1a: vira a primaria
+        self.assertNotIn((pool, tf_label, 2), prim_110)        # a do dia 3 NUNCA e herdada como primaria sob 1-10
 
 
 class UsdGapTests(unittest.TestCase):

@@ -265,6 +265,16 @@ detecção.
 - **Regra de parada por contagem**: aplica-se à combinação primária original (1h, A, extremos, 2–7 dias) — é ela
   quem decide quando o discovery/holdout para de coletar (§7/§8). As outras 23 combinações usam exatamente as MESMAS
   janelas de calendário sorteadas (nenhuma janela extra é sorteada ou baixada por elas).
+- **Confirmado (correção de implementação, não de regra — sem novo hash)**: (a) a medida "fechamentos" roda nos 3
+  timeframes reais (5m, 1h, 4h), não só 1h — `detect_and_trade` (`pipeline.py`) itera `QUEDA_MEDIDAS` dentro do loop
+  por tf real; travado por `test_runner_without_creation_date_has_no_primary_setup`, que já conta
+  `setups_primarios` nos 6 rótulos (`5m`, `1h`, `4h`, `5m_fecham`, `1h_fecham`, `4h_fecham`). (b) "1º setup por
+  token" é recalculado SEPARADAMENTE para cada faixa de idade — `primary_under_window` nunca herda o resultado de
+  uma janela para a outra (cada chamada começa um `done` novo e só olha o `idade_dias` já gravado); uma entrada no
+  dia 1,5 (fora de 2–7, dentro de 1–10) pode virar a primária sob 1–10 enquanto a entrada do dia 3 do MESMO
+  pool/tf, que era a primária sob 2–7, nunca é herdada como primária sob 1–10 (vira reentrada sob essa janela).
+  Caso coberto pelo teste novo `test_primary_under_window_is_recomputed_independently_per_idade_faixa`
+  (`tests/test_pos_runner_parte_a.py`).
 
 ### 10.2 Tabela de trades (substitui a estrutura do §9 — mesmo conteúdo por linha, agora por combinação)
 
