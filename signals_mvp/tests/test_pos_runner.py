@@ -241,6 +241,46 @@ class DetectorTests(unittest.TestCase):
         det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
         self.assertNotIn("TESTE", kinds(det))
 
+    def test_hammer_bottom_high_is_part_of_r(self):
+        """O proprio candle do fundo fecha recuperado (martelo): a maxima dele e o 1o repique e entra em R."""
+        s = Series()
+        s.flat(60_000, 2)
+        for p in (150_000, 300_000, 600_000, 900_000):
+            s.add(p * 0.9, p * 1.02, p * 0.88, p)
+        s.add(900_000, 1_000_000, 880_000, 950_000)            # pico 1M
+        for p in (800_000, 600_000, 400_000, 250_000):
+            s.add(p * 1.1, p * 1.12, p * 0.97, p)
+        s.add(250_000, 255_000, 190_000, 195_000)              # queda >= 80% -> fase 2
+        s.add(195_000, 300_000, 150_000, 250_000)              # fundo 150k e ja fecha 250k (martelo); maxima 300k
+        for _ in range(4):
+            s.add(210_000, 215_000, 200_000, 210_000)
+        s.add(210_000, 212_000, 160_000, 162_000)              # teste
+        s.add(162_000, 200_000, 158_000, 195_000)
+        for _ in range(6):
+            s.add(205_000, 220_000, 200_000, 210_000)
+        s.add(212_000, 232_000, 210_000, 230_000)              # fecha acima de 220k, mas abaixo do repique (300k)
+        s.flat(230_000, 20)
+        s.add(230_000, 320_000, 228_000, 310_000)              # so este fecha acima de R = 300k
+        s.flat(310_000, 5)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
+        entries = [e for e in det.events if e.kind == "ENTRADA"]
+        self.assertEqual(len(entries), 1, kinds(det))
+        self.assertEqual(entries[0].data["R"], 300_000)
+        self.assertEqual(entries[0].data["close"], 310_000)
+
+    def test_breakout_candle_that_kills_the_wave_is_not_an_entry(self):
+        """A minima do candle de rompimento leva a queda a mais de 90%: a onda morre nele, sem ENTRADA."""
+        bars = list(textbook().bars)
+        k = next(i for i, b in enumerate(bars) if b.close == 290_000 and b.high == 300_000)
+        b = bars[k]
+        bars[k] = Bar(b.ts, b.open, b.high, 95_000.0, b.close, b.volume)       # 90,5% abaixo do pico de 1M
+        det = run(bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertEqual([e.kind for e in det.events if e.idx == k], ["ONDA_INVALIDA"])
+        self.assertFalse([e for e in det.events if e.kind == "ENTRADA" and e.idx <= k])
+        bars[k] = Bar(b.ts, b.open, b.high, 30_000.0, b.close, b.volume)       # abaixo de 0,75 x L_bc (37,5k)
+        det = run(bars, params(drop_max=0.99), "1h", L_BC, GRAD, CREATED)
+        self.assertEqual([e.kind for e in det.events if e.idx == k], ["ONDA_INVALIDA"])
+
     def test_out_of_order_bars_are_rejected(self):
         det = Detector(params(), "1h", L_BC, GRAD)
         det.update(flat(T0 + H, 1.0))

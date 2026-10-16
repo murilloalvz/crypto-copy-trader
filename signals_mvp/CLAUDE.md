@@ -53,7 +53,8 @@ starting with "Status:"); the draft text may quote the final status. Part B inva
 - a pool is tracked only after on-chain lineage (same key-account enumeration as Part A, +-10 min window) — never by
   paging the pool's own history (hot pools have ~500 tx/s right after graduation);
 - GT calls come from a reserved slice of the v0 cycle budget (`BudgetedHttp`); v0 candidates keep priority minus 1 call;
-- every ENTRADA decided after tracking started AND after the first cycle of the current `versao_config` is a paper
+- every ENTRADA decided after tracking started AND after the start of the current continuous run of the `versao_config`
+  (`pr_version_start`: same-version restarts keep it, any version switch resets it) is a paper
   A/B signal (alerts gated by recency and `so_primario`); replaying frozen bars never creates retroactive signals;
   open paper of another version becomes `descontinuado`; alert keys carry the version;
 - a pool is promoted to the radar only with its token creation date (the lineage thread fetches it; pools verified by

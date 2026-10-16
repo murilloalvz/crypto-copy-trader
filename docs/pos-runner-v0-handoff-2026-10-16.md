@@ -76,7 +76,7 @@ assinatura, nenhuma ordem. Kernel Rust, branch do H2, `benchmarks/sig_fast_v0/` 
 
 ## 5. Verificações feitas
 
-- **246 testes offline** (`python -m unittest discover -s signals_mvp/tests -t .`) em Python 3.13 e 3.10 (o mínimo do
+- **250 testes offline** (`python -m unittest discover -s signals_mvp/tests -t .`) em Python 3.13 e 3.10 (o mínimo do
   README; sem matplotlib o teste do gráfico é pulado) e `compileall` em 3.11.
 - Detector: entrada de livro (com a zona e o teste esperados), mesmas decisões em todo prefixo da série (sem lookahead),
   moeda morta > 90%, fundo abaixo de 0,75 × L_bc, sem exigência de volume, maturidade, precisa de teste, 1º repique
@@ -92,6 +92,19 @@ assinatura, nenhuma ordem. Kernel Rust, branch do H2, `benchmarks/sig_fast_v0/` 
 
 ## 6. Bugs achados e corrigidos
 
+- **Revisão independente do diff** (outro agente, só leitura, verificando cada achado com script) — 4 confirmados e 1
+  reforço, todos corrigidos com teste que falha sem a correção:
+  1. R não incluía a máxima do candle do fundo quando ele mesmo já fechava recuperado (martelo) — contrariava "R inclui
+     o 1º repique";
+  2. um candle de rompimento cuja mínima passava de 90% de queda gerava ENTRADA e "moeda morta" no mesmo candle —
+     agora a morte da onda vence (sem entrada);
+  3. Parte A: candle sem cotação/USD era trocado por um candle plano inventado (esconderia quedas reais) — agora a
+     série para ali, como na Parte B, e o corte é contado (vinha do commit 7261491);
+  4. Parte B: trocar de versão da config e voltar (V → V' → V) adotava como sinal de V o que foi decidido com V' rodando —
+     agora o início da versão recomeça a cada troca;
+  5. a trava aceitava variações do termo ("PRE-REGISTRADO?", "PRE-REGISTRADOS") — agora só `**PRE-REGISTRADO**` exato.
+  O Passo 0 v2 foi regenerado com o detector corrigido: muda R onde o fundo foi martelo e 1 entrada do BIKE no 5m; o resumo
+  (43 ondas, 26 mortas, 1 entrada primária no FLAME) não muda.
 - **Trava do pré-registro** (achado pelo teste nesta rodada): o rascunho novo cita a linha de status final e o hash
   candidato, e a trava antiga procurava o padrão em qualquer lugar do texto — teria aberto. Agora só a linha de status
   (a 1ª que começa com "Status:") conta, num único helper (`params.is_preregistered`) usado pela Parte A e pelo bot.

@@ -117,10 +117,11 @@ def params_from_dict(raw: dict[str, Any]) -> Params:
 
 
 def is_preregistered(text: str, version: str) -> bool:
-    """O pre-registro esta congelado com ESTA config: a linha de status (a 1a linha que comeca com "Status:") diz
-    PRE-REGISTRADO e o hash aparece no documento. So a linha de status conta: o texto pode citar o status final."""
+    """O pre-registro esta congelado com ESTA config: a linha de status (a 1a linha que comeca com "Status:") comeca
+    exatamente com **PRE-REGISTRADO** e o hash aparece no documento. So a linha de status conta (o texto pode citar o
+    status final) e so o termo exato (nao "PRE-REGISTRADO?", "PRE-REGISTRADOS"...)."""
     status = re.search(r"^Status:(.*)$", text, re.M)
-    return bool(status and re.match(r"\s*\*\*PRE-REGISTRADO", status.group(1))) and version in text
+    return bool(status and re.match(r"\s*\*\*PRE-REGISTRADO\*\*", status.group(1))) and version in text
 
 
 def load_params(path: Path = CONFIG_PATH) -> Params:

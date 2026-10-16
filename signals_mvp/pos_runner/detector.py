@@ -11,7 +11,8 @@ invalidacao pelo FECHAMENTO.
   fase 2  a minima desde o pico chega a <= 0,20 x P_peak (queda >= 80%): a ZONA comeca nesse candle. Onda invalida
           (moeda morta) se a queda passar de 90% ou se o fundo ficar abaixo de 0,75 x L_bc.
   zona    S = minima da zona. O 1o REPIQUE (1o fechamento que recupera — ver abaixo) fixa o FUNDO da zona; R = maxima
-          das tentativas de subida depois do fundo, INCLUINDO o 1o repique. Antes do 1o repique nao ha R fixo.
+          das tentativas de subida depois do fundo, INCLUINDO o 1o repique (se o proprio candle do fundo ja fecha
+          recuperado — martelo —, a maxima dele entra em R). Antes do 1o repique nao ha R fixo.
   testes  teste de suporte = episodio de 1 ou muitos candles: estando o preco dentro da zona (depois de uma
           recuperacao), a minima desce a <= S x 1,10 (regiao do suporte) e depois o preco RECUPERA: fecha
           >= min((S + R) / 2, 1,25 x S) e acima da regiao do suporte. Sem limite de candles; o martelo de 1 candle e
@@ -24,6 +25,7 @@ invalidacao pelo FECHAMENTO.
   idade   2-7 dias desde a CRIACAO do token, na entrada: filtro do sinal primario (fora = diagnostico). Sem a data de
           criacao a idade fica desconhecida e o setup nao e primario (falta de dado fica explicita).
 Uma decisao (ENTRADA ou ABSURDO) por zona; depois dela a zona recomeca. Nova maxima acima de P_peak = nova onda.
+Candle cuja minima mata a onda (queda > 90% ou fundo < 0,75 x L_bc) nunca e decisao: a onda morre nele.
 """
 
 from __future__ import annotations
@@ -143,6 +145,13 @@ class Detector:
             return None
         return 100.0 * (1.0 - self.trough / self.peak)
 
+    def _kills_wave(self, low: float) -> bool:
+        """A minima `low` leva a queda acima do teto ou o fundo abaixo de 0,75 x L_bc (a onda morre neste candle)."""
+        assert self.peak is not None
+        trough = low if self.trough is None else min(self.trough, low)
+        return (1.0 - trough / self.peak > self.p.drop_max
+                or (self.l_bc is not None and trough < self.p.support_min_lbc * self.l_bc))
+
     def _recovered(self, z: Zone, close: float) -> bool:
         """Recuperacao: fecha >= min((S+R)/2, 1,25 x S) e acima da regiao do suporte (S x 1,10)."""
         assert z.S is not None
@@ -175,6 +184,9 @@ class Detector:
         bar = self.bars[i]
         z = self.zone
         assert z is not None
+        assert self.peak is not None
+        if bar.high <= self.peak and self._kills_wave(bar.low):
+            return                         # a onda morre neste candle (ONDA_INVALIDA logo a seguir): nao ha decisao
         last = z.last_test
         if last is not None and bar.close < last["low"] * (1.0 - self.p.test_break):
             self._emit("INVALIDADO", i, motivo="fechou abaixo da minima do ultimo teste", S=z.S, R=z.R,
@@ -269,6 +281,8 @@ class Detector:
             if self._recovered(z, bar.close):
                 z.anchor = z.S_idx        # o 1o repique fixa o fundo; R = maxima desde ele (inclui o repique)
                 z.state = "dentro"
+                if z.anchor == i and (z.R is None or bar.high > z.R):
+                    z.R, z.R_idx = bar.high, i     # o proprio candle do fundo e o 1o repique (martelo)
         else:
             if z.state == "dentro" and bar.low <= region:
                 z.state = "testando"

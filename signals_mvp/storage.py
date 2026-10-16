@@ -576,10 +576,18 @@ class Storage:
         return self._one("SELECT * FROM pr_signals WHERE mint=? ORDER BY decision_ts DESC, id DESC LIMIT 1", (contract,))
 
     def pr_version_start(self, version: str, ts: float) -> float:
-        """Inicio (1o ciclo) de uma versao_config do POS-RUNNER: gravado uma vez, nunca reescrito."""
+        """Inicio da execucao CONTINUA atual de uma versao_config do POS-RUNNER. Reiniciar com a MESMA versao mantem o
+        inicio (decisao tomada com o bot desligado ainda e dela); trocar de versao e voltar recomeca a contagem (o que
+        foi decidido enquanto outra versao rodava nunca vira sinal desta)."""
+        key = f"pr_versao_inicio:{version}"
         with self._lock:
-            self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (f"pr_versao_inicio:{version}", repr(float(ts))))
-            row = self._db.execute("SELECT value FROM meta WHERE key=?", (f"pr_versao_inicio:{version}",)).fetchone()
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return float(row[0])
 
     def pr_alert_once(self, key: str, ts: float) -> bool:

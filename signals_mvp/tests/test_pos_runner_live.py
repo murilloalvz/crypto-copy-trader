@@ -537,6 +537,26 @@ class CreationAndVersionTest(unittest.TestCase):
         self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
+    def test_switching_back_to_an_old_version_does_not_adopt_what_another_version_decided(self) -> None:
+        import dataclasses
+        h = self.h
+        v1 = h.params
+        start_tracking(h)                                     # v1 roda; o rompimento ainda nao aconteceu
+        h.params = dataclasses.replace(v1, time_stop_candles=47)
+        live2 = h.new_live()
+        h.clock.advance(H)
+        h.tick(live=live2)                                    # v2 assume
+        for _ in range(23):                                   # o rompimento (candle 25) acontece com a v2 rodando
+            h.clock.advance(H)
+            h.tick(live=live2)
+        self.assertEqual({s["versao_config"] for s in h.storage.pr_signals()}, {h.params.version})
+        h.params = v1
+        live3 = h.new_live()                                  # volta para a v1: o inicio dela recomeca agora
+        h.clock.advance(H)
+        h.tick(live=live3)
+        self.assertEqual([s["versao_config"] for s in h.storage.pr_signals()], [dataclasses.replace(v1, time_stop_candles=47).version])
+        self.assertGreater(live3.version_start, live2.version_start)
+
 
 class MultiTimeframeSolQuoteTest(unittest.TestCase):
     def test_lbc_from_1h_first_then_5m_and_4h_with_sol_converted_by_the_reference_pool(self) -> None:

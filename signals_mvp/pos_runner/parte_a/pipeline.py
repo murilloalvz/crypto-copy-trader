@@ -107,10 +107,22 @@ def enumerate_windows(ctx: Context, period: str, orders: Iterable[int]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _mc_bars(ctx: Context, row: Any, tf: str, end_ts: int, supply: float, usd: UsdSeries) -> list[Bar]:
+def _mc_bars(ctx: Context, row: Any, tf: str, end_ts: int, supply: float, usd: UsdSeries,
+             stats: Optional[dict] = None) -> list[Bar]:
+    """Candles de MC. A serie PARA no 1o candle sem cotacao/USD no fechamento (como na Parte B, que espera): o candle
+    real nunca e trocado por um candle plano inventado. `fill_gaps` so preenche intervalos sem negocio no GT."""
     raw = ctx.ohlcv.history(row["pool"], tf, row["grad_ts"], end_ts, currency="token")
     step = tf_seconds(tf)
-    mc, _missing = to_mc_bars([b for b in raw if b.ts + step <= end_ts], tf, usd, supply)
+    closed = [b for b in raw if b.ts + step <= end_ts]
+    prefix = []
+    for b in closed:
+        f = usd.at(b.ts + step)
+        if f is None or f <= 0:
+            break
+        prefix.append(b)
+    if stats is not None:
+        stats["sem_usd_cortados"] = len(closed) - len(prefix)
+    mc, _missing = to_mc_bars(prefix, tf, usd, supply)
     return fill_gaps(mc, step)
 
 
@@ -128,7 +140,8 @@ def stage1(ctx: Context, row: Any) -> tuple[str, Optional[bool]]:
         ctx.store.save_stage1(row["pool"], "sem_supply", None, None, None, None, {})
         return "sem_supply", None
     end = row["grad_ts"] + ctx.plan.horizon_days * DAY
-    bars = _mc_bars(ctx, row, "1h", end, supply, usd)
+    cut: dict = {}
+    bars = _mc_bars(ctx, row, "1h", end, supply, usd, cut)
     real = [b for b in bars if not b.filled]
     if not real:
         ctx.store.save_stage1(row["pool"], "sem_dados", None, None, None, supply, {})
@@ -139,7 +152,8 @@ def stage1(ctx: Context, row: Any) -> tuple[str, Optional[bool]]:
     # data a idade fica desconhecida e nenhum setup do token e primario (falta explicita, contada no relatorio)
     created = ctx.creation_fn(row["mint"], row["signature"]) if runner and row["mint"] and row["signature"] else None
     ctx.store.save_stage1(row["pool"], "ok", max_mc, runner, real[0].open, supply,
-                          {"candles": len(real), "criacao": "ok" if created else ("sem_dado" if runner else "nao_precisa")},
+                          {"candles": len(real), "criacao": "ok" if created else ("sem_dado" if runner else "nao_precisa"),
+                           "sem_usd_cortados": cut.get("sem_usd_cortados", 0)},
                           created)
     return "ok", runner
 
@@ -152,13 +166,13 @@ def series_end(ctx: Context, row: Any, tf: str) -> int:
     return row["grad_ts"] + (ctx.plan.horizon_days + min(EXIT_ALLOWANCE_DAYS[tf], ctx.plan.exit_days)) * DAY
 
 
-def load_bars(ctx: Context, row: Any, tf: str) -> list[Bar]:
+def load_bars(ctx: Context, row: Any, tf: str, stats: Optional[dict] = None) -> list[Bar]:
     """Candles de MC de um pool ja baixado (do cache em disco; usado tambem pela linha de base)."""
     st = ctx.store.stage1(row["pool"])
     usd = ctx.usd(row["quote"], row["period"])
     if st is None or usd is None or not st[4]:
         return []
-    return _mc_bars(ctx, row, tf, series_end(ctx, row, tf), st[4], usd)
+    return _mc_bars(ctx, row, tf, series_end(ctx, row, tf), st[4], usd, stats)
 
 
 def stage2_bars(ctx: Context, row: Any) -> dict[str, list[Bar]]:
@@ -176,9 +190,10 @@ def stage2_bars(ctx: Context, row: Any) -> dict[str, list[Bar]]:
                 ctx.ohlcv.repair(row["pool"], tf, gaps, currency="token")
                 raw = ctx.ohlcv.history(row["pool"], tf, row["grad_ts"], end, currency="token")
                 holes = len(missing_windows(raw, tf, h1_cut, "1h"))
-        bars = load_bars(ctx, row, tf)
+        cut: dict = {}
+        bars = load_bars(ctx, row, tf, cut)
         status = "ok" if holes == 0 and bars else ("buracos" if holes else "sem_dados")
-        ctx.store.save_stage2(row["pool"], tf, status, len(bars), holes, {})
+        ctx.store.save_stage2(row["pool"], tf, status, len(bars), holes, cut)
         out[tf] = bars
     return out
 

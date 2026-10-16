@@ -172,7 +172,8 @@ idade com o mesmo stop/alvo em %. É isso que mostra se o padrão agrega algo al
 
 **Troca de versão das regras:** reiniciar o bot com outro `pos_runner_v0.yaml` muda o hash (`versao_config`). O paper
 aberto da versão anterior vira `descontinuado`, e nenhuma decisão anterior ao 1º ciclo da versão nova vira sinal dela
-(o detector refaz o estado a partir dos candles congelados, sem sinal retroativo).
+(o detector refaz o estado a partir dos candles congelados, sem sinal retroativo; voltar para uma versão antiga também
+recomeça a contagem dela).
 
 **Seus trades:** `/entrei <contrato> <valor>` e `/sai <contrato> <valor>` funcionam igual ao v0 e gravam em
 `trades_operador.csv`; quando o contrato é de um sinal POS-RUNNER, `sinal_relacionado` fica `data|pos_runner_<tf>`.

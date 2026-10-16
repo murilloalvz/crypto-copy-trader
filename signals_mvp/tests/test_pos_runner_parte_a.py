@@ -229,6 +229,24 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn(pools[0], {r["pool"] for r in rows})           # sem criacao tambem nao entra na base
 
 
+class UsdGapTests(unittest.TestCase):
+    def test_candle_without_usd_stops_the_series_instead_of_becoming_a_fake_flat_candle(self):
+        from ..pos_runner.parte_a.pipeline import _mc_bars
+        from ..pos_runner.quotes import UsdSeries
+        ctx = make_ctx(Path(tempfile.mkdtemp()), {"P"})
+        ctx.ohlcv.grad["P"] = 1_789_000_000 - 1_789_000_000 % 3600
+        g = ctx.ohlcv.grad["P"]
+        usd = UsdSeries([g + k * 3600 for k in range(10)], [1.0] * 10, [1.0] * 10)   # cotacao so nas 10 primeiras horas
+        row = {"pool": "P", "grad_ts": g}
+        stats: dict = {}
+        bars = _mc_bars(ctx, row, "1h", g + 40 * 3600, SUPPLY, usd, stats)
+        # 6 h de folga depois da ultima hora com cotacao; dali em diante a serie PARA (nada inventado)
+        self.assertEqual(len(bars), 16)
+        self.assertFalse(any(b.filled for b in bars))
+        self.assertEqual(stats["sem_usd_cortados"], 40 - 16)
+        ctx.store.close()
+
+
 class MetricsTests(unittest.TestCase):
     def test_summarize(self):
         s = summarize([0.5, -0.2, -0.1, 0.3, -0.4, -0.1])
@@ -284,6 +302,10 @@ class GateTests(unittest.TestCase):
                 cli_mod.check_preregistration(doc, "abc123")
             from ..pos_runner.live import config_status
             self.assertEqual(config_status("abc123", doc), "rascunho")
+            for status in ("**PRE-REGISTRADO? NÃO**", "**PRE-REGISTRADOS na fila**", "PRE-REGISTRADO"):
+                doc.write_text(f"Status: {status} config `abc123`\n", encoding="utf-8")
+                with self.assertRaises(SystemExit, msg=status):
+                    cli_mod.check_preregistration(doc, "abc123")
             doc.write_text("# x\n\nStatus: **PRE-REGISTRADO** (2026-10-20), config `abc123`\n", encoding="utf-8")
             cli_mod.check_preregistration(doc, "abc123")
             self.assertEqual(config_status("abc123", doc), "pre-registrada")
