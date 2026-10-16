@@ -481,6 +481,44 @@ class BankrollTests(unittest.TestCase):
         ctx = self.ctx(self.tmp, set())
         self.assertIsNone(_token_name(ctx, "qualquer_pool"))   # FakeOhlcv nao tem .http: cai no fallback, sem crash
 
+    def test_ledger_state_round_trip_survives_a_restart(self):
+        """A Parte B persiste o estado do ledger entre reinicios (BankrollState.to_json/from_json); restaurar um
+        estado no meio da serie precisa continuar EXATAMENTE como se nunca tivesse parado."""
+        from ..pos_runner.detector import Event
+        from ..pos_runner.parte_a.bankroll import BankrollLedger, BankrollState
+        from ..pos_runner.parte_a.pipeline import load_bars
+        from ..pos_runner.quotes import SOL_MINT
+
+        ctx = self._four_simultaneous_entries()
+        prim = ctx.store.setups("discovery", "1h", primary_only=True)
+        closed = {(r[0], r[1], r[2]) for r in ctx.store.trades("discovery", "setup") if r[3] == "A" and r[4] == "fechado"}
+        grads = {g["pool"]: g for g in ctx.store.graduations("discovery")}
+        sol_at = ctx.usd(SOL_MINT, "discovery").at
+        entradas = []
+        for r in sorted((r for r in prim if (r[0], r[1], r[2]) in closed), key=lambda r: r[4]):
+            g = grads[r[0]]
+            bars = load_bars(ctx, g, "1h")
+            d = json.loads(r[5])
+            ev = Event(kind=d["kind"], idx=d["idx"], ts=d["ts"], decision_ts=d["decision_ts"], data=d["data"])
+            meta = {"token": None, "contrato": g["mint"], "launchpad": g["launchpad"], "tf": "1h", "saida": "A"}
+            entradas.append((bars, ev, meta))
+        self.assertEqual(len(entradas), 4)
+
+        continuo = BankrollLedger(ctx.params, ctx.costs)
+        linhas_continuo = [continuo.step(bars, ev, "A", "pumpswap", None, sol_at, meta) for bars, ev, meta in entradas]
+
+        # restaura no meio: processa 2, serializa, recria o ledger do JSON, processa o resto
+        reiniciado = BankrollLedger(ctx.params, ctx.costs)
+        linhas_reiniciado = [reiniciado.step(*entradas[0][:2], "A", "pumpswap", None, sol_at, entradas[0][2]),
+                              reiniciado.step(*entradas[1][:2], "A", "pumpswap", None, sol_at, entradas[1][2])]
+        estado_salvo = reiniciado.state.to_json()
+        retomado = BankrollLedger(ctx.params, ctx.costs, state=BankrollState.from_json(estado_salvo))
+        linhas_reiniciado += [retomado.step(*entradas[2][:2], "A", "pumpswap", None, sol_at, entradas[2][2]),
+                              retomado.step(*entradas[3][:2], "A", "pumpswap", None, sol_at, entradas[3][2])]
+
+        self.assertEqual(linhas_continuo, linhas_reiniciado)
+        self.assertEqual(continuo.state.resumo(), retomado.state.resumo())
+
 
 class GateTests(unittest.TestCase):
     def test_preregistration_gate(self):

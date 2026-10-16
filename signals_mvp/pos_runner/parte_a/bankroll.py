@@ -16,6 +16,10 @@ Gestao de banca (separada por ajuste, nunca preco medio):
 - so trades FECHADOS (status "fechado") entram na tabela e na contagem de posicoes abertas; cancelado (abriu
   fora do plano) nunca vira posicao e em_aberto (sem dado ate o fim da janela) fica fora desta tabela
   ilustrativa (limitacao documentada no pre-registro, nao afeta a metrica oficial).
+
+`BankrollLedger` e o estado por ajuste (um por tf x variante): reutilizado pela Parte A (loteado, `simulate_bankroll`
+varre todo o periodo de uma vez) e pela Parte B ao vivo (um passo por sinal fechado, estado persistido entre
+reinicios -- ver `BankrollState.to_json`/`from_json`).
 """
 
 from __future__ import annotations
@@ -24,13 +28,16 @@ import csv
 import dataclasses
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from ...util import iso_utc
+from ..candles import Bar
+from ..costs import CostModel
 from ..detector import Event
+from ..params import Params
 from ..quotes import SOL_MINT
 from ..simulate import simulate
 from .metrics import TF_HOURS
@@ -71,6 +78,131 @@ def _semana_utc(ts: float) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
+@dataclass
+class BankrollState:
+    """Estado completo de UM ajuste (tf x variante); serializavel para persistir entre reinicios (Parte B)."""
+
+    banca: float
+    peak_banca: float
+    banca_inicio_dia: float
+    banca_inicio_semana: float
+    open_positions: list[tuple[float, float]] = field(default_factory=list)
+    dia_atual: Optional[str] = None
+    perdas_seguidas: int = 0
+    dia_pausado: bool = False
+    semana_atual: Optional[str] = None
+    semana_pausada: bool = False
+    maior_queda_usd: float = 0.0
+    maior_queda_pct: float = 0.0
+    n_trades: int = 0
+    n_lucro: int = 0
+    soma_liq_pct: float = 0.0
+
+    @classmethod
+    def novo(cls, banca_inicial: float) -> "BankrollState":
+        return cls(banca=banca_inicial, peak_banca=banca_inicial, banca_inicio_dia=banca_inicial, banca_inicio_semana=banca_inicial)
+
+    def resumo(self) -> dict[str, Any]:
+        n = self.n_trades
+        return {
+            "n_trades": n,
+            "pct_com_lucro": (100.0 * self.n_lucro / n) if n else None,
+            "lucro_liq_medio_pct": (self.soma_liq_pct / n) if n else None,
+            "banca_final_usd": self.banca,
+            "maior_queda_usd": self.maior_queda_usd,
+            "maior_queda_pct": self.maior_queda_pct,
+        }
+
+    def to_json(self) -> str:
+        d = dataclasses.asdict(self)
+        d["open_positions"] = [list(p) for p in self.open_positions]
+        return json.dumps(d)
+
+    @classmethod
+    def from_json(cls, text: str) -> "BankrollState":
+        d = json.loads(text)
+        d["open_positions"] = [tuple(p) for p in d.get("open_positions", [])]
+        return cls(**d)
+
+
+class BankrollLedger:
+    """Um ajuste (tf x variante): `step` avanca com UMA entrada primaria ja sabida FECHADA pelo custo oficial
+    (0,15 SOL), devolve a linha da tabela (sempre, inclusive "pulado") e muda o estado. `base_costs` e so o molde
+    (terminal_pct/network_sol/multiplier); o `position_sol` de cada chamada vem da banca atual."""
+
+    def __init__(self, detector_params: Params, base_costs: CostModel, params: BankrollParams = BankrollParams(),
+                state: Optional[BankrollState] = None):
+        self.detector_params = detector_params
+        self.base_costs = base_costs
+        self.params = params
+        self.state = state or BankrollState.novo(params.banca_inicial_usd)
+
+    def step(self, bars: list[Bar], ev: Event, variant: str, dex: str, l_bc: Optional[float],
+             sol_at: Any, meta: dict[str, Any]) -> Optional[dict[str, Any]]:
+        s = self.state
+        j0 = ev.idx + 1
+        if j0 >= len(bars):
+            return None   # sem o candle de entrada ainda: o chamador so deve chamar apos o trade oficial fechar
+        entry_ts = bars[j0].ts
+        dia = _dia_utc(entry_ts)
+        if dia != s.dia_atual:
+            s.dia_atual, s.banca_inicio_dia, s.perdas_seguidas, s.dia_pausado = dia, s.banca, 0, False
+        semana = _semana_utc(entry_ts)
+        if semana != s.semana_atual:
+            s.semana_atual, s.banca_inicio_semana, s.semana_pausada = semana, s.banca, False
+        s.open_positions = [p for p in s.open_positions if p[1] > entry_ts]
+
+        linha: dict[str, Any] = {**meta, "data_entrada": iso_utc(entry_ts), "mc_entrada": None, "mc_saida": None,
+                                 "tempo_no_trade_h": None, "lucro_bruto_pct": None, "taxas_pct": None,
+                                 "lucro_liquido_pct": None, "tamanho_posicao_usd": None, "resultado_usd": None,
+                                 "banca_depois_usd": None}
+        if s.semana_pausada:
+            return {**linha, "motivo_saida": "pulado: stop semanal"}
+        if s.dia_pausado:
+            return {**linha, "motivo_saida": "pulado: stop diário"}
+        if len(s.open_positions) >= self.params.max_posicoes_abertas:
+            return {**linha, "motivo_saida": "pulado: limite"}
+        sol_usd_entry = sol_at(entry_ts)
+        if not sol_usd_entry:
+            return {**linha, "motivo_saida": "sem dado: sol/usd"}
+
+        position_usd = s.banca * self.params.posicao_frac
+        position_sol = position_usd / sol_usd_entry
+        cost_model = dataclasses.replace(self.base_costs, position_sol=position_sol)
+        res = simulate(bars, ev, variant, self.detector_params, cost_model, dex, l_bc, sol_at)
+        if res.status != "fechado" or not res.legs:
+            return {**linha, "motivo_saida": f"sem dado: {res.status}"}
+
+        resultado_usd = position_usd * (res.net_ret or 0.0)
+        banca_depois = s.banca + resultado_usd
+        linha.update(mc_entrada=res.entry_price, mc_saida=res.legs[-1].price,
+                     motivo_saida=_MOTIVO.get(res.reason, res.reason or "sem dado"),
+                     tempo_no_trade_h=(res.bars_held or 0) * TF_HOURS[meta["tf"]],
+                     lucro_bruto_pct=(res.gross_ret or 0.0) * 100.0,
+                     taxas_pct=((res.gross_ret or 0.0) - (res.net_ret or 0.0)) * 100.0,
+                     lucro_liquido_pct=(res.net_ret or 0.0) * 100.0,
+                     tamanho_posicao_usd=position_usd, resultado_usd=resultado_usd, banca_depois_usd=banca_depois)
+        s.open_positions.append((entry_ts, res.legs[-1].ts))
+        s.banca = banca_depois
+        s.n_trades += 1
+        if resultado_usd > 0:
+            s.n_lucro += 1
+            s.perdas_seguidas = 0
+        else:
+            s.perdas_seguidas += 1
+        s.soma_liq_pct += linha["lucro_liquido_pct"]
+        s.peak_banca = max(s.peak_banca, s.banca)
+        queda_usd = s.peak_banca - s.banca
+        if queda_usd > s.maior_queda_usd:
+            s.maior_queda_usd = queda_usd
+            s.maior_queda_pct = 100.0 * queda_usd / s.peak_banca if s.peak_banca else 0.0
+        if s.banca - s.banca_inicio_dia <= -self.params.stop_diario_frac * s.banca_inicio_dia or s.perdas_seguidas >= self.params.stop_diario_perdas_seguidas:
+            s.dia_pausado = True
+        if s.banca - s.banca_inicio_semana <= -self.params.stop_semanal_frac * s.banca_inicio_semana:
+            s.semana_pausada = True
+        return linha
+
+
 def _fetch_token_name(ctx: Context, pool: str) -> Optional[str]:
     """Nome/simbolo do token via GeckoTerminal (so para exibicao na tabela; nunca filtro, nunca trava o relatorio)."""
     try:
@@ -105,24 +237,9 @@ def simulate_bankroll(ctx: Context, period: str, tf: str, variant: str,
     sol_series = ctx.usd(SOL_MINT, period)
     sol_at = sol_series.at if sol_series else (lambda t: None)
     bars_cache: dict[str, list] = {}
+    ledger = BankrollLedger(ctx.params, ctx.costs, params)
 
     rows: list[dict[str, Any]] = []
-    banca = params.banca_inicial_usd
-    open_positions: list[tuple[float, float]] = []
-    dia_atual: Optional[str] = None
-    banca_inicio_dia = banca
-    perdas_seguidas = 0
-    dia_pausado = False
-    semana_atual: Optional[str] = None
-    banca_inicio_semana = banca
-    semana_pausada = False
-    peak_banca = banca
-    maior_queda_usd = 0.0
-    maior_queda_pct = 0.0
-    n_real = 0
-    n_lucro = 0
-    soma_liq_pct = 0.0
-
     for r in sorted((r for r in prim_rows if (r[0], r[1], r[2]) in closed), key=lambda r: r[4]):
         pool = r[0]
         g = grads.get(pool)
@@ -133,86 +250,14 @@ def simulate_bankroll(ctx: Context, period: str, tf: str, variant: str,
             continue
         d = json.loads(r[5])
         ev = Event(kind=d["kind"], idx=d["idx"], ts=d["ts"], decision_ts=d["decision_ts"], data=d["data"])
-        j0 = ev.idx + 1
-        if j0 >= len(bars):
-            continue
-        entry_ts = bars[j0].ts
-        dia = _dia_utc(entry_ts)
-        if dia != dia_atual:
-            dia_atual, banca_inicio_dia, perdas_seguidas, dia_pausado = dia, banca, 0, False
-        semana = _semana_utc(entry_ts)
-        if semana != semana_atual:
-            semana_atual, banca_inicio_semana, semana_pausada = semana, banca, False
-        open_positions = [p for p in open_positions if p[1] > entry_ts]
-
-        linha = {"data_entrada": iso_utc(entry_ts), "token": _token_name(ctx, pool), "contrato": g["mint"],
-                 "launchpad": g["launchpad"], "tf": tf, "saida": variant, "mc_entrada": None, "mc_saida": None,
-                 "tempo_no_trade_h": None, "lucro_bruto_pct": None, "taxas_pct": None, "lucro_liquido_pct": None,
-                 "tamanho_posicao_usd": None, "resultado_usd": None, "banca_depois_usd": None}
-        if semana_pausada:
-            rows.append({**linha, "motivo_saida": "pulado: stop semanal"})
-            continue
-        if dia_pausado:
-            rows.append({**linha, "motivo_saida": "pulado: stop diário"})
-            continue
-        if len(open_positions) >= params.max_posicoes_abertas:
-            rows.append({**linha, "motivo_saida": "pulado: limite"})
-            continue
-        sol_usd_entry = sol_at(entry_ts)
-        if not sol_usd_entry:
-            rows.append({**linha, "motivo_saida": "sem dado: sol/usd"})
-            continue
-
         st1 = ctx.store.stage1(pool)
         l_bc = st1[3] if st1 else None
         dex = DEX_OF_LAUNCHPAD.get(g["launchpad"], "desconhecido")
-        position_usd = banca * params.posicao_frac
-        position_sol = position_usd / sol_usd_entry
-        cost_model = dataclasses.replace(ctx.costs, position_sol=position_sol)
-        res = simulate(bars, ev, variant, ctx.params, cost_model, dex, l_bc, sol_at)
-        if res.status != "fechado" or not res.legs:
-            rows.append({**linha, "motivo_saida": f"sem dado: {res.status}"})
-            continue
-
-        resultado_usd = position_usd * (res.net_ret or 0.0)
-        banca_depois = banca + resultado_usd
-        row = {**linha,
-               "mc_entrada": res.entry_price, "mc_saida": res.legs[-1].price,
-               "motivo_saida": _MOTIVO.get(res.reason, res.reason or "sem dado"),
-               "tempo_no_trade_h": (res.bars_held or 0) * TF_HOURS[tf],
-               "lucro_bruto_pct": (res.gross_ret or 0.0) * 100.0,
-               "taxas_pct": ((res.gross_ret or 0.0) - (res.net_ret or 0.0)) * 100.0,
-               "lucro_liquido_pct": (res.net_ret or 0.0) * 100.0,
-               "tamanho_posicao_usd": position_usd, "resultado_usd": resultado_usd, "banca_depois_usd": banca_depois}
-        rows.append(row)
-        open_positions.append((entry_ts, res.legs[-1].ts))
-        banca = banca_depois
-        n_real += 1
-        if resultado_usd > 0:
-            n_lucro += 1
-            perdas_seguidas = 0
-        else:
-            perdas_seguidas += 1
-        soma_liq_pct += row["lucro_liquido_pct"]
-        peak_banca = max(peak_banca, banca)
-        queda_usd = peak_banca - banca
-        if queda_usd > maior_queda_usd:
-            maior_queda_usd = queda_usd
-            maior_queda_pct = 100.0 * queda_usd / peak_banca if peak_banca else 0.0
-        if banca - banca_inicio_dia <= -params.stop_diario_frac * banca_inicio_dia or perdas_seguidas >= params.stop_diario_perdas_seguidas:
-            dia_pausado = True
-        if banca - banca_inicio_semana <= -params.stop_semanal_frac * banca_inicio_semana:
-            semana_pausada = True
-
-    resumo = {
-        "n_trades": n_real,
-        "pct_com_lucro": (100.0 * n_lucro / n_real) if n_real else None,
-        "lucro_liq_medio_pct": (soma_liq_pct / n_real) if n_real else None,
-        "banca_final_usd": banca,
-        "maior_queda_usd": maior_queda_usd,
-        "maior_queda_pct": maior_queda_pct,
-    }
-    return rows, resumo
+        meta = {"token": _token_name(ctx, pool), "contrato": g["mint"], "launchpad": g["launchpad"], "tf": tf, "saida": variant}
+        linha = ledger.step(bars, ev, variant, dex, l_bc, sol_at, meta)
+        if linha is not None:
+            rows.append(linha)
+    return rows, ledger.state.resumo()
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
