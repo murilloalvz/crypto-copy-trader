@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS pr_bars (
 CREATE INDEX IF NOT EXISTS pr_signals_open ON pr_signals (status);
 CREATE TABLE IF NOT EXISTS pr_alerts (key TEXT PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS pr_trade_links (trade_id INTEGER PRIMARY KEY, pr_signal_id INTEGER NOT NULL);
+-- gestao de banca ao vivo (addendum de relatorio, 2026-10-16): estado por ajuste (tf x variante x versao_config),
+-- persistido entre reinicios -- BankrollState.to_json/from_json (signals_mvp/pos_runner/bankroll.py)
+CREATE TABLE IF NOT EXISTS pr_bankroll_state (
+  tf TEXT NOT NULL, variante TEXT NOT NULL, versao_config TEXT NOT NULL, state_json TEXT NOT NULL,
+  PRIMARY KEY (tf, variante, versao_config)
+);
+-- uma linha POR entrada fechada (ou "pulada"); nunca reescrita (cada sinal fecha so uma vez por variante)
+CREATE TABLE IF NOT EXISTS pr_bankroll_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, variante TEXT NOT NULL,
+  versao_config TEXT NOT NULL, pr_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL,
+  UNIQUE (pr_signal_id, variante)
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -154,7 +166,7 @@ class Storage:
             elif current > SCHEMA_VERSION:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
-                       "pos_runner_detalhe": True}
+                       "pos_runner_detalhe": True, "pos_runner_banca": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -465,6 +477,7 @@ class Storage:
             "detalhe": (self.paths.detalhe_csv, self._detalhe_rows),
             "pos_runner": (self.paths.pos_runner_csv, lambda: (POS_RUNNER_COLUMNS, self._pos_runner_rows())),
             "pos_runner_detalhe": (self.paths.pos_runner_detalhe_csv, self._pos_runner_detail_rows),
+            "pos_runner_banca": (self.paths.pos_runner_banca_csv, self._pos_runner_banca_header_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -600,6 +613,45 @@ class Storage:
         """Ja houve alerta com chave comecando por `prefix`? (ex.: um 👀 daquela onda antes de mandar o 🔴)."""
         # substr (e nao LIKE): endereco base58 diferencia maiuscula de minuscula
         return self._one("SELECT 1 FROM pr_alerts WHERE substr(key, 1, ?)=? LIMIT 1", (len(prefix), prefix)) is not None
+
+    # -- gestao de banca ao vivo (addendum de relatorio, 2026-10-16) ------------------------------
+    def pr_bankroll_load(self, tf: str, variante: str, versao_config: str) -> Optional[str]:
+        row = self._one("SELECT state_json FROM pr_bankroll_state WHERE tf=? AND variante=? AND versao_config=?",
+                        (tf, variante, versao_config))
+        return row[0] if row else None
+
+    def pr_bankroll_save(self, tf: str, variante: str, versao_config: str, state_json: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO pr_bankroll_state (tf, variante, versao_config, state_json) VALUES (?, ?, ?, ?)",
+                (tf, variante, versao_config, state_json))
+
+    def pr_bankroll_append(self, tf: str, variante: str, versao_config: str, pr_signal_id: int, row: dict, ts: float) -> bool:
+        """Grava a linha da tabela (nunca reescreve: um sinal fecha so uma vez por variante). True se gravou agora."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr_bankroll_trades (ts, tf, variante, versao_config, pr_signal_id, row_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (ts, tf, variante, versao_config, pr_signal_id, json.dumps(row, default=str)))
+            if cur.rowcount:
+                self._dirty["pos_runner_banca"] = True
+            return bool(cur.rowcount)
+
+    def pr_bankroll_resumos(self) -> dict[str, dict]:
+        """resumo atual (lido do estado salvo) por ajuste x versao_config -- pro resumo diario do Telegram."""
+        from .pos_runner.bankroll import BankrollState
+        out = {}
+        for r in self._all("SELECT tf, variante, versao_config, state_json FROM pr_bankroll_state"):
+            out[f"{r['tf']}/{r['variante']}@{r['versao_config'][:12]}"] = BankrollState.from_json(r["state_json"]).resumo()
+        return out
+
+    def _pos_runner_banca_header_rows(self) -> tuple[list[str], list[list[Any]]]:
+        from .pos_runner.bankroll import COLUMNS, HEADER_LABELS
+        header = [HEADER_LABELS.get(c, c) for c in COLUMNS]
+        rows = []
+        for r in self._all("SELECT row_json FROM pr_bankroll_trades ORDER BY ts, id"):
+            d = json.loads(r[0])
+            rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
+        return header, rows
 
     def pr_link_trade(self, trade_id: int, pr_signal_id: int) -> None:
         with self._lock:

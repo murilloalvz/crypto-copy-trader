@@ -211,7 +211,9 @@ GeckoTerminal (`networks/solana/pools/{pool}`); falha ou indisponibilidade vira 
 relatório, nunca filtro).
 
 Feito no discovery e, se houver candidato, no holdout (abas/arquivos separados por período). Os 5 exemplos do
-professor ficam fora (mesma exclusão de sempre). Implementação: `signals_mvp/pos_runner/parte_a/bankroll.py`
-(`simulate_bankroll`, `write_bankroll_reports`), chamado por `report.write_report` (comando `relatorio`).
-A Parte B ao vivo (`live.py`) grava a mesma tabela com os sinais reais e envia o resumo diário no Telegram
-(decisão registrada aqui; implementação na branch `signals-mvp` junto do paper A/B existente).
+professor ficam fora (mesma exclusão de sempre). A gestão de banca em si (`BankrollLedger`/`BankrollState`) vive em
+`signals_mvp/pos_runner/bankroll.py`, sem depender do `Context` da Parte A, e é compartilhada pelas duas partes:
+Parte A (`parte_a/bankroll.py`: `simulate_bankroll`/`write_bankroll_reports`, chamado por `report.write_report`,
+comando `relatorio`) e Parte B ao vivo (`live.py`: `PosRunnerLive._update_bankroll`, chamado assim que um sinal
+real fecha; grava `pos_runner_banca.csv`, estado persistido em `pr_bankroll_state` por `(tf, variante,
+versao_config)`; resumo diário por ajuste enviado no Telegram no mesmo horário do resumo diário do bot v0).

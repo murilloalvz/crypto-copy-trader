@@ -783,6 +783,8 @@ class Engine:
         except TelegramError as exc:
             log.warning("falha ao enviar o resumo diario: %s", exc)
             return False
+        if self.pos_runner is not None:
+            self.pos_runner.send_daily_bankroll_summary()   # _send ja trata falha do Telegram sem propagar
         self.storage.set_meta("ultimo_resumo", today)
         return True
 

@@ -43,6 +43,7 @@ class Paths:
     detalhe_csv: Path
     pos_runner_csv: Path
     pos_runner_detalhe_csv: Path
+    pos_runner_banca_csv: Path
     heartbeat: Path
     stop_flag: Path
     pid_file: Path
@@ -70,6 +71,7 @@ def make_paths(base: Path | None = None) -> Paths:
         detalhe_csv=dados / "sinais_detalhe.csv",
         pos_runner_csv=dados / "pos_runner.csv",
         pos_runner_detalhe_csv=dados / "pos_runner_detalhe.csv",
+        pos_runner_banca_csv=dados / "pos_runner_banca.csv",
         heartbeat=dados / "heartbeat.json",
         stop_flag=dados / "PARAR",
         pid_file=dados / "supervisor.pid",

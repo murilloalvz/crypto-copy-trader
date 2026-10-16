@@ -375,6 +375,56 @@ class LiveFlowTest(unittest.TestCase):
         self.assertEqual((detail[0]["faixa_pico"], detail[0]["S_acima_100k"]), ("1-5M", "sim"))
         self.assertTrue(detail[0]["max_caminho_A_pct"])
 
+    def test_bankroll_table_and_daily_summary_survive_a_restart(self) -> None:
+        """Addendum de relatorio (2026-10-16): a Parte B grava a MESMA tabela de trades (banca US$100, posicao
+        5%) com o sinal real que acabou de fechar, e o estado sobrevive a um reinicio -- igual ao resto do
+        paper A/B (nunca comeca banca nova so porque o processo reiniciou no meio)."""
+        from ..pos_runner.quotes import REFERENCE_POOLS
+
+        h = self.h
+        start_tracking(h)
+        # cotacao SOL/USD cacheada (na vida real outro pool cotado em SOL ja teria disparado isso): sem ela a
+        # gestao de banca (que converte US$ -> SOL) fica sem dado -- explicito, nunca um custo inventado
+        ref_pool, _side = REFERENCE_POOLS[SOL]
+        h.world.series[(ref_pool, "1h")] = [Bar(GRAD - 30 * H + k * H, 150.0, 150.0, 150.0, 150.0, 1e6) for k in range(400)]
+
+        def run_hours_with_sol_quote(hours: int) -> None:
+            # refresca a cotacao SOL/USD a cada hora (na vida real, outro pool cotado em SOL faria isso sozinho);
+            # sem ela, a conversao US$ -> SOL da gestao de banca fica sem dado -- nunca um custo inventado
+            for _ in range(hours):
+                h.clock.advance(H)
+                h.tick()
+                h.live.http.arm(CallBudget(10), 1, 10)
+                h.live.quotes.series(SOL, GRAD, h.clock())
+                h.live.http.disarm()
+
+        run_hours_with_sol_quote(18)                          # roda o mesmo cenario ate o rompimento + fechamento
+        run_hours_with_sol_quote(50)                          # sai pelo stop de tempo (igual ao teste de cima)
+        signal = h.storage.pr_signals()[0]
+        self.assertEqual(signal["status"], "fechado")
+        h.storage.export_csvs()
+        rows = read_csv(h.paths.dados / "pos_runner_banca.csv")
+        self.assertEqual(len(rows), 2)                        # uma linha por variante (A e B), mesmo sinal
+        self.assertEqual({r["saida"] for r in rows}, {"A", "B"})
+        for r in rows:
+            self.assertEqual(r["contrato"], "MINT1")
+            self.assertEqual(r["launchpad"], "pumpfun")
+            self.assertEqual(r["tf"], "1h")
+            self.assertEqual(r["motivo_saida"], "tempo")
+            self.assertLess(float(r["resultado_usd"]), 0.0)   # mesmo trade perdedor do paper oficial
+            self.assertAlmostEqual(float(r["tamanho_posicao_usd"]), 5.0, places=6)   # 5% de US$100
+            self.assertLess(float(r["banca_depois_usd"]), 100.0)
+        resumo = h.live.daily_bankroll_summary()
+        self.assertIn("1h/A", resumo)
+        self.assertIn("1 trades", resumo)
+
+        # reinicio: outro PosRunnerLive na MESMA storage continua a MESMA banca (nunca volta a US$100)
+        banca_antes = {r["saida"]: float(r["banca_depois_usd"]) for r in rows}
+        live2 = h.new_live()
+        ledger_a = live2._bankroll_ledger("1h", "A")
+        self.assertAlmostEqual(ledger_a.state.banca, banca_antes["A"], places=6)
+        self.assertEqual(ledger_a.state.n_trades, 1)
+
     def test_frozen_bars_are_the_final_candles_never_the_one_in_progress(self) -> None:
         h = self.h
         start_tracking(h)

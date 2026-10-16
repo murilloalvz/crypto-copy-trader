@@ -177,6 +177,15 @@ dedicado (antes limitada pelo teto autoimposto de 100/min, não pelo provedor).
 **Addendum de relatório** (§9 do pré-registro; substitui o item 1, "simulação de banca", da mensagem original do
 operador): tabela de trades (CSV + XLSX) por ajuste da grade (tf×saída), com simulação de banca de US$100 (posição
 5%, até 3 abertas, stop diário/semanal) — custo recalculado pelo tamanho real da posição; a escolha da variante
-continua vindo só do custo fixo de 0,15 SOL. Gerada automaticamente pelo comando `relatorio`
-(`parte_a/bankroll.py`). A Parte B ao vivo vai gravar a mesma tabela com os sinais reais e mandar o resumo diário
-no Telegram (próximo passo, ainda não implementado nesta rodada).
+continua vindo só do custo fixo de 0,15 SOL. A gestão de banca em si (`BankrollLedger`/`BankrollState`) vive em
+`pos_runner/bankroll.py`, sem depender do `Context` da Parte A, e é compartilhada pelas duas partes:
+
+- Parte A: `relatorio` chama `parte_a/bankroll.py` automaticamente, que roda o ledger em lote sobre todo o período
+  e grava CSV + XLSX.
+- Parte B ao vivo: `live.py` avança o MESMO ledger um sinal real por vez, assim que ele fecha
+  (`PosRunnerLive._update_bankroll`), grava `pos_runner_banca.csv` (mesmas colunas) e persiste o estado no banco
+  (`pr_bankroll_state`, chave `(tf, variante, versao_config)` — trocar de config começa banca nova, igual ao resto
+  do paper). O resumo diário por ajuste sai no Telegram no mesmo horário do resumo diário do bot v0
+  (`engine.maybe_send_daily_summary` chama `PosRunnerLive.daily_bankroll_summary()`).
+- Conversão US$→SOL (posição real) precisa de uma cotação SOL/USD já cacheada; sem ela a linha fica explícita
+  (`"sem dado: sol/usd"`), nunca um custo inventado.

@@ -55,11 +55,18 @@ date has aged past GT's free range is HTTP 401 → explicit per-pool status `for
 never `sem_dados`). RPC pace is configurable via `POS_RUNNER_RPC_PER_MIN` (default 100, unchanged) — only raise it for
 a dedicated paid RPC (QuickNode), never the shared public one. Report addendum (§9 of the pre-registration,
 2026-10-16, supersedes the operator's original item 1 "simulação de banca"; reporting only, no rule/grid/variant
-change): `parte_a/bankroll.py` builds, per grid adjustment (tf×exit), a CSV+XLSX trade table (one row per CLOSED
-primary entry, chronological) with a $100-bankroll simulation (5% position, max 3 concurrent, daily/weekly stop)
-— costs are re-simulated at the REAL position size (the handoff's 0.15-SOL `CostModel` still decides
-`choose_variant`, untouched); token display name comes from a cached, best-effort GeckoTerminal pool lookup
-(failure → `None`, never a crash). `report.write_report` calls it automatically. One detector/simulator/cost model shared by Passo 0,
+change): `pos_runner/bankroll.py` (`BankrollLedger`/`BankrollState`, no `Context`/`Store` dependency, shared by
+both parts) builds, per grid adjustment (tf×exit), a trade table (one row per CLOSED primary entry, chronological)
+with a $100-bankroll simulation (5% position, max 3 concurrent, daily/weekly stop) — costs are re-simulated at the
+REAL position size (the handoff's 0.15-SOL `CostModel` still decides `choose_variant`, untouched; converting the
+US$ position to SOL needs a cached SOL/USD quote — missing it is explicit, `"sem dado: sol/usd"`, never a guessed
+cost). Part A: `parte_a/bankroll.py` runs the ledger in a batch over a whole period and writes CSV+XLSX
+(`report.write_report` calls it automatically); token display name comes from a cached, best-effort GeckoTerminal
+pool lookup (failure → `None`, never a crash). Part B: `live.py` steps the SAME ledger once per real closed signal
+(`PosRunnerLive._update_bankroll`, called from `_update_paper`'s closed branch) and writes `pos_runner_banca.csv`
+(`storage.py`'s `pr_bankroll_state`/`pr_bankroll_trades` tables; state keyed by `(tf, variant, versao_config)`, so
+switching config version starts a fresh $100 bankroll, same as the rest of the paper); `engine.maybe_send_daily_summary`
+also sends `PosRunnerLive.daily_bankroll_summary()` on the same daily Telegram schedule. One detector/simulator/cost model shared by Passo 0,
 Part A (`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Age = days since token CREATION
 (on-chain: oldest successful mint signature before the migration, `lineage.creation_time`); unknown creation = no age
 = never primary. The pre-registration gate (`params.is_preregistered`) reads ONLY the status line (the first line

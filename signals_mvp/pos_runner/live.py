@@ -37,6 +37,7 @@ from ..models import ChainCtx, PoolSnap
 from ..telegram import TelegramError
 from ..util import clean_text, fmt_usd, iso_utc, utc_now
 from . import charts
+from .bankroll import BankrollLedger, BankrollParams, BankrollState
 from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
 from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
@@ -506,6 +507,8 @@ class PosRunnerLive:
         self.last_tick: dict[str, Any] = {}
         self.version = params.version
         self.version_start: Optional[float] = None     # 1o ciclo desta versao_config (decisao anterior nao vira sinal)
+        self._bankroll: dict[tuple[str, str], BankrollLedger] = {}  # (tf, variante) desta versao_config -> ledger
+        self._bankroll_params = BankrollParams()
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -956,6 +959,7 @@ class PosRunnerLive:
                     tempo_h=None if a.bars_held is None else a.bars_held * step / 3600.0, detail_json=json.dumps(detail),
                     base_json=json.dumps(base), closed_ts=now)
                 self._result_alert(row, tf, signal, a, b, base)
+                self._update_bankroll(row, tf, det, signal, now)
                 continue
             self.storage.pr_update_signal(signal["id"], detail_json=json.dumps(detail))
 
@@ -1057,6 +1061,54 @@ class PosRunnerLive:
             new = self._baseline(signal, row, signal["tf"], fake)
             if new.get("n", 0) > base.get("n", 0):
                 self.storage.pr_update_signal(signal["id"], base_json=json.dumps(new))
+
+    # -- gestao de banca (addendum de relatorio, 2026-10-16) -------------------------------------------
+    def _bankroll_ledger(self, tf: str, variant: str) -> BankrollLedger:
+        """Um por (tf, variante) desta `versao_config` (troca de config comeca banca nova, como o resto do paper
+        -- decisao de outra versao nunca vira sinal/resultado dela)."""
+        key = (tf, variant)
+        ledger = self._bankroll.get(key)
+        if ledger is None:
+            saved = self.storage.pr_bankroll_load(tf, variant, self.version)
+            state = BankrollState.from_json(saved) if saved else None
+            ledger = BankrollLedger(self.params, self.costs, self._bankroll_params, state)
+            self._bankroll[key] = ledger
+        return ledger
+
+    def _update_bankroll(self, row: Any, tf: str, det: Detector, signal: Any, now: float) -> None:
+        """Avanca os 2 ledgers (A/B) deste tf com o sinal que acabou de fechar; nunca reescreve uma linha ja gravada
+        (um sinal fecha so uma vez por variante). So trades FECHADOS entram -- cancelado nunca chega aqui."""
+        ev = event_from_json(signal["event_json"])
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        sol_at = self._sol_at()
+        meta = {"token": row["symbol"], "contrato": row["mint"], "launchpad": row["launchpad"], "tf": tf}
+        for variant in ("A", "B"):
+            ledger = self._bankroll_ledger(tf, variant)
+            linha = ledger.step(det.bars, ev, variant, dex, row["l_bc"], sol_at, {**meta, "saida": variant})
+            if linha is None:
+                continue
+            if self.storage.pr_bankroll_append(tf, variant, self.version, signal["id"], linha, now):
+                self.storage.pr_bankroll_save(tf, variant, self.version, ledger.state.to_json())
+
+    def daily_bankroll_summary(self) -> str:
+        """Resumo diario por ajuste (nº trades, % com lucro, lucro liquido medio, banca final, maior queda) -- o
+        operador pediu que a Parte B mande isso no Telegram todo dia."""
+        resumos = self.storage.pr_bankroll_resumos()
+        if not resumos:
+            return "Gestão de banca: nenhum ajuste com trade fechado ainda."
+        out = ["💰 Resumo diário da gestão de banca (US$100, posição 5%, até 3 abertas):"]
+        for k in sorted(resumos):
+            s = resumos[k]
+            if not s["n_trades"]:
+                out.append(f"- {k}: 0 trades | banca US$ {s['banca_final_usd']:.2f}")
+                continue
+            out.append(f"- {k}: {s['n_trades']} trades | {s['pct_com_lucro']:.0f}% com lucro | "
+                       f"líquido médio {s['lucro_liq_medio_pct']:+.1f}% | banca US$ {s['banca_final_usd']:.2f} | "
+                       f"maior queda US$ {s['maior_queda_usd']:.2f} ({s['maior_queda_pct']:.0f}%)")
+        return "\n".join(out)
+
+    def send_daily_bankroll_summary(self) -> None:
+        self._send(self.daily_bankroll_summary())
 
     # -- status ----------------------------------------------------------------------------------------
     def status_line(self) -> str:

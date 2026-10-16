@@ -484,8 +484,8 @@ class BankrollTests(unittest.TestCase):
     def test_ledger_state_round_trip_survives_a_restart(self):
         """A Parte B persiste o estado do ledger entre reinicios (BankrollState.to_json/from_json); restaurar um
         estado no meio da serie precisa continuar EXATAMENTE como se nunca tivesse parado."""
+        from ..pos_runner.bankroll import BankrollLedger, BankrollState
         from ..pos_runner.detector import Event
-        from ..pos_runner.parte_a.bankroll import BankrollLedger, BankrollState
         from ..pos_runner.parte_a.pipeline import load_bars
         from ..pos_runner.quotes import SOL_MINT
 
