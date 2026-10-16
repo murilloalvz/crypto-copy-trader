@@ -125,6 +125,29 @@ def oldest_signature(rpc: SolanaRpc, address: str, before: Optional[str], max_pa
     return oldest, seen, False
 
 
+def creation_time(rpc: SolanaRpc, mint: str, before_signature: str, max_pages: int = 30) -> tuple[Optional[int], int, bool]:
+    """Criacao do token = blockTime da transacao BEM-SUCEDIDA mais antiga do mint, paginando para tras a partir da
+    migracao (todo negocio na curva referencia o mint, entao o custo e ~1 pagina por mil negocios da curva).
+
+    Devolve (blockTime ou None, assinaturas vistas, completo). Bateu no teto de paginas = criacao DESCONHECIDA (o
+    chamador trata como falta de dado explicita, nunca como "criado no inicio da ultima pagina")."""
+    cursor: Optional[str] = before_signature
+    oldest_ok: Optional[int] = None
+    seen = 0
+    for _ in range(max_pages):
+        rows = rpc.signatures(mint, before=cursor, limit=SIGNATURES_PAGE_SIZE)
+        if not rows:
+            return oldest_ok, seen, True
+        seen += len(rows)
+        for row in rows:                       # do mais novo para o mais velho
+            if row.get("err") is None and row.get("blockTime") is not None:
+                oldest_ok = int(row["blockTime"])
+        if len(rows) < SIGNATURES_PAGE_SIZE:
+            return oldest_ok, seen, True
+        cursor = rows[-1]["signature"]
+    return None, seen, False
+
+
 @dataclass
 class AccountOrigin:
     address: str

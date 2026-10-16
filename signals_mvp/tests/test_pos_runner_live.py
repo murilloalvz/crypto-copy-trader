@@ -30,7 +30,7 @@ from ..storage import POS_RUNNER_COLUMNS, Storage
 from ..util import iso_utc, parse_iso
 from .fakes import FakeClock, FakeTelegram, load_fixture
 from .helpers import Env, read_csv, shipped_config
-from .test_pos_runner import GRAD, H, params, textbook
+from .test_pos_runner import CREATED, GRAD, H, params, textbook
 
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL = "So11111111111111111111111111111111111111112"
@@ -108,6 +108,18 @@ def ok_lineage(grad_ts: float = GRAD + 60, launchpad: str = "pumpfun"):
     return lambda rpc, pool, mint, created, lp: Lineage("ok", "", launchpad, grad_ts, USDC, SUPPLY, "SIG", "MigrateV2")
 
 
+def created_at(ts: Optional[float] = CREATED, seen: int = 1234):
+    """Busca da data de criacao (on-chain) de mentira: (blockTime ou None, assinaturas vistas, completo)."""
+    calls: list[tuple[str, str]] = []
+
+    def creation(rpc, mint, signature, max_pages=100):
+        calls.append((mint, signature))
+        return ts, seen, ts is not None
+
+    creation.calls = calls          # type: ignore[attr-defined]
+    return creation
+
+
 class LiveHarness:
     def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True):
         self.tmp = Path(tempfile.mkdtemp(prefix="pr_live_"))
@@ -120,7 +132,7 @@ class LiveHarness:
                                                  descoberta_min=3, fontes=("pumpswap",), grafico=False)
         self.params = params()
         self.live = self.new_live()
-        self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage())
+        self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage(), creation=created_at())
 
     def new_live(self, telegram: Any = None) -> PosRunnerLive:
         return PosRunnerLive(self.settings, self.params, self.storage, self.world, CTX, telegram or self.tg, LINKS, "solana",
@@ -316,15 +328,23 @@ class LiveFlowTest(unittest.TestCase):
         row = h.storage.pr_pool("POOL1")
         self.assertEqual(row["status"], "ativo")
         self.assertAlmostEqual(row["l_bc"], textbook().bars[0].open)
-        h.run_hours(21)                                      # ate o martelo (caixa armada) fechar
+        h.run_hours(15)                                      # candle 22: zona com teste, mas ainda sem 12 candles
+        self.assertEqual([t for t in h.texts() if t.startswith("👀")], [])
+        h.run_hours(1)                                       # candle 23: zona madura (12 candles desde o fundo + 1 teste)
         watch = [t for t in h.texts() if t.startswith("👀")]
         self.assertEqual(len(watch), 1, h.texts())
-        self.assertIn("Caixa S", watch[0])
-        h.run_hours(3)                                       # rompimento
+        self.assertIn("Zona S 150k – R 260k", watch[0])            # R inclui o 1o repique
+        self.assertIn("morre se fechar abaixo de 152k", watch[0])  # minima do teste (155k) - 2%
+        self.assertIn("1 teste(s) de suporte", watch[0])
+        self.assertIn("idade 4,0 d desde a criação", watch[0])
+        self.assertEqual([t for t in h.texts() if t.startswith("🟢")], [])
+        h.run_hours(2)                                       # candle 25: rompimento (fecha acima de R)
         entries = [t for t in h.texts() if t.startswith("🟢")]
         self.assertEqual(len(entries), 1, h.texts())
         self.assertIn("ENTRADA POS-RUNNER [1h]", entries[0])
         self.assertIn("Sinal #1 (primário)", entries[0])
+        self.assertIn("1 teste(s) de suporte", entries[0])
+        self.assertIn("(1-5M)", entries[0])
         signal = h.storage.pr_signals()[0]
         self.assertEqual(signal["status"], "aberto")
         self.assertIsNotNone(signal["tg_message_id"])
@@ -343,13 +363,17 @@ class LiveFlowTest(unittest.TestCase):
         self.assertEqual(list(rows[0].keys()), POS_RUNNER_COLUMNS)
         r = rows[0]
         self.assertEqual((r["contrato"], r["launchpad"], r["tf"]), ("MINT1", "pumpfun", "1h"))
-        self.assertEqual(float(r["entrada_mc"]), 330_000.0)  # open do candle seguinte ao sinal
+        self.assertEqual(float(r["entrada_mc"]), 290_000.0)  # open do candle seguinte ao sinal
         self.assertEqual(float(r["tp_mc"]), 950_000.0)        # 95% do pico
         self.assertEqual(r["motivo_saida"], "A=tempo; B=tempo")
         self.assertEqual(r["versao_config"], h.params.version)
+        self.assertEqual(r["n_wicks"], "1")                  # n de testes de suporte
+        self.assertAlmostEqual(float(r["idade_h"]), 24 * (GRAD + 26 * H - CREATED) / 86400, places=1)   # desde a criacao
         detail = read_csv(h.paths.dados / "pos_runner_detalhe.csv")
         self.assertEqual(detail[0]["status"], "fechado")
         self.assertEqual(detail[0]["alerta_enviado"], "1")
+        self.assertEqual((detail[0]["faixa_pico"], detail[0]["S_acima_100k"]), ("1-5M", "sim"))
+        self.assertTrue(detail[0]["max_caminho_A_pct"])
 
     def test_frozen_bars_are_the_final_candles_never_the_one_in_progress(self) -> None:
         h = self.h
@@ -382,7 +406,7 @@ class LiveFlowTest(unittest.TestCase):
     def test_bot_off_during_the_breakout_records_paper_but_sends_no_stale_alert(self) -> None:
         h = self.h
         start_tracking(h)
-        h.run_hours(20)
+        h.run_hours(14)
         h.clock.advance(10 * H)                              # bot desligado 10 h (o rompimento acontece no meio)
         h.tick()
         self.assertEqual([t for t in h.texts() if t.startswith("🟢")], [])
@@ -423,6 +447,95 @@ class LiveFlowTest(unittest.TestCase):
             self.assertEqual(len([t for t, _ in h2.tg.sent if t.startswith("🟢")]), 1)
         finally:
             h2.close()
+
+
+class CreationAndVersionTest(unittest.TestCase):
+    """Idade desde a CRIACAO do token (buscada on-chain na thread de linhagem) e troca de versao_config."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_creation_date_is_fetched_after_the_lineage_and_unknown_creation_keeps_the_pool_out(self) -> None:
+        h = self.h
+        h.list_pool()
+        h.tick()
+        self.assertTrue(h.verifier.step())
+        row = h.storage.pr_pool("POOL1")
+        self.assertEqual(row["status"], "verificado")
+        self.assertEqual(json.loads(row["info"])["criado_ts"], CREATED)
+        self.assertEqual(h.verifier.creation.calls, [("MINT1", "SIG")])       # a partir da assinatura da migracao
+        # teto de paginas: criacao desconhecida = sem idade = nenhum sinal primario possivel -> nao entra
+        h.list_pool(pool="POOL2", mint="MINT2")
+        h.live.next_discovery = 0
+        h.tick()
+        h.verifier.creation = created_at(None, seen=100_000)
+        h.verifier.step()
+        row = h.storage.pr_pool("POOL2")
+        self.assertEqual(row["status"], "rejeitado")
+        self.assertIn("data de criacao do token desconhecida", row["motivo"])
+        # falha de RPC na busca da criacao: tenta de novo depois (nunca entra sem a data)
+        h.list_pool(pool="POOL3", mint="MINT3")
+        h.live.next_discovery = 0
+        h.tick()
+
+        def broken(rpc, mint, signature, max_pages=100):
+            raise RpcError("exhausted", "getSignaturesForAddress: 6 tentativas sem resposta")
+
+        h.verifier.creation = broken
+        h.verifier.step()
+        row = h.storage.pr_pool("POOL3")
+        self.assertEqual(row["status"], "pendente")
+        self.assertIn("data de criacao", row["motivo"])
+        h.clock.advance(3600)
+        h.verifier.creation = created_at(CREATED)
+        h.verifier.step()
+        self.assertEqual(h.storage.pr_pool("POOL3")["status"], "verificado")
+
+    def test_legacy_pool_without_creation_goes_back_to_the_queue_and_old_paper_is_discontinued(self) -> None:
+        h = self.h
+        h.world.add_series("POOL1", "1h", textbook().bars)
+        now = h.clock()
+        info = {"created_ts": GRAD + 60, "side": "base", "tentativas": 1, "linhagem": {"status": "ok", "signature": "SIGVELHA"}}
+        h.storage.pr_upsert_pool("POOL1", mint="MINT1", symbol="CAT", quote=USDC, dex="pumpswap", status="ativo", found_ts=now - 7200,
+                                 mc_found=1e6, launchpad="pumpfun", grad_ts=GRAD + 60, supply=SUPPLY, added_ts=now - 7200,
+                                 checked_ts=now - 7200, info=json.dumps(info))
+        h.storage.pr_insert_signal({"pool": "POOL1", "tf": "1h", "n": 1, "primario": 1, "decision_ts": now - 3600, "mint": "MINT1",
+                                    "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap", "versao_config": "velha",
+                                    "event_json": "{}", "status": "aberto"})
+        h.tick()
+        self.assertEqual(h.storage.pr_signals()[0]["status"], "descontinuado")   # outra regra: fora de qualquer avaliacao
+        self.assertEqual(h.storage.pr_pool("POOL1")["status"], "verificado")     # sem a data de criacao nao acompanha
+        self.assertEqual(h.storage.pr_bars("POOL1", "1h"), [])
+        self.assertTrue(h.verifier.step())                                       # so busca a criacao (linhagem ja feita)
+        self.assertEqual(h.verifier.creation.calls, [("MINT1", "SIGVELHA")])
+        h.tick()
+        row = h.storage.pr_pool("POOL1")
+        self.assertEqual(row["status"], "ativo")
+        self.assertEqual(json.loads(row["info"])["criado_ts"], CREATED)
+        self.assertTrue(h.storage.pr_bars("POOL1", "1h"))
+        self.assertEqual(h.live.dets[("POOL1", "1h")].created_ts, CREATED)
+
+    def test_a_new_config_version_never_turns_past_decisions_into_its_signals(self) -> None:
+        h = self.h
+        start_tracking(h)
+        h.run_hours(24)                                       # rompimento (candle 25) decidido com a versao 1
+        old = h.storage.pr_signals()
+        self.assertEqual([s["versao_config"] for s in old], [h.params.version])
+        self.assertTrue(h.storage.pr_alert_seen(f"e:{h.params.version}:POOL1:1h:1"))   # chave de alerta por versao
+        sent = len(h.texts())
+        import dataclasses
+        h.params = dataclasses.replace(h.params, time_stop_candles=47)             # outra versao_config
+        live2 = h.new_live()
+        h.clock.advance(H)
+        h.tick(live=live2)
+        signals = h.storage.pr_signals()
+        self.assertEqual(len(signals), 1)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
+        self.assertEqual(signals[0]["status"], "descontinuado")
+        self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
+        self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
 
 class MultiTimeframeSolQuoteTest(unittest.TestCase):

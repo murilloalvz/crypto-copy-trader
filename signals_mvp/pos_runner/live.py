@@ -4,14 +4,17 @@ A cada ciclo do bot, dentro de uma fatia reservada do orcamento de chamadas do G
   1. descoberta: pools de graduacao (PumpSwap, Raydium CPMM, Meteora DAMM v2) com MC >= piso do runner, vindos das
      listas do GT (trending e top por volume de cada DEX) e das fotos de pools novos que o bot v0 ja busca;
   2. linhagem on-chain (RPC, numa thread propria): o pool tem de ter nascido da instrucao de migracao do launchpad
-     da sua DEX, com o mesmo mint e o mesmo pool (metodo da enumeracao da Parte A). Sem isso nao entra (falha fechada);
+     da sua DEX, com o mesmo mint e o mesmo pool (metodo da enumeracao da Parte A). Sem isso nao entra (falha fechada).
+     Na mesma thread sai a data de CRIACAO do token (a idade do sinal e contada dela): sem ela o pool tambem nao entra;
   3. candles 5m/1h/4h em token de cotacao x cotacao/USD (igual a Parte A), consumidos so depois de FECHADOS (+ folga de
      indexacao do GT) e CONGELADOS no banco: o detector ve cada candle uma vez, em ordem; reiniciar o bot refaz o mesmo
      estado a partir dos candles congelados (nada e reescrito com dado posterior);
-  4. alertas: 👀 caixa armada (fase 2 com S, R e wick), 🟢 entrada com mini-grafico, 🔴 invalidado, ⚪ nao entrar
-     (candle absurdo), 🟡 saida sugerida (pernas do paper) e 📊 resultado do paper;
-  5. paper A/B de TODA entrada (custo 1x e 2x) e linha de base pareada (mesma idade, mesmo colchete), nos CSVs
-     `pos_runner.csv` (colunas do handoff) e `pos_runner_detalhe.csv`.
+  4. alertas: 👀 zona madura (fase 2 com S, R e teste de suporte), 🟢 entrada com mini-grafico, 🔴 invalidado,
+     ⚪ nao entrar (candle absurdo), 🟡 saida sugerida (pernas do paper) e 📊 resultado do paper;
+  5. paper A/B de TODA entrada decidida com a config em uso (custo 1x e 2x) e linha de base pareada (mesma idade desde
+     a criacao, mesmo colchete), nos CSVs `pos_runner.csv` (colunas do handoff) e `pos_runner_detalhe.csv`. Decisao
+     anterior ao 1o ciclo de uma `versao_config` (refeita a partir dos candles congelados) nunca vira sinal dela, e o
+     paper aberto de outra versao vira `descontinuado`.
 Somente leitura: nenhuma chave, nenhuma assinatura, nenhuma ordem.
 """
 
@@ -38,7 +41,8 @@ from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
 from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
-from .params import Params
+from .lineage import creation_time
+from .params import Params, is_preregistered
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
 from .parte_a.quotebook import QuoteBook
@@ -54,6 +58,7 @@ LAG_S = 90.0                 # folga depois do fechamento do candle para o GT in
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 LINEAGE_MARGIN_S = 600       # janela da linhagem: +-10 min em volta da criacao informada pelo GT
 VERIFY_MAX_ATTEMPTS = 8      # falha de RPC repetida (espera 4, 8, 16, 30 min...): o pool sai (nunca entra sem linhagem)
+CREATION_MAX_PAGES = 100     # data de criacao: ate 100 mil assinaturas do mint antes da migracao (o SOLCAT teve ~10 mil)
 QUEUE_MAX = 60               # pools pendentes/verificados esperando vaga
 # listas do GeckoTerminal usadas na descoberta ("novos e top pools Solana" do handoff)
 SOURCES: dict[str, tuple[str, dict[str, Any]]] = {
@@ -123,7 +128,7 @@ def config_status(version: str, prereg: Path = PREREG) -> str:
         text = prereg.read_text(encoding="utf-8")
     except OSError:
         return "rascunho"
-    return "pre-registrada" if re.search(r"Status:\s*\*\*PRE-REGISTRADO", text) and version in text else "rascunho"
+    return "pre-registrada" if is_preregistered(text, version) else "rascunho"
 
 
 # ---------------------------------------------------------------------------
@@ -193,14 +198,17 @@ def verify_lineage(rpc: Any, pool: str, mint: str, created_ts: float, launchpad:
 
 
 class LineageVerifier:
-    """Confere os pools `pendente` um por vez. O RPC publico e lento, entao roda numa thread propria (`run`) para nao
-    atrasar o ciclo do bot; os testes chamam `step()` direto."""
+    """Confere os pools `pendente` um por vez: linhagem e depois a data de criacao do token. O RPC publico e lento, entao
+    roda numa thread propria (`run`) para nao atrasar o ciclo do bot; os testes chamam `step()` direto. Pool verificado
+    por uma versao anterior do bot (sem a data de criacao) passa so pela busca da criacao."""
 
-    def __init__(self, storage: Any, rpc: Any, clock: Callable[[], float] = utc_now, verify: Callable[..., Lineage] = verify_lineage):
+    def __init__(self, storage: Any, rpc: Any, clock: Callable[[], float] = utc_now, verify: Callable[..., Lineage] = verify_lineage,
+                 creation: Callable[..., tuple] = creation_time):
         self.storage = storage
         self.rpc = rpc
         self.clock = clock
         self.verify = verify
+        self.creation = creation
 
     @staticmethod
     def _info(row: Any) -> dict:
@@ -216,26 +224,55 @@ class LineageVerifier:
         tries = self._info(row).get("tentativas", 0)
         return now - row["checked_ts"] >= min(1800.0, 120.0 * (2 ** tries))
 
-    def step(self) -> bool:
-        now = self.clock()
-        ready = [r for r in self.storage.pr_pools("pendente") if self._ready(r, now)]
-        if not ready:
-            return False
-        row = min(ready, key=lambda r: (r["checked_ts"] or 0.0, -(r["mc_found"] or 0.0)))
-        info = self._info(row)
+    def _lineage(self, row: Any, info: dict) -> Lineage:
         res = self.verify(self.rpc, row["pool"], row["mint"], float(info.get("created_ts") or 0.0), GRAD_DEX.get(row["dex"]))
-        info["tentativas"] = info.get("tentativas", 0) + 1
         info["linhagem"] = asdict(res)
-        fields: dict[str, Any] = {"checked_ts": self.clock(), "info": json.dumps(info, ensure_ascii=False)}
         if res.status == "ok" and GRAD_DEX.get(row["dex"]) != res.launchpad:
             res = Lineage("rejeitado", f"DEX {row['dex']} nao e a de graduacao de {res.launchpad}")
         if res.status == "ok" and res.quote and row["quote"] and res.quote != row["quote"]:
             res = Lineage("rejeitado", f"cotacao on-chain ({res.quote}) difere da do GT ({row['quote']})")
         if res.status == "ok" and not res.grad_ts:
             res = Lineage("erro", "migracao sem horario de bloco")
+        return res
+
+    def _creation(self, row: Any, res: Lineage, info: dict) -> Lineage:
+        """Criacao do token = transacao bem-sucedida mais antiga do mint antes da migracao (a idade do sinal parte dela).
+        Teto de paginas = criacao desconhecida = sem idade = nenhum sinal primario possivel: o pool nao entra."""
+        if not res.signature:
+            return Lineage("erro", "sem a assinatura da migracao para buscar a data de criacao")
+        try:
+            created, seen, _complete = self.creation(self.rpc, row["mint"], res.signature, max_pages=CREATION_MAX_PAGES)
+        except (RpcError, RuntimeError) as exc:
+            return Lineage("erro", f"data de criacao: {type(exc).__name__}: {str(exc)[:120]}")
+        if created is None:
+            return Lineage("rejeitado", f"data de criacao do token desconhecida ({seen} assinaturas do mint antes da migracao, "
+                                        f"teto de {CREATION_MAX_PAGES} paginas): sem idade nao ha sinal primario")
+        if res.grad_ts and created > res.grad_ts:
+            return Lineage("rejeitado", "data de criacao depois da migracao (dado inconsistente)")
+        info["criado_ts"] = float(created)
+        return res
+
+    def step(self) -> bool:
+        now = self.clock()
+        ready = [r for r in self.storage.pr_pools("pendente", "verificado")
+                 if (r["status"] == "pendente" or "criado_ts" not in self._info(r)) and self._ready(r, now)]
+        if not ready:
+            return False
+        row = min(ready, key=lambda r: (r["checked_ts"] or 0.0, -(r["mc_found"] or 0.0)))
+        info = self._info(row)
+        info["tentativas"] = info.get("tentativas", 0) + 1
+        if row["status"] == "pendente":
+            res = self._lineage(row, info)
+        else:                      # linhagem ja conferida por uma versao anterior do bot: falta so a data de criacao
+            res = Lineage("ok", "", row["launchpad"], row["grad_ts"], row["quote"], row["supply"],
+                          (info.get("linhagem") or {}).get("signature"))
+        if res.status == "ok":
+            res = self._creation(row, res, info)
+        fields: dict[str, Any] = {"checked_ts": self.clock(), "info": json.dumps(info, ensure_ascii=False)}
         if res.status == "ok":
             fields.update(status="verificado", launchpad=res.launchpad, grad_ts=res.grad_ts, supply=res.supply, motivo="")
-            log.info("POS-RUNNER: linhagem ok %s (%s, %s)", row["symbol"], res.launchpad, row["pool"][:8])
+            log.info("POS-RUNNER: linhagem ok %s (%s, %s, criado em %s)", row["symbol"], res.launchpad, row["pool"][:8],
+                     iso_utc(info["criado_ts"]))
         elif res.status == "rejeitado" or info["tentativas"] >= VERIFY_MAX_ATTEMPTS:
             fields.update(status="rejeitado", motivo=res.motivo[:200])
             log.info("POS-RUNNER: %s fora (%s)", row["symbol"], res.motivo[:120])
@@ -351,36 +388,42 @@ def _head(emoji: str, title: str, tf: str, symbol: str, launchpad: Optional[str]
     return f"{emoji} {title} [{tf}] | ${_esc(symbol, 20)} | {_esc(lp)}"
 
 
+def _yes(value: Any) -> str:
+    return "s/d" if value is None else ("sim" if value else "não")
+
+
 def watch_text(symbol: str, launchpad: Optional[str], tf: str, mint: str, d: dict, on_arrival: bool) -> str:
     lines = [
         _head("👀", "WATCHLIST POS-RUNNER", tf, symbol, launchpad),
-        f"Pico {fmt_usd(d['P_peak'])} → queda {_num(d['queda_pct'], 0)}% | L_bc {fmt_usd(d['L_bc'])} | idade {_num(d['idade_dias'])} d",
-        f"Caixa S {fmt_usd(d['S'])} – R {fmt_usd(d['R'])} (R/S {_num(d['R'] / d['S'] if d['S'] else None)}) | {d['n_wicks']} wick(s) | {d['box_len']} candles",
-        "Entrada se FECHAR acima de R com volume ≥ 2× a média da caixa",
+        f"Pico {fmt_usd(d['P_peak'])} ({d['faixa_pico']}) → queda {_num(d['queda_pct'], 0)}% | L_bc {fmt_usd(d['L_bc'])} | "
+        f"idade {_num(d['idade_dias'])} d desde a criação",
+        f"Zona S {fmt_usd(d['S'])} – R {fmt_usd(d['R'])} (R/S {_num(d['R'] / d['S'] if d['S'] else None)}) | "
+        f"{d['n_testes']} teste(s) de suporte | {d['box_len']} candles",
+        f"Entrada se FECHAR acima de R (sem exigência de volume) | morre se fechar abaixo de {fmt_usd(d['morre_abaixo'])}",
     ]
     if on_arrival:
-        lines.append("(a caixa ja estava armada quando o token entrou no radar)")
+        lines.append("(a zona ja estava madura quando o token entrou no radar)")
     lines.append(f"<code>{_esc(mint, 60)}</code>")
     return "\n".join(lines)
 
 
-def entry_text(symbol: str, launchpad: Optional[str], tf: str, mint: str, d: dict, version: str, status: str,
-               breakout_mult: float) -> str:
+def entry_text(symbol: str, launchpad: Optional[str], tf: str, mint: str, d: dict, version: str, status: str) -> str:
     entry, stop, tp = d["close"], d["stop"], d["tp"]
     rr = (tp - entry) / (entry - stop) if entry > stop else None
     n = d.get("n_entrada", 1)
-    kind = "primário" if d.get("primario") else "reentrada: diagnóstico, fora da métrica primária"
+    kind = "primário" if d.get("primario") else "reentrada ou fora da idade: diagnóstico, fora da métrica primária"
     lines = [
         _head("🟢", "ENTRADA POS-RUNNER", tf, symbol, launchpad),
         f"Entrada ~MC {fmt_usd(entry)} (open do próximo candle) | Stop {fmt_usd(stop)} ({_pct(100 * (stop / entry - 1))}) | "
         f"Alvo {fmt_usd(tp)} ({_pct(100 * (tp / entry - 1))}) | R:R {_num(rr)}",
-        f"Wicks {d['n_wicks']} | volume do rompimento {_num(d.get('vol_ratio'))}× a média da caixa (mín. {_num(breakout_mult)}×)",
+        f"{d['n_testes']} teste(s) de suporte | volume do rompimento {_num(d.get('vol_ratio'))}× a média da zona (só atributo)",
     ]
     if d.get("power_candle"):
-        lines.append("⚡ Power candle no rompimento (ignição)")
+        lines.append("⚡ Power candle saudável no rompimento (atributo positivo)")
     lines += [
-        f"Pico {fmt_usd(d.get('P_peak_topo') or d['P_peak'])} | queda {_num(d.get('queda_pct'), 0)}% | L_bc {fmt_usd(d['L_bc'])} | "
-        f"S {fmt_usd(d['S'])} | R {fmt_usd(d['R'])} | idade {_num(d.get('idade_dias'))} d",
+        f"Pico {fmt_usd(d['P_peak'])} ({d.get('faixa_pico', '?')}) | queda {_num(d.get('queda_pct'), 0)}% | L_bc {fmt_usd(d['L_bc'])} | "
+        f"S {fmt_usd(d['S'])} (≥ 100k: {_yes(d.get('S_acima_100k'))}) | R {fmt_usd(d['R'])} | "
+        f"idade {_num(d.get('idade_dias'))} d desde a criação",
         f"Sinal #{n} ({kind}) · paper A/B automático · config {version} ({status})",
         f"<code>{_esc(mint, 60)}</code>",
     ]
@@ -393,7 +436,7 @@ EXIT_TEXT = {
     "alvo_parcial": "ALVO atingido — B vende metade e o resto segue com trailing",
     "trailing": "B: trailing atingido — vende o resto",
     "stop_na_entrada": "B: voltou ao preço de entrada — vende o resto",
-    "exaustao": "power candle de EXAUSTÃO — sair no próximo candle",
+    "exaustao": "power candle de EXAUSTÃO perto do último topo — sair no próximo candle",
     "tempo": "stop de TEMPO (sem alvo nem stop) — sair a mercado",
 }
 
@@ -461,6 +504,8 @@ class PosRunnerLive:
         self.last_prune = 0.0
         self.last_baselines = 0.0
         self.last_tick: dict[str, Any] = {}
+        self.version = params.version
+        self.version_start: Optional[float] = None     # 1o ciclo desta versao_config (decisao anterior nao vira sinal)
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -474,6 +519,19 @@ class PosRunnerLive:
 
     def tfs(self) -> tuple[str, ...]:
         return self.settings.timeframes or TFS
+
+    def _startup(self, now: float) -> None:
+        """1o ciclo: marca o inicio desta versao_config (decisoes anteriores, refeitas dos candles congelados, nao viram
+        sinal dela); paper aberto de outra versao vira `descontinuado` (outra regra; fica fora de qualquer avaliacao);
+        pool ativo sem a data de criacao (verificado por uma versao anterior do bot) volta para a fila ate a thread de
+        linhagem buscar a criacao."""
+        self.version_start = self.storage.pr_version_start(self.version, now)
+        for signal in self.storage.pr_signals(status="aberto"):
+            if signal["versao_config"] != self.version:
+                self.storage.pr_update_signal(signal["id"], status="descontinuado", closed_ts=now)
+        for row in self.storage.pr_pools("ativo"):
+            if "criado_ts" not in LineageVerifier._info(row):
+                self.storage.pr_upsert_pool(row["pool"], status="verificado", motivo="falta a data de criacao do token")
 
     def lbc_tf(self) -> str:
         """L_bc sai do 1o candle de 1h (como no estagio 1 da Parte A); sem o 1h na config, do 1o tf ligado."""
@@ -531,9 +589,10 @@ class PosRunnerLive:
         self.offer(snaps, now, fonte=name)
 
     def _promote(self, now: float) -> None:
-        """Verificado -> ativo enquanto houver vaga (maior MC na descoberta primeiro)."""
+        """Verificado (com a data de criacao) -> ativo enquanto houver vaga (maior MC na descoberta primeiro)."""
         active = len(self.storage.pr_pools("ativo"))
-        waiting = sorted(self.storage.pr_pools("verificado"), key=lambda r: -(r["mc_found"] or 0.0))
+        waiting = sorted((r for r in self.storage.pr_pools("verificado") if "criado_ts" in LineageVerifier._info(r)),
+                         key=lambda r: -(r["mc_found"] or 0.0))
         for row in waiting:
             if row["grad_ts"] is None or now - row["grad_ts"] > self.settings.idade_max_dias * 86400.0:
                 self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="passou da idade maxima na fila")
@@ -597,6 +656,8 @@ class PosRunnerLive:
         out: dict[str, Any] = {"chamadas": 0, "erros": 0, "rate_limited": False}
         if not self.enabled():
             return out
+        if self.version_start is None:
+            self._startup(now)
         self.http.arm(budget, keep, self.settings.chamadas_por_ciclo)
         try:
             self._promote(now)
@@ -658,12 +719,17 @@ class PosRunnerLive:
         det = self.dets.get(key)
         if det is not None or row["l_bc"] is None:
             return det
-        det = Detector(self.params, tf, row["l_bc"], row["grad_ts"])
+        det = Detector(self.params, tf, row["l_bc"], row["grad_ts"], self._created(row))
         for ts, o, h, l, c, v, filled in self.storage.pr_bars(row["pool"], tf):
             for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
                 self._on_event(row, tf, det, ev, now)
         self.dets[key] = det
         return det
+
+    @staticmethod
+    def _created(row: Any) -> Optional[float]:
+        value = LineageVerifier._info(row).get("criado_ts")
+        return None if value is None else float(value)
 
     def _usd_prefix(self, bars: list[Bar], tf: str, usd: UsdSeries) -> list[Bar]:
         """Candles ate o 1o sem cotacao/USD no fechamento (esse e os seguintes esperam: nunca convertidos no chute)."""
@@ -758,32 +824,37 @@ class PosRunnerLive:
     def _late(now: float, known_ts: float, limit_s: float) -> bool:
         return now - known_ts > limit_s
 
+    def _key(self, kind: str, *parts: Any) -> str:
+        """Chave de alerta por versao_config (a numeracao de onda/zona/entrada recomeca com outra regra)."""
+        return ":".join([kind, self.version, *(str(p) for p in parts)])
+
     def _watched(self, pool: str, tf: str, wave: Any) -> bool:
-        return self.storage.pr_alert_seen(f"w:{pool}:{tf}:{wave}:")
+        return self.storage.pr_alert_seen(self._key("w", pool, tf, wave) + ":")
 
     def _watch(self, row: Any, tf: str, det: Detector, now: float, on_arrival: bool) -> None:
-        """👀 quando a fase 2 esta ARMADA agora (caixa com tamanho minimo e wick no suporte): so ai S, R e wicks existem."""
-        box = det.box
-        if not (self.settings.alerta_watchlist and det.phase == PHASE_PULLBACK and det.armed and not det.decided and box):
+        """👀 quando a zona da fase 2 esta MADURA agora (>= 12 candles desde o fundo e >= 1 teste de suporte): so ai S, R e
+        os testes existem. Depois de uma decisao (entrada/absurdo/invalidacao) a zona recomeca e precisa amadurecer de novo."""
+        z = det.zone
+        if not (self.settings.alerta_watchlist and det.phase == PHASE_PULLBACK and det.armed and z is not None
+                and z.S is not None and z.R is not None and z.last_test is not None):
             return
-        if self.settings.so_primario:
-            window = self.params.age_window(tf)
-            age = det.age_days(len(det.bars) - 1)
-            in_window = window is None or (age is not None and window[0] <= age <= window[1])
-            if det.primary_done or not in_window:
-                return            # so sairia reentrada/diagnostico: sem 👀 quando o operador pediu so primarios
-        decided_at = det.bars[-1].ts + det.step
-        if self._late(now, decided_at, max(900.0, float(det.step))):
+        last = len(det.bars) - 1
+        if self.settings.so_primario and (det.primary_done or not det.in_age_window(last)):
+            return                # so sairia reentrada/diagnostico: sem 👀 quando o operador pediu so primarios
+        if self._late(now, det.bars[last].ts + det.step, max(900.0, float(det.step))):
             return
-        if not self.storage.pr_alert_once(f"w:{row['pool']}:{tf}:{det.wave_no}:{det.box_floor}", now):
+        if not self.storage.pr_alert_once(self._key("w", row["pool"], tf, det.wave_no, z.zid), now):
             return
-        d = {"P_peak": det.peak, "queda_pct": 100.0 * (1.0 - (det.trough or det.peak) / det.peak), "L_bc": det.l_bc,
-             "idade_dias": det.age_days(len(det.bars) - 1), "S": box.S, "R": box.R, "n_wicks": len(box.wicks), "box_len": box.length}
+        d = {"P_peak": det.peak, "faixa_pico": self.params.peak_band(det.peak), "queda_pct": det.drop_pct(), "L_bc": det.l_bc,
+             "idade_dias": det.age_days(last), "S": z.S, "R": z.R, "n_testes": len(z.tests), "box_len": z.length(last),
+             "morre_abaixo": z.last_test["low"] * (1.0 - self.params.test_break)}
         self._send(watch_text(row["symbol"], row["launchpad"], tf, row["mint"], d, on_arrival), self._keyboard(row))
 
     def _on_event(self, row: Any, tf: str, det: Detector, ev: Event, now: float) -> None:
         pool = row["pool"]
-        tracked = row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+        # sinal = decidido com o token ja no radar E com esta versao_config ja rodando (nada retroativo)
+        tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+                   and self.version_start is not None and ev.decision_ts >= self.version_start)
         if ev.kind == "ENTRADA":
             if tracked:
                 self._entry(row, tf, det, ev, now)
@@ -792,14 +863,16 @@ class PosRunnerLive:
             return
         late = self._late(now, ev.decision_ts, max(900.0, float(det.step)))
         if ev.kind in ("INVALIDADO", "ONDA_INVALIDA") and self.settings.alerta_invalidado and not late:
-            if self.storage.pr_alert_once(f"x:{pool}:{tf}:{ev.data.get('onda')}:{ev.idx}", now):
+            if self.storage.pr_alert_once(self._key("x", pool, tf, ev.data.get("onda"), ev.idx), now):
                 if ev.kind == "INVALIDADO":
-                    why = f"fechou abaixo da mínima da última wick (MC {fmt_usd(det.bars[ev.idx].close)} < {fmt_usd(ev.data['wick_low'])})"
+                    limit = ev.data["teste_minima"] * (1.0 - self.params.test_break)
+                    why = (f"setup morto: fechou abaixo da mínima do último teste de suporte −{100 * self.params.test_break:.0f}% "
+                           f"(MC {fmt_usd(det.bars[ev.idx].close)} < {fmt_usd(limit)})")
                 else:
-                    why = str(ev.data.get("motivo", "onda invalidada")).replace("minima furou L_bc", "a mínima furou L_bc")
+                    why = "onda descartada: " + str(ev.data.get("motivo", "onda invalida"))
                 self._send(f"{_head('🔴', 'INVALIDADO', tf, row['symbol'], row['launchpad'])}\n{_esc(why, 160)}", self._keyboard(row))
         elif ev.kind == "ABSURDO" and self.settings.alerta_entrada and not late:
-            if self.storage.pr_alert_once(f"a:{pool}:{tf}:{ev.data.get('onda')}:{ev.idx}", now):
+            if self.storage.pr_alert_once(self._key("a", pool, tf, ev.data.get("onda"), ev.idx), now):
                 cov = ev.data.get("cobertura")
                 self._send(f"{_head('⚪', 'NÃO ENTRAR', tf, row['symbol'], row['launchpad'])}\nCandle absurdo no rompimento: já "
                            f"cobriu {_num(None if cov is None else 100 * min(cov, 9.99), 0)}% do caminho de R até o topo (desequilíbrio)",
@@ -810,20 +883,19 @@ class PosRunnerLive:
         self.storage.pr_insert_signal({
             "pool": pool, "tf": tf, "n": n, "primario": int(bool(ev.data.get("primario"))), "decision_ts": float(ev.decision_ts),
             "mint": row["mint"], "symbol": row["symbol"], "launchpad": row["launchpad"], "dex": row["dex"],
-            "versao_config": self.params.version, "event_json": event_to_json(ev), "status": "aberto",
+            "versao_config": self.version, "event_json": event_to_json(ev), "status": "aberto",
         })
-        signal = self.storage.pr_signal_by_key(pool, tf, n)
+        signal = self.storage.pr_signal_by_key(pool, tf, n, self.version)
         if signal is None or not self.settings.alerta_entrada:
             return
         if self.settings.so_primario and not ev.data.get("primario"):
             return
         if self._late(now, ev.decision_ts, max(300.0, det.step / 2.0)):
             return
-        if not self.storage.pr_alert_once(f"e:{pool}:{tf}:{n}", now):
+        if not self.storage.pr_alert_once(self._key("e", pool, tf, n), now):
             return
         data = dict(ev.data, n_entrada=n)
-        text = entry_text(row["symbol"], row["launchpad"], tf, row["mint"], data, self.params.version, self.status,
-                          self.params.breakout_vol_mult)
+        text = entry_text(row["symbol"], row["launchpad"], tf, row["mint"], data, self.version, self.status)
         mid = self._send(text, self._keyboard(row), self._chart(row, tf, det, ev))
         if mid is not None:
             self.storage.pr_update_signal(signal["id"], tg_message_id=mid, alert_ts=self.clock())
@@ -833,7 +905,7 @@ class PosRunnerLive:
         if not self.settings.grafico or not charts.available():
             return None
         d = ev.data
-        lo = max(0, min(d.get("topo_idx") or d["peak_idx"], d["peak_idx"]) - 10)
+        lo = max(0, d["peak_idx"] - 10)
         name = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{iso_utc(ev.decision_ts)[:16]}_{row['symbol'] or row['pool'][:8]}_{tf}_{d['n_entrada']}.png")
         try:
             path = charts.plot_setup(
@@ -858,6 +930,8 @@ class PosRunnerLive:
     def _update_paper(self, row: Any, tf: str, det: Detector, now: float) -> None:
         step = det.step
         for signal in self.storage.pr_signals(status="aberto", pool=row["pool"], tf=tf):
+            if signal["versao_config"] != self.version:
+                continue                  # outra regra: virou `descontinuado` no 1o ciclo desta versao
             ev = event_from_json(signal["event_json"])
             res = self._simulate(det.bars, ev, row, self.costs)
             res2 = self._simulate(det.bars, ev, row, self.costs2)
@@ -866,6 +940,7 @@ class PosRunnerLive:
                 "entrada": a.entry_price, "entrada_ts": a.entry_ts, "ambiguo_A": int(a.ambiguous), "ambiguo_B": int(b.ambiguous),
                 "bruto_A": a.gross_ret, "bruto_B": b.gross_ret, "custo2x_A": res2["A"].net_ret, "custo2x_B": res2["B"].net_ret,
                 "R_A": a.r_mult, "R_B": b.r_mult, "tempo_B_h": None if b.bars_held is None else b.bars_held * step / 3600.0,
+                "max_caminho_A": a.max_path_pct, "max_caminho_B": b.max_path_pct,
                 "pernas_A": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in a.legs],
                 "pernas_B": [[leg.idx, leg.price, leg.frac, leg.reason] for leg in b.legs],
             }
@@ -926,30 +1001,36 @@ class PosRunnerLive:
 
     # -- linha de base pareada -------------------------------------------------------------------------
     def _baseline(self, signal: Any, row: Any, tf: str, a: TradeResult) -> dict[str, Any]:
-        """Mesma regra da Parte A: ate K outros runners acompanhados que ja eram runners na mesma idade, entrada no 1o
-        candle com idade >= a do sinal, mesmo colchete (% do stop e do alvo), mesmas saidas e custos."""
-        if a.entry_ts is None or not a.entry_price or a.stop is None or a.tp is None:
+        """Mesma regra da Parte A: ate K outros runners acompanhados (com data de criacao) que ja eram runners na mesma
+        idade desde a criacao, entrada no 1o candle com idade >= a do sinal, mesmo colchete (% do stop e do alvo, e o
+        pico equivalente da exaustao), mesmas saidas e custos."""
+        created = self._created(row)
+        if a.entry_ts is None or not a.entry_price or a.stop is None or a.tp is None or not a.peak or created is None:
             return {"n": 0}
         step = tf_seconds(tf)
-        age = a.entry_ts - row["grad_ts"]
-        stop_pct, tp_pct = 1.0 - a.stop / a.entry_price, a.tp / a.entry_price - 1.0
+        age = a.entry_ts - created
+        stop_pct, tp_pct, peak_mult = 1.0 - a.stop / a.entry_price, a.tp / a.entry_price - 1.0, a.peak / a.entry_price
         others = [q for q in self.storage.pr_pools("ativo", "encerrado")
-                  if q["pool"] != row["pool"] and q["grad_ts"] is not None and q["l_bc"] is not None]
+                  if q["pool"] != row["pool"] and q["grad_ts"] is not None and q["l_bc"] is not None
+                  and self._created(q) is not None]
         rng = random.Random(f"base:{signal['pool']}:{tf}:{signal['n']}")
         rng.shuffle(others)
         rows = []
         for q in others:
             if len(rows) >= K_BASELINE:
                 break
+            q_created = self._created(q)
+            assert q_created is not None
             bars = [Bar(int(t), o, h, l, c, v, bool(f)) for t, o, h, l, c, v, f in self.storage.pr_bars(q["pool"], tf)]
-            if not bars or not runner_by_age(bars, q["grad_ts"], age, self.params.runner_min_mc, step):
+            if not bars or not runner_by_age(bars, q_created, age, self.params.runner_min_mc, step):
                 continue
-            target = q["grad_ts"] + age
+            target = q_created + age
             j = next((i for i, x in enumerate(bars) if x.ts >= target), None)
             if j is None or j == 0 or j + self.params.time_stop_candles >= len(bars):
                 continue
             entry = bars[j].open
-            ev = Event("ENTRADA", j - 1, bars[j - 1].ts, bars[j].ts, {"stop": entry * (1 - stop_pct), "tp": entry * (1 + tp_pct)})
+            ev = Event("ENTRADA", j - 1, bars[j - 1].ts, bars[j].ts,
+                       {"stop": entry * (1 - stop_pct), "tp": entry * (1 + tp_pct), "P_peak": entry * peak_mult})
             res = self._simulate(bars, ev, q, self.costs)
             rows.append({"pool": q["pool"], **{v: (r.net_ret if r.status == "fechado" else None) for v, r in res.items()}})
         out: dict[str, Any] = {"n": len(rows), "pools": rows}
@@ -961,6 +1042,8 @@ class PosRunnerLive:
     def _refresh_baselines(self, now: float) -> None:
         """Base de sinais fechados com menos de K comparaveis e fechados ha < 14 dias: recalcula (so medicao, sem chamada)."""
         for signal in self.storage.pr_signals(status="fechado"):
+            if signal["versao_config"] != self.version:
+                continue
             base = json.loads(signal["base_json"] or "{}")
             if base.get("n", 0) >= K_BASELINE or now - (signal["closed_ts"] or now) > 14 * 86400.0:
                 continue
@@ -970,7 +1053,7 @@ class PosRunnerLive:
                 continue
             ev = event_from_json(signal["event_json"])
             fake = TradeResult("A", "fechado", ev.idx + 1, entry_ts=detail.get("entrada_ts"), entry_price=detail["entrada"],
-                               stop=ev.data["stop"], tp=ev.data["tp"])
+                               stop=ev.data["stop"], tp=ev.data["tp"], peak=ev.data.get("P_peak"))
             new = self._baseline(signal, row, signal["tf"], fake)
             if new.get("n", 0) > base.get("n", 0):
                 self.storage.pr_update_signal(signal["id"], base_json=json.dumps(new))
@@ -981,6 +1064,6 @@ class PosRunnerLive:
             return "POS-RUNNER: desligado (config.yaml > pos_runner.ligado)"
         c = self.storage.pr_counts()
         hot = sum(1 for (pool, tf) in self.dets if self._heat(pool, tf) == 0)
-        return (f"POS-RUNNER: config {self.params.version} ({self.status}) | pools {c.get('pools_ativo', 0)}/{self.settings.max_pools} "
+        return (f"POS-RUNNER: config {self.version} ({self.status}) | pools {c.get('pools_ativo', 0)}/{self.settings.max_pools} "
                 f"(fila {c.get('pools_verificado', 0)}, conferindo {c.get('pools_pendente', 0)}, em fase 2: {hot}) | "
                 f"sinais abertos {c.get('sinais_aberto', 0)}, fechados {c.get('sinais_fechado', 0)}")

@@ -6,8 +6,9 @@ Convencoes (iguais no backtest e no paper ao vivo):
 - No mesmo candle, se a minima toca o stop e a maxima toca o alvo, a ordem e desconhecida: conta o STOP
   primeiro (conservador) e marca `ambiguo`.
 - Stop preenche no nivel do stop, ou no open se o candle ja abriu abaixo (gap). Alvo idem para cima.
-- Exaustao: candle verde com amplitude >= power_atr_mult x ATR(20) (20 candles anteriores) e fechamento
-  >= entrada x (1 + exhaustion_gain) -> sai no open seguinte.
+- Exaustao (perto do ultimo topo): power candle (amplitude >= power_atr_mult x ATR(20 candles anteriores), de
+  qualquer cor) cuja maxima chega a >= exhaustion_peak_frac x P_peak -> sai no open seguinte.
+- Registra a maxima atingida desde a entrada ate a saida, em % do caminho entrada -> P_peak (`max_path_pct`).
 - Stop de tempo: depois de `time_stop_candles` candles no trade, sai no open seguinte.
 - Saida B: no alvo vende `partial_frac`; o resto passa a ter stop = max(entrada, (1 - trail_frac) x maxima
   desde a entrada), valendo a partir do candle SEGUINTE ao do alvo (ordem dentro do candle e desconhecida).
@@ -58,6 +59,15 @@ class TradeResult:
     # o bot ao vivo avisa nesse fechamento, sem esperar o proximo candle existir
     pending_exit: str = ""
     pending_idx: Optional[int] = None
+    peak: Optional[float] = None               # P_peak do sinal (alvo, exaustao e caminho)
+    max_high: Optional[float] = None           # maior maxima desde a entrada ate a saida (ou ate agora, se aberto)
+
+    @property
+    def max_path_pct(self) -> Optional[float]:
+        """Maxima atingida em % do caminho entrada -> P_peak (100 = chegou no topo)."""
+        if self.max_high is None or self.entry_price is None or self.peak is None or self.peak <= self.entry_price:
+            return None
+        return 100.0 * (self.max_high - self.entry_price) / (self.peak - self.entry_price)
 
 
 def _atr(bars: list[Bar], j: int, n: int) -> Optional[float]:
@@ -87,7 +97,8 @@ def simulate(
     i = event.idx
     stop = float(event.data["stop"])
     tp = float(event.data["tp"])
-    res = TradeResult(variant=variant, status="em_aberto", entry_idx=i + 1, stop=stop, tp=tp)
+    peak = float(event.data["P_peak"])
+    res = TradeResult(variant=variant, status="em_aberto", entry_idx=i + 1, stop=stop, tp=tp, peak=peak)
     j0 = i + 1
     if j0 >= len(bars):
         return res
@@ -112,6 +123,9 @@ def simulate(
         nonlocal remaining
         res.legs.append(Leg(j, bars[j].ts, price, frac, reason, leg_cost(price, bars[j].ts)))
         remaining -= frac
+        # maxima "antes da saida": candles inteiros no trade + o preco da propria saida (dentro do candle de saida a
+        # ordem dos precos e desconhecida, entao a maxima dele so conta ate o nivel em que saiu)
+        res.max_high = max(res.max_high or entry, max_high, price)
 
     def exit_next_open(j: int, reason: str) -> bool:
         """Sai do restante no open do candle j+1. False se ainda nao existe esse candle."""
@@ -147,24 +161,25 @@ def simulate(
                 break
         max_high = max(max_high, bar.high)
         atr = _atr(bars, j, params.atr_period)
-        green_power = bar.close > bar.open and atr is not None and (bar.high - bar.low) >= params.power_atr_mult * atr
-        if green_power and bar.close >= entry * (1.0 + params.exhaustion_gain):
+        power = atr is not None and (bar.high - bar.low) >= params.power_atr_mult * atr
+        if power and bar.high >= params.exhaustion_peak_frac * peak:
             if not exit_next_open(j, "exaustao"):
-                return _finish(res, entry, open_trade=True)
+                return _finish(res, entry, open_trade=True, max_high=max_high)
             break
         if j == j0 + params.time_stop_candles - 1:
             if not exit_next_open(j, "tempo"):
-                return _finish(res, entry, open_trade=True)
+                return _finish(res, entry, open_trade=True, max_high=max_high)
             break
         j += 1
     if remaining > 1e-12:
-        return _finish(res, entry, open_trade=True)
+        return _finish(res, entry, open_trade=True, max_high=max_high)
     return _finish(res, entry, open_trade=False)
 
 
-def _finish(res: TradeResult, entry: float, open_trade: bool) -> TradeResult:
+def _finish(res: TradeResult, entry: float, open_trade: bool, max_high: Optional[float] = None) -> TradeResult:
     if open_trade:
         res.status = "em_aberto"
+        res.max_high = max(res.max_high or entry, max_high or entry)
         return res
     res.status = "fechado"
     c_in = (res.entry_cost_pct or 0.0) / 100.0

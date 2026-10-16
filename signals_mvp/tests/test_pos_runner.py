@@ -7,7 +7,7 @@ import unittest
 
 from ..pos_runner.candles import Bar, fill_gaps, missing_windows
 from ..pos_runner.costs import CostModel, pumpswap_fee_pct
-from ..pos_runner.detector import Detector, is_hammer, run
+from ..pos_runner.detector import Detector, run
 from ..pos_runner.params import Params, load_params, params_from_dict
 from ..pos_runner.quotes import UsdSeries, to_mc_bars
 from ..pos_runner.simulate import simulate
@@ -20,11 +20,6 @@ L_BC = 50_000.0
 
 def flat(ts: int, price: float, vol: float = 1_000.0) -> Bar:
     return Bar(ts, price, price * 1.01, price * 0.99, price, vol)
-
-
-def hammer(ts: int, low: float, close: float, vol: float = 1_000.0) -> Bar:
-    # corpo pequeno perto do topo, pavio inferior longo
-    return Bar(ts, close * 0.995, close * 1.005, low, close, vol)
 
 
 class Series:
@@ -45,40 +40,41 @@ class Series:
             self.t += H
         return self
 
-    def hammer(self, low: float, close: float, v: float = 1_000.0) -> "Series":
-        self.bars.append(hammer(self.t, low, close, v))
-        self.t += H
-        return self
 
-
-def textbook(box_len: int = 14, wick_low: float = 150_000.0, drop_low: float = 150_000.0, breakout_vol: float = 5_000.0,
-             breakout_close: float = 330_000.0, breakout_high: float = 340_000.0, start_flat: int = 50) -> Series:
-    """Graduacao a 50k -> runner a 1M -> queda a 150k (-85%) -> repique -> caixa 150k-300k com martelo -> rompimento."""
+def textbook(range_len: int = 8, bottom: float = 150_000.0, test_low: float = 155_000.0, breakout_vol: float = 5_000.0,
+             breakout_close: float = 290_000.0, breakout_high: float = 300_000.0, with_test: bool = True,
+             start_flat: int = 50) -> Series:
+    """Graduacao a 60k -> runner (maxima 1M) -> queda ate o fundo (150k, -85%) -> 1o repique (maxima 260k = R) ->
+    lateral 200-240k -> teste de suporte de 3 candles (minima 155k, recupera) -> lateral -> rompimento de R."""
     s = Series()
-    s.flat(60_000, 2)
-    for p in (150_000, 300_000, 600_000, 900_000):
+    s.flat(60_000, 2)                                     # 0-1
+    for p in (150_000, 300_000, 600_000, 900_000):        # 2-5
         s.add(p * 0.9, p * 1.02, p * 0.88, p)
-    s.add(900_000, 1_000_000, 880_000, 950_000)          # pico 1M
-    for p in (800_000, 600_000, 400_000, 250_000, 180_000):
+    s.add(900_000, 1_000_000, 880_000, 950_000)          # 6: pico (maxima 1M)
+    for p in (800_000, 600_000, 400_000, 250_000):        # 7-10
         s.add(p * 1.1, p * 1.12, p * 0.97, p)
-    s.add(180_000, 182_000, drop_low, 160_000)           # fundo da queda
-    s.add(160_000, 200_000, 158_000, 195_000)
-    s.add(195_000, 280_000, 190_000, 270_000)            # 1o repique (topo fractal)
-    s.add(270_000, 272_000, 220_000, 230_000)
-    s.add(230_000, 235_000, 205_000, 210_000)
-    # caixa: oscila 200k-300k, com um martelo no suporte
-    for k in range(box_len):
-        if k == box_len - 3:
-            s.hammer(wick_low, 215_000)
-        else:
-            s.add(240_000, 300_000 if k % 4 == 1 else 260_000, 200_000, 245_000)
-    s.add(250_000, breakout_high, 248_000, breakout_close, breakout_vol)   # rompimento
+    s.add(250_000, 255_000, 160_000, 165_000)            # 11: queda passa de 80% (minima 160k) -> fase 2, zona comeca
+    s.add(165_000, 170_000, bottom, 155_000)             # 12: fundo
+    s.add(155_000, 260_000, 154_000, 250_000)            # 13: 1o repique (fecha 250k >= 1,25 x S): fixa o fundo; R = 260k
+    for k in range(range_len // 2):                       # lateral sem tocar a regiao do suporte (S x 1,10 = 165k)
+        s.add(240_000, 245_000, 200_000, 210_000)
+    if with_test:                                         # teste de 3 candles: desce ate 155k e recupera
+        s.add(210_000, 212_000, 175_000, 180_000)
+        s.add(180_000, 182_000, test_low, 162_000)
+        s.add(162_000, 200_000, 158_000, 195_000)        # fecha 195k >= min((S+R)/2, 1,25 S) = 187,5k: teste completo
+    else:
+        s.add(210_000, 230_000, 190_000, 215_000)
+        s.add(215_000, 232_000, 191_000, 220_000)
+        s.add(220_000, 233_000, 192_000, 225_000)
+    for k in range(range_len - range_len // 2):
+        s.add(220_000, 245_000, 205_000, 230_000)
+    s.add(240_000, breakout_high, 238_000, breakout_close, breakout_vol)   # rompimento de R
     s.flat(breakout_close, start_flat)
     return s
 
 
 def params(**over) -> Params:
-    base = Params(age_window_days={"5m": None, "1h": None, "4h": None})
+    base = Params(age_window_days=(0.0, 10_000.0))       # sem filtro de idade (o teste de idade usa os valores reais)
     return dataclasses.replace(base, **over)
 
 
@@ -86,98 +82,164 @@ def kinds(det: Detector) -> list[str]:
     return [e.kind for e in det.events]
 
 
+CREATED = GRAD - 3 * 86400        # token criado 3 dias antes da graduacao: o rompimento cai dentro de 2-7 dias
+
+
 class DetectorTests(unittest.TestCase):
     def test_textbook_setup_gives_one_primary_entry(self):
         s = textbook()
-        det = run(s.bars, params(), "1h", L_BC, GRAD)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
         entries = [e for e in det.events if e.kind == "ENTRADA"]
         self.assertEqual(len(entries), 1, kinds(det))
         e = entries[0]
         self.assertTrue(e.data["primario"])
         self.assertEqual(e.data["P_peak"], 1_000_000)
-        self.assertAlmostEqual(e.data["S"], 150_000)
-        self.assertEqual(e.data["R"], 300_000)
-        self.assertEqual(e.data["n_wicks"], 1)
-        self.assertAlmostEqual(e.data["stop"], 150_000 * 0.97)
+        self.assertEqual(e.data["faixa_pico"], "1-5M")                 # 1M exato cai em 1-5M (faixas [ini, fim))
+        self.assertEqual(e.data["S"], 150_000)
+        self.assertEqual(e.data["R"], 260_000)                 # o 1o repique faz parte da resistencia
+        self.assertEqual(e.data["n_testes"], 1)
+        self.assertEqual(e.data["ultimo_teste_minima"], 155_000)
+        self.assertAlmostEqual(e.data["stop"], 155_000 * 0.97)
         self.assertAlmostEqual(e.data["tp"], 950_000)
+        self.assertAlmostEqual(e.data["queda_pct"], 85.0)
+        self.assertTrue(e.data["S_acima_100k"])
+        self.assertEqual(e.data["box_start"], 12)              # a zona conta do fundo
         self.assertEqual(e.ts, s.bars[e.idx].ts)
         self.assertEqual(e.decision_ts, e.ts + H)
-        self.assertIn("WATCHLIST", kinds(det))
-        self.assertLess(kinds(det).index("WATCHLIST"), kinds(det).index("ENTRADA"))
+        k = kinds(det)
+        self.assertLess(k.index("FASE2"), k.index("TESTE"))
+        self.assertLess(k.index("TESTE"), k.index("WATCHLIST"))
+        self.assertLess(k.index("WATCHLIST"), k.index("ENTRADA"))
 
     def test_no_lookahead_every_prefix_gives_the_same_events(self):
         s = textbook()
-        full = run(s.bars, params(), "1h", L_BC, GRAD)
+        full = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
         for k in range(1, len(s.bars) + 1):
-            part = run(s.bars[:k], params(), "1h", L_BC, GRAD)
+            part = run(s.bars[:k], params(), "1h", L_BC, GRAD, CREATED)
             expect = [(e.kind, e.idx, e.data) for e in full.events if e.idx < k]
             self.assertEqual([(e.kind, e.idx, e.data) for e in part.events], expect, f"prefixo {k}")
 
     def test_future_bars_cannot_change_a_past_decision(self):
         s = textbook()
-        base = run(s.bars, params(), "1h", L_BC, GRAD)
+        base = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
         entry = next(e for e in base.events if e.kind == "ENTRADA")
         crashed = list(s.bars[: entry.idx + 1]) + [flat(b.ts, 1_000.0) for b in s.bars[entry.idx + 1:]]
-        other = run(crashed, params(), "1h", L_BC, GRAD)
+        other = run(crashed, params(), "1h", L_BC, GRAD, CREATED)
         self.assertEqual([(e.kind, e.idx, e.data) for e in other.events if e.idx <= entry.idx],
                          [(e.kind, e.idx, e.data) for e in base.events if e.idx <= entry.idx])
 
-    def test_drop_beyond_max_invalidates_the_wave(self):
-        det = run(textbook(drop_low=80_000, wick_low=80_000).bars, params(), "1h", L_BC, GRAD)
-        self.assertIn("ONDA_INVALIDA", kinds(det))
+    def test_drop_beyond_90_percent_is_a_dead_coin(self):
+        det = run(textbook(bottom=95_000, test_low=100_000).bars, params(), "1h", L_BC, GRAD, CREATED)
+        dead = [e for e in det.events if e.kind == "ONDA_INVALIDA"]
+        self.assertTrue(dead and "moeda morta" in dead[0].data["motivo"], kinds(det))
         self.assertNotIn("ENTRADA", kinds(det))
 
-    def test_low_below_bonding_curve_level_invalidates(self):
-        det = run(textbook().bars, params(drop_max=0.97), "1h", 155_000.0, GRAD)
-        invalid = [e for e in det.events if e.kind == "ONDA_INVALIDA"]
-        self.assertTrue(invalid and invalid[0].data["motivo"] == "minima furou L_bc", kinds(det))
+    def test_bottom_below_75_percent_of_the_curve_level_invalidates(self):
+        det = run(textbook().bars, params(), "1h", 210_000.0, GRAD, CREATED)      # 0,75 x 210k = 157,5k > fundo 150k
+        dead = [e for e in det.events if e.kind == "ONDA_INVALIDA"]
+        self.assertTrue(dead and "0.75 x L_bc" in dead[0].data["motivo"], kinds(det))
         self.assertNotIn("ENTRADA", kinds(det))
-
-    def test_breakout_without_volume_is_not_an_entry(self):
-        det = run(textbook(breakout_vol=1_500).bars, params(), "1h", L_BC, GRAD)
-        self.assertNotIn("ENTRADA", kinds(det))
-
-    def test_box_must_mature(self):
-        det = run(textbook(box_len=6).bars, params(), "1h", L_BC, GRAD)
-        self.assertNotIn("ENTRADA", kinds(det))
-        det = run(textbook(box_len=6).bars, params(box_min_candles=6), "1h", L_BC, GRAD)
+        det = run(textbook().bars, params(), "1h", 195_000.0, GRAD, CREATED)      # 0,75 x 195k = 146k < 150k: vale
         self.assertIn("ENTRADA", kinds(det))
 
-    def test_needs_a_wick_at_support(self):
-        # "martelo" fora da zona S +-5%: o suporte (minima da caixa) fica no fundo da queda, longe do martelo
-        det = run(textbook(wick_low=190_000, drop_low=150_000).bars, params(bounce_fractal=1, box_min_candles=12), "1h", L_BC, GRAD)
-        box_events = [e for e in det.events if e.kind == "ENTRADA"]
-        for e in box_events:
-            self.assertGreaterEqual(e.data["n_wicks"], 1)
+    def test_slow_breakout_without_volume_is_still_an_entry(self):
+        det = run(textbook(breakout_vol=10.0).bars, params(), "1h", L_BC, GRAD, CREATED)
+        entries = [e for e in det.events if e.kind == "ENTRADA"]
+        self.assertEqual(len(entries), 1)
+        self.assertLess(entries[0].data["vol_ratio"], 1.0)        # volume e so atributo
 
-    def test_absurd_breakout_candle_is_skipped(self):
-        det = run(textbook(breakout_high=800_000, breakout_close=700_000).bars, params(), "1h", L_BC, GRAD)
-        self.assertIn("ABSURDO", kinds(det))
+    def test_zone_must_mature(self):
+        det = run(textbook(range_len=2).bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("ENTRADA", kinds(det))
+        det = run(textbook(range_len=2).bars, params(zone_min_candles=6), "1h", L_BC, GRAD, CREATED)
+        self.assertIn("ENTRADA", kinds(det))
+
+    def test_needs_a_support_test(self):
+        det = run(textbook(with_test=False).bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("TESTE", kinds(det))
+        self.assertNotIn("WATCHLIST", kinds(det))
         self.assertNotIn("ENTRADA", kinds(det))
 
-    def test_losing_the_last_wick_invalidates_and_box_restarts(self):
+    def test_first_bounce_is_never_bought(self):
+        s = Series()
+        s.flat(60_000, 2)
+        for p in (150_000, 300_000, 600_000, 900_000):
+            s.add(p * 0.9, p * 1.02, p * 0.88, p)
+        s.add(900_000, 1_000_000, 880_000, 950_000)
+        s.add(950_000, 960_000, 160_000, 170_000)            # queda de 84% num candle
+        for _ in range(14):                                   # fundo arrastado (zona velha, mas sem teste)
+            s.add(170_000, 172_000, 158_000, 165_000)
+        s.add(165_000, 400_000, 164_000, 390_000)            # 1o repique forte, acima de tudo da zona
+        s.flat(390_000, 5)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("ENTRADA", kinds(det))
+
+    def test_multi_candle_test_counts_once_and_two_episodes_count_twice(self):
+        s = textbook(range_len=8, start_flat=0)
+        bars = s.bars[:-1]                                      # sem o rompimento
+        t = bars[-1].ts + H
+        extra = [(230_000, 232_000, 170_000, 172_000), (172_000, 175_000, 160_000, 168_000),   # 2o teste, 3 candles
+                 (168_000, 205_000, 166_000, 200_000), (200_000, 240_000, 199_000, 230_000),
+                 (240_000, 300_000, 238_000, 290_000, 5_000)]
+        for k, row in enumerate(extra):
+            bars.append(Bar(t + k * H, *row[:4], row[4] if len(row) > 4 else 1_000.0))
+        det = run(bars, params(), "1h", L_BC, GRAD, CREATED)
+        tests = [e for e in det.events if e.kind == "TESTE"]
+        self.assertEqual(len(tests), 2)
+        entry = next(e for e in det.events if e.kind == "ENTRADA")
+        self.assertEqual(entry.data["n_testes"], 2)
+        self.assertEqual(entry.data["ultimo_teste_minima"], 160_000)
+        self.assertAlmostEqual(entry.data["stop"], 160_000 * 0.97)
+
+    def test_a_descent_without_recovery_is_not_a_test(self):
+        s = textbook(with_test=False, start_flat=0)
+        bars = s.bars[:-1]
+        t = bars[-1].ts + H
+        for k, row in enumerate([(230_000, 231_000, 158_000, 160_000), (160_000, 170_000, 156_000, 162_000)]):
+            bars.append(Bar(t + k * H, *row, 1_000.0))           # desce ate o suporte e fica la
+        det = run(bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("TESTE", kinds(det))
+
+    def test_close_below_the_last_test_kills_the_setup_and_the_zone_restarts(self):
         s = textbook(start_flat=0)
-        s.bars.pop()                                   # tira o rompimento
-        s.t -= H
-        s.add(210_000, 212_000, 140_000, 141_000)       # fecha abaixo da minima da wick -2%
-        s.add(141_000, 345_000, 140_000, 340_000, 9_000)  # "rompimento" logo depois: caixa nova ainda imatura
-        det = run(s.bars, params(drop_max=0.95), "1h", L_BC, GRAD)
+        bars = s.bars[:-1]                                      # tira o rompimento
+        t = bars[-1].ts + H
+        bars.append(Bar(t, 210_000, 212_000, 140_000, 151_000, 1_000.0))        # fecha < 155k x 0,98 = 151,9k
+        bars.append(Bar(t + H, 151_000, 345_000, 150_000, 340_000, 9_000.0))    # "rompimento" logo depois
+        det = run(bars, params(), "1h", L_BC, GRAD, CREATED)
         self.assertIn("INVALIDADO", kinds(det))
         self.assertNotIn("ENTRADA", kinds(det))
 
-    def test_age_window_marks_out_of_window_entries_as_not_primary(self):
-        det = run(textbook().bars, Params(), "1h", L_BC, GRAD)   # janela 2-7 dias no 1h; o rompimento e com ~1,5 dia
-        entries = [e for e in det.events if e.kind == "ENTRADA"]
-        self.assertEqual(len(entries), 1)
-        self.assertFalse(entries[0].data["na_janela"])
-        self.assertFalse(entries[0].data["primario"])
+    def test_absurd_breakout_candle_is_vetoed(self):
+        det = run(textbook(breakout_high=700_000, breakout_close=650_000).bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertIn("ABSURDO", kinds(det))
+        self.assertNotIn("ENTRADA", kinds(det))
 
-    def test_close_measure_uses_closes(self):
-        p = params(measure="close")
-        det = run(textbook().bars, p, "1h", L_BC, GRAD)
-        runner = [e for e in det.events if e.kind == "FASE2"]
-        self.assertTrue(runner)
-        self.assertEqual(runner[0].data["P_peak"], 950_000)
+    def test_age_since_creation_decides_the_primary_signal(self):
+        bars = textbook().bars
+        inside = run(bars, Params(), "1h", L_BC, GRAD, CREATED)           # 2-7 dias (criado 3 dias antes da graduacao)
+        e = next(e for e in inside.events if e.kind == "ENTRADA")
+        self.assertTrue(e.data["na_janela"] and e.data["primario"])
+        self.assertGreater(e.data["idade_dias"], e.data["idade_grad_dias"])
+        young = run(bars, Params(), "1h", L_BC, GRAD, GRAD - 600)         # ~1,3 dia: fora da janela
+        e = next(e for e in young.events if e.kind == "ENTRADA")
+        self.assertFalse(e.data["na_janela"] or e.data["primario"])
+        unknown = run(bars, Params(), "1h", L_BC, GRAD, None)             # sem data de criacao: nunca primario
+        e = next(e for e in unknown.events if e.kind == "ENTRADA")
+        self.assertIsNone(e.data["idade_dias"])
+        self.assertFalse(e.data["primario"])
+
+    def test_tight_range_inside_the_support_region_has_no_tests(self):
+        s = Series()
+        s.flat(60_000, 2)
+        for p in (150_000, 300_000, 600_000, 900_000):
+            s.add(p * 0.9, p * 1.02, p * 0.88, p)
+        s.add(900_000, 1_000_000, 880_000, 950_000)
+        s.add(950_000, 960_000, 150_000, 155_000)
+        for k in range(20):                                     # tudo dentro de S x 1,10: nao ha de onde "descer"
+            s.add(155_000, 162_000, 151_000, 158_000 if k % 2 else 153_000)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("TESTE", kinds(det))
 
     def test_out_of_order_bars_are_rejected(self):
         det = Detector(params(), "1h", L_BC, GRAD)
@@ -185,28 +247,27 @@ class DetectorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             det.update(flat(T0, 1.0))
 
-    def test_hammer_definition(self):
-        self.assertTrue(is_hammer(Bar(0, 100, 101, 80, 99, 1.0), 2.0))     # pavio 19 >= 2 x corpo 1
-        self.assertFalse(is_hammer(Bar(0, 100, 101, 95, 90, 1.0), 2.0))    # vermelho, sem pavio inferior relevante
-        self.assertFalse(is_hammer(Bar(0, 100, 100, 100, 100, 0.0, True), 2.0))   # candle preenchido
-
 
 class ParamsTests(unittest.TestCase):
-    def test_shipped_yaml_is_the_documented_proposal_over_the_handoff_defaults(self):
+    def test_shipped_yaml_is_the_operator_rule_set(self):
         shipped = load_params()
-        handoff = Params()
-        changed = {k for k, v in shipped.as_dict().items() if handoff.as_dict()[k] != v}
-        # so estas chaves mudam em relacao ao handoff (cada uma com motivo no yaml e no relatorio do Passo 0)
-        self.assertEqual(changed, {"drop_max", "measure", "tp_reference", "wick_body_mult", "age_window_days"})
-        self.assertEqual(shipped.version, load_params().version)          # hash estavel
-        self.assertNotEqual(shipped.version, handoff.version)
-        self.assertNotEqual(shipped.version, dataclasses.replace(shipped, drop_max=0.9).version)
+        self.assertEqual(shipped, Params())                  # o yaml repete as regras do operador (codigo = documento)
+        self.assertEqual(shipped.version, load_params().version)
+        self.assertNotEqual(shipped.version, dataclasses.replace(shipped, drop_max=0.95).version)
+        self.assertEqual([shipped.peak_band(x) for x in (300_000, 499_999, 500_000, 1_000_000, 4_999_999, 5_000_000, 299_999)],
+                         ["300-500k", "300-500k", "500k-1M", "1-5M", "1-5M", ">5M", "?"])
 
     def test_unknown_or_invalid_params_fail(self):
         with self.assertRaises(ValueError):
             params_from_dict({"nao_existe": 1})
         with self.assertRaises(ValueError):
             Params(drop_min=0.9, drop_max=0.8)
+        with self.assertRaises(ValueError):
+            Params(test_zone=0.30, recover_mult=1.25)       # recuperacao precisa ficar acima da regiao do suporte
+
+    def test_ints_and_floats_give_the_same_hash(self):
+        self.assertEqual(params_from_dict({"runner_min_mc": 300000}).version, Params().version)
+        self.assertEqual(params_from_dict({"age_window_days": [2, 7]}).version, Params().version)
 
 
 class SimulatorTests(unittest.TestCase):
@@ -215,30 +276,33 @@ class SimulatorTests(unittest.TestCase):
         self.costs = CostModel()
         self.sol = lambda ts: 100.0
 
-    def _entry(self, bars_before: list[Bar], stop: float = 90.0, tp: float = 200.0):
+    def _entry(self, bars_before: list[Bar], stop: float = 90.0, tp: float = 200.0, peak: float = 1_000.0):
         from ..pos_runner.detector import Event
         idx = len(bars_before) - 1
-        return Event("ENTRADA", idx, bars_before[-1].ts, bars_before[-1].ts + H, {"stop": stop, "tp": tp})
+        return Event("ENTRADA", idx, bars_before[-1].ts, bars_before[-1].ts + H, {"stop": stop, "tp": tp, "P_peak": peak})
 
     def _bars(self, *ohlc) -> list[Bar]:
         return [Bar(T0 + k * H, *row, 1_000.0) for k, row in enumerate(ohlc)]
 
     def test_exit_a_hits_target(self):
         bars = self._bars((100, 101, 99, 100), (100, 120, 95, 115), (115, 210, 110, 190))
-        r = simulate(bars, self._entry(bars[:1]), "A", self.p, self.costs, "pumpswap", 50.0, self.sol)
+        r = simulate(bars, self._entry(bars[:1], peak=210.0), "A", self.p, self.costs, "pumpswap", 50.0, self.sol)
         self.assertEqual((r.status, r.reason, r.hit_tp), ("fechado", "alvo", True))
         self.assertAlmostEqual(r.gross_ret, 200 / 100 - 1)
         self.assertLess(r.net_ret, r.gross_ret)
         self.assertAlmostEqual(r.r_mult, r.net_ret / 0.10)
+        self.assertAlmostEqual(r.max_path_pct, 100 * (200 - 100) / (210 - 100))   # saiu no alvo: maxima = nivel de saida
 
     def test_stop_gap_fills_at_open_and_ambiguous_counts_stop_first(self):
         bars = self._bars((100, 101, 99, 100), (100, 110, 95, 105), (80, 85, 70, 75))
         r = simulate(bars, self._entry(bars[:1]), "A", self.p, self.costs, "pumpswap", 50.0, self.sol)
         self.assertEqual((r.reason, r.legs[-1].price), ("stop", 80))
+        self.assertAlmostEqual(r.max_high, 110)                 # o candle inteiro antes do stop conta
         bars = self._bars((100, 101, 99, 100), (100, 250, 50, 150))
         r = simulate(bars, self._entry(bars[:1]), "A", self.p, self.costs, "pumpswap", 50.0, self.sol)
         self.assertTrue(r.ambiguous)
         self.assertEqual((r.reason, r.legs[-1].price, r.hit_tp), ("stop", 90.0, False))
+        self.assertEqual(r.max_high, 100)                       # dentro do candle ambiguo a maxima nao conta
 
     def test_cancelled_when_next_open_is_outside_the_plan(self):
         bars = self._bars((100, 101, 99, 100), (85, 90, 80, 85))
@@ -259,13 +323,20 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual((r.reason, r.legs[-1].idx, r.bars_held), ("tempo", 4, 4))
         r = simulate(bars[:3], self._entry(bars[:1]), "A", p, self.costs, "pumpswap", 50.0, self.sol)
         self.assertEqual(r.status, "em_aberto")
+        self.assertEqual(r.max_high, 105)
 
-    def test_exhaustion_power_candle_exits_next_open(self):
+    def test_exhaustion_is_a_power_candle_near_the_last_top(self):
         p = params(atr_period=3)
-        bars = self._bars((100, 101, 99, 100), (100, 102, 99, 101), (101, 103, 100, 102), (102, 104, 101, 103),
-                          (103, 190, 102, 185), (180, 182, 170, 175))
-        r = simulate(bars, self._entry(bars[:1], tp=400.0), "A", p, self.costs, "pumpswap", 50.0, self.sol)
-        self.assertEqual((r.reason, r.legs[-1].price), ("exaustao", 180))
+        rows = [(100, 101, 99, 100), (100, 102, 99, 101), (101, 103, 100, 102), (102, 104, 101, 103)]
+        near_top = self._bars(*rows, (103, 185, 102, 180), (175, 178, 170, 172))       # maxima 185 >= 0,85 x 200
+        r = simulate(near_top, self._entry(near_top[:1], tp=190.0, peak=200.0), "A", p, self.costs, "pumpswap", 50.0, self.sol)
+        self.assertEqual((r.reason, r.legs[-1].price), ("exaustao", 175))
+        far = self._bars(*rows, (103, 160, 102, 158), (158, 159, 150, 155))             # power candle, mas longe do topo
+        r = simulate(far, self._entry(far[:1], tp=190.0, peak=200.0), "A", p, self.costs, "pumpswap", 50.0, self.sol)
+        self.assertNotEqual(r.reason, "exaustao")
+        red = self._bars(*rows, (103, 186, 100, 110), (110, 112, 105, 106))             # vermelho perto do topo tambem
+        r = simulate(red, self._entry(red[:1], tp=190.0, peak=200.0), "A", p, self.costs, "pumpswap", 50.0, self.sol)
+        self.assertEqual(r.reason, "exaustao")
 
 
 class CostTests(unittest.TestCase):

@@ -53,6 +53,7 @@ class Context:
     quotes: QuoteBook
     enumerate_fn: Callable[[str, int, int], WindowResult]          # (launchpad, ini, fim) -> resultado
     supply_fn: Callable[[str], Optional[float]]                     # mint -> supply total
+    creation_fn: Callable[[str, str], Optional[float]] = lambda mint, migration_sig: None   # criacao do token (on-chain)
     costs: CostModel = field(default_factory=CostModel)
     sealed_holdout: set[str] = field(default_factory=set)
     _usd: dict[tuple[str, str], Optional[UsdSeries]] = field(default_factory=dict)
@@ -134,7 +135,12 @@ def stage1(ctx: Context, row: Any) -> tuple[str, Optional[bool]]:
         return "sem_dados", None
     max_mc = max(b.high for b in real)
     runner = max_mc >= ctx.params.runner_min_mc
-    ctx.store.save_stage1(row["pool"], "ok", max_mc, runner, real[0].open, supply, {"candles": len(real)})
+    # idade = desde a CRIACAO do token (regra do operador): so para runners (os unicos que podem ter setup); sem a
+    # data a idade fica desconhecida e nenhum setup do token e primario (falta explicita, contada no relatorio)
+    created = ctx.creation_fn(row["mint"], row["signature"]) if runner and row["mint"] and row["signature"] else None
+    ctx.store.save_stage1(row["pool"], "ok", max_mc, runner, real[0].open, supply,
+                          {"candles": len(real), "criacao": "ok" if created else ("sem_dado" if runner else "nao_precisa")},
+                          created)
     return "ok", runner
 
 
@@ -190,19 +196,26 @@ def detect_and_trade(ctx: Context, row: Any, bars: dict[str, list[Bar]]) -> dict
         if ctx.store.stage2(row["pool"], tf)[0] != "ok":
             counts[tf] = 0
             continue
-        det = run(tf_bars, ctx.params, tf, l_bc, row["grad_ts"])
+        det = run(tf_bars, ctx.params, tf, l_bc, row["grad_ts"], st[6])
         entries = [e for e in det.events if e.kind == "ENTRADA" and e.decision_ts <= limit]
         ctx.store.save_setups(row["pool"], tf, [{"kind": e.kind, "idx": e.idx, "ts": e.ts, "decision_ts": e.decision_ts, "data": e.data} for e in entries])
         for n, e in enumerate(entries, start=1):
             for variant in ("A", "B"):
                 for kind, costs in (("setup", ctx.costs), ("setup_custo2x", dataclasses.replace(ctx.costs, multiplier=2.0))):
                     res = simulate(tf_bars, e, variant, ctx.params, costs, dex, l_bc, sol_at)
-                    ctx.store.save_trade(row["pool"], tf, n, variant, kind, res,
-                                         {"entrada": res.entry_price, "stop": res.stop, "alvo": res.tp, "risco": res.risk_frac,
-                                          "n_wicks": e.data["n_wicks"], "P_peak_topo": e.data.get("P_peak_topo"),
-                                          "idade_d": e.data["idade_dias"], "entry_ts": res.entry_ts, "ambiguo": res.ambiguous})
+                    ctx.store.save_trade(row["pool"], tf, n, variant, kind, res, trade_info(e, res))
         counts[tf] = sum(1 for e in entries if e.data.get("primario"))
     return counts
+
+
+def trade_info(e: Any, res: Any) -> dict[str, Any]:
+    """Atributos do setup guardados com cada trade (cortes do relatorio; nenhum deles e filtro)."""
+    d = e.data
+    return {"entrada": res.entry_price, "stop": res.stop, "alvo": res.tp, "risco": res.risk_frac, "entry_ts": res.entry_ts,
+            "ambiguo": res.ambiguous, "P_peak": d["P_peak"], "faixa_pico": d["faixa_pico"], "n_testes": d["n_testes"],
+            "S_acima_100k": d["S_acima_100k"], "R_S": d["R_S"], "S_sobre_Lbc": d["S_sobre_Lbc"], "vol_ratio": d["vol_ratio"],
+            "power_candle": d["power_candle"], "idade_d": d["idade_dias"], "idade_grad_d": d["idade_grad_dias"],
+            "zona_candles": d["box_len"], "max_caminho_pct": res.max_path_pct}
 
 
 # ---------------------------------------------------------------------------

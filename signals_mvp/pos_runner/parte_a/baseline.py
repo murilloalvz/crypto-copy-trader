@@ -1,9 +1,11 @@
 """Linha de base PAREADA: mostra se o padrao agrega algo alem de "comprar token que ja correu".
 
-Para cada setup primario (pool P, tf, entrada na idade a = entrada - graduacao de P, colchete stop -x% / alvo +y%):
-sorteia (seed derivada de P e tf) ate K outros runners do MESMO periodo que ja eram runners na idade a (MC >= piso
-antes de a) e tem candles para o trade sair; cada um entra no open do 1o candle com idade >= a, com o MESMO
-colchete percentual, as mesmas saidas A/B, o mesmo stop de tempo e o mesmo custo. Base do setup = media dos K.
+Para cada setup primario (pool P, tf, entrada na idade a = entrada - CRIACAO do token de P, colchete stop -x% /
+alvo +y%): sorteia (seed derivada de P e tf) ate K outros runners do MESMO periodo, com data de criacao conhecida,
+que ja eram runners na idade a (MC >= piso antes de a) e tem candles para o trade sair; cada um entra no open do 1o
+candle com idade >= a, com o MESMO colchete percentual, as mesmas saidas A/B, o mesmo stop de tempo e o mesmo custo.
+A exaustao (power candle perto do topo) usa o pico EQUIVALENTE: a mesma distancia percentual da entrada ao P_peak
+do setup (entrada_base x P_peak / entrada_setup), para o colchete inteiro ficar igual. Base do setup = media dos K.
 """
 
 from __future__ import annotations
@@ -20,8 +22,9 @@ from .pipeline import DEX_OF_LAUNCHPAD, Context, load_bars
 K_BASELINE = 5
 
 
-def runner_by_age(bars: list[Any], grad_ts: int, age_s: float, floor: float, step: int) -> bool:
-    lim = grad_ts + age_s
+def runner_by_age(bars: list[Any], created_ts: float, age_s: float, floor: float, step: int) -> bool:
+    """Ja era runner (maxima >= piso num candle FECHADO) quando tinha `age_s` segundos de existencia."""
+    lim = created_ts + age_s
     return any(b.high >= floor for b in bars if b.ts + step <= lim and not b.filled)
 
 
@@ -32,12 +35,15 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
     if trade is None:
         return []
     info = json.loads(trade[0])
-    if not info.get("entry_ts") or not info.get("entrada") or not info.get("stop") or not info.get("alvo"):
+    if not all(info.get(key) for key in ("entry_ts", "entrada", "stop", "alvo", "P_peak")):
         return []
-    me = next(r for r in candidates if r["pool"] == pool)
-    age = info["entry_ts"] - me["grad_ts"]
+    created = ctx.store.stage1(pool)[6]
+    if created is None:          # setup primario sempre tem criacao conhecida; sem ela nao ha idade para parear
+        return []
+    age = info["entry_ts"] - created
     stop_pct = 1.0 - info["stop"] / info["entrada"]
     tp_pct = info["alvo"] / info["entrada"] - 1.0
+    peak_mult = info["P_peak"] / info["entrada"]
     step = tf_seconds(tf)
     rng = random.Random(f"{ctx.plan.seed}:base:{pool}:{tf}:{n}")
     pool_list = [r for r in candidates if r["pool"] != pool]
@@ -48,16 +54,20 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
     for r in pool_list:
         if len(out) >= k:
             break
-        bars = load_bars(ctx, r, tf)
-        if not bars or not runner_by_age(bars, r["grad_ts"], age, ctx.params.runner_min_mc, step):
+        st = ctx.store.stage1(r["pool"])
+        r_created = st[6] if st is not None else None
+        if r_created is None:
             continue
-        target = r["grad_ts"] + age
+        bars = load_bars(ctx, r, tf)
+        if not bars or not runner_by_age(bars, r_created, age, ctx.params.runner_min_mc, step):
+            continue
+        target = r_created + age
         j = next((i for i, b in enumerate(bars) if b.ts >= target), None)
         if j is None or j == 0 or j + ctx.params.time_stop_candles >= len(bars):
             continue
         entry = bars[j].open
-        ev = Event("ENTRADA", j - 1, bars[j - 1].ts, bars[j].ts, {"stop": entry * (1 - stop_pct), "tp": entry * (1 + tp_pct)})
-        st = ctx.store.stage1(r["pool"])
+        ev = Event("ENTRADA", j - 1, bars[j - 1].ts, bars[j].ts,
+                   {"stop": entry * (1 - stop_pct), "tp": entry * (1 + tp_pct), "P_peak": entry * peak_mult})
         row = {"pool": r["pool"]}
         for variant in ("A", "B"):
             res = simulate(bars, ev, variant, ctx.params, ctx.costs, DEX_OF_LAUNCHPAD.get(r["launchpad"], "desconhecido"),
@@ -70,7 +80,7 @@ def baseline_for_setup(ctx: Context, period: str, pool: str, tf: str, n: int, ca
 def run_baselines(ctx: Context, period: str) -> int:
     """Calcula (e grava em `meta`) a base de cada setup primario do periodo. Devolve quantos setups receberam base."""
     runners = [r for r in ctx.store.graduations(period)
-               if (st := ctx.store.stage1(r["pool"])) is not None and st[0] == "ok" and st[2] == 1]
+               if (st := ctx.store.stage1(r["pool"])) is not None and st[0] == "ok" and st[2] == 1 and st[6] is not None]
     done = 0
     for pool, tf, n, _prim, _ts, _ev in ctx.store.setups(period, primary_only=True):
         key = f"base:{pool}:{tf}:{n}"

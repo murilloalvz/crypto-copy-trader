@@ -38,9 +38,22 @@ POS_RUNNER_DETALHE_COLUMNS = [
     "atraso_alerta_s", "entrada_ts", "entrada_mc_paper", "ambiguo_A", "ambiguo_B", "bruto_A", "bruto_B", "custo2x_A", "custo2x_B",
     "R_A", "R_B", "tempo_B_h", "base_n", "base_A", "base_B", "edge_A", "edge_B", "vol_ratio_rompimento", "cobertura_ate_topo",
     "status", "versao_config",
+    # atributos das regras do operador (2026-10-16): nenhum e filtro
+    "faixa_pico", "S_acima_100k", "R_S", "idade_grad_d", "max_caminho_A_pct", "max_caminho_B_pct",
 ]
 
 SCHEMA_VERSION = 1
+PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, tf TEXT NOT NULL, n INTEGER NOT NULL, primario INTEGER,
+  decision_ts REAL, mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config TEXT, event_json TEXT,
+  status TEXT NOT NULL DEFAULT 'aberto', result_a REAL, result_b REAL, reason_a TEXT, reason_b TEXT, tempo_h REAL,
+  detail_json TEXT, base_json TEXT, tg_message_id INTEGER, alert_ts REAL, closed_ts REAL, UNIQUE (pool, tf, n, versao_config)
+);"""
+PR_SIGNALS_COLS = {
+    "id", "pool", "tf", "n", "primario", "decision_ts", "mint", "symbol", "launchpad", "dex", "versao_config", "event_json",
+    "status", "result_a", "result_b", "reason_a", "reason_b", "tempo_h", "detail_json", "base_json", "tg_message_id", "alert_ts",
+    "closed_ts",
+}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS config_versions (hash TEXT PRIMARY KEY, first_ts REAL, json TEXT);
@@ -95,12 +108,7 @@ CREATE TABLE IF NOT EXISTS pr_bars (
   pool TEXT NOT NULL, tf TEXT NOT NULL, ts INTEGER NOT NULL, o REAL, h REAL, l REAL, c REAL, v REAL, filled INTEGER,
   PRIMARY KEY (pool, tf, ts)
 );
-CREATE TABLE IF NOT EXISTS pr_signals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, tf TEXT NOT NULL, n INTEGER NOT NULL, primario INTEGER,
-  decision_ts REAL, mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config TEXT, event_json TEXT,
-  status TEXT NOT NULL DEFAULT 'aberto', result_a REAL, result_b REAL, reason_a TEXT, reason_b TEXT, tempo_h REAL,
-  detail_json TEXT, base_json TEXT, tg_message_id INTEGER, alert_ts REAL, closed_ts REAL, UNIQUE (pool, tf, n)
-);
+""" + PR_SIGNALS_DDL + """
 CREATE INDEX IF NOT EXISTS pr_signals_open ON pr_signals (status);
 CREATE TABLE IF NOT EXISTS pr_alerts (key TEXT PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS pr_trade_links (trade_id INTEGER PRIMARY KEY, pr_signal_id INTEGER NOT NULL);
@@ -139,6 +147,7 @@ class Storage:
             self._db.execute("PRAGMA synchronous=NORMAL")
             self._db.execute("PRAGMA busy_timeout=30000")
             self._db.executescript(SCHEMA)
+            self._migrate_pr_signals()
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -147,6 +156,27 @@ class Storage:
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True}
         self._warned: set[str] = set()
+
+    def _migrate_pr_signals(self) -> None:
+        """Banco da 1a versao da Parte B: sinal unico por (pool, tf, n). Com outra config a numeracao recomeca, entao
+        a chave passa a incluir `versao_config` (senao um sinal novo seria descartado por colidir com um antigo)."""
+        row = self._db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pr_signals'").fetchone()
+        if row is None or "UNIQUE(pool,tf,n,versao_config)" in row[0].replace(" ", ""):
+            return
+        self._db.execute("BEGIN")
+        try:
+            self._db.execute("ALTER TABLE pr_signals RENAME TO pr_signals_v1")
+            self._db.execute("DROP INDEX IF EXISTS pr_signals_open")
+            self._db.execute(PR_SIGNALS_DDL)
+            cols = [r[1] for r in self._db.execute("PRAGMA table_info(pr_signals_v1)").fetchall()]
+            keep = ", ".join(c for c in cols if c in PR_SIGNALS_COLS)
+            self._db.execute(f"INSERT INTO pr_signals ({keep}) SELECT {keep} FROM pr_signals_v1")
+            self._db.execute("DROP TABLE pr_signals_v1")
+            self._db.execute("CREATE INDEX IF NOT EXISTS pr_signals_open ON pr_signals (status)")
+            self._db.execute("COMMIT")
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         with self._lock:
@@ -530,8 +560,8 @@ class Storage:
     def pr_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
         return self._one("SELECT * FROM pr_signals WHERE id=?", (signal_id,))
 
-    def pr_signal_by_key(self, pool: str, tf: str, n: int) -> Optional[sqlite3.Row]:
-        return self._one("SELECT * FROM pr_signals WHERE pool=? AND tf=? AND n=?", (pool, tf, n))
+    def pr_signal_by_key(self, pool: str, tf: str, n: int, version: str) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_signals WHERE pool=? AND tf=? AND n=? AND versao_config=?", (pool, tf, n, version))
 
     def pr_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
         where, args = [], []
@@ -544,6 +574,13 @@ class Storage:
 
     def pr_signal_for_contract(self, contract: str) -> Optional[sqlite3.Row]:
         return self._one("SELECT * FROM pr_signals WHERE mint=? ORDER BY decision_ts DESC, id DESC LIMIT 1", (contract,))
+
+    def pr_version_start(self, version: str, ts: float) -> float:
+        """Inicio (1o ciclo) de uma versao_config do POS-RUNNER: gravado uma vez, nunca reescrito."""
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (f"pr_versao_inicio:{version}", repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (f"pr_versao_inicio:{version}",)).fetchone()
+        return float(row[0])
 
     def pr_alert_once(self, key: str, ts: float) -> bool:
         """True na 1a vez que a chave aparece (alerta ainda nao enviado); False depois (nunca repete alerta)."""
@@ -603,7 +640,8 @@ class Storage:
             out.append([
                 iso_utc(r["decision_ts"]), csv_safe(r["symbol"]), r["mint"], r["launchpad"], r["tf"],
                 _num(None if age is None else age * 24, 1), _num(d.get("P_peak_topo") or d.get("P_peak")),
-                _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(d.get("S")), _num(d.get("R")), d.get("n_wicks", ""),
+                _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(d.get("S")), _num(d.get("R")),
+                d.get("n_testes", d.get("n_wicks", "")),     # coluna do handoff: n de testes de suporte (wicks)
                 _num(entry), _num(stop), _num(tp), _num(rr, 2), "sim" if d.get("power_candle") else "nao",
                 _num(None if r["result_a"] is None else 100 * r["result_a"], 2), _num(None if r["result_b"] is None else 100 * r["result_b"], 2),
                 _num(r["tempo_h"], 1), reason, r["versao_config"],
@@ -630,5 +668,8 @@ class Storage:
                 pct(det.get("custo2x_A")), pct(det.get("custo2x_B")), _num(det.get("R_A"), 2), _num(det.get("R_B"), 2),
                 _num(det.get("tempo_B_h"), 1), base.get("n", ""), pct(base.get("A")), pct(base.get("B")), pct(edge["A"]), pct(edge["B"]),
                 _num(d.get("vol_ratio"), 2), _num(d.get("cobertura"), 3), r["status"], r["versao_config"],
+                d.get("faixa_pico", ""), "" if d.get("S_acima_100k") is None else ("sim" if d["S_acima_100k"] else "nao"),
+                _num(d.get("R_S"), 2), _num(d.get("idade_grad_dias"), 2), _num(det.get("max_caminho_A"), 1),
+                _num(det.get("max_caminho_B"), 1),
             ])
         return POS_RUNNER_DETALHE_COLUMNS, rows

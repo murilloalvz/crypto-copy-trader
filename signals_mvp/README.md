@@ -116,16 +116,17 @@ cortados; resultado líquido (média e mediana) e **% que bateu TP1 antes do SL*
 
 ## POS-RUNNER ao vivo (estratégia pós-runner) — Parte B
 
-Além do v0, o mesmo bot acompanha a hipótese **POS-RUNNER-V0**: token que **já correu** (runner com MC ≥ 300k),
-**caiu 80–90%**, **lateralizou acima do nível da curva** (`L_bc`, a MC da graduação) com **wicks no suporte** e
-**rompe a lateralização**. Ele roda nos timeframes **5m, 1h e 4h**, nos 3 launchpads da Solana (pump.fun, Raydium
+Além do v0, o mesmo bot acompanha a hipótese **POS-RUNNER-V0**: token que **já correu** (runner com pico de MC ≥ 300k),
+**caiu 80–90%** a partir do pico, formou uma **zona** com o fundo acima de 0,75 × o nível da curva (`L_bc`, a MC da
+graduação), teve pelo menos um **teste de suporte** (desceu até perto do fundo e recuperou) e **fecha acima da
+resistência** da zona. Ele roda nos timeframes **5m, 1h e 4h**, nos 3 launchpads da Solana (pump.fun, Raydium
 LaunchLab, Meteora DBC), com **o mesmo detector, simulador e custos do backtest** (Parte A). PAPER: o bot só avisa e
 simula; quem decide e opera é você, no simulador do Axiom.
 
-> **Ainda é rascunho.** As regras do padrão estão em `pos_runner/pos_runner_v0.yaml` e só ficam **congeladas** depois
-> do seu OK no relatório do Passo 0 (`pos_runner/passo0_relatorio/`). Até lá, todo alerta mostra
-> `config <hash> (rascunho)`. Paper ao vivo **não é validação**: a hipótese só pode virar edge pelo backtest sem viés
-> com holdout selado (Parte A) e o rito do registro de hipóteses.
+> **Ainda é rascunho.** As regras do padrão (as suas, de 16/10) estão em `pos_runner/pos_runner_v0.yaml` e só ficam
+> **congeladas** depois da sua confirmação (o que o detector vê nos 5 exemplos: `pos_runner/passo0_relatorio_v2/`).
+> Até lá, todo alerta mostra `config <hash> (rascunho)`. Paper ao vivo **não é validação**: a hipótese só pode virar
+> edge pelo backtest sem viés com holdout selado (Parte A) e o rito do registro de hipóteses.
 
 **Passo a passo**
 
@@ -142,30 +143,36 @@ simula; quem decide e opera é você, no simulador do Axiom.
 **Como os tokens entram no radar:** a cada 3 min o bot lê uma lista do GeckoTerminal (em rodízio: *trending* e os
 pools de maior volume 24h do PumpSwap, Meteora DAMM v2 e Raydium) e também olha os pools novos que o v0 já busca.
 Entra quem é **pool de graduação** (a DEX certa), tem **MC ≥ 300k** agora e **até 14 dias** de vida. Antes de
-acompanhar, o bot confere **on-chain** (RPC) que a 1ª transação do pool é a **migração** de um dos 3 launchpads, para
-aquele token e aquele pool — sem essa prova o token não entra. No máximo `max_pools` (15) ao mesmo tempo; o resto
-espera na fila (maior MC primeiro). Cada token é acompanhado até 14 dias depois da graduação.
+acompanhar, o bot confere **on-chain** (RPC) que o pool nasceu da **migração** de um dos 3 launchpads, para aquele
+token e aquele pool, e busca a **data de criação** do token (a idade dos sinais conta dela) — sem essas duas provas o
+token não entra. No máximo `max_pools` (15) ao mesmo tempo; o resto espera na fila (maior MC primeiro). Cada token é
+acompanhado até 14 dias depois da graduação (`idade_max_dias`); como só a idade de 2–7 dias desde a criação gera sinal
+primário, baixar para 7 libera vagas do radar mais cedo.
 
 **O que chega no Telegram**
 
 | alerta | quando |
 |---|---|
-| `👀 WATCHLIST POS-RUNNER [tf]` | a fase 2 ficou **armada**: queda de 80–90% feita, caixa com tamanho mínimo e ≥ 1 wick no suporte. Mostra pico, queda %, `L_bc`, `S`, `R`, nº de wicks e idade |
-| `🟢 ENTRADA POS-RUNNER [tf]` | fechamento acima de `R` com volume ≥ 2× a média da caixa. Mostra MC de entrada (o paper entra no **open do próximo candle**), stop (abaixo da última wick), alvo (perto do último topo), R:R, nº de wicks, aviso de **power candle** (ignição), botão do Axiom e o **mini-gráfico** com S, R, wicks e pico |
-| `⚪ NÃO ENTRAR [tf]` | o rompimento veio num candle **absurdo** (já cobriu boa parte do caminho até o topo) |
-| `🔴 INVALIDADO [tf]` | perdeu a mínima da última wick, a mínima furou `L_bc` ou a queda passou do máximo (só para tokens que tiveram 👀) |
-| `🟡 SAÍDA SUGERIDA [tf]` | o paper saiu (ou vai sair no próximo candle): **stop**, **alvo**, **trailing** (saída B), **power candle de exaustão** ou **stop de tempo** (48 candles). Vem como **resposta** ao 🟢 |
+| `👀 WATCHLIST POS-RUNNER [tf]` | a zona da fase 2 ficou **madura**: ≥ 12 candles desde o fundo e ≥ 1 **teste de suporte**. Mostra pico (e a faixa: 300–500k, 500k–1M, 1–5M, >5M), queda %, `L_bc`, `S`, `R`, nº de testes, idade desde a criação e o nível que **mata** o setup |
+| `🟢 ENTRADA POS-RUNNER [tf]` | **fechamento acima de `R`** (sem exigência de volume). Mostra MC de entrada (o paper entra no **open do próximo candle**), stop (3% abaixo da mínima do último teste), alvo (95% do pico), R:R, nº de testes, volume do rompimento e **power candle** (só atributos), S ≥ 100k, idade, botão do Axiom e o **mini-gráfico** com S, R, testes e pico |
+| `⚪ NÃO ENTRAR [tf]` | o rompimento veio num candle **absurdo** (sozinho cobriu ≥ 50% do caminho de `R` até o pico) |
+| `🔴 INVALIDADO [tf]` | fechou abaixo da mínima do último teste −2% (setup morto), a queda passou de 90% (moeda morta) ou o fundo ficou abaixo de 0,75 × `L_bc` (só para tokens que tiveram 👀) |
+| `🟡 SAÍDA SUGERIDA [tf]` | o paper saiu (ou vai sair no próximo candle): **stop**, **alvo**, **trailing** (saída B), **exaustão** (power candle perto do último topo: máxima ≥ 85% do pico) ou **stop de tempo** (48 candles). Vem como **resposta** ao 🟢 |
 | `📊 POS-RUNNER [tf]` | resultado do paper (A e B, já com custos) e a **linha de base pareada** |
 
-Com `so_primario: true` (padrão), o 👀/🟢 só sai para o **1º setup** de cada token em cada timeframe; reentradas
-viram só paper (aparecem no CSV). Os 🟡 chegam no **fechamento do candle** (o bot trabalha com candles fechados):
+Com `so_primario: true` (padrão), o 👀/🟢 só sai para o **1º setup** de cada token em cada timeframe com **idade de
+2 a 7 dias desde a criação**; reentradas e setups fora da idade viram só paper (aparecem no CSV). Os 🟡 chegam no **fechamento do candle** (o bot trabalha com candles fechados):
 se você entrar, coloque **stop e alvo no próprio Axiom**.
 
-**Saídas do paper:** **A** = vende tudo no alvo; **B** = vende metade no alvo e o resto segue com *trailing* (stop sobe
-para 75% da máxima desde a entrada). As duas têm o mesmo stop, a saída por exaustão e o stop de tempo. **Todo** sinal
-de entrada vira paper A e B (custo normal e custo 2×), e cada um ganha uma **linha de base pareada**: até 5 outros
-tokens do radar que já eram runners na mesma idade, "comprados" na mesma idade com o mesmo stop/alvo em %. É isso que
-mostra se o padrão agrega algo além de "comprar token que já correu".
+**Saídas do paper:** **A** = vende tudo no alvo (95% do pico); **B** = vende metade no alvo, o stop do resto vai para
+a entrada e o resto segue com *trailing* de 25% da máxima. As duas têm o mesmo stop, a saída por exaustão e o stop de
+tempo. **Todo** sinal de entrada vira paper A e B (custo normal e custo 2×), e cada um ganha uma **linha de base
+pareada**: até 5 outros tokens do radar que já eram runners na mesma idade (desde a criação), "comprados" na mesma
+idade com o mesmo stop/alvo em %. É isso que mostra se o padrão agrega algo além de "comprar token que já correu".
+
+**Troca de versão das regras:** reiniciar o bot com outro `pos_runner_v0.yaml` muda o hash (`versao_config`). O paper
+aberto da versão anterior vira `descontinuado`, e nenhuma decisão anterior ao 1º ciclo da versão nova vira sinal dela
+(o detector refaz o estado a partir dos candles congelados, sem sinal retroativo).
 
 **Seus trades:** `/entrei <contrato> <valor>` e `/sai <contrato> <valor>` funcionam igual ao v0 e gravam em
 `trades_operador.csv`; quando o contrato é de um sinal POS-RUNNER, `sinal_relacionado` fica `data|pos_runner_<tf>`.
@@ -173,8 +180,10 @@ mostra se o padrão agrega algo além de "comprar token que já correu".
 **CSVs:** `dados\pos_runner.csv` — **uma entrada por linha**, colunas fixas do handoff:
 `data,token,contrato,launchpad,tf,idade_h,P_peak,L_bc,queda_pct,S,R,n_wicks,entrada_mc,stop_mc,tp_mc,rr,power_candle,resultado_A,resultado_B,tempo_trade_h,motivo_saida,versao_config`
 (`resultado_*` = % líquido de custos; vazio enquanto o trade está aberto; `motivo_saida` = `A=…; B=…`,
-`em_aberto` ou `cancelado`; `versao_config` = hash do `pos_runner_v0.yaml`). `dados\pos_runner_detalhe.csv` traz o
-resto: resultado bruto e com custo 2×, R múltiplo, base pareada e edge sobre ela, se o alerta saiu e com que atraso.
+`em_aberto`, `cancelado` ou `descontinuado`; `idade_h` = horas desde a **criação** do token; `n_wicks` = nº de
+**testes de suporte**; `versao_config` = hash do `pos_runner_v0.yaml`). `dados\pos_runner_detalhe.csv` traz o resto:
+resultado bruto e com custo 2×, R múltiplo, base pareada e edge sobre ela, se o alerta saiu e com que atraso, faixa do
+pico, S ≥ 100k, R/S, idade desde a graduação e a máxima atingida antes da saída em % do caminho até o pico.
 Os mini-gráficos ficam em `dados\pos_runner\graficos\`.
 
 **Limitações (leia):**
@@ -182,7 +191,10 @@ Os mini-gráficos ficam em `dados\pos_runner\graficos\`.
 - o bot só usa candle **fechado** e espera 90 s para o GeckoTerminal indexar as últimas trades; o paper entra no
   open seguinte ao sinal, e o seu clique real chega depois do alerta (no 5m isso pesa mais);
 - MC em USD = preço no token de cotação × cotação/USD do fechamento horário anterior (SOL via Orca SOL/USDC) ×
-  supply **atual** (queima posterior distorce um pouco o passado);
+  supply **atual** (queima posterior distorce um pouco o passado); com cotação **exótica** que sobe junto com o token
+  (ex.: FLAME/EMBER) a máxima do 1h/4h pode distorcer (medido no Passo 0 v2);
+- a data de criação vem da transação mais antiga do token (até 100 mil transações antes da migração); acima disso o
+  token fica sem idade e não entra no radar;
 - o radar só pega tokens **enquanto** estão com MC ≥ 300k: um runner que aconteceu com o bot desligado não entra
   depois; as chamadas ao GeckoTerminal são divididas com o v0 (`chamadas_por_ciclo`), então com muitos tokens em
   fase 2 o 5m pode atrasar um ciclo;
@@ -373,7 +385,8 @@ respostas reais), `security.py`, `triggers.py`, `metrics.py`, `scoring.py`, `nar
 `worker.py`/`supervisor.py`/`cli.py`, `selfcheck.py`/`netcheck.py` e `tests/` (stdlib `unittest`, com respostas reais
 reduzidas em `tests/fixtures/`). `pos_runner/` é a hipótese POS-RUNNER-V0: `detector.py` (fases 0–3, causal),
 `simulate.py`/`costs.py` (paper A/B), `candles.py`/`quotes.py` (OHLCV e USD), `live.py` (Parte B, ao vivo),
-`parte_a/` (backtest sem viés, ainda não executado) e `passo0*.py` (calibração com os 5 exemplos). Testes: `py -3 -m signals_mvp selfcheck`, ou `py -3 -m unittest discover -s signals_mvp\tests -t .`
+`parte_a/` (backtest sem viés, ainda não executado) e `passo0.py` (o que o detector vê nos 5 exemplos; relatórios em
+`passo0_relatorio/` e `passo0_relatorio_v2/`). Testes: `py -3 -m signals_mvp selfcheck`, ou `py -3 -m unittest discover -s signals_mvp\tests -t .`
 
 ## Próximos passos
 

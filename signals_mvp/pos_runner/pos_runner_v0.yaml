@@ -1,50 +1,41 @@
 # POS-RUNNER-V0 — parametros do detector e das saidas (PAPER / somente leitura).
 #
-# ESTADO: RASCUNHO = PROPOSTA DO PASSO 0 (calibracao com os 5 exemplos do professor, 2026-10-15).
-# Os valores do handoff ficam nos comentarios "(handoff: ...)" e no codigo (`Params()`); o que mudou tem o motivo
-# ao lado e no relatorio do Passo 0. So vale depois do OK do operador; ai o arquivo e CONGELADO no pre-registro
-# (o hash vai para docs/research-hypothesis-registry-v1-2026-10-04.md) e qualquer mudanca vira hipotese NOVA.
+# ESTADO: RASCUNHO PRONTO PARA CONGELAR = REGRAS DO OPERADOR (decisoes de 2026-10-16 sobre o relatorio do Passo 0).
+# Os 5 exemplos do professor so calibraram a DETECCAO das fases; nenhum numero daqui foi ajustado para "acertar"
+# exemplo. Depois do congelamento o hash deste arquivo vai para o pre-registro e qualquer mudanca vira hipotese NOVA.
 # Cada linha de log/CSV carrega `versao_config` = hash destes parametros.
 # Duracoes em NUMERO DE CANDLES do timeframe (5m, 1h ou 4h). MC = preco USD x supply total.
+# Medidas: pico, queda, suporte e resistencia pelos EXTREMOS dos candles (maxima/minima); rompimento, recuperacao e
+# invalidacao pelo FECHAMENTO (escolha conservadora para o ponto que ficou sem resposta).
 
 parametros:
   # --- fase 1: runner ---------------------------------------------------------
-  runner_min_mc: 300000        # pico de MC desde a graduacao precisa chegar a isto (piso; 500k so diagnostico)
+  runner_min_mc: 300000        # pico (maxima) da onda >= 300k (300-500k ja vale)
+  peak_bands: [500000, 1000000, 5000000]   # ATRIBUTO "quanto maior, melhor": 300-500k, 500k-1M, 1-5M, >5M
 
-  # --- fase 2: pullback e caixa -----------------------------------------------
-  drop_min: 0.80               # queda a partir do pico que inicia a fase 2 (MC <= 0,20 x pico)
-  drop_max: 0.95               # (handoff: 0.90) queda maior = onda invalida. Nos exemplos, medida pelos corpos no
-                               # timeframe do professor, a queda foi de 85% (BIKE) a 95,1% (ALLINU); a regra do
-                               # proprio operador para invalidar e a minima furar L_bc, que continua valendo
-  measure: body                # (handoff: wick) pico, queda e caixa (S/R) pelos CORPOS dos candles: e como se
-                               # traca suporte/resistencia horizontal; os pavios ficam como os "testes" (wicks).
-                               # Com pavios, um unico print (sniper, falso rompimento) estica R e quebra R/S
-  tp_reference: wick           # (novo) o alvo usa o TOPO REAL (maxima) do runner: "saida no ultimo topo"
-  bounce_fractal: 2            # 1o repique = 1o topo com 2 candles mais baixos de cada lado; caixa comeca depois
-  box_min_candles: 12          # maturacao minima da caixa (12 e o maximo que ainda pega o ALLINU no 1h)
-  box_max_ratio: 3.0           # caixa contida: R/S <= 3 (3 ou 4 nao mudou nenhum exemplo)
+  # --- fase 2: queda e zona ----------------------------------------------------
+  drop_min: 0.80               # queda a partir do pico >= 80% inicia a fase 2 (a zona comeca nesse candle)
+  drop_max: 0.90               # queda > 90% = moeda morta, fora
+  support_min_lbc: 0.75        # fundo (suporte S) >= 0,75 x L_bc (tolerancia fixa de "fundo acima da curva")
+  support_attr_mc: 100000      # "fase 2 normalmente acima de 100k": ATRIBUTO e corte de analise, NAO filtro
+  zone_min_candles: 12         # zona madura: >= 12 candles desde o fundo
 
-  # --- wicks (martelos no suporte) ----------------------------------------------
-  wick_zone: 0.05              # minima do candle na zona S + 5% ou abaixo de S (5% ou 10% nao mudou nenhum exemplo)
-  wick_body_mult: 1.5          # (handoff: 2.0) pavio inferior >= 1,5x o corpo. Com 2x o candle de capitulacao do
-                               # FLAME (pavio de 1,3-1,4x o corpo) nao conta e o rompimento verdadeiro nao arma
-  wick_min: 1                  # minimo de wicks para armar o setup
-  wick_break: 0.02             # fechamento abaixo da minima da ultima wick -2% = setup invalidado
+  # --- testes de suporte (1 ou muitos candles) --------------------------------
+  test_zone: 0.10              # o teste comeca quando a minima desce a <= S x 1,10
+  recover_mult: 1.25           # e termina quando o preco RECUPERA: fecha >= min((S+R)/2, S x 1,25)
+  tests_min: 1                 # zona madura: >= 1 teste completo
+  test_break: 0.02             # fechamento < minima do ultimo teste -2% = setup morto
+  stop_below_test: 0.03        # stop = minima do ultimo teste -3%
 
-  # --- fase 3: entrada ---------------------------------------------------------
-  breakout_vol_mult: 2.0       # volume do candle de rompimento >= 2x a media da caixa
+  # --- fase 3: entrada (fechamento acima de R; volume so como atributo) --------
   atr_period: 20
-  power_atr_mult: 3.0          # power candle = amplitude >= 3x ATR(20)
-  absurd_frac: 0.50            # candle que cobre >= 50% de R ate o topo = absurdo (nao entra)
-  age_window_days:             # (handoff: 1h e 4h so entre 2 e 7 dias) idade so como ATRIBUTO, sem filtro:
-    5m: null                   # o BIKE rompeu com 9,0 dias e o ALLINU com 1,9 dia — a janela do handoff tiraria
-    1h: null                   # 2 dos 4 exemplos reconhecidos do resultado primario. PERGUNTA ao operador:
-    4h: null                   # "2-7 dias em fase 2" e idade do token ou tempo na fase 2?
+  power_atr_mult: 3.0          # power candle = amplitude >= 3x ATR(20); saudavel no rompimento = atributo
+  absurd_frac: 0.50            # veto: um candle cobrindo >= 50% do caminho de R ate P_peak
+  age_window_days: [2, 7]      # 2-7 dias de EXISTENCIA do token (desde a criacao) na entrada: filtro primario
 
-  # --- stop e saidas -------------------------------------------------------------
-  stop_below_wick: 0.03        # stop = minima da ultima wick -3%
-  tp_frac_of_peak: 0.95        # alvo = 0,95 x topo
-  exhaustion_gain: 0.50        # sai em power candle verde quando ja subiu >= 50% desde a entrada (handoff; ver pergunta)
+  # --- saidas -------------------------------------------------------------------
+  tp_frac_of_peak: 0.95        # alvo = 0,95 x P_peak (saida A: 100%; saida B: 50%)
+  exhaustion_peak_frac: 0.85   # exaustao = power candle com maxima >= 0,85 x P_peak -> sai no open seguinte
   time_stop_candles: 48        # stop de tempo
   partial_frac: 0.50           # saida B: vende 50% no alvo e move o stop do resto para a entrada
-  trail_frac: 0.25             # saida B: resto sai em trailing de 25% a partir da maxima
+  trail_frac: 0.25             # saida B: resto em trailing de 25% a partir da maxima

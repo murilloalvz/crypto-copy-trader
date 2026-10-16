@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS graduations (
     signature TEXT, period TEXT NOT NULL, ord INTEGER NOT NULL, status TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS stage1 (
-    pool TEXT PRIMARY KEY, status TEXT NOT NULL, max_mc REAL, runner INTEGER, l_bc REAL, supply REAL, info TEXT
+    pool TEXT PRIMARY KEY, status TEXT NOT NULL, max_mc REAL, runner INTEGER, l_bc REAL, supply REAL, info TEXT,
+    created_ts REAL
 );
 CREATE TABLE IF NOT EXISTS stage2 (
     pool TEXT NOT NULL, tf TEXT NOT NULL, status TEXT NOT NULL, n_bars INTEGER, holes INTEGER, info TEXT,
@@ -91,12 +92,14 @@ class Store:
 
     # -- estagios -----------------------------------------------------------------------
     def stage1(self, pool: str) -> Optional[tuple]:
-        return self.db.execute("SELECT status, max_mc, runner, l_bc, supply, info FROM stage1 WHERE pool=?", (pool,)).fetchone()
+        """(status, max_mc, runner, l_bc, supply, info, created_ts) — created_ts = criacao do token (so runners)."""
+        return self.db.execute("SELECT status, max_mc, runner, l_bc, supply, info, created_ts FROM stage1 WHERE pool=?", (pool,)).fetchone()
 
-    def save_stage1(self, pool: str, status: str, max_mc: Optional[float], runner: Optional[bool], l_bc: Optional[float], supply: Optional[float], info: dict) -> None:
+    def save_stage1(self, pool: str, status: str, max_mc: Optional[float], runner: Optional[bool], l_bc: Optional[float],
+                    supply: Optional[float], info: dict, created_ts: Optional[float] = None) -> None:
         with self.db:
-            self.db.execute("INSERT OR REPLACE INTO stage1 VALUES (?,?,?,?,?,?,?)",
-                            (pool, status, max_mc, None if runner is None else int(runner), l_bc, supply, json.dumps(info)))
+            self.db.execute("INSERT OR REPLACE INTO stage1 VALUES (?,?,?,?,?,?,?,?)",
+                            (pool, status, max_mc, None if runner is None else int(runner), l_bc, supply, json.dumps(info), created_ts))
 
     def stage2(self, pool: str, tf: str) -> Optional[tuple]:
         return self.db.execute("SELECT status, n_bars, holes FROM stage2 WHERE pool=? AND tf=?", (pool, tf)).fetchone()
@@ -131,8 +134,8 @@ class Store:
 
     def trades(self, period: str, kind: str = "setup") -> list[tuple]:
         return self.db.execute(
-            "SELECT t.pool, t.tf, t.n, t.variant, t.status, t.net_ret, t.gross_ret, t.r_mult, t.hit_tp, t.bars_held, t.reason, t.info, g.launchpad "
-            "FROM trades t JOIN graduations g ON g.pool=t.pool WHERE g.period=? AND t.kind=?", (period, kind)).fetchall()
+            "SELECT t.pool, t.tf, t.n, t.variant, t.status, t.net_ret, t.gross_ret, t.r_mult, t.hit_tp, t.bars_held, t.reason, t.info, "
+            "g.launchpad, g.quote FROM trades t JOIN graduations g ON g.pool=t.pool WHERE g.period=? AND t.kind=?", (period, kind)).fetchall()
 
     def counts(self, period: str) -> dict[str, Any]:
         c = {}
@@ -141,6 +144,9 @@ class Store:
             "SELECT s.status, COUNT(*) FROM stage1 s JOIN graduations g ON g.pool=s.pool WHERE g.period=? GROUP BY s.status", (period,)).fetchall())
         c["runners"] = self.db.execute(
             "SELECT COUNT(*) FROM stage1 s JOIN graduations g ON g.pool=s.pool WHERE g.period=? AND s.runner=1", (period,)).fetchone()[0]
+        c["runners_sem_criacao"] = self.db.execute(
+            "SELECT COUNT(*) FROM stage1 s JOIN graduations g ON g.pool=s.pool WHERE g.period=? AND s.runner=1 AND s.created_ts IS NULL",
+            (period,)).fetchone()[0]
         c["setups_primarios"] = dict(self.db.execute(
             "SELECT s.tf, COUNT(*) FROM setups s JOIN graduations g ON g.pool=s.pool WHERE g.period=? AND s.primary_flag=1 GROUP BY s.tf",
             (period,)).fetchall())

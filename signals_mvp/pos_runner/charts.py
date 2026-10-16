@@ -1,8 +1,8 @@
 """Graficos anotados do POS-RUNNER (PNG). matplotlib e OPCIONAL: sem ele, `available()` e False e quem chama segue
 sem grafico (o alerta nunca deixa de sair por causa do grafico).
 
-Marca: pico do runner, L_bc, queda, caixa (S e R no periodo da caixa), wicks, rompimento, entrada, stop, alvo,
-saidas A/B e power candles (amplitude >= power_atr_mult x ATR20).
+Marca: pico do runner, L_bc, zona (S e R desde o fundo), testes de suporte (minima de cada episodio), rompimento,
+entrada, stop, alvo, saidas A/B e power candles (amplitude >= power_atr_mult x ATR20).
 """
 
 from __future__ import annotations
@@ -59,9 +59,11 @@ def plot_setup(
     power_mult: float = 3.0,
     small: bool = False,
     pad_right: int = 0,
+    levels: Iterable[tuple[float, str, str]] = (),
 ) -> Optional[Path]:
     """Desenha e salva. `window` = (indice inicial, indice final) dos candles mostrados. `pad_right`: espaco vazio a
-    direita (alerta ao vivo: o grafico acaba no candle do sinal e as linhas de stop/alvo seguem para o futuro)."""
+    direita (alerta ao vivo: o grafico acaba no candle do sinal e as linhas de stop/alvo seguem para o futuro).
+    `levels`: linhas de referencia extras (valor, rotulo, cor) na janela inteira (Passo 0: limites de 80%/90% de queda)."""
     if not available() or not bars:
         return None
     import matplotlib
@@ -100,6 +102,9 @@ def plot_setup(
 
     if l_bc:
         hline(l_bc, lo_i, x_end, "#777777", "--", "L_bc")
+    for y, label, color in levels:
+        if y and y > 0:
+            hline(y, lo_i, x_end, color, "-.", label, 0.9)
     if entry_event is not None:
         d = entry_event.data
         e_idx = entry_event.idx
@@ -113,19 +118,21 @@ def plot_setup(
         if lo_i <= pk <= hi_i:
             ax.annotate("pico", (pk, bars[pk].high), xytext=(0, 12), textcoords="offset points", ha="center", fontsize=8,
                         arrowprops=dict(arrowstyle="->", color="#1b7f3b"), color="#1b7f3b")
-        for w in d.get("wicks", []):
+        for k, t in enumerate(d.get("testes", []), start=1):
+            w = t["low_idx"]
             if lo_i <= w <= hi_i:
-                ax.annotate("w", (w, bars[w].low), xytext=(0, -14), textcoords="offset points", ha="center", fontsize=8,
+                ax.annotate(f"t{k}", (w, bars[w].low), xytext=(0, -14), textcoords="offset points", ha="center", fontsize=8,
                             color="#6a1b9a", arrowprops=dict(arrowstyle="->", color="#6a1b9a"))
         ax.annotate("rompimento", (e_idx, bars[e_idx].close), xytext=(-40, 25), textcoords="offset points", fontsize=8,
                     arrowprops=dict(arrowstyle="->", color="black"))
     marks = {"INVALIDADO": ("x", "#c62828"), "ONDA_INVALIDA": ("X", "#c62828"), "ABSURDO": ("D", "#ff9800"),
-             "FASE2": ("v", "#555555"), "WATCHLIST": ("o", "#1f5fbf")}
+             "FASE2": ("v", "#555555"), "WATCHLIST": ("o", "#1f5fbf"), "TESTE": ("^", "#6a1b9a")}
     n_entry = 0
     for ev in events:
-        if ev.kind in marks and lo_i <= ev.idx <= hi_i:
+        at = ev.data.get("minima_idx", ev.idx) if ev.kind == "TESTE" else ev.idx   # teste: marca a minima do episodio
+        if ev.kind in marks and lo_i <= at <= hi_i:
             m, c = marks[ev.kind]
-            ax.scatter([ev.idx], [bars[ev.idx].low * 0.9], marker=m, color=c, s=25, zorder=7)
+            ax.scatter([at], [bars[at].low * 0.9], marker=m, color=c, s=25, zorder=7)
         if ev.kind == "ENTRADA":
             n_entry += 1
             if lo_i <= ev.idx <= hi_i:

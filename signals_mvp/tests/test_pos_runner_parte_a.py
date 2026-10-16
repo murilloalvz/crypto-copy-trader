@@ -3,7 +3,6 @@ vazamento, parada por contagem, retomada, linha de base pareada, metricas e trav
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import tempfile
 import unittest
@@ -14,7 +13,8 @@ from ..pos_runner.enumerate import Graduation, WindowResult
 from ..pos_runner.params import Params
 from ..pos_runner.parte_a import cli as cli_mod
 from ..pos_runner.parte_a.baseline import baseline_mean, run_baselines
-from ..pos_runner.parte_a.metrics import candidate, choose_variant, holdout_verdict, summarize, variant_table
+from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, holdout_verdict, path_stats,
+                                          summarize, variant_table)
 from ..pos_runner.parte_a.pipeline import Context, load_seal, run_period, seal_holdout
 from ..pos_runner.parte_a.plan import DAY, PeriodPlan, load_plan, write_plan
 from ..pos_runner.parte_a.store import Store
@@ -22,6 +22,7 @@ from ..pos_runner.quotes import stable_series
 from .test_pos_runner import textbook
 
 SUPPLY = 1e9
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 
 def plan() -> PeriodPlan:
@@ -67,24 +68,36 @@ class FakeQuotes:
         return stable_series()
 
 
-def make_ctx(tmp: Path, runners: set[str], per_window: int = 2, extra_pool_in_discovery: str = "") -> Context:
+CREATED_BEFORE_GRAD = 2.5 * DAY     # criacao 2,5 dias antes da graduacao: o rompimento cai em 2-7 dias nos 3 tfs
+
+
+def make_ctx(tmp: Path, runners: set[str], per_window: int = 2, extra_pool_in_discovery: str = "",
+             no_creation: frozenset[str] = frozenset()) -> Context:
     p = plan()
     store = Store(tmp / "a.sqlite")
     ohlcv = FakeOhlcv(runners)
+    creation_calls: list[str] = []
+
+    def created(mint: str, migration_sig: str):
+        pool = mint[1:]
+        creation_calls.append(pool)
+        if pool in no_creation or pool not in ohlcv.grad:
+            return None                     # teto de paginas: criacao desconhecida
+        return ohlcv.grad[pool] - CREATED_BEFORE_GRAD
 
     def enum(launchpad, lo, hi):
         res = WindowResult(launchpad, lo, hi)
         for k in range(per_window):
             pool = f"P_{launchpad[:4]}_{lo}_{k}"
             ohlcv.grad[pool] = lo + 60
-            res.graduations.append(Graduation(launchpad, f"sig{pool}", lo + 60, 1, "MigrateV2", f"M{pool}", "USDC", pool))
+            res.graduations.append(Graduation(launchpad, f"sig{pool}", lo + 60, 1, "MigrateV2", f"M{pool}", USDC, pool))
         if extra_pool_in_discovery and lo < p.periods()["embargo"][0]:
-            res.graduations.append(Graduation(launchpad, "x", lo + 60, 1, "MigrateV2", "Mx", "USDC", extra_pool_in_discovery))
+            res.graduations.append(Graduation(launchpad, "x", lo + 60, 1, "MigrateV2", "Mx", USDC, extra_pool_in_discovery))
         return res
 
-    params = dataclasses.replace(Params(), measure="body", drop_max=0.95, wick_body_mult=1.5, tp_reference="wick",
-                                 age_window_days={"5m": None, "1h": None, "4h": None})
-    return Context(p, params, store, ohlcv, FakeQuotes(), enum, lambda mint: SUPPLY)
+    ctx = Context(p, Params(), store, ohlcv, FakeQuotes(), enum, lambda mint: SUPPLY, created)
+    ctx.creation_calls = creation_calls      # type: ignore[attr-defined]
+    return ctx
 
 
 class PlanTests(unittest.TestCase):
@@ -168,6 +181,39 @@ class PipelineTests(unittest.TestCase):
         self.assertGreater(table["1h/A"]["n"], 0)
         self.assertIn("edge_sobre_base_pct", table["1h/A"])
         self.assertIn("custo_2x", table["1h/A"])
+        # resultado completo por faixa de pico e os cortes pre-registrados (atributos)
+        st = table["1h/A"]
+        self.assertEqual(list(st["por_pico"]), ["1-5M"])                    # o padrao de livro tem pico de 1M
+        self.assertEqual(st["por_pico"]["1-5M"]["n"], st["n"])
+        self.assertIn("custo_2x", st["por_pico"]["1-5M"])
+        for name, _key in CUTS:
+            self.assertEqual(sum(v["n"] for v in st[name].values()), st["n"], name)
+        self.assertEqual(set(st["por_testes"]), {"1"})
+        self.assertEqual(set(st["por_S_100k"]), {"sim"})                     # S = 150k
+        self.assertEqual(set(st["por_cotacao"]), {"SOL/estavel"})             # cotados em USDC
+        self.assertGreater(st["caminho_max"]["n"], 0)
+        # idade desde a criacao: so runners (cada mint uma vez) e todos dentro da janela 2-7 dias
+        self.assertEqual(sorted(ctx.creation_calls), sorted(p for p in runners if ctx.store.stage1(p) is not None))
+        for pool, tf, n, _prim, _ts, ev in ctx.store.setups("discovery"):
+            self.assertTrue(2.0 <= json.loads(ev)["data"]["idade_dias"] <= 7.0, (tf, json.loads(ev)["data"]["idade_dias"]))
+
+    def test_runner_without_creation_date_has_no_primary_setup(self):
+        windows = plan().windows("discovery")
+        pools = [f"P_{lp[:4]}_{windows[0][0]}_{k}" for lp in ("pumpfun", "raydium_launchlab", "meteora_dbc") for k in range(2)]
+        ctx = self.ctx(self.tmp, set(pools), no_creation=frozenset(pools[:1]))
+        counts = run_period(ctx, "discovery", target_min_setups=1000, max_windows=1)
+        self.assertEqual(counts["runners"], len(pools))
+        self.assertEqual(counts["runners_sem_criacao"], 1)
+        self.assertEqual(json.loads(ctx.store.stage1(pools[0])[5])["criacao"], "sem_dado")
+        self.assertIsNone(ctx.store.stage1(pools[0])[6])
+        mine = [row for row in ctx.store.setups("discovery", primary_only=False) if row[0] == pools[0]]
+        self.assertTrue(mine)                                               # o detector ve o setup (diagnostico)...
+        self.assertTrue(all(row[3] == 0 for row in mine))                   # ...mas sem idade nenhum e primario
+        self.assertEqual(counts["setups_primarios"], {tf: len(pools) - 1 for tf in ("5m", "1h", "4h")})
+        run_baselines(ctx, "discovery")
+        for pool, tf, n, *_ in ctx.store.setups("discovery"):
+            rows = json.loads(ctx.store.get(f"base:{pool}:{tf}:{n}"))
+            self.assertNotIn(pools[0], {r["pool"] for r in rows})           # sem criacao tambem nao entra na base
 
 
 class MetricsTests(unittest.TestCase):
@@ -185,9 +231,21 @@ class MetricsTests(unittest.TestCase):
         ok = candidate({"n": 30, "ev_liq_pct": 1.0, "pf": 1.2, "edge_sobre_base_pct": 0.5})
         self.assertTrue(ok["candidato"])
         self.assertFalse(candidate({"n": 29, "ev_liq_pct": 1.0, "pf": 1.2, "edge_sobre_base_pct": 0.5})["candidato"])
-        self.assertEqual(holdout_verdict({"n": 19, "ev_liq_pct": 9, "pf": 3}), "INCONCLUSIVE")
-        self.assertEqual(holdout_verdict({"n": 25, "ev_liq_pct": -1, "pf": 3}), "FAIL")
-        self.assertEqual(holdout_verdict({"n": 25, "ev_liq_pct": 2, "pf": 1.5}), "PASS")
+        self.assertEqual(holdout_verdict({"n": 29, "ev_liq_pct": 9, "pf": 3}), "INCONCLUSIVE")     # minimo 30 (conservador)
+        self.assertEqual(holdout_verdict({"n": 30, "ev_liq_pct": -1, "pf": 3}), "FAIL")
+        self.assertEqual(holdout_verdict({"n": 30, "ev_liq_pct": 2, "pf": 1.5}), "PASS")
+
+    def test_path_stats_and_band_order(self):
+        st = path_stats([{"max_caminho_pct": v} for v in (10.0, 50.0, 100.0, 120.0)] + [{"max_caminho_pct": None}])
+        self.assertEqual(st["n"], 4)
+        self.assertAlmostEqual(st["mediana_pct"], 75.0)
+        self.assertAlmostEqual(st["chegou_a_metade_pct"], 75.0)
+        self.assertAlmostEqual(st["chegou_ao_topo_pct"], 50.0)
+        self.assertEqual(path_stats([]), {"n": 0})
+        self.assertEqual(BAND_ORDER[:4], ("300-500k", "500k-1M", "1-5M", ">5M"))
+        p = Params()
+        self.assertEqual([p.peak_band(x) for x in (300_000, 499_999, 500_000, 999_999, 1_000_000, 5_000_000)],
+                         ["300-500k", "300-500k", "500k-1M", "500k-1M", "1-5M", ">5M"])
 
 
 class GateTests(unittest.TestCase):
@@ -203,9 +261,25 @@ class GateTests(unittest.TestCase):
             doc.write_text("Status: **PRE-REGISTRADO**. config hash `abc123`\n", encoding="utf-8")
             cli_mod.check_preregistration(doc, "abc123")
 
+    def test_only_the_status_line_opens_the_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = Path(d) / "prereg.md"
+            # o texto de um rascunho pode citar o status final e o hash: a trava le so a linha de status
+            doc.write_text("# x\n\nStatus: **RASCUNHO PRONTO PARA CONGELAR.** hash `abc123`\n\n"
+                           "Com o OK: `Status: **PRE-REGISTRADO**` + hash `abc123`.\nStatus: **PRE-REGISTRADO**\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                cli_mod.check_preregistration(doc, "abc123")
+            from ..pos_runner.live import config_status
+            self.assertEqual(config_status("abc123", doc), "rascunho")
+            doc.write_text("# x\n\nStatus: **PRE-REGISTRADO** (2026-10-20), config `abc123`\n", encoding="utf-8")
+            cli_mod.check_preregistration(doc, "abc123")
+            self.assertEqual(config_status("abc123", doc), "pre-registrada")
+
     def test_shipped_preregistration_is_still_a_draft(self):
         with self.assertRaises(SystemExit):
             cli_mod.check_preregistration(cli_mod.PREREG, "qualquer")
+        with self.assertRaises(SystemExit):              # nem com o hash candidato, que o rascunho ja cita
+            cli_mod.check_preregistration(cli_mod.PREREG, Params().version)
 
 
 if __name__ == "__main__":

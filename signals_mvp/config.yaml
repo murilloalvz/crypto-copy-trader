@@ -259,13 +259,13 @@ pos_runner:
   descoberta_min: 3          # a cada N min le UMA lista do GT (em rodizio pelas fontes abaixo)
   fontes: ["trending", "pumpswap", "meteora-damm-v2", "raydium"]   # trending + top por volume 24h de cada DEX de graduacao
   mc_max_usd: 50000000       # acima disso o numero e lixo/manipulado
-  idade_max_dias: 14         # acompanha cada token ate 14 dias depois da graduacao (o mesmo horizonte da Parte A)
+  idade_max_dias: 14         # acompanha cada token ate 14 dias depois da graduacao (o horizonte da Parte A; sinal primario so ate 7 dias desde a criacao)
   alertas:
-    watchlist: true          # WATCHLIST: fase 2 armada (caixa com S, R e wick no suporte)
+    watchlist: true          # WATCHLIST: zona da fase 2 madura (>= 12 candles desde o fundo e >= 1 teste de suporte)
     entrada: true            # ENTRADA: rompimento valido (com mini-grafico) e NAO ENTRAR: candle absurdo
-    invalidado: true         # INVALIDADO: perdeu a ultima wick, furou L_bc ou caiu demais (so de quem teve WATCHLIST)
+    invalidado: true         # INVALIDADO: fechou abaixo do ultimo teste -2%, queda > 90% ou fundo < 0,75 x L_bc (so de quem teve WATCHLIST)
     saida: true              # SAIDA SUGERIDA (stop, alvo, trailing, exaustao, tempo) e o resultado do paper
-    so_primario: true        # true = alerta so o 1o setup de cada token/tf (reentradas viram so paper, no CSV)
+    so_primario: true        # true = alerta so o 1o setup de cada token/tf com idade 2-7 dias desde a criacao (o resto vira so paper)
   grafico: true              # mini-grafico PNG no alerta de entrada (precisa do matplotlib; sem ele vai so o texto)
 
 # -----------------------------------------------------------------------------
