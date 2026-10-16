@@ -46,7 +46,14 @@ conservative option, listed in the pre-registration §5). **Frozen (PRE-REGISTRA
 pre-registration). From that commit on, no parameter/grid/period/baseline/cut/cost change — a change is a new
 hypothesis (§4). The examples only calibrate phase DETECTION (Passo 0 v2: no parameter sweep, no trade results). Part
 A is the unbiased collection that judges it; run it in commit-sized steps exactly as `docs/pos-runner-v0-preregistration-DRAFT-2026-10-15.md`
-§7 orders (seal the holdout and commit it before any discovery call). One detector/simulator/cost model shared by Passo 0,
+§7 orders (seal the holdout and commit it before any discovery call). Operational decisions (§8, infra only, no rule
+changed): raw data is downloaded oldest-calendar-window-first (`parte_a cli baixar-bruto`, `pipeline.prefetch_period`)
+ahead of the seeded discovery/holdout order, because GeckoTerminal's free OHLCV only covers ~180 days and that cutoff
+slides forward daily — a seeded-late window could age out before ever being fetched otherwise; the seeded order still
+governs the actual stop-by-count judgment, which makes zero new network calls once prefetch is done. A window whose
+date has aged past GT's free range is HTTP 401 → explicit per-pool status `fora_do_alcance_gratis` (never silent,
+never `sem_dados`). RPC pace is configurable via `POS_RUNNER_RPC_PER_MIN` (default 100, unchanged) — only raise it for
+a dedicated paid RPC (QuickNode), never the shared public one. One detector/simulator/cost model shared by Passo 0,
 Part A (`parte_a/`, unbiased backtest) and Part B (`live.py`, inside the bot). Age = days since token CREATION
 (on-chain: oldest successful mint signature before the migration, `lineage.creation_time`); unknown creation = no age
 = never primary. The pre-registration gate (`params.is_preregistered`) reads ONLY the status line (the first line

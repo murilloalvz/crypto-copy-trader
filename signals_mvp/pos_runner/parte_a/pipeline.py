@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from ...http import ApiError
 from ...util import short_hash
 from ..candles import Bar, OhlcvStore, fill_gaps, missing_windows, tf_seconds
 from ..costs import CostModel
@@ -107,11 +108,27 @@ def enumerate_windows(ctx: Context, period: str, orders: Iterable[int]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_history(ctx: Context, pool: str, tf: str, start_ts: int, end_ts: int, stats: Optional[dict] = None,
+                   **kwargs: Any) -> list[Bar]:
+    """`ctx.ohlcv.history` protegida contra o limite movel de ~180 dias do GeckoTerminal (decisao operacional de
+    2026-10-16): HTTP 401 = a janela ja envelheceu e saiu do alcance gratis. Isso NUNCA vira candle vazio em
+    silencio nem erro generico: fica marcado (`stats["fora_do_alcance_gratis"]`) para o estagio chamador gravar
+    um status explicito, por data, no relatorio."""
+    try:
+        return ctx.ohlcv.history(pool, tf, start_ts, end_ts, **kwargs)
+    except ApiError as exc:
+        if exc.status == 401:
+            if stats is not None:
+                stats["fora_do_alcance_gratis"] = True
+            return []
+        raise
+
+
 def _mc_bars(ctx: Context, row: Any, tf: str, end_ts: int, supply: float, usd: UsdSeries,
              stats: Optional[dict] = None) -> list[Bar]:
     """Candles de MC. A serie PARA no 1o candle sem cotacao/USD no fechamento (como na Parte B, que espera): o candle
     real nunca e trocado por um candle plano inventado. `fill_gaps` so preenche intervalos sem negocio no GT."""
-    raw = ctx.ohlcv.history(row["pool"], tf, row["grad_ts"], end_ts, currency="token")
+    raw = _fetch_history(ctx, row["pool"], tf, row["grad_ts"], end_ts, stats, currency="token")
     step = tf_seconds(tf)
     closed = [b for b in raw if b.ts + step <= end_ts]
     prefix = []
@@ -129,7 +146,7 @@ def _mc_bars(ctx: Context, row: Any, tf: str, end_ts: int, supply: float, usd: U
 def stage1(ctx: Context, row: Any) -> tuple[str, Optional[bool]]:
     """1h de graduacao ate graduacao + horizonte: quem chegou a MC >= piso (runner)."""
     done = ctx.store.stage1(row["pool"])
-    if done is not None and done[0] in ("ok", "sem_referencia", "sem_supply", "sem_dados"):
+    if done is not None and done[0] in ("ok", "sem_referencia", "sem_supply", "sem_dados", "fora_do_alcance_gratis"):
         return done[0], None if done[2] is None else bool(done[2])
     usd = ctx.usd(row["quote"], row["period"]) if row["quote"] else None
     if usd is None:
@@ -144,6 +161,10 @@ def stage1(ctx: Context, row: Any) -> tuple[str, Optional[bool]]:
     bars = _mc_bars(ctx, row, "1h", end, supply, usd, cut)
     real = [b for b in bars if not b.filled]
     if not real:
+        if cut.get("fora_do_alcance_gratis"):
+            ctx.store.save_stage1(row["pool"], "fora_do_alcance_gratis", None, None, None, supply,
+                                  {"grad_ts": row["grad_ts"]})
+            return "fora_do_alcance_gratis", None
         ctx.store.save_stage1(row["pool"], "sem_dados", None, None, None, supply, {})
         return "sem_dados", None
     max_mc = max(b.high for b in real)
@@ -178,21 +199,25 @@ def load_bars(ctx: Context, row: Any, tf: str, stats: Optional[dict] = None) -> 
 def stage2_bars(ctx: Context, row: Any) -> dict[str, list[Bar]]:
     """5m/1h/4h de graduacao ate graduacao + horizonte + saida; o 5m e conferido contra o 1h (buracos rebaixados)."""
     out: dict[str, list[Bar]] = {}
-    h1_raw = ctx.ohlcv.history(row["pool"], "1h", row["grad_ts"], series_end(ctx, row, "1h"), currency="token")
+    h1_stats: dict = {}
+    h1_raw = _fetch_history(ctx, row["pool"], "1h", row["grad_ts"], series_end(ctx, row, "1h"), h1_stats, currency="token")
     for tf in TFS:
         holes = 0
+        cut: dict = dict(h1_stats) if tf == "1h" else {}
         if tf == "5m":
             end = series_end(ctx, row, tf)
-            raw = ctx.ohlcv.history(row["pool"], tf, row["grad_ts"], end, currency="token")
+            raw = _fetch_history(ctx, row["pool"], tf, row["grad_ts"], end, cut, currency="token")
             h1_cut = [b for b in h1_raw if b.ts < end]
             gaps = missing_windows(raw, tf, h1_cut, "1h")
-            if gaps:
+            if gaps and not cut.get("fora_do_alcance_gratis"):
                 ctx.ohlcv.repair(row["pool"], tf, gaps, currency="token")
-                raw = ctx.ohlcv.history(row["pool"], tf, row["grad_ts"], end, currency="token")
+                raw = _fetch_history(ctx, row["pool"], tf, row["grad_ts"], end, cut, currency="token")
                 holes = len(missing_windows(raw, tf, h1_cut, "1h"))
-        cut: dict = {}
         bars = load_bars(ctx, row, tf, cut)
-        status = "ok" if holes == 0 and bars else ("buracos" if holes else "sem_dados")
+        if cut.get("fora_do_alcance_gratis"):
+            status = "fora_do_alcance_gratis"
+        else:
+            status = "ok" if holes == 0 and bars else ("buracos" if holes else "sem_dados")
         ctx.store.save_stage2(row["pool"], tf, status, len(bars), holes, cut)
         out[tf] = bars
     return out
@@ -231,6 +256,43 @@ def trade_info(e: Any, res: Any) -> dict[str, Any]:
             "S_acima_100k": d["S_acima_100k"], "R_S": d["R_S"], "S_sobre_Lbc": d["S_sobre_Lbc"], "vol_ratio": d["vol_ratio"],
             "power_candle": d["power_candle"], "idade_d": d["idade_dias"], "idade_grad_d": d["idade_grad_dias"],
             "zona_candles": d["box_len"], "max_caminho_pct": res.max_path_pct}
+
+
+# ---------------------------------------------------------------------------
+# download do bruto em ordem CRONOLOGICA (decisao operacional de 2026-10-16)
+# ---------------------------------------------------------------------------
+
+
+def prefetch_period(ctx: Context, period: str, max_windows: Optional[int] = None,
+                    progress: Optional[Callable[[dict], None]] = None) -> dict[str, Any]:
+    """Baixa o BRUTO (enumeracao on-chain + candles de estagio 1/2) com a janela mais ANTIGA do calendario primeiro,
+    nunca pela ordem sorteada. Motivo: o OHLCV gratis do GeckoTerminal so cobre ~180 dias e esse limite anda 1 dia
+    por dia; uma janela antiga que so fosse visitada tarde na ordem sorteada (a que decide o resultado, em
+    `run_period`) correria o risco de sair do alcance antes de ser baixada. So GRAVA dado bruto, com checkpoint
+    (retomavel): nao roda o detector nem decide parada por contagem. Depois de um prefetch completo, `run_period`
+    na ordem sorteada nao faz NENHUMA chamada de rede nova — so le o que ja esta em cache/checkpoint."""
+    windows = ctx.plan.windows(period)
+    order = sorted(range(len(windows)), key=lambda k: windows[k][0])      # cronologico, mais antiga primeiro
+    if max_windows is not None:
+        order = order[:max_windows]
+    for i, k in enumerate(order, start=1):
+        enumerate_windows(ctx, period, [k])
+        if progress:
+            progress({"fase": "enumeracao", "periodo": period, "janelas_feitas": i, "de": len(order),
+                      "janela_inicio": windows[k][0]})
+    rows = sorted((r for r in ctx.store.graduations(period) if r["status"] == "ok"), key=lambda r: r["grad_ts"])
+    runners: list[Any] = []
+    for i, row in enumerate(rows, start=1):
+        status, runner = stage1(ctx, row)
+        if status == "ok" and runner:
+            runners.append(row)
+        if progress:
+            progress({"fase": "estagio1", "periodo": period, "pools_feitos": i, "de": len(rows), "runners": len(runners)})
+    for i, row in enumerate(runners, start=1):
+        stage2_bars(ctx, row)
+        if progress:
+            progress({"fase": "estagio2", "periodo": period, "runners_feitos": i, "de": len(runners)})
+    return {"janelas": len(order), "graduacoes": len(rows), "runners": len(runners)}
 
 
 # ---------------------------------------------------------------------------

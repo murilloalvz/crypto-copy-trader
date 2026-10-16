@@ -139,4 +139,42 @@ Deste commit em diante: nenhuma mudança de parâmetro, grade, critério, perío
 
 1. (este commit) status → `PRE-REGISTRADO`, registro → `PRE-REGISTRADA`, plano da Parte A (`plano --congelamento 2026-10-16`).
 2. `selar-holdout` → commit da selagem (lista + hash), ANTES de qualquer cálculo do discovery.
-3. `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.
+3. `baixar-bruto --periodo discovery` (ordem cronológica, §8.1) → `discovery` → `escolher` → commit da escolha → `holdout` (só se o discovery der candidato) → `relatorio`.
+
+## 8. Decisões OPERACIONAIS de 2026-10-16 (infraestrutura — nenhuma muda a hipótese, a grade, o período, a linha de
+## base, os cortes ou o custo; §2 e §4 continuam intocados)
+
+Calibrado antes de rodar em escala: ~181 chamadas de RPC por janela (3 launchpads), ~108 s/janela no teto padrão de
+100/min do cliente (o próprio teto, não o QuickNode do operador, é o limitador real nesse padrão). Selar as 400
+janelas do holdout sozinho custaria ~12 h nesse teto.
+
+### 8.1 Ordem de download (limite móvel de ~180 dias do GeckoTerminal)
+
+O discovery começa em 2026-04-22, perto do limite de ~180 dias do OHLCV grátis do GeckoTerminal — limite que anda 1
+dia por dia. Uma janela antiga que só fosse baixada tarde na ordem SORTEADA (a que decide o resultado) corre o risco
+de sair do alcance antes de ser baixada, numa coleta de muitas horas/dias. Correção operacional: `baixar-bruto`
+(`signals_mvp/pos_runner/parte_a/pipeline.py:prefetch_period`) baixa o bruto (enumeração on-chain + candles de
+estágio 1/2) com a janela mais ANTIGA do calendário primeiro — nunca pela ordem sorteada — grava com checkpoint
+(retomável) e não roda o detector nem decide a parada por contagem. A parada por contagem continua, sem exceção, na
+ordem sorteada pré-registrada (`discovery`/`holdout`); depois de um `baixar-bruto` completo, ela não faz NENHUMA
+chamada de rede nova (lê só o que já está em cache/checkpoint). Janela sorteada cuja data já estiver fora do alcance
+grátis (HTTP 401 do GeckoTerminal) vira status explícito **`fora_do_alcance_gratis`** (com a data), nunca
+`sem_dados` genérico nem pulo em silêncio — contado no relatório e nos estágios 1/2 (`pipeline.py:_fetch_history`).
+Holdout (2026-08-02 a 2026-09-22) não corre esse risco (45–75 dias de idade hoje, bem dentro dos 180); a prioridade
+cronológica é para o discovery.
+
+### 8.2 Exemplos no holdout
+
+Conferido: `EXCLUDED` (os 5 exemplos do professor) já era aplicado em `enumerate_windows` ANTES do `if period !=
+"holdout"`, ou seja, para discovery E holdout igualmente — não precisou de correção. Travado com teste
+(`test_examples_are_excluded_from_both_discovery_and_holdout`).
+
+### 8.3 Créditos e ritmo do RPC
+
+Ritmo-teto do RPC configurável por `POS_RUNNER_RPC_PER_MIN` (padrão 100, igual a antes — só infra, nunca regra); o
+limitador é adaptativo (cai pela metade a cada 429, sobe aos poucos) e só é seguro subir o teto num RPC DEDICADO
+(QuickNode do operador), nunca no público compartilhado. Cada comando da Parte A loga e acumula (`rpc_calls_total`,
+`gt_calls_total` na Store) as chamadas de RPC e GeckoTerminal daquela execução. **Limitação desta sessão**: não há
+acesso programático ao painel/API de cota da QuickNode — não dá para calcular o % real do plano gratuito mensal
+consumido sem o operador informar o limite do plano ou checar o painel. Reportarei os totais acumulados medidos a
+cada marco; se o operador disser o limite mensal, calculo o % e paro com checkpoint em 90%, como pedido.

@@ -8,14 +8,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ..http import ApiError
 from ..pos_runner.candles import Bar, tf_seconds
 from ..pos_runner.enumerate import Graduation, WindowResult
+from ..pos_runner.examples import EXAMPLES
 from ..pos_runner.params import Params
 from ..pos_runner.parte_a import cli as cli_mod
 from ..pos_runner.parte_a.baseline import baseline_mean, run_baselines
 from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, holdout_verdict, path_stats,
                                           summarize, variant_table)
-from ..pos_runner.parte_a.pipeline import Context, load_seal, run_period, seal_holdout
+from ..pos_runner.parte_a.pipeline import Context, enumerate_windows, load_seal, prefetch_period, run_period, seal_holdout
 from ..pos_runner.parte_a.plan import DAY, PeriodPlan, load_plan, write_plan
 from ..pos_runner.parte_a.store import Store
 from ..pos_runner.quotes import stable_series
@@ -38,9 +40,12 @@ class FakeOhlcv:
         self.runners = runners
         self.calls = 0
         self.grad: dict[str, int] = {}
+        self.fail_401: set[str] = set()       # pools cuja data "ja saiu" do alcance gratis do GT (HTTP 401)
 
     def history(self, pool, tf, start_ts, end_ts=None, currency="usd", side="base"):
         self.calls += 1
+        if pool in self.fail_401:
+            raise ApiError("http", "GeckoTerminal: HTTP 401", 401)
         step = tf_seconds(tf)
         g = self.grad.get(pool, int(start_ts))
         g -= g % step                       # candles do GeckoTerminal sao alinhados ao timeframe
@@ -72,10 +77,11 @@ CREATED_BEFORE_GRAD = 2.5 * DAY     # criacao 2,5 dias antes da graduacao: o rom
 
 
 def make_ctx(tmp: Path, runners: set[str], per_window: int = 2, extra_pool_in_discovery: str = "",
-             no_creation: frozenset[str] = frozenset()) -> Context:
+             no_creation: frozenset[str] = frozenset(), fail_401: frozenset[str] = frozenset()) -> Context:
     p = plan()
     store = Store(tmp / "a.sqlite")
     ohlcv = FakeOhlcv(runners)
+    ohlcv.fail_401 = set(fail_401)
     creation_calls: list[str] = []
 
     def created(mint: str, migration_sig: str):
@@ -148,6 +154,43 @@ class PipelineTests(unittest.TestCase):
         ctx2.sealed_holdout = sealed
         with self.assertRaises(RuntimeError):
             run_period(ctx2, "discovery", 1, max_windows=1)
+
+    def test_examples_are_excluded_from_both_discovery_and_holdout(self):
+        """Os 5 exemplos do professor ficam fora de TODAS as metricas -- inclusive do holdout, nao so do discovery
+        (os dois usam a mesma `enumerate_windows`; confirma que o filtro de EXCLUDED nao depende do periodo)."""
+        ex = EXAMPLES[0]
+
+        def enum(launchpad, lo, hi):
+            res = WindowResult(launchpad, lo, hi)
+            res.graduations.append(Graduation(launchpad, "sig", lo + 60, 1, "MigrateV2", ex.mint, USDC, ex.pool))
+            return res
+
+        for period in ("discovery", "holdout"):
+            store = Store(self.tmp / f"excl_{period}.sqlite")
+            ctx = Context(plan(), Params(), store, FakeOhlcv(set()), FakeQuotes(), enum, lambda mint: SUPPLY, lambda *a: None)
+            self.ctxs.append(ctx)
+            enumerate_windows(ctx, period, [0])
+            self.assertEqual(ctx.store.graduations(period), [], period)
+
+    def test_out_of_free_range_is_an_explicit_status_never_silent(self):
+        """HTTP 401 do GeckoTerminal (janela ja fora dos ~180 dias gratis) vira status explicito, por pool -- nunca
+        'sem_dados' generico nem um crash que derruba o resto da coleta (os outros pools da mesma janela seguem)."""
+        lo = plan().windows("discovery")[0][0]
+        target = f"P_pump_{lo}_0"
+        ctx = self.ctx(self.tmp, set(), per_window=1, fail_401={target})
+        counts = run_period(ctx, "discovery", target_min_setups=1, max_windows=1)
+        self.assertEqual(counts["estagio1"].get("fora_do_alcance_gratis"), 1)
+        self.assertEqual(counts["estagio1"].get("ok"), 2)          # raydium_launchlab e meteora_dbc seguiram normal
+        st = ctx.store.stage1(target)
+        self.assertEqual(st[0], "fora_do_alcance_gratis")
+        self.assertIsNone(st[2])                                    # runner desconhecido, nao False
+        self.assertEqual(json.loads(st[5])["grad_ts"], lo + 60)     # explicito, por data -- nunca silencioso
+        # status terminal: uma 2a chamada (retomada) nao tenta de novo (nao soma mais chamadas de rede a esse pool)
+        calls_before = ctx.ohlcv.calls
+        from ..pos_runner.parte_a.pipeline import stage1
+        row = next(r for r in ctx.store.graduations("discovery") if r["pool"] == target)
+        stage1(ctx, row)
+        self.assertEqual(ctx.ohlcv.calls, calls_before)
 
     def test_tampered_seal_is_rejected(self):
         ctx = self.ctx(self.tmp, set())
@@ -277,6 +320,79 @@ class MetricsTests(unittest.TestCase):
         p = Params()
         self.assertEqual([p.peak_band(x) for x in (300_000, 499_999, 500_000, 999_999, 1_000_000, 5_000_000)],
                          ["300-500k", "300-500k", "500k-1M", "500k-1M", "1-5M", ">5M"])
+
+
+class PrefetchTests(unittest.TestCase):
+    """Decisao operacional de 2026-10-16: baixar o bruto com a janela mais ANTIGA do calendario primeiro (nunca pela
+    ordem sorteada), para nunca perder dado por causa do limite movel de ~180 dias do GeckoTerminal."""
+
+    def test_prefetch_enumerates_chronologically_not_by_the_seeded_shuffle(self):
+        tmp = Path(tempfile.mkdtemp())
+        seen: list[int] = []
+
+        def enum(launchpad, lo, hi):
+            seen.append(lo)
+            return WindowResult(launchpad, lo, hi)
+
+        store = Store(tmp / "p.sqlite")
+        ctx = Context(plan(), Params(), store, FakeOhlcv(set()), FakeQuotes(), enum, lambda mint: SUPPLY, lambda *a: None)
+        prefetch_period(ctx, "discovery", max_windows=6)
+        pumpfun_order = seen[0::3]                               # 3 launchpads por janela, nesta ordem fixa
+        self.assertEqual(pumpfun_order, sorted(pumpfun_order))    # cronologico, mais antiga primeiro
+        shuffled = [w[0] for w in plan().windows("discovery")[:6]]
+        self.assertNotEqual(shuffled, sorted(shuffled))           # confirma que a ordem sorteada NAO e cronologica
+        store.close()
+
+    def test_run_period_after_a_full_prefetch_makes_no_new_network_call(self):
+        """O prefetch so GRAVA bruto; a parada por contagem continua na ordem sorteada (`run_period`), e depois de um
+        prefetch COMPLETO (as mesmas janelas, so em outra ordem) ela roda so sobre o cache (nenhuma chamada nova de
+        RPC ou GeckoTerminal), porque a ordem de visita nao muda QUAIS janelas sao enumeradas -- so QUANDO."""
+        tmp = Path(tempfile.mkdtemp())
+        total = len(plan().windows("discovery"))
+        ctx = self.ctxPatch(tmp, set())
+        prefetch_period(ctx, "discovery")                          # todas as janelas, cronologico
+        enum_calls_before, gt_calls_before = ctx.enumerate_calls, ctx.ohlcv.calls
+        self.assertGreater(enum_calls_before, 0)
+        run_period(ctx, "discovery", target_min_setups=10**9, max_windows=total)   # mesmas janelas, ordem sorteada
+        self.assertEqual(ctx.enumerate_calls, enum_calls_before)   # enumerate_windows pulou tudo (window_done)
+        self.assertEqual(ctx.ohlcv.calls, gt_calls_before)         # stage1 veio 100% do cache do estagio
+        ctx.store.close()
+
+    @staticmethod
+    def ctxPatch(tmp: Path, runners: set[str]) -> Context:
+        ctx = make_ctx(tmp, runners, per_window=1)
+        real_enum = ctx.enumerate_fn
+        ctx.enumerate_calls = 0
+
+        def counted(lp, lo, hi):
+            ctx.enumerate_calls += 1
+            return real_enum(lp, lo, hi)
+
+        ctx.enumerate_fn = counted
+        return ctx
+
+
+class RpcPaceTests(unittest.TestCase):
+    def test_rpc_per_min_is_configurable_and_infra_only(self):
+        """Ritmo-teto do RPC pago (QuickNode etc.) vem de POS_RUNNER_RPC_PER_MIN; sem ela, o padrao continua 100
+        (igual antes desta decisao operacional -- nao muda nenhuma regra, so a velocidade do download)."""
+        import os
+        from ..pos_runner.parte_a.cli import ENV_RPC_PER_MIN, build_context
+
+        tmp = Path(tempfile.mkdtemp())
+        old_env = os.environ.get(ENV_RPC_PER_MIN)
+        try:
+            os.environ.pop(ENV_RPC_PER_MIN, None)
+            _ctx, rpc_default, _http = build_context(tmp / "a", plan())
+            self.assertEqual(rpc_default.limiters[list(rpc_default.limiters)[0]].max_per_min, 100.0)
+            os.environ[ENV_RPC_PER_MIN] = "900"
+            _ctx2, rpc_fast, _http2 = build_context(tmp / "b", plan())
+            self.assertEqual(rpc_fast.limiters[list(rpc_fast.limiters)[0]].max_per_min, 900.0)
+        finally:
+            if old_env is None:
+                os.environ.pop(ENV_RPC_PER_MIN, None)
+            else:
+                os.environ[ENV_RPC_PER_MIN] = old_env
 
 
 class GateTests(unittest.TestCase):
