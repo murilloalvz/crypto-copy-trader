@@ -189,3 +189,40 @@ continua vindo só do custo fixo de 0,15 SOL. A gestão de banca em si (`Bankrol
   (`engine.maybe_send_daily_summary` chama `PosRunnerLive.daily_bankroll_summary()`).
 - Conversão US$→SOL (posição real) precisa de uma cotação SOL/USD já cacheada; sem ela a linha fica explícita
   (`"sem dado: sol/usd"`), nunca um custo inventado.
+
+## 11. Status em 2026-10-16 ~15h UTC (handoff para quem assumir a sessão)
+
+**Pronto e commitado** (branch `signals-mvp` = `claude/pensive-wright-62usq8`, PR #6):
+- Congelamento do pré-registro (commit `dbbcea1`), plano da Parte A, 3 decisões operacionais de §8 (prefetch
+  cronológico, confirmação dos exemplos, créditos/ritmo do RPC) e o addendum de relatório completo (§9: Parte A
+  `bankroll.py` + Parte B `live.py` com resumo diário no Telegram) — commits `28b310a`, `b6f9102`, `77eebe7`,
+  `a0c35f9`, `5808a98`. 261 testes offline passando.
+
+**Em andamento agora** (processo em segundo plano, PID 490, fora do controle de versão):
+`selar-holdout --janelas 400`, checkpoint em `signals_mvp/dados/pos_runner_parte_a/parte_a.sqlite` (gitignored).
+Estava em ~239/400 janelas, 0 erro, usando um endpoint QuickNode NOVO (o antigo bateu o limite diário às
+~14h40 UTC; trocado com o operador). Ritmo `POS_RUNNER_RPC_PER_MIN=150` (conservador, endpoint novo sem
+histórico de limite conhecido).
+
+**Ainda NÃO existe nenhuma tabela de trades/banca real** (a pergunta "terminou a tabela?" — resposta: não, e não
+pode terminar antes do discovery rodar): `write_bankroll_reports` só gera algo para um período com graduações
+enumeradas, e por enquanto SÓ o holdout está sendo selado (zero linhas em `graduations` para `discovery`, zero em
+`trades`). A tabela real só existe depois de: selar o holdout (em andamento) → commitar a selagem → `baixar-bruto
+--periodo discovery` (4.560 janelas, o maior passo — download cronológico do bruto para não perder dado no limite
+de ~180 dias do GeckoTerminal) → `discovery` (parada por contagem, ≥60 setups/tf) → `escolher` → (se candidato)
+`holdout` → `relatorio` (que já chama `write_bankroll_reports` automaticamente).
+
+**Próximos passos exatos, na ordem, cada um com seu commit** (comandos em
+`signals_mvp/pos_runner/parte_a/cli.py`):
+1. Esperar `selar-holdout` chegar a 400/400 → commitar `docs/pos-runner-v0/holdout_selado.json` ANTES de qualquer
+   `discovery`.
+2. `baixar-bruto --periodo discovery` (sem commit — só grava bruto em cache/checkpoint).
+3. `discovery` → `escolher` → commitar `docs/pos-runner-v0/escolha_discovery.json`.
+4. Se `candidato: true`: `holdout` → commitar `docs/pos-runner-v0/resultado_holdout.json`.
+5. `relatorio` → gera `docs/pos-runner-v0/relatorio_parte_a.md` + `docs/pos-runner-v0/trades/*.csv` +
+   `trades_parte_a.xlsx` (a tabela de banca) + 5 gráficos de trades sorteados. Esse conjunto é a entrega final.
+
+**Only-mentioned-once risco conhecido**: um endpoint QuickNode agressivo (600/min) esgota TODAS as 8 tentativas de
+`getTransaction`/`getSlot` e trava o progresso sem travar o processo (fica "dormindo" em retry); se isso se
+repetir, `curl`/`requests.post` direto no endpoint com `getSlot` mostra na hora se é limite diário (HTTP 429,
+`-32003 "daily request limit reached"`) — não é só questão de baixar o `POS_RUNNER_RPC_PER_MIN`.
