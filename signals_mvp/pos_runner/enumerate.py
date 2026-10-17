@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Optional
 
-from .lineage import summarize_tx
+from .lineage import summarize_tx, top_level_instruction_names
 from .solana_rpc import SIGNATURES_PAGE_SIZE, RpcError, SolanaRpc, anchor_at_or_after
 
 
@@ -76,6 +76,7 @@ class WindowResult:
     tx_fetched: int = 0
     skipped_err: int = 0
     not_migration: int = 0
+    nao_resolvida: int = 0   # contagem EXPLICITA de graduacoes rejeitadas pelo filtro defensivo; nunca pool morto
     accounts: tuple[str, ...] = ()
     error: str = ""
 
@@ -86,23 +87,47 @@ class WindowResult:
 
 
 def _launchpad_instruction(tx: dict, spec: LaunchpadSpec) -> tuple[Optional[str], Optional[list[str]]]:
-    """(nome da instrucao de migracao, contas da instrucao de nivel 1 do programa do launchpad)."""
+    """(nome da instrucao de migracao, contas da instrucao de nivel 1 do programa do launchpad). Casa a
+    instrucao certa pelo NOME logado (`top_level_instruction_names`), nunca so pelo `programId` -- uma
+    transacao pode chamar o MESMO programa em mais de uma instrucao de nivel 1 (ex.: comprar e migrar no
+    mesmo envio); pegar "a 1a que casa o programId" pode pegar a instrucao ERRADA e ler contas de outro
+    layout (achado real em producao: DBC com Init+Swap+Migracao, pump.fun com Buy+Migracao na mesma tx)."""
     summary = summarize_tx("", tx)
     if summary is None or not summary.ok:
         return None, None
     names = [ix for prog, ix in summary.instructions if prog == spec.program and ix in spec.layouts]
     if not names:
         return None, None
-    for ix in ((tx.get("transaction") or {}).get("message") or {}).get("instructions") or []:
-        if ix.get("programId") == spec.program and isinstance(ix.get("accounts"), list):
-            return names[0], ix["accounts"]
-    # migracao chamada por outro programa (CPI): procura nas instrucoes internas
+    top_names = top_level_instruction_names(tx)
+    top_instrs = ((tx.get("transaction") or {}).get("message") or {}).get("instructions") or []
+    for i, ix in enumerate(top_instrs):
+        name = top_names[i] if i < len(top_names) else None
+        if ix.get("programId") == spec.program and name in spec.layouts and isinstance(ix.get("accounts"), list):
+            return name, ix["accounts"]
+    # migracao chamada por outro programa (CPI): procura nas instrucoes internas (mesma limitacao de sempre:
+    # casa so por tamanho de contas, nao por nome -- nao foi achado nenhum caso real do bug aqui ainda)
     need = max(spec.layouts[names[0]]) + 1
     for inner in ((tx.get("meta") or {}).get("innerInstructions") or []):
         for ix in inner.get("instructions") or []:
             if ix.get("programId") == spec.program and isinstance(ix.get("accounts"), list) and len(ix["accounts"]) >= need:
                 return names[0], ix["accounts"]
     return names[0], None
+
+
+# EMENDA 2026-10-16 (filtro defensivo, pos achado em producao de pool/mint lixo): enderecos nativos/de sistema
+# nunca sao o mint ou o pool de uma graduacao real (podem ser a COTACAO legitimamente, ex. SOL/USDC/USDT --
+# por isso nao entram aqui). Pega qualquer resto de leitura errada que o casamento por nome nao evitou.
+KNOWN_NATIVE_OR_PROGRAM = frozenset({
+    "So11111111111111111111111111111111111111112",   # SOL (mint nativo)
+    "11111111111111111111111111111111",               # System Program
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",     # SPL Token Program
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",     # Token-2022 Program
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",    # Associated Token Program
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",     # Metadata Program
+    "Sysvar1nstructions1111111111111111111111111",     # Sysvar Instructions
+    "SysvarRent111111111111111111111111111111111",     # Rent Sysvar
+    "ComputeBudget111111111111111111111111111111",     # Compute Budget Program
+})
 
 
 def resolve_graduation(tx: dict, spec: LaunchpadSpec, signature: str) -> Optional[Graduation]:
@@ -115,6 +140,10 @@ def resolve_graduation(tx: dict, spec: LaunchpadSpec, signature: str) -> Optiona
         g.status = "nao_resolvida"
         return g
     g.mint, g.quote_mint, g.pool = accounts[idx[0]], accounts[idx[1]], accounts[idx[2]]
+    if (g.pool in KNOWN_NATIVE_OR_PROGRAM or g.mint in KNOWN_NATIVE_OR_PROGRAM
+            or g.pool == g.mint or g.pool == g.quote_mint):
+        g.status, g.mint, g.quote_mint, g.pool = "nao_resolvida", None, None, None
+        return g
     return g
 
 
@@ -173,6 +202,8 @@ def enumerate_window(
                 if grad is None:
                     res.not_migration += 1
                     continue
+                if grad.status == "nao_resolvida":
+                    res.nao_resolvida += 1
                 if grad.pool and grad.pool in pools:
                     continue
                 if grad.pool:

@@ -176,4 +176,9 @@ class Store:
         c["setups_primarios"] = dict(self.db.execute(
             "SELECT s.tf, COUNT(*) FROM setups s JOIN graduations g ON g.pool=s.pool WHERE g.period=? AND s.primary_flag=1 GROUP BY s.tf",
             (period,)).fetchall())
+        # EMENDA 2026-10-16 (filtro defensivo da enumeracao): graduacoes rejeitadas (endereco nativo/de sistema no
+        # lugar de mint/pool reais) -- nunca pool morto, so contagem explicita por janela (nunca silencioso).
+        c["enumeracao_nao_resolvida"] = sum(
+            json.loads(info or "{}").get("nao_resolvida", 0)
+            for (info,) in self.db.execute("SELECT info FROM windows WHERE period=?", (period,)).fetchall())
         return c

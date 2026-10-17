@@ -314,6 +314,48 @@ class LineageTest(unittest.TestCase):
         finally:
             h.close()
 
+    def test_parte_a_enumeration_picks_the_right_instruction_when_the_tx_bundles_more_than_one(self) -> None:
+        """Achado real em producao (2026-10-16): uma tx pode chamar o MESMO programa do launchpad em mais de
+        uma instrucao de NIVEL 1 (ex.: comprar e migrar no mesmo envio, bot sniper) -- `_launchpad_instruction`
+        pegava "a 1a instrucao que casa o programId", nao necessariamente a de migracao, e lia mint/pool da
+        instrucao ERRADA (endereco nativo/de sistema em vez de token/pool real). Virou um "pool" lixo
+        (So1111...1112, o mint nativo do SOL) que acabou dentro do selo do holdout -- achado pela trava de
+        vazamento holdout/discovery, nunca por conferencia direta. Fixtures reais (getTransaction das 2
+        transacoes que causaram o achado): `rpc_tx_migrate_dbc_bundled.json` (Init+Swap+MigrationDammV2) e
+        `rpc_tx_migrate_pumpfun_bundled_buy.json` (BuyV2+MigrateV2). Agora casa pelo NOME logado
+        (`lineage.top_level_instruction_names`), nunca so pelo programId."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        native = {"So11111111111111111111111111111111111111112", "11111111111111111111111111111111",
+                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"}
+
+        tx = load_fixture("rpc_tx_migrate_dbc_bundled.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["meteora_dbc"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertNotIn(g.pool, native)
+        self.assertNotIn(g.mint, native)
+        self.assertNotEqual(g.pool, g.mint)
+
+        tx = load_fixture("rpc_tx_migrate_pumpfun_bundled_buy.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertTrue(g.mint.endswith("pump"))      # mint real do pump.fun (sufixo vanity), nunca SOL/Token-2022
+        self.assertNotIn(g.pool, native)
+        self.assertNotIn(g.quote_mint, native - {"So11111111111111111111111111111111111111112"})  # SOL e cotacao normal aqui
+
+    def test_single_instruction_classic_examples_are_unaffected_by_the_name_matching_fix(self) -> None:
+        """Regressao: os 3 exemplos classicos (1 unica instrucao de nivel 1 do launchpad por tx) continuam
+        resolvendo exatamente o mesmo pool/mint de antes -- o fix so muda o comportamento quando ha MAIS de
+        uma instrucao de nivel 1 do mesmo programa."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        for launchpad, (fixture, pool, mint) in self.CASES.items():
+            tx = self.tx(fixture)
+            g = resolve_graduation(tx, LAUNCHPADS[launchpad], "sig")
+            self.assertEqual(g.status, "ok", launchpad)
+            self.assertEqual(g.pool, pool, launchpad)
+            self.assertEqual(g.mint, mint, launchpad)
+
 
 class LiveFlowTest(unittest.TestCase):
     def setUp(self) -> None:

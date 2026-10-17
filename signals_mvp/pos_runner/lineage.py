@@ -104,6 +104,36 @@ def summarize_tx(signature: str, tx: Optional[dict]) -> Optional[TxSummary]:
     )
 
 
+def top_level_instruction_names(tx: Optional[dict]) -> list[Optional[str]]:
+    """Nome logado ('Program log: Instruction: X') de cada instrucao de NIVEL 1 (invoke [1]), na MESMA ordem
+    de `tx.transaction.message.instructions` -- `None` quando o programa nao loga nome nenhum. Existe porque
+    uma transacao pode chamar o MESMO programa em mais de uma instrucao de nivel 1 (ex.: um bot que compra e
+    migra no mesmo envio) -- casar so pelo `programId` pega a 1a por acaso, nao necessariamente a certa
+    (achado real: DBC com `InitializeVirtualPoolWithSplToken` + `Swap2` + `MigrationDammV2` na mesma tx;
+    pump.fun com `BuyV2` + `MigrateV2`). Mesma mecanica de pilha de `summarize_tx`, so que marcando a QUAL
+    instrucao de nivel 1 cada nome pertence."""
+    if not tx:
+        return []
+    logs = (tx.get("meta") or {}).get("logMessages") or []
+    depth = 0
+    names: list[Optional[str]] = []
+    for line in logs:
+        m = _INVOKE.match(line)
+        if m:
+            depth = int(m.group(2))
+            if depth == 1:
+                names.append(None)
+            continue
+        if depth == 1:
+            m = _INSTRUCTION.match(line)
+            if m and names and names[-1] is None:
+                names[-1] = m.group(1)
+                continue
+        if line.startswith("Program ") and (line.endswith(" success") or " failed" in line):
+            depth = max(depth - 1, 0)
+    return names
+
+
 def oldest_signature(rpc: SolanaRpc, address: str, before: Optional[str], max_pages: int = 300) -> tuple[Optional[dict], int, bool]:
     """Pagina `getSignaturesForAddress` para tras a partir de `before` ate acabar.
 

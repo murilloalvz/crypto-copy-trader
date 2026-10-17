@@ -100,7 +100,7 @@ def enumerate_windows(ctx: Context, period: str, orders: Iterable[int]) -> int:
                     raise RuntimeError(f"pool do holdout selado apareceu no {period}: {leaked[:3]}")
             ctx.store.save_window(period, k, lo, hi, lp, status, grads if status == "ok" else [],
                                   {"assinaturas": res.signatures_seen, "tx": res.tx_fetched, "nao_migracao": res.not_migration,
-                                   "erro": res.error, "contas": list(res.accounts)})
+                                   "nao_resolvida": res.nao_resolvida, "erro": res.error, "contas": list(res.accounts)})
             new += len(grads) if status == "ok" else 0
     return new
 

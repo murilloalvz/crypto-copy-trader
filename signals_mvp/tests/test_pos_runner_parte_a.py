@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..http import ApiError
 from ..pos_runner.candles import Bar, tf_seconds
-from ..pos_runner.enumerate import Graduation, WindowResult
+from ..pos_runner.enumerate import LAUNCHPADS, Graduation, WindowResult, resolve_graduation
 from ..pos_runner.examples import EXAMPLES
 from ..pos_runner.params import Params
 from ..pos_runner.parte_a import cli as cli_mod
@@ -107,6 +107,75 @@ def make_ctx(tmp: Path, runners: set[str], per_window: int = 2, extra_pool_in_di
     ctx = Context(p, Params(), store, ohlcv, FakeQuotes(), enum, lambda mint: SUPPLY, created)
     ctx.creation_calls = creation_calls      # type: ignore[attr-defined]
     return ctx
+
+
+def _synthetic_migrate_tx(accounts: list[str]) -> dict:
+    """Tx sintetica minima (so o que `resolve_graduation` le): 1 instrucao de nivel 1 do programa do pump.fun,
+    nome logado 'MigrateV2' (layout mint=2, cotacao=3, pool=10 -- por isso len(accounts) >= 11)."""
+    prog = LAUNCHPADS["pumpfun"].program
+    return {
+        "blockTime": 100, "slot": 1,
+        "meta": {"err": None, "innerInstructions": [], "logMessages": [
+            f"Program {prog} invoke [1]",
+            "Program log: Instruction: MigrateV2",
+            f"Program {prog} consumed 1 of 1 compute units",
+            f"Program {prog} success",
+        ]},
+        "transaction": {"message": {"instructions": [{"programId": prog, "accounts": accounts}]}},
+    }
+
+
+class EnumerateTests(unittest.TestCase):
+    """Achado real em producao (2026-10-16): filtro defensivo em `resolve_graduation` -- endereco nativo/de
+    sistema no lugar do mint/pool nunca vira graduacao real, mesmo que a instrucao certa tenha sido achada."""
+
+    def test_native_address_as_mint_or_pool_is_rejected_explicitly(self):
+        spec = LAUNCHPADS["pumpfun"]
+        SOL = "So11111111111111111111111111111111111111112"
+        good = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", "POOLREAL"]
+        g = resolve_graduation(_synthetic_migrate_tx(good), spec, "sig_ok")
+        self.assertEqual(g.status, "ok")
+        self.assertEqual((g.mint, g.quote_mint, g.pool), ("MINTREAL", SOL, "POOLREAL"))
+
+        mint_is_native = ["a0", "a1", SOL, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "a4", "a5", "a6",
+                          "a7", "a8", "a9", "POOLX"]
+        g = resolve_graduation(_synthetic_migrate_tx(mint_is_native), spec, "sig_bad_mint")
+        self.assertEqual(g.status, "nao_resolvida")
+        self.assertIsNone(g.mint)
+        self.assertIsNone(g.pool)
+
+        pool_is_native = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", SOL]
+        g = resolve_graduation(_synthetic_migrate_tx(pool_is_native), spec, "sig_bad_pool")
+        self.assertEqual(g.status, "nao_resolvida")
+        self.assertIsNone(g.pool)
+
+    def test_rejected_graduations_are_counted_explicitly_and_never_a_dead_pool(self):
+        """A contagem (`counts()["enumeracao_nao_resolvida"]`) e explicita, nunca silenciosa; a graduacao
+        rejeitada NUNCA entra em `graduations` (pool=None), entao nunca aparece como onda/pool morto em
+        nenhuma etapa seguinte (stage1/stage2/detector nem a conhecem)."""
+        windows = plan().windows("discovery")
+        lo = windows[0][0]
+
+        def enum(launchpad, lo_, hi):
+            res = WindowResult(launchpad, lo_, hi)
+            pool = f"P_{launchpad[:4]}_{lo_}_0"
+            res.graduations.append(Graduation(launchpad, f"sig{pool}", lo_ + 60, 1, "MigrateV2", f"M{pool}", USDC, pool))
+            if lo_ == lo and launchpad == "pumpfun":
+                res.graduations.append(Graduation(launchpad, "sig_lixo", lo_ + 60, 1, "MigrateV2", None, None, None,
+                                                   status="nao_resolvida"))
+                res.nao_resolvida = 1
+            return res
+
+        from ..pos_runner.parte_a.pipeline import enumerate_windows
+        ctx = Context(plan(), Params(), Store(Path(tempfile.mkdtemp()) / "a.sqlite"), FakeOhlcv(set()), FakeQuotes(),
+                     enum, lambda mint: SUPPLY, lambda *a: None)
+        try:
+            enumerate_windows(ctx, "discovery", [0, 1])
+            self.assertEqual(ctx.store.counts("discovery")["enumeracao_nao_resolvida"], 1)
+            self.assertNotIn(None, {g["pool"] for g in ctx.store.graduations("discovery")})   # nunca entrou como pool
+            self.assertEqual(len(ctx.store.graduations("discovery")), 6)                       # 3 launchpads x 2 janelas, so as reais
+        finally:
+            ctx.store.close()
 
 
 class PlanTests(unittest.TestCase):
