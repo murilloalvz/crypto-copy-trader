@@ -1,6 +1,6 @@
 {
  "versao_plano": "8a2387a3e185",
- "versao_config": "2a8bef99a917",
+ "versao_config": "0de2333a7f63",
  "janelas": 400,
  "graduacoes": [
   {
@@ -326,8 +326,8 @@
    "ord": 1
   },
   {
-   "pool": "So11111111111111111111111111111111111111112",
-   "mint": "11111111111111111111111111111111",
+   "pool": "CxM799ZZYtdjYT9yLV77oJ5LqQ14QgNnVWwpfNEd1cQU",
+   "mint": "7rUbuFQcWAiT6ycEgEoYM9dgmuupghvFm9kmukcD4nry",
    "launchpad": "meteora_dbc",
    "grad_ts": 1788766460,
    "ord": 1
@@ -15481,13 +15481,6 @@
    "ord": 30
   },
   {
-   "pool": "7SFX4fF7M4YQGVoDt9mL87Rz6pDsmURrvTJPQQpi1ayG",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788803540,
-   "ord": 30
-  },
-  {
    "pool": "GEfj9M4seNY8pVCAQNWtynwDdpCBDyoP57etSBLKGggD",
    "mint": "BUPNYwndVGfzVb6RG6q2PX53VdAimw2Mi98QxqeWpump",
    "launchpad": "pumpfun",
@@ -20493,8 +20486,8 @@
    "ord": 39
   },
   {
-   "pool": "5S6rXU8JrYuTAP1gsp45e4a2vuWpyZF9fjm2E9Hy9PBR",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "2PCykwwqSHFyRoUuvN4Qncs8DkmS1XVwsDp98oCBpvL5",
+   "mint": "Vs3pDKNzSKAEtTf8GhvwoobnzP14hNoa7BibGjDpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789246748,
    "ord": 39
@@ -20707,13 +20700,6 @@
    "mint": "6igCr8y6XqGEG7aGyZsti891U7faABx4ft96hRANqvEp",
    "launchpad": "pumpfun",
    "grad_ts": 1789533656,
-   "ord": 40
-  },
-  {
-   "pool": "baH9vrsecXP33zbCnhhaeEw157u7JgH4WoQsaZKQLh5",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1789533669,
    "ord": 40
   },
   {
@@ -21284,8 +21270,8 @@
    "ord": 41
   },
   {
-   "pool": "GBgBfALWT93coQXvfYH7B49NkgCVAsjpVhGoq33rSDcZ",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "FnMum8LbynYEvYGaVSKZQCjxJqxaVpUFGgtgwZ4WKq81",
+   "mint": "E2SdY6xXpQbKsGRPiQVqieisKHSyoTk7isuxLagqpump",
    "launchpad": "pumpfun",
    "grad_ts": 1787946386,
    "ord": 41
@@ -26793,8 +26779,8 @@
    "ord": 51
   },
   {
-   "pool": "FJKHBPcz8zCGqcpMbu85W1bgfvaoyMRB3uqUpsK7YedF",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "Cp29inx1rzN4sQwHhGcWPqHzpVLiZcNDuPwZoAsVE9UB",
+   "mint": "27pbcjz2K3u1HKcoaigftSJNEga8w5zxDvmQNK46YnkP",
    "launchpad": "pumpfun",
    "grad_ts": 1789943106,
    "ord": 51
@@ -31259,8 +31245,8 @@
    "ord": 61
   },
   {
-   "pool": "5T2xDDyyJf862QDjjHrDvTDoJjTRGeLLm2HectbUsukw",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "3dbZXGhDrgkZZvqbdcaCejUvh4Ga7Rzak7kDQcR3FFg8",
+   "mint": "2HAUfq511JSDHfN17nEC9R38jh4abh7Zv7kv7YY4pump",
    "launchpad": "pumpfun",
    "grad_ts": 1788674028,
    "ord": 61
@@ -40345,8 +40331,8 @@
    "ord": 83
   },
   {
-   "pool": "AVotQWxPJjb4pT9nGRRrGkeYVnAgB2YnUqmRBLSvBLzU",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "2f6Ai8pdFxqfk4KHfNJMMxMc55Fs7QtzAXMHJMsRMzz1",
+   "mint": "DvMznVtm76KbJhfpaUyT6bEY5iK5ZBw1h27sjZshpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789861256,
    "ord": 83
@@ -52924,8 +52910,8 @@
    "ord": 109
   },
   {
-   "pool": "Cc4NvPDmwQxMW7JGcxDDDLq3y5j3C1iuAL9gfpVWkq3i",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "6vHjGQu2y6bB78XASUyQ1w5oeGf9BpEqPHedoR5W1VJQ",
+   "mint": "24Z8ZK5TGWA7ivdZeYH1w1xgr6CGVYsPcnE4GSy3pump",
    "launchpad": "pumpfun",
    "grad_ts": 1788783231,
    "ord": 109
@@ -53715,8 +53701,8 @@
    "ord": 110
   },
   {
-   "pool": "BsLnUiFE8PaL9BsR3ntZ9csBetKh3HZLkzHCT4fPYcbG",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "9r3HfnFEj6ELJigTh4oQuyJ4x1GppJk6VTj5kvZGWXw8",
+   "mint": "F56pXpCRNwRxekbuKkAauNqn3DyXw4HWc4nDMosfpump",
    "launchpad": "pumpfun",
    "grad_ts": 1788247647,
    "ord": 110
@@ -64859,8 +64845,8 @@
    "ord": 133
   },
   {
-   "pool": "EVdU34jFY7CMQpRHF1uTDSHEYNcD98vV1octkzGGccQF",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "22dtLfYJLSBVaoZ1RUkKZPK6o1j3oG9RDvQDaJmf3GnX",
+   "mint": "e97r9rtqwDF8M361kSRBLXws1g113ZFCFfzSmW2pump",
    "launchpad": "pumpfun",
    "grad_ts": 1788093997,
    "ord": 133
@@ -72790,8 +72776,8 @@
    "ord": 149
   },
   {
-   "pool": "BitCfH1FJddnTudN8yvDcRPBytswi5REsjJFV2PoCZ8p",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "Ao7DrRMcmnFGnT3h3LwwogQqqcUeK6qvFaQuqkjCpWGz",
+   "mint": "FNENCeQjAuC1wKzPvJtTRtJCByG658zBy8Rw1bYqpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789514368,
    "ord": 149
@@ -75058,13 +75044,6 @@
    "ord": 154
   },
   {
-   "pool": "6hj9XDVsKdgeVZMFMzYqe3USsWBN4sqwu1zyxWLq5Gxi",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1789355566,
-   "ord": 154
-  },
-  {
    "pool": "AWeYDN2vCrfVDj9qyk5FGYW3DUBchh3gM3nBkHp8uea8",
    "mint": "7FEF4RUbw9RQzMqFxgVMHAWfDVhGVNjH1jkmpTbwpump",
    "launchpad": "pumpfun",
@@ -75632,8 +75611,8 @@
    "ord": 155
   },
   {
-   "pool": "DEKQnWn9Xdb9Hf6B79Z8cwhzdp2vZCfPXbReZtPxoX3S",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "Fr958XasQKFe5WJqLhGzDH5TXTgAin3Wbyo8z3SjGg45",
+   "mint": "GRD4QpAfetZFMyyTUzj1he4GuUrAEEZzJEvv8pa8pump",
    "launchpad": "pumpfun",
    "grad_ts": 1789470511,
    "ord": 155
@@ -76297,8 +76276,8 @@
    "ord": 156
   },
   {
-   "pool": "BaxD2wz72fRC9JvYiXwZw1zJuHEckG6mPQ7cYkxjawwQ",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "2HV2bsPoa2AKrKQD6DwmfyaChYqQyY4xpUgB299CGTJp",
+   "mint": "B33yWXo4uNSmZDkNMNCNi95DRAChEB2LVFpD1LqGpump",
    "launchpad": "pumpfun",
    "grad_ts": 1788437195,
    "ord": 156
@@ -96086,8 +96065,8 @@
    "ord": 197
   },
   {
-   "pool": "CVEjCLba96LtPdrVHUsLYEWLA21xpToBcyUYPz6CSvLY",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "DvTESqSihodWgR3tMqeZx9vaN8QNuJ5WWTEGeuiNytDU",
+   "mint": "3CF1EmxFZWqjXBQxxvy16RwvQSxhz8ro12Tu2ZCRpump",
    "launchpad": "pumpfun",
    "grad_ts": 1788201369,
    "ord": 197
@@ -103632,13 +103611,6 @@
    "ord": 211
   },
   {
-   "pool": "D3JkeTg9ECPqMzcAyuRirR8m1eMiVEj2fzFuUEKMSfyt",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1789209749,
-   "ord": 211
-  },
-  {
    "pool": "F74vCgSgbGHbYq8hVYvEAvEtxF7KqLmsj5TgKjY7NMei",
    "mint": "2kuEPy7zQNcCXmmq8zjTUNMm1WRs5XzBC5VXgVo6pump",
    "launchpad": "pumpfun",
@@ -106222,8 +106194,8 @@
    "ord": 218
   },
   {
-   "pool": "8mMWMDgVcYjfhqVuQY1c7atD1Yb87wwjCX3fnzcVzjJD",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "9QzuJBqrXcYzEJ3gTDBkHFHH1RDiTmszxuXWXyWNw48Q",
+   "mint": "KKFdLkPgnnW9LhXFztHKQhYfSEeDRLG6v8SMVjaSs9J",
    "launchpad": "pumpfun",
    "grad_ts": 1789615937,
    "ord": 218
@@ -116533,13 +116505,6 @@
    "ord": 242
   },
   {
-   "pool": "79Upq2dFhLNoRdXr7eMgLiuEd9grKgJBJP6VDqnRkBWg",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788644070,
-   "ord": 242
-  },
-  {
    "pool": "9488UNdtFMBRHtyJPwmzGojb1fobCspsbqPc39NzMepn",
    "mint": "4ULZpBddAcZBZMVKrdrRpoFWHkwz2vv4Sog7kDFmpump",
    "launchpad": "pumpfun",
@@ -124443,8 +124408,8 @@
    "ord": 259
   },
   {
-   "pool": "8Q7gmRTo2v58FuznAtraLRNMoADuxeX5E5Y7cnbvVya2",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "BKyvpbUdWVgo4igzcbjDa31Ap6RsmjDpd65Nh4fB6fSG",
+   "mint": "3KsTy7PHRnfjrbFp2JBqUbg49x3aBGoRWgt6sUh2pump",
    "launchpad": "pumpfun",
    "grad_ts": 1789326049,
    "ord": 259
@@ -127467,8 +127432,8 @@
    "ord": 264
   },
   {
-   "pool": "DRFWddRHQPMJfibrQDMAVTCye5TJdENqmmWtekkefCmN",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "C69fFcKcur5GFAcs3BRncaZhnxLQBcJcpTefXKGUZePZ",
+   "mint": "GjfDzpE79BzzwGY315vnrV9Qi1n7NU34fQFUiF5RhTLY",
    "launchpad": "pumpfun",
    "grad_ts": 1788036675,
    "ord": 264
@@ -133494,8 +133459,8 @@
    "ord": 277
   },
   {
-   "pool": "AUB8b8q3yZJSVqWJRf9nbXoMJKwbNF3qFMFUkB2hyhch",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "74B5NrdmLzmNqYLfQEMveQAWk6C5YWMdsmPMQUBrHoxb",
+   "mint": "5JbT8HhZCpA7zDnwdAScWxsBpjzhPYkF6QCr6Ldgpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789846217,
    "ord": 277
@@ -134110,8 +134075,8 @@
    "ord": 277
   },
   {
-   "pool": "3o5tMGzjgUPru2DayGMKn8qpgQfXRnjLtr2EYtvsFL3x",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "CzfGXXU8TXNE8Hm7PVuW57HXLLL1zhJeXwtqvxWbgEqn",
+   "mint": "8KNftfxgQr17eiYQesjfUPvvS7UCbXiNd4bnCmktHRDe",
    "launchpad": "pumpfun",
    "grad_ts": 1789847556,
    "ord": 277
@@ -135559,8 +135524,8 @@
    "ord": 280
   },
   {
-   "pool": "6x3rYM79PoVqrSkA2yfqTtCxGSGojDzYhoLGY6dPyFaw",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "7SeuwQsT8F75nZxi6FfXpaz5fiacdXfuBCavbuY2FVpc",
+   "mint": "5A7kU8rD5DeRuviAqQvWAhjjWQrrDSLiNYoi9v5Rpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789855964,
    "ord": 280
@@ -136245,8 +136210,8 @@
    "ord": 281
   },
   {
-   "pool": "HEkNmwaqcqbErd7gbfYGNtAr5CszGqmZuUtusQMFooTB",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "8NXvnQm8XiYreNGMz3VBc9jYRLqzmREcTJLxHwGRygSs",
+   "mint": "Ac5LSKqNeV1PFeJAHwdi2wfSXXNAAfLVmeEEcKuLpump",
    "launchpad": "pumpfun",
    "grad_ts": 1788478940,
    "ord": 281
@@ -139455,13 +139420,6 @@
    "mint": "CC7bQPn5JzvVgcnwyMEtzffLJ3G8oTJDyj5SLXV2jDjL",
    "launchpad": "meteora_dbc",
    "grad_ts": 1788628509,
-   "ord": 287
-  },
-  {
-   "pool": "ASUpfRZWDbZGW4N47bQqB7nSzyct17pfHPAwEiZPyaKE",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788628510,
    "ord": 287
   },
   {
@@ -144148,8 +144106,8 @@
    "ord": 296
   },
   {
-   "pool": "FRubTX2bxWcJWN8x4NDVrzYFpsJkJeHAqKAriYzc93HL",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "7jV9a2DdV5JPmTQ2PRGCnqii14wrwhs9w19KWzPiy7ZZ",
+   "mint": "3to4WmXf76NPXBEFW9gLYkpJQ9K9nrZSDpC6paVypump",
    "launchpad": "pumpfun",
    "grad_ts": 1790013981,
    "ord": 296
@@ -154305,8 +154263,8 @@
    "ord": 314
   },
   {
-   "pool": "bfMv2cZzidKiB8BfHftWdgh5JrgexxpzjygPACe8sGP",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "Hc21AcxddZku6hWdCpCdk8xSppShkqjqubkXHVyFDF2g",
+   "mint": "6HZ9XtHVGma14Jhn5LFqzNbyokzRqbD4JJQ6ARVCrw1B",
    "launchpad": "pumpfun",
    "grad_ts": 1787981043,
    "ord": 314
@@ -157035,13 +156993,6 @@
    "ord": 320
   },
   {
-   "pool": "B364WZWpfGmqn74mxip64HXDW9SBT2Miv3791kUURx9e",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788413617,
-   "ord": 320
-  },
-  {
    "pool": "AhkhpPzoTYX8sMntphhJGtNZ8WzzLRS98eXj1FcetpsK",
    "mint": "CYavHLucTZQ1kQqM1iVq4sZ4XPWpTfKSVS1PgKJXpump",
    "launchpad": "pumpfun",
@@ -157448,8 +157399,8 @@
    "ord": 320
   },
   {
-   "pool": "71PjQkdYMYj9rrHFBHsk4YB3F1bmkSS7Nu6gwKXrdrLq",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "A6cUrksKsWtCCGKQXMjxoMMoyTLuMSKXtAVewLMY69zP",
+   "mint": "CS57Cs4Ffe2TxXUdRrALbbZxBfJmLD7VR7QzoR8Wpump",
    "launchpad": "pumpfun",
    "grad_ts": 1788414935,
    "ord": 320
@@ -164749,8 +164700,8 @@
    "ord": 334
   },
   {
-   "pool": "55jyEkVrg8uxZZpvHXUnoiMDyrsPJQ27eaRTPXrDPnu",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "DwEkjGkKb4RKwgsPF7b79yGSC7fx1zP5dPgTxchakWRC",
+   "mint": "2wfUtGTrw2scUMhsFUd1585R5CT8MQBkByQ4qpNmpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789602400,
    "ord": 334
@@ -166212,8 +166163,8 @@
    "ord": 337
   },
   {
-   "pool": "Cyy5ca3zTYcp3NJncpDUDN2s1uuYqE83B2mjdybUYr4z",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "CmZwv2gXaDAkrgPfdXXKnQVo11m9iud3RzdvXpTS1BvG",
+   "mint": "9GGVdGxG4tJyNCePX9Q5MpHoZ7Fgb8Pr83Aa3QDnpaid",
    "launchpad": "pumpfun",
    "grad_ts": 1789509846,
    "ord": 337
@@ -166387,8 +166338,8 @@
    "ord": 337
   },
   {
-   "pool": "G2saDZPjP8tBiit3JBUrav3c4m8FEcHzVNPtHx1WkrS1",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "EhjoDnxpZEzaU1hFSAG22tog4Z8x36feVAxTyfNAkTZg",
+   "mint": "7xwPE6M7h19FT5U7pd6HejjNmrh3rDSMFCoAwibVCRwT",
    "launchpad": "pumpfun",
    "grad_ts": 1789510526,
    "ord": 337
@@ -167367,8 +167318,8 @@
    "ord": 338
   },
   {
-   "pool": "CaKKhjpdibjV1Vh7igCdmcizTs3VYAb9C6L3siJ38A9M",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "E9xHr79npkMu4aDqH46REKnL6NPMhRWvZHP9LqHnXx5n",
+   "mint": "Djx8tN8Cqo3huY2o7D3AhpSB9FVEXttFWvQ4zqHepump",
    "launchpad": "pumpfun",
    "grad_ts": 1789161893,
    "ord": 338
@@ -170468,8 +170419,8 @@
    "ord": 344
   },
   {
-   "pool": "GNYgZcQRcGVx1A458WNQpJHJoHRVGWeGX4r9BuTiNBQS",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "4tpaK8ukGm1hCdtHvgUyUjHrvEayv2fgu4WeUDo136xG",
+   "mint": "Wy3EhCfUjgwisyVRAVuUdXpwacDvBeNg4N8FWh6pump",
    "launchpad": "pumpfun",
    "grad_ts": 1789316409,
    "ord": 344
@@ -172652,8 +172603,8 @@
    "ord": 347
   },
   {
-   "pool": "8Pm2ZhFP6VAnp1Lpg6Ra67mHxQ7VVQfGKScLBVgTKKaz",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "7n5sJ5tXWbqDyjXCipkaciWcq6vtM5UAy9cTkNu94uYP",
+   "mint": "G3jJwbBvsEGTTx1T1GXCZL1afY1zVWxAqB3q712gpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789660799,
    "ord": 347
@@ -172799,8 +172750,8 @@
    "ord": 348
   },
   {
-   "pool": "9rDGvvsq7XQavuDAL4k3zxr75ZJ37nWBd9kLiEpb12eS",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "2JD4i74YiQvrWSgdEPsdpjYh399tULBygCjngLidwYNz",
+   "mint": "ETDgPjTqszonMbjwvwJDQ4GewRbxmvojQom3S3HYTpAc",
    "launchpad": "pumpfun",
    "grad_ts": 1788043208,
    "ord": 348
@@ -172838,13 +172789,6 @@
    "mint": "4PpjL3HHkoxs15PNDjMjEuaCydqoz7oNTskdAyXXEcmN",
    "launchpad": "meteora_dbc",
    "grad_ts": 1788043334,
-   "ord": 348
-  },
-  {
-   "pool": "SepD23GP6g4X3csrG4GfvG2o61VDsJkavdDZ9jXBXg8",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788043366,
    "ord": 348
   },
   {
@@ -176075,8 +176019,8 @@
    "ord": 355
   },
   {
-   "pool": "HrMeKbiSXbXGBiZ7QJrsguBV1qn56PUoakK5CgieMZEU",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "GoGzmNZGpa5RhzdNqXSek7mBi7xBCq5tMBKBfFWC5dAb",
+   "mint": "87Y8yTksSxqH19XMWzvcEjsG4PoMdqvVtUAL8Fvppump",
    "launchpad": "pumpfun",
    "grad_ts": 1788491279,
    "ord": 355
@@ -176509,8 +176453,8 @@
    "ord": 356
   },
   {
-   "pool": "EvpviiTGaddHgjpFw4Jr5ZfWCLucdzfnfnnXRgkHogSU",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "AFPntVrnz6jVyAcTy7RquSnjYkYRZEwg2htzgjfh1vTP",
+   "mint": "2L3gjE86wcHbJPFG8EZr8s5PC585cgMCeaKG8RgBpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789441329,
    "ord": 356
@@ -180569,13 +180513,6 @@
    "ord": 363
   },
   {
-   "pool": "CDNFZJjaWFhck4DrGqYtimbgsUKDoGkBUVv9TSM73HgW",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1789069373,
-   "ord": 363
-  },
-  {
    "pool": "5hEREpBC7BkyyD5T6PHjKsdW14EdQWJQfSkjokq9BKiP",
    "mint": "7hxPiTdZkcFU444h2wnNx9bNdw7ch96G1wKTY6oUpump",
    "launchpad": "pumpfun",
@@ -181922,13 +181859,6 @@
   {
    "pool": "5BBgyzv2HsXRtjdquiwEWD3obMcgGN3ucDVQAtusk6am",
    "mint": "GyDBBBhXrUGVpbCzWouixLRYokjQAgHZhDC572Z5pump",
-   "launchpad": "pumpfun",
-   "grad_ts": 1788409218,
-   "ord": 365
-  },
-  {
-   "pool": "6gmSpWapNKtV9bXcNoXyDYTHb45Jk7ckaEGwzkNQrjd9",
-   "mint": "So11111111111111111111111111111111111111112",
    "launchpad": "pumpfun",
    "grad_ts": 1788409218,
    "ord": 365
@@ -185147,8 +185077,8 @@
    "ord": 373
   },
   {
-   "pool": "C7VUD89sAf6UTn3woiniBNdV8akrnZXc9pat2xzAChva",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "BX1eHSDw3bExYBAdy7W8w8fffThPr2okoaRimeMEth9L",
+   "mint": "4cFAGsZ1x7cHMgGvMAq9xfUFLCro5m1MjHcWCGPHpump",
    "launchpad": "pumpfun",
    "grad_ts": 1789890026,
    "ord": 373
@@ -192413,8 +192343,8 @@
    "ord": 387
   },
   {
-   "pool": "A3WFzcHXZb9XeWaeP2uCXkmiz1XiJfmHqM5bjBy5M3wc",
-   "mint": "So11111111111111111111111111111111111111112",
+   "pool": "9qfE1T4sUgVkH36JoJ8PeynYciXCU8NuHDDPPr7ooq4U",
+   "mint": "2Fh8acqEoLzfxCpcL6RQzqWoa1fpcHbzsdHv7rUepump",
    "launchpad": "pumpfun",
    "grad_ts": 1789272688,
    "ord": 387
@@ -193614,13 +193544,6 @@
    "mint": "63N13gKKeFzvGua1f1zptYJp83aqEB76iaFP4uqupump",
    "launchpad": "pumpfun",
    "grad_ts": 1787998131,
-   "ord": 389
-  },
-  {
-   "pool": "Hnejv2AP6wncXNcDMM3VnvqqPxSM9eMVsFcGveAUsqEi",
-   "mint": "So11111111111111111111111111111111111111112",
-   "launchpad": "pumpfun",
-   "grad_ts": 1787998157,
    "ord": 389
   },
   {
@@ -198538,5 +198461,5 @@
    "ord": 399
   }
  ],
- "hash_pools": "f17dda7e1f719967dc9cfd59211d3277"
+ "hash_pools": "e6edb9723d10e3554c6a7c89ffe20bae"
 }

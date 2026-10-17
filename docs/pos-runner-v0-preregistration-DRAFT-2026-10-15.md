@@ -336,3 +336,35 @@ offline completa 276/276.
 Linha `POS-RUNNER-V0` em `docs/research-hypothesis-registry-v1-2026-10-04.md` atualizada no mesmo commit desta
 emenda: emenda registrada, grade 6 → 24, multiplicidade 24, hash novo `0de2333a7f63`, holdout selado permanece
 válido.
+
+## 11. Correção de qualidade de dado na enumeração (2026-10-16) — selo re-emitido, NENHUMA regra mudou
+
+Achado durante `baixar-bruto` do discovery: a trava de vazamento (holdout dentro do discovery) pegou 1 "pool" com
+o mint nativo do SOL — nunca um pool real. Raiz confirmada via `getTransaction` real: uma transação pode chamar o
+MESMO programa do launchpad em mais de uma instrução de nível 1 (ex.: comprar e migrar no mesmo envio, ou
+criar+testar+migrar); `_launchpad_instruction` pegava "a 1ª instrução que casa o `programId`", não necessariamente
+a de migração, e lia mint/pool do layout de contas ERRADO. Corrigido em `enumerate.py`/`lineage.py`: casa a
+instrução pelo NOME logado (`top_level_instruction_names`), nunca só pelo `programId`; filtro defensivo adicional
+rejeita (`nao_resolvida`, nunca "pool morto") qualquer mint/pool que bata com endereço nativo/de sistema conhecido.
+Fixtures reais das 2 transações que causaram os achados (`rpc_tx_migrate_dbc_bundled.json`,
+`rpc_tx_migrate_pumpfun_bundled_buy.json`); os 3 exemplos clássicos continuam resolvendo exatamente o mesmo
+pool/mint de antes (regressão zero).
+
+**Varredura e reprocessamento** (holdout, as únicas 28366 graduações já enumeradas; discovery só tinha 4 linhas,
+sem suspeitas): 45 entradas suspeitas (pool/mint == endereço nativo/de sistema, ou pool==mint) — 44 em pump.fun,
+1 em meteora_dbc. Reprocessadas com o parser corrigido via `getTransaction` real (1 chamada por entrada,
+`Store.reprocess_graduation`, nunca edição direta do SQLite): 34 corrigidas (pool/mint reais); 11 eram
+duplicatas — a mesma migração real já estava corretamente gravada sob OUTRA assinatura (mesmo mint, pool, grad_ts
+próximo; causa exata da assinatura duplicada não aprofundada, registrada como limitação) — removidas, sem perda de
+dado (a linha correta permanece). 0 removidas como genuinamente "não resolvida" (todas as 45 encontraram a
+instrução certa com o fix).
+
+**Selo re-emitido com transparência total** (`docs/pos-runner-v0/holdout_selado.json`, histórico git preserva a
+versão anterior): hash antigo `f17dda7e1f719967dc9cfd59211d3277` (28362 pools, incluindo o lixo) → hash novo
+`e6edb9723d10e3554c6a7c89ffe20bae` (28351 pools, só reais). Confirmado ANTES do re-selo: `stage1`/`stage2`/`setups`/
+`trades` com 0 linhas (nada dependente de `ctx.params`/do detector foi calculado ainda) — a correção é só
+qualidade de enumeração, nunca retune de regra. `versao_plano`/janelas (400) inalterados.
+
+**Nada de regra/grade/período/baseline/corte/custo mudou** — só a qualidade do dado de enumeração (correção de
+bug de parsing + filtro defensivo, ambos documentados e testados). Commits da correção, do filtro e do re-selo
+citam este parágrafo.
