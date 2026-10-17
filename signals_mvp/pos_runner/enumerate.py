@@ -32,6 +32,12 @@ class LaunchpadSpec:
     program: str
     accounts: tuple[str, ...]
     layouts: dict[str, tuple[int, int, int]]     # instrucao -> (idx mint, idx cotacao, idx pool) na instrucao do launchpad
+    # EMENDA 2026-10-16 (achado real: o indice fixo de pool nao e estavel entre variantes de instrucao -- "Migrate"
+    # legado (27/25 contas) e "MigrateV2" (29 contas) tem o pool em posicoes DIFERENTES, 9 ou 10, mas SEMPRE
+    # imediatamente depois do programa da AMM de destino na lista de contas). Quando setado, o pool vem de
+    # `accounts[accounts.index(pool_after_program) + 1]` em vez do indice fixo de `layouts` -- mais robusto a
+    # variantes de instrucao ainda nao vistas, nunca um palpite de posicao.
+    pool_after_program: Optional[str] = None
 
 
 LAUNCHPADS: dict[str, LaunchpadSpec] = {
@@ -39,6 +45,7 @@ LAUNCHPADS: dict[str, LaunchpadSpec] = {
         "pumpfun", "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
         ("39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg",),
         {"Migrate": (2, 3, 10), "MigrateV2": (2, 3, 10)},
+        pool_after_program="pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
     ),
     "raydium_launchlab": LaunchpadSpec(
         "raydium_launchlab", "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
@@ -130,18 +137,44 @@ KNOWN_NATIVE_OR_PROGRAM = frozenset({
 })
 
 
+def _mint_seen_in_balances(tx: dict, mint: Optional[str]) -> bool:
+    """Checagem de consistencia INDEPENDENTE do layout de contas (EMENDA 2026-10-16, "falhar fechado"): o mint
+    extraido precisa aparecer em `postTokenBalances`/`preTokenBalances` (saldo de token que a tx realmente
+    moveu) -- sem chamada de RPC nova (os dados ja vieram no `getTransaction`). Nunca confia so na posicao fixa
+    de conta; se o mint nao teve NENHUM saldo tocado nesta tx, ele nao e o mint real da migracao."""
+    if not mint:
+        return False
+    meta = tx.get("meta") or {}
+    seen = {b.get("mint") for b in (meta.get("postTokenBalances") or [])}
+    seen |= {b.get("mint") for b in (meta.get("preTokenBalances") or [])}
+    return mint in seen
+
+
 def resolve_graduation(tx: dict, spec: LaunchpadSpec, signature: str) -> Optional[Graduation]:
     name, accounts = _launchpad_instruction(tx, spec)
     if name is None:
         return None
     idx = spec.layouts[name]
     g = Graduation(spec.name, signature, int(tx.get("blockTime") or 0), tx.get("slot"), name, None, None, None)
-    if accounts is None or max(idx) >= len(accounts):
+    if accounts is None or max(idx[:2]) >= len(accounts):
         g.status = "nao_resolvida"
         return g
-    g.mint, g.quote_mint, g.pool = accounts[idx[0]], accounts[idx[1]], accounts[idx[2]]
+    pool = accounts[idx[2]] if idx[2] < len(accounts) else None
+    if spec.pool_after_program:
+        # posicao fixa de pool NAO e estavel entre variantes de instrucao (achado real: "Migrate" legado tem o
+        # pool numa posicao diferente de "MigrateV2") -- acha dinamicamente pelo programa da AMM de destino,
+        # sempre o proximo da lista de contas, nunca um indice fixo.
+        try:
+            pool = accounts[accounts.index(spec.pool_after_program) + 1]
+        except (ValueError, IndexError):
+            g.status = "nao_resolvida"
+            return g
+    if pool is None:
+        g.status = "nao_resolvida"
+        return g
+    g.mint, g.quote_mint, g.pool = accounts[idx[0]], accounts[idx[1]], pool
     if (g.pool in KNOWN_NATIVE_OR_PROGRAM or g.mint in KNOWN_NATIVE_OR_PROGRAM
-            or g.pool == g.mint or g.pool == g.quote_mint):
+            or g.pool == g.mint or g.pool == g.quote_mint or not _mint_seen_in_balances(tx, g.mint)):
         g.status, g.mint, g.quote_mint, g.pool = "nao_resolvida", None, None, None
         return g
     return g
@@ -214,8 +247,34 @@ def enumerate_window(
             before = rows[-1]["signature"]
         else:
             res.error = f"teto de paginas em {account[:8]}"
+    if not res.error:
+        try:
+            _verify_pools_exist_on_chain(rpc, res)
+        except RpcError as exc:
+            res.error = f"verificacao de pool on-chain: {exc}"
+            return res
     res.graduations.sort(key=lambda g: (g.block_time, g.signature))
     return res
+
+
+def _verify_pools_exist_on_chain(rpc: SolanaRpc, res: WindowResult) -> None:
+    """Checagem de consistencia INDEPENDENTE do layout de contas (EMENDA 2026-10-16/17, "falhar fechado"): todo
+    pool resolvido precisa EXISTIR on-chain (`getAccountInfo`, em lote via `getMultipleAccounts` -- poucas
+    chamadas extra por janela, nunca uma por graduacao). Pool que nao existe vira `nao_resolvida` (nunca pool
+    morto: nunca entra em stage1/stage2/detector). Falha de rede nesta checagem NUNCA aceita a graduacao sem
+    verificar (falhar fechado): sobe como `RpcError`, a janela inteira vira `erro` e e retomada depois, igual a
+    qualquer outra falha de RPC nesta funcao."""
+    ok = [g for g in res.graduations if g.status == "ok" and g.pool]
+    if not ok:
+        return
+    for i in range(0, len(ok), 100):
+        batch = ok[i:i + 100]
+        values = rpc.call("getMultipleAccounts", [[g.pool for g in batch], {"encoding": "base64"}])
+        accounts = (values or {}).get("value") or []
+        for g, acc in zip(batch, accounts):
+            if acc is None:
+                g.status, g.mint, g.quote_mint, g.pool = "nao_resolvida", None, None, None
+                res.nao_resolvida += 1
 
 
 def validate_with_examples(rpc: SolanaRpc, examples: Iterable[Any], margin_s: int = 120) -> list[dict[str, Any]]:

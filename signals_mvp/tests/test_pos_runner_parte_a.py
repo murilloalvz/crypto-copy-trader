@@ -111,7 +111,8 @@ def make_ctx(tmp: Path, runners: set[str], per_window: int = 2, extra_pool_in_di
 
 def _synthetic_migrate_tx(accounts: list[str]) -> dict:
     """Tx sintetica minima (so o que `resolve_graduation` le): 1 instrucao de nivel 1 do programa do pump.fun,
-    nome logado 'MigrateV2' (layout mint=2, cotacao=3, pool=10 -- por isso len(accounts) >= 11)."""
+    nome logado 'MigrateV2' (layout mint=2, cotacao=3, pool=10 -- por isso len(accounts) >= 11). postTokenBalances
+    inclui o mint sintetico (accounts[2]) para passar a checagem "falhar fechado" de EMENDA 2026-10-16/17."""
     prog = LAUNCHPADS["pumpfun"].program
     return {
         "blockTime": 100, "slot": 1,
@@ -120,7 +121,7 @@ def _synthetic_migrate_tx(accounts: list[str]) -> dict:
             "Program log: Instruction: MigrateV2",
             f"Program {prog} consumed 1 of 1 compute units",
             f"Program {prog} success",
-        ]},
+        ], "postTokenBalances": [{"mint": accounts[2]}] if len(accounts) > 2 else []},
         "transaction": {"message": {"instructions": [{"programId": prog, "accounts": accounts}]}},
     }
 
@@ -132,22 +133,68 @@ class EnumerateTests(unittest.TestCase):
     def test_native_address_as_mint_or_pool_is_rejected_explicitly(self):
         spec = LAUNCHPADS["pumpfun"]
         SOL = "So11111111111111111111111111111111111111112"
-        good = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", "POOLREAL"]
+        PUMPSWAP = spec.pool_after_program
+        good = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", PUMPSWAP, "POOLREAL"]
         g = resolve_graduation(_synthetic_migrate_tx(good), spec, "sig_ok")
         self.assertEqual(g.status, "ok")
         self.assertEqual((g.mint, g.quote_mint, g.pool), ("MINTREAL", SOL, "POOLREAL"))
 
         mint_is_native = ["a0", "a1", SOL, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "a4", "a5", "a6",
-                          "a7", "a8", "a9", "POOLX"]
+                          "a7", "a8", PUMPSWAP, "POOLX"]
         g = resolve_graduation(_synthetic_migrate_tx(mint_is_native), spec, "sig_bad_mint")
         self.assertEqual(g.status, "nao_resolvida")
         self.assertIsNone(g.mint)
         self.assertIsNone(g.pool)
 
-        pool_is_native = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", SOL]
+        pool_is_native = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", PUMPSWAP, SOL]
         g = resolve_graduation(_synthetic_migrate_tx(pool_is_native), spec, "sig_bad_pool")
         self.assertEqual(g.status, "nao_resolvida")
         self.assertIsNone(g.pool)
+
+    def test_pool_not_found_after_amm_program_is_rejected(self):
+        """Sem o programa da AMM de destino na lista de contas (ou ele vem por ultimo, sem proximo indice), o
+        pool nao pode ser achado dinamicamente -- `nao_resolvida`, nunca um palpite de posicao fixa."""
+        spec = LAUNCHPADS["pumpfun"]
+        SOL = "So11111111111111111111111111111111111111112"
+        no_pumpswap = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", "POOLREAL"]
+        g = resolve_graduation(_synthetic_migrate_tx(no_pumpswap), spec, "sig_no_pumpswap")
+        self.assertEqual(g.status, "nao_resolvida")
+
+        pumpswap_is_last = ["a0", "a1", "MINTREAL", SOL, "a4", "a5", "a6", "a7", "a8", "a9", spec.pool_after_program]
+        g = resolve_graduation(_synthetic_migrate_tx(pumpswap_is_last), spec, "sig_pumpswap_last")
+        self.assertEqual(g.status, "nao_resolvida")
+
+    def test_verify_pools_exist_on_chain_rejects_nonexistent_pools_and_fails_closed(self):
+        """EMENDA 2026-10-16/17 ("falhar fechado"): todo pool resolvido precisa EXISTIR on-chain, verificado em
+        lote (`getMultipleAccounts`) -- quem nao existe vira `nao_resolvida` (nunca pool morto). Falha de rede
+        nesta checagem nunca aceita a graduacao sem verificar: sobe RpcError, igual a qualquer outra falha de
+        `enumerate_window`."""
+        from ..pos_runner.enumerate import _verify_pools_exist_on_chain
+        from ..pos_runner.solana_rpc import RpcError
+
+        class FakeRpc:
+            def __init__(self, existing: set[str], fail: bool = False):
+                self.existing = existing
+                self.fail = fail
+
+            def call(self, method, params):
+                assert method == "getMultipleAccounts"
+                if self.fail:
+                    raise RpcError("transport", "falha de rede")
+                pubkeys = params[0]
+                return {"value": [{"owner": "x"} if p in self.existing else None for p in pubkeys]}
+
+        g_ok = Graduation("pumpfun", "s1", 1, 1, "MigrateV2", "MINT1", "QUOTE1", "POOL_EXISTE")
+        g_lixo = Graduation("pumpfun", "s2", 1, 1, "MigrateV2", "MINT2", "QUOTE2", "POOL_NAO_EXISTE")
+        res = WindowResult("pumpfun", 0, 1, graduations=[g_ok, g_lixo])
+        _verify_pools_exist_on_chain(FakeRpc({"POOL_EXISTE"}), res)
+        self.assertEqual(g_ok.status, "ok")
+        self.assertEqual(g_lixo.status, "nao_resolvida")
+        self.assertIsNone(g_lixo.pool)
+        self.assertEqual(res.nao_resolvida, 1)
+
+        with self.assertRaises(RpcError):   # excecao de rede sobe (falhar fechado), nunca aceita sem verificar
+            _verify_pools_exist_on_chain(FakeRpc(set(), fail=True), WindowResult("pumpfun", 0, 1, graduations=[g_ok]))
 
     def test_rejected_graduations_are_counted_explicitly_and_never_a_dead_pool(self):
         """A contagem (`counts()["enumeracao_nao_resolvida"]`) e explicita, nunca silenciosa; a graduacao

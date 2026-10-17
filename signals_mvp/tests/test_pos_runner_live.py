@@ -356,6 +356,44 @@ class LineageTest(unittest.TestCase):
             self.assertEqual(g.pool, pool, launchpad)
             self.assertEqual(g.mint, mint, launchpad)
 
+    def test_pumpfun_pool_index_is_found_dynamically_not_a_fixed_position(self) -> None:
+        """Achado real em producao (2026-10-17, validacao positiva pos-fix): a instrucao LEGADA 'Migrate' (sem
+        V2) tem o pool numa posicao DIFERENTE de 'MigrateV2' (indice 9 com 27/25 contas, vs. indice 10 com 29
+        contas de MigrateV2) -- o indice fixo (2,3,10) lia um endereco que nem existe on-chain. Corrigido: pool
+        do pump.fun vem SEMPRE do indice logo depois do programa da PumpSwap (`pool_after_program`), nunca de
+        uma posicao fixa. Fixture real: `rpc_tx_migrate_pumpfun_legacy_migrate.json`
+        (pool_real=CPFDtcFmxaYEygwqgbX2WU2zAWei6vD2DwpzPhQKEbdw, confirmado on-chain, owner=PumpSwap; a leitura
+        antiga pelo indice 10 dava PraA5riypBLc3uXjKh5WRNqXBiAwF9Tk5ot2AQ29CCh, que nao existe)."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        tx = load_fixture("rpc_tx_migrate_pumpfun_legacy_migrate.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertEqual(g.pool, "CPFDtcFmxaYEygwqgbX2WU2zAWei6vD2DwpzPhQKEbdw")
+        self.assertEqual(g.mint, "4cMBUtWzE9K6v2TwxgSXuWewu4j2ohoFXkhJTb1Ppump")
+        self.assertNotEqual(g.pool, "PraA5riypBLc3uXjKh5WRNqXBiAwF9Tk5ot2AQ29CCh")   # leitura antiga (indice fixo), nao existe
+
+    def test_mint_not_in_token_balances_is_rejected_falhar_fechado(self) -> None:
+        """EMENDA 2026-10-16/17 ("falhar fechado"): o mint extraido precisa aparecer em postTokenBalances/
+        preTokenBalances da propria tx (saldo de token realmente movido) -- checagem independente do layout de
+        contas, sem chamada de RPC nova. Um mint que nunca teve saldo tocado na tx (ex.: leitura de conta
+        errada) vira `nao_resolvida`, nunca uma graduacao aceita no palpite."""
+        import copy
+
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        tx = copy.deepcopy(load_fixture("rpc_tx_migrate_pumpfun.json")["result"])
+        tx["meta"]["postTokenBalances"] = [b for b in tx["meta"]["postTokenBalances"]
+                                           if b.get("mint") != "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"]
+        tx["meta"]["preTokenBalances"] = [b for b in tx["meta"].get("preTokenBalances", [])
+                                          if b.get("mint") != "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "nao_resolvida")
+        self.assertIsNone(g.mint)
+        self.assertIsNone(g.pool)
+
 
 class LiveFlowTest(unittest.TestCase):
     def setUp(self) -> None:
