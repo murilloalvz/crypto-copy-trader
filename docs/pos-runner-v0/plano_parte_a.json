@@ -1,0 +1,45 @@
+{
+ "hipotese": "POS-RUNNER-V0",
+ "versao_config": "2a8bef99a917",
+ "versao_plano": "8a2387a3e185",
+ "plano": {
+  "freeze_date": "2026-10-16",
+  "free_days": 180,
+  "margin_days": 3,
+  "horizon_days": 14,
+  "exit_days": 9,
+  "tail_margin_days": 1,
+  "holdout_fraction": 0.3333333333333333,
+  "embargo_days": 7,
+  "window_minutes": 30,
+  "seed": 20261015,
+  "launchpads": [
+   "pumpfun",
+   "raydium_launchlab",
+   "meteora_dbc"
+  ]
+ },
+ "periodos": {
+  "discovery": {
+   "inicio": "2026-04-22T00:00:00Z",
+   "fim": "2026-07-26T00:00:00Z",
+   "dias": 95.0
+  },
+  "embargo": {
+   "inicio": "2026-07-26T00:00:00Z",
+   "fim": "2026-08-02T00:00:00Z",
+   "dias": 7.0
+  },
+  "holdout": {
+   "inicio": "2026-08-02T00:00:00Z",
+   "fim": "2026-09-22T00:00:00Z",
+   "dias": 51.0
+  }
+ },
+ "janelas": {
+  "discovery": 4560,
+  "holdout": 2448
+ },
+ "hash_ordem_discovery": "bba2e0f3d591cf50",
+ "hash_ordem_holdout": "32edc0024c93b521"
+}

@@ -1,0 +1,41 @@
+# POS-RUNNER-V0 — parametros do detector e das saidas (PAPER / somente leitura).
+#
+# ESTADO: RASCUNHO PRONTO PARA CONGELAR = REGRAS DO OPERADOR (decisoes de 2026-10-16 sobre o relatorio do Passo 0).
+# Os 5 exemplos do professor so calibraram a DETECCAO das fases; nenhum numero daqui foi ajustado para "acertar"
+# exemplo. Depois do congelamento o hash deste arquivo vai para o pre-registro e qualquer mudanca vira hipotese NOVA.
+# Cada linha de log/CSV carrega `versao_config` = hash destes parametros.
+# Duracoes em NUMERO DE CANDLES do timeframe (5m, 1h ou 4h). MC = preco USD x supply total.
+# Medidas: pico, queda, suporte e resistencia pelos EXTREMOS dos candles (maxima/minima); rompimento, recuperacao e
+# invalidacao pelo FECHAMENTO (escolha conservadora para o ponto que ficou sem resposta).
+
+parametros:
+  # --- fase 1: runner ---------------------------------------------------------
+  runner_min_mc: 300000        # pico (maxima) da onda >= 300k (300-500k ja vale)
+  peak_bands: [500000, 1000000, 5000000]   # ATRIBUTO "quanto maior, melhor": 300-500k, 500k-1M, 1-5M, >5M
+
+  # --- fase 2: queda e zona ----------------------------------------------------
+  drop_min: 0.80               # queda a partir do pico >= 80% inicia a fase 2 (a zona comeca nesse candle)
+  drop_max: 0.90               # queda > 90% = moeda morta, fora
+  support_min_lbc: 0.75        # fundo (suporte S) >= 0,75 x L_bc (tolerancia fixa de "fundo acima da curva")
+  support_attr_mc: 100000      # "fase 2 normalmente acima de 100k": ATRIBUTO e corte de analise, NAO filtro
+  zone_min_candles: 12         # zona madura: >= 12 candles desde o fundo
+
+  # --- testes de suporte (1 ou muitos candles) --------------------------------
+  test_zone: 0.10              # o teste comeca quando a minima desce a <= S x 1,10
+  recover_mult: 1.25           # e termina quando o preco RECUPERA: fecha >= min((S+R)/2, S x 1,25)
+  tests_min: 1                 # zona madura: >= 1 teste completo
+  test_break: 0.02             # fechamento < minima do ultimo teste -2% = setup morto
+  stop_below_test: 0.03        # stop = minima do ultimo teste -3%
+
+  # --- fase 3: entrada (fechamento acima de R; volume so como atributo) --------
+  atr_period: 20
+  power_atr_mult: 3.0          # power candle = amplitude >= 3x ATR(20); saudavel no rompimento = atributo
+  absurd_frac: 0.50            # veto: um candle cobrindo >= 50% do caminho de R ate P_peak
+  age_window_days: [2, 7]      # 2-7 dias de EXISTENCIA do token (desde a criacao) na entrada: filtro primario
+
+  # --- saidas -------------------------------------------------------------------
+  tp_frac_of_peak: 0.95        # alvo = 0,95 x P_peak (saida A: 100%; saida B: 50%)
+  exhaustion_peak_frac: 0.85   # exaustao = power candle com maxima >= 0,85 x P_peak -> sai no open seguinte
+  time_stop_candles: 48        # stop de tempo
+  partial_frac: 0.50           # saida B: vende 50% no alvo e move o stop do resto para a entrada
+  trail_frac: 0.25             # saida B: resto em trailing de 25% a partir da maxima

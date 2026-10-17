@@ -1,0 +1,85 @@
+{
+ "code": 1,
+ "message": "OK",
+ "result": {
+  "0x0ff33f4d07dade0835a33e4b664fb242a701f5e1": {
+   "anti_whale_modifiable": "0",
+   "buy_tax": "0",
+   "can_take_back_ownership": "0",
+   "cannot_buy": "0",
+   "cannot_sell_all": "0",
+   "creator_address": "0x314ad66907c733ac5a083454c188425d1820ebfc",
+   "creator_balance": "2999861",
+   "creator_percent": "0.003000",
+   "dex": [
+    {
+     "liquidity": "36196.02656500",
+     "liquidity_type": "UniV2",
+     "name": "PancakeV2",
+     "pair": "0x25d03b29dcef610751a59bd9811bf86465e054ec",
+     "pool_fee": "0.0025"
+    }
+   ],
+   "external_call": "0",
+   "hidden_owner": "0",
+   "holder_count": "1",
+   "holders": [
+    {
+     "address": "0x0000000000000000000000000000000000000000",
+     "balance": "192.618887083225405106",
+     "is_contract": 0,
+     "is_locked": 1,
+     "percent": "0.000000192618887083",
+     "tag": "Null Address"
+    }
+   ],
+   "honeypot_with_same_creator": "0",
+   "is_anti_whale": "0",
+   "is_blacklisted": "0",
+   "is_honeypot": "0",
+   "is_in_dex": "1",
+   "is_mintable": "0",
+   "is_open_source": "1",
+   "is_proxy": "0",
+   "is_whitelisted": "0",
+   "lp_holder_count": "2",
+   "lp_holders": [
+    {
+     "NFT_list": null,
+     "address": "0x314ad66907c733ac5a083454c188425d1820ebfc",
+     "balance": "73305.661445757380191645",
+     "is_contract": 0,
+     "is_locked": 0,
+     "percent": "0.999999999999999999",
+     "tag": "",
+     "value": "36196.026564995827527061"
+    },
+    {
+     "NFT_list": null,
+     "address": "0x0000000000000000000000000000000000000000",
+     "balance": "0.000000000000001",
+     "is_contract": 0,
+     "is_locked": 1,
+     "percent": "0.000000000000000000",
+     "tag": "Null Address",
+     "value": "0.000000000000000494"
+    }
+   ],
+   "lp_total_supply": "73305.661445757380192645",
+   "owner_address": "0x0000000000000000000000000000000000000000",
+   "owner_balance": "0",
+   "owner_change_balance": "0",
+   "owner_percent": "0.0",
+   "personal_slippage_modifiable": "0",
+   "selfdestruct": "0",
+   "sell_tax": "0",
+   "slippage_modifiable": "0",
+   "token_name": "太阳属马",
+   "token_symbol": "太阳属马",
+   "total_supply": "1000000000",
+   "trading_cooldown": "0",
+   "transfer_pausable": "0",
+   "transfer_tax": "0"
+  }
+ }
+}

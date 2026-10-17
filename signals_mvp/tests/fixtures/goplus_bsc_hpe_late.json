@@ -1,0 +1,81 @@
+{
+ "code": 1,
+ "message": "OK",
+ "result": {
+  "0x27071edc2e8681c97f6682c60e656d304602b99d": {
+   "anti_whale_modifiable": "0",
+   "buy_tax": "0",
+   "can_take_back_ownership": "0",
+   "cannot_buy": "0",
+   "cannot_sell_all": "0",
+   "creator_address": "0x439198a02213ee7abf2870c166e8b8da460a8626",
+   "creator_balance": "0",
+   "creator_percent": "0.000000",
+   "dex": [
+    {
+     "liquidity": "22384.35577122",
+     "liquidity_type": "UniV2",
+     "name": "PancakeV2",
+     "pair": "0x2d3de4f8f4eb03b8ff51af199064748d318eda35",
+     "pool_fee": "0.0025"
+    }
+   ],
+   "external_call": "0",
+   "hidden_owner": "0",
+   "holder_count": "0",
+   "honeypot_with_same_creator": "0",
+   "is_anti_whale": "0",
+   "is_blacklisted": "0",
+   "is_honeypot": "0",
+   "is_in_dex": "1",
+   "is_mintable": "0",
+   "is_open_source": "1",
+   "is_proxy": "0",
+   "is_whitelisted": "0",
+   "lp_holder_count": "2",
+   "lp_holders": [
+    {
+     "NFT_list": null,
+     "address": "0x407993575c91ce7643a4d4ccacc9a98c36ee1bbe",
+     "balance": "0.499999999999999",
+     "is_contract": 1,
+     "is_locked": 1,
+     "locked_detail": [
+      {
+       "amount": "0.499999999999999000",
+       "end_time": "59752-05-03T12:23:14+00:00",
+       "opt_time": "2026-10-13T13:34:21+00:00"
+      }
+     ],
+     "percent": "0.999999999999998000",
+     "tag": "PinkLock02",
+     "value": "21798.593614566408682682"
+    },
+    {
+     "NFT_list": null,
+     "address": "0x0000000000000000000000000000000000000000",
+     "balance": "0.000000000000001",
+     "is_contract": 0,
+     "is_locked": 1,
+     "percent": "0.000000000000002000",
+     "tag": "Null Address",
+     "value": "0.000000000043597187"
+    }
+   ],
+   "lp_total_supply": "0.5",
+   "owner_balance": "0",
+   "owner_change_balance": "0",
+   "owner_percent": "0",
+   "personal_slippage_modifiable": "0",
+   "selfdestruct": "0",
+   "sell_tax": "0",
+   "slippage_modifiable": "0",
+   "token_name": "Hewlett Packard Enterprise Co (Derivatives)",
+   "token_symbol": "HPE",
+   "total_supply": "100000000",
+   "trading_cooldown": "0",
+   "transfer_pausable": "0",
+   "transfer_tax": "0"
+  }
+ }
+}

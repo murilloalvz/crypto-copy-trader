@@ -1,0 +1,258 @@
+{
+ "data": [
+  {
+   "attributes": {
+    "address": "6zb2wBbo1vVitSAw5iRmS9c2VY3BKHu2w7CHTiGcg84s",
+    "base_token_price_native_currency": "0.0000000372644349676949",
+    "base_token_price_quote_token": "0.00000003726443497",
+    "base_token_price_usd": "0.00000397655483533852134937083374803507409795624017793955340835352366",
+    "fdv_usd": "3976.554835",
+    "launchpad_details": {
+     "completed": false,
+     "completed_at": null,
+     "graduation_percentage": 18.11,
+     "migrated_destination_pool_address": null
+    },
+    "locked_liquidity_percentage": null,
+    "market_cap_usd": null,
+    "name": "BURN / SOL",
+    "pool_created_at": "2026-10-13T13:36:33Z",
+    "pool_fee_percentage": null,
+    "pool_name": "BURN / SOL",
+    "price_change_percentage": {
+     "h1": "27.218",
+     "h24": "27.218",
+     "h6": "27.218",
+     "m15": "27.218",
+     "m30": "27.218",
+     "m5": "0"
+    },
+    "quote_token_price_base_token": "26835238.5019903",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "106.711797422551888088849806681857713227157597189",
+    "reserve_in_usd": "3085.4705",
+    "transactions": {
+     "h1": {
+      "buyers": 31,
+      "buys": 39,
+      "sellers": 22,
+      "sells": 26
+     },
+     "h24": {
+      "buyers": 31,
+      "buys": 39,
+      "sellers": 22,
+      "sells": 26
+     },
+     "h6": {
+      "buyers": 31,
+      "buys": 39,
+      "sellers": 22,
+      "sells": 26
+     },
+     "m15": {
+      "buyers": 31,
+      "buys": 39,
+      "sellers": 22,
+      "sells": 26
+     },
+     "m30": {
+      "buyers": 31,
+      "buys": 39,
+      "sellers": 22,
+      "sells": 26
+     },
+     "m5": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     }
+    },
+    "volume_usd": {
+     "h1": "2028.2746588761",
+     "h24": "2028.2746588761",
+     "h6": "2028.2746588761",
+     "m15": "2028.2746588761",
+     "m30": "2028.2746588761",
+     "m5": "0.7089720531"
+    }
+   },
+   "id": "solana_6zb2wBbo1vVitSAw5iRmS9c2VY3BKHu2w7CHTiGcg84s",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "solana_8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "pump-fun",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "solana_So11111111111111111111111111111111111111112",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "CBtEfiHnP6rsemr59EpsXTqPXN5ucZGKFTBWuSzLVCnK",
+    "base_token_price_native_currency": "0.000000314369059647261",
+    "base_token_price_quote_token": "0.0000003143690596",
+    "base_token_price_usd": "0.000033465380587456412274470257771837388518753028358953271136034851",
+    "fdv_usd": "33007.51181",
+    "launchpad_details": {
+     "completed": false,
+     "completed_at": null,
+     "graduation_percentage": 83.9,
+     "migrated_destination_pool_address": null
+    },
+    "locked_liquidity_percentage": null,
+    "market_cap_usd": null,
+    "name": "买买买 / SOL",
+    "pool_created_at": "2026-10-13T13:37:21Z",
+    "pool_fee_percentage": null,
+    "pool_name": "买买买 / SOL",
+    "price_change_percentage": {
+     "h1": "32.971",
+     "h24": "32.971",
+     "h6": "32.971",
+     "m15": "32.971",
+     "m30": "32.971",
+     "m5": "17.004"
+    },
+    "quote_token_price_base_token": "3180974.61983712",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "106.86864564997164539553872588651055511449537127",
+    "reserve_in_usd": "32229.8236",
+    "transactions": {
+     "h1": {
+      "buyers": 211,
+      "buys": 1594,
+      "sellers": 208,
+      "sells": 1618
+     },
+     "h24": {
+      "buyers": 211,
+      "buys": 1594,
+      "sellers": 208,
+      "sells": 1618
+     },
+     "h6": {
+      "buyers": 211,
+      "buys": 1594,
+      "sellers": 208,
+      "sells": 1618
+     },
+     "m15": {
+      "buyers": 211,
+      "buys": 1594,
+      "sellers": 208,
+      "sells": 1618
+     },
+     "m30": {
+      "buyers": 211,
+      "buys": 1594,
+      "sellers": 208,
+      "sells": 1618
+     },
+     "m5": {
+      "buyers": 180,
+      "buys": 405,
+      "sellers": 169,
+      "sells": 395
+     }
+    },
+    "volume_usd": {
+     "h1": "34314.2638185623",
+     "h24": "34314.2638185623",
+     "h6": "34314.2638185623",
+     "m15": "34314.2638185623",
+     "m30": "34314.2638185623",
+     "m5": "8439.4034499045"
+    }
+   },
+   "id": "solana_CBtEfiHnP6rsemr59EpsXTqPXN5ucZGKFTBWuSzLVCnK",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "solana_2rbX6Z998s8zGKs34uCD57EKcyR29jABCycnoEPzmRet",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "meteora-dbc",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "solana_So11111111111111111111111111111111111111112",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  }
+ ],
+ "included": [
+  {
+   "attributes": {
+    "address": "8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX",
+    "coingecko_coin_id": null,
+    "decimals": 6,
+    "image_url": "https://assets.geckoterminal.com/ncbao1zs39d7mtgnyddpwaz7l83x",
+    "name": "BurnCoin",
+    "symbol": "BURN"
+   },
+   "id": "solana_8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "So11111111111111111111111111111111111111112",
+    "coingecko_coin_id": "wrapped-solana",
+    "decimals": 9,
+    "image_url": "https://coin-images.coingecko.com/coins/images/21629/large/solana.jpg?1696520989",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "id": "solana_So11111111111111111111111111111111111111112",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Pump.fun"
+   },
+   "id": "pump-fun",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "2rbX6Z998s8zGKs34uCD57EKcyR29jABCycnoEPzmRet",
+    "coingecko_coin_id": null,
+    "decimals": 6,
+    "image_url": null,
+    "name": "买买买",
+    "symbol": "买买买"
+   },
+   "id": "solana_2rbX6Z998s8zGKs34uCD57EKcyR29jABCycnoEPzmRet",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Meteora DBC"
+   },
+   "id": "meteora-dbc",
+   "type": "dex"
+  }
+ ]
+}

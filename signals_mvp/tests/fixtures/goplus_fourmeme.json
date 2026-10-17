@@ -1,0 +1,37 @@
+{
+ "code": 1,
+ "message": "OK",
+ "result": {
+  "0x2519570da0fcdaec7ee1feafadc958024518ffff": {
+   "anti_whale_modifiable": "0",
+   "buy_tax": "",
+   "can_take_back_ownership": "0",
+   "cannot_buy": "0",
+   "external_call": "1",
+   "hidden_owner": "0",
+   "holder_count": "0",
+   "is_anti_whale": "0",
+   "is_blacklisted": "0",
+   "is_honeypot": "0",
+   "is_in_dex": "0",
+   "is_mintable": "0",
+   "is_open_source": "1",
+   "is_proxy": "0",
+   "is_whitelisted": "0",
+   "owner_address": "0x5c952063c7fc8610ffdb798152d69f0b9550762b",
+   "owner_balance": "999999627.4889512",
+   "owner_change_balance": "0",
+   "owner_percent": "1.0",
+   "personal_slippage_modifiable": "0",
+   "selfdestruct": "0",
+   "sell_tax": "",
+   "slippage_modifiable": "0",
+   "token_name": "feetcoin",
+   "token_symbol": "feetcoin",
+   "total_supply": "1000000000",
+   "trading_cooldown": "0",
+   "transfer_pausable": "0",
+   "transfer_tax": ""
+  }
+ }
+}

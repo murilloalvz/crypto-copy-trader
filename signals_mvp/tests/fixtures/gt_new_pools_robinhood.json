@@ -1,0 +1,368 @@
+{
+ "data": [
+  {
+   "attributes": {
+    "address": "0x2be0c492ffd3be46b2991a5b5f618dc1189264c0",
+    "base_token_price_native_currency": "0.00000000378119635479694",
+    "base_token_price_quote_token": "0.000009510602075",
+    "base_token_price_usd": "0.00000900242160582208",
+    "fdv_usd": "9002.421606",
+    "market_cap_usd": null,
+    "name": "DUVE / USDG",
+    "pool_created_at": "2026-10-13T13:48:28Z",
+    "price_change_percentage": {
+     "h1": "83.7",
+     "h24": "83.7",
+     "h6": "83.7",
+     "m15": "83.7",
+     "m30": "83.7",
+     "m5": "83.7"
+    },
+    "quote_token_price_base_token": "105145.814336119",
+    "quote_token_price_native_currency": "0.000397576969889891",
+    "quote_token_price_usd": "0.997858557878143",
+    "reserve_in_usd": "6863.4358",
+    "transactions": {
+     "h1": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     },
+     "h24": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     },
+     "h6": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     },
+     "m15": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     },
+     "m30": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     },
+     "m5": {
+      "buyers": 45,
+      "buys": 54,
+      "sellers": 15,
+      "sells": 32
+     }
+    },
+    "volume_usd": {
+     "h1": "9057.1974477091",
+     "h24": "9057.1974477091",
+     "h6": "9057.1974477091",
+     "m15": "9057.1974477091",
+     "m30": "9057.1974477091",
+     "m5": "9057.1974477091"
+    }
+   },
+   "id": "robinhood_0x2be0c492ffd3be46b2991a5b5f618dc1189264c0",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "robinhood_0x659a71a904bcbb84db41e633234734ea82b9afde",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "pons-v2",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "robinhood_0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0xb936b72795cff84ffa5a91b19afc3fdacc0f74c7",
+    "base_token_price_native_currency": "0.00000000398099911437941",
+    "base_token_price_quote_token": "0.000000003980999114",
+    "base_token_price_usd": "0.0000105777102180032",
+    "fdv_usd": "10189.73979",
+    "market_cap_usd": null,
+    "name": "CLOVER / WETH",
+    "pool_created_at": "2026-10-13T13:48:49Z",
+    "price_change_percentage": {
+     "h1": "56.338",
+     "h24": "56.338",
+     "h6": "56.338",
+     "m15": "56.338",
+     "m30": "56.338",
+     "m5": "56.338"
+    },
+    "quote_token_price_base_token": "251193223.42675",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "2509.85",
+    "reserve_in_usd": "8765.1492",
+    "transactions": {
+     "h1": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     },
+     "h24": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     },
+     "h6": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m15": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m30": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m5": {
+      "buyers": 6,
+      "buys": 6,
+      "sellers": 0,
+      "sells": 0
+     }
+    },
+    "volume_usd": {
+     "h1": "2639.503250873",
+     "h24": "2639.503250873",
+     "h6": "2639.503250873",
+     "m15": "2639.503250873",
+     "m30": "2639.503250873",
+     "m5": "2639.503250873"
+    }
+   },
+   "id": "robinhood_0xb936b72795cff84ffa5a91b19afc3fdacc0f74c7",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "robinhood_0x760761f07b7222253c36fc3a15f6dacf8b8a60e0",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "pons-v2",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "robinhood_0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0x697ab7d0ace0f84d46a63946ed070ed6091b7305125667985d6955e5d7d950c5",
+    "base_token_price_native_currency": "0.0000000248890476556987",
+    "base_token_price_quote_token": "0.00000002488904766",
+    "base_token_price_usd": "0.0000704105790981666",
+    "fdv_usd": "70410.5791",
+    "market_cap_usd": null,
+    "name": "ZUCK / WETH 1%",
+    "pool_created_at": "2026-10-13T13:48:23Z",
+    "price_change_percentage": {
+     "h1": "22.589",
+     "h24": "22.589",
+     "h6": "22.589",
+     "m15": "22.589",
+     "m30": "22.589",
+     "m5": "22.589"
+    },
+    "quote_token_price_base_token": "40178315.1301507",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "2509.85",
+    "reserve_in_usd": "26343.1346",
+    "transactions": {
+     "h1": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     },
+     "h24": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     },
+     "h6": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     },
+     "m15": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     },
+     "m30": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     },
+     "m5": {
+      "buyers": 14,
+      "buys": 16,
+      "sellers": 9,
+      "sells": 13
+     }
+    },
+    "volume_usd": {
+     "h1": "5970.2994155576",
+     "h24": "5970.2994155576",
+     "h6": "5970.2994155576",
+     "m15": "5970.2994155576",
+     "m30": "5970.2994155576",
+     "m5": "5970.2994155576"
+    }
+   },
+   "id": "robinhood_0x697ab7d0ace0f84d46a63946ed070ed6091b7305125667985d6955e5d7d950c5",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "robinhood_0x9fe16c936b0595bcd0f9a50f4d29d6d8d1337777",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "uniswap-v4-robinhood",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "robinhood_0x0000000000000000000000000000000000000000",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  }
+ ],
+ "included": [
+  {
+   "attributes": {
+    "address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": "https://coin-images.coingecko.com/coins/images/2518/large/weth.png?1696503332",
+    "name": "WETH",
+    "symbol": "WETH"
+   },
+   "id": "robinhood_0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Pons V2"
+   },
+   "id": "pons-v2",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "0x760761f07b7222253c36fc3a15f6dacf8b8a60e0",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": "https://assets.geckoterminal.com/w0a2extv9ugkczzgjjhossy55oy1",
+    "name": "Cloverpad",
+    "symbol": "CLOVER"
+   },
+   "id": "robinhood_0x760761f07b7222253c36fc3a15f6dacf8b8a60e0",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": "https://assets.geckoterminal.com/7l7tdohmj7ud6i62llktrh18kcj6",
+    "name": "WETH",
+    "symbol": "WETH"
+   },
+   "id": "robinhood_0x0000000000000000000000000000000000000000",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Uniswap V4 (Robinhood)"
+   },
+   "id": "uniswap-v4-robinhood",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+    "coingecko_coin_id": "global-dollar",
+    "decimals": 6,
+    "image_url": "https://coin-images.coingecko.com/coins/images/51281/large/GDN_USDG_Token_200x200.png?1730484111",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "id": "robinhood_0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x659a71a904bcbb84db41e633234734ea82b9afde",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": "https://assets.geckoterminal.com/kv9f6793z5fbt4g1dtxttcxayi53",
+    "name": "Fat Duval",
+    "symbol": "DUVE"
+   },
+   "id": "robinhood_0x659a71a904bcbb84db41e633234734ea82b9afde",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x9fe16c936b0595bcd0f9a50f4d29d6d8d1337777",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": null,
+    "name": "The Guinness Enjoyoor",
+    "symbol": "ZUCK"
+   },
+   "id": "robinhood_0x9fe16c936b0595bcd0f9a50f4d29d6d8d1337777",
+   "type": "token"
+  }
+ ]
+}
