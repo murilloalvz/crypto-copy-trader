@@ -257,6 +257,11 @@ def enumerate_window(
     return res
 
 
+# QuickNode no plano "discover" (free) recusa `getMultipleAccounts` com mais de 5 chaves (HTTP 413, codigo
+# -32615) -- medido em produção 2026-10-17. 5 e conservador o bastante para qualquer plano/provedor.
+GET_MULTIPLE_ACCOUNTS_BATCH = 5
+
+
 def _verify_pools_exist_on_chain(rpc: SolanaRpc, res: WindowResult) -> None:
     """Checagem de consistencia INDEPENDENTE do layout de contas (EMENDA 2026-10-16/17, "falhar fechado"): todo
     pool resolvido precisa EXISTIR on-chain (`getAccountInfo`, em lote via `getMultipleAccounts` -- poucas
@@ -267,8 +272,8 @@ def _verify_pools_exist_on_chain(rpc: SolanaRpc, res: WindowResult) -> None:
     ok = [g for g in res.graduations if g.status == "ok" and g.pool]
     if not ok:
         return
-    for i in range(0, len(ok), 100):
-        batch = ok[i:i + 100]
+    for i in range(0, len(ok), GET_MULTIPLE_ACCOUNTS_BATCH):
+        batch = ok[i:i + GET_MULTIPLE_ACCOUNTS_BATCH]
         values = rpc.call("getMultipleAccounts", [[g.pool for g in batch], {"encoding": "base64"}])
         accounts = (values or {}).get("value") or []
         for g, acc in zip(batch, accounts):

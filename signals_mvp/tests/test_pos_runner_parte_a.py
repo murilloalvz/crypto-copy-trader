@@ -176,22 +176,34 @@ class EnumerateTests(unittest.TestCase):
             def __init__(self, existing: set[str], fail: bool = False):
                 self.existing = existing
                 self.fail = fail
+                self.batch_sizes: list[int] = []
 
             def call(self, method, params):
                 assert method == "getMultipleAccounts"
                 if self.fail:
                     raise RpcError("transport", "falha de rede")
                 pubkeys = params[0]
+                self.batch_sizes.append(len(pubkeys))
+                assert len(pubkeys) <= 5, "QuickNode discover plan: no maximo 5 chaves por chamada"
                 return {"value": [{"owner": "x"} if p in self.existing else None for p in pubkeys]}
 
         g_ok = Graduation("pumpfun", "s1", 1, 1, "MigrateV2", "MINT1", "QUOTE1", "POOL_EXISTE")
         g_lixo = Graduation("pumpfun", "s2", 1, 1, "MigrateV2", "MINT2", "QUOTE2", "POOL_NAO_EXISTE")
         res = WindowResult("pumpfun", 0, 1, graduations=[g_ok, g_lixo])
-        _verify_pools_exist_on_chain(FakeRpc({"POOL_EXISTE"}), res)
+        fake = FakeRpc({"POOL_EXISTE"})
+        _verify_pools_exist_on_chain(fake, res)
         self.assertEqual(g_ok.status, "ok")
         self.assertEqual(g_lixo.status, "nao_resolvida")
         self.assertIsNone(g_lixo.pool)
         self.assertEqual(res.nao_resolvida, 1)
+
+        # mais de 5 graduacoes: confirma que o lote respeita o limite do plano (varias chamadas de 5 ou menos)
+        many = [Graduation("pumpfun", f"s{i}", 1, 1, "MigrateV2", f"M{i}", "Q", f"POOL_EXISTE_{i}") for i in range(12)]
+        fake2 = FakeRpc({g.pool for g in many})
+        _verify_pools_exist_on_chain(fake2, WindowResult("pumpfun", 0, 1, graduations=many))
+        self.assertEqual(sum(fake2.batch_sizes), 12)
+        self.assertTrue(all(n <= 5 for n in fake2.batch_sizes))
+        self.assertTrue(all(g.status == "ok" for g in many))
 
         with self.assertRaises(RpcError):   # excecao de rede sobe (falhar fechado), nunca aceita sem verificar
             _verify_pools_exist_on_chain(FakeRpc(set(), fail=True), WindowResult("pumpfun", 0, 1, graduations=[g_ok]))
