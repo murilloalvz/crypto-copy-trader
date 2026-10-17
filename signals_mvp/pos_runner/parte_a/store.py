@@ -116,6 +116,41 @@ class Store:
         self.db.row_factory = None
         return rows
 
+    def reprocess_graduation(self, old_pool: str, corrected: Optional[dict] = None) -> None:
+        """Re-processa UMA graduacao ja gravada (ex.: achado de parser corrigido depois da coleta) -- NUNCA
+        editar o SQLite na mao. Permitido so quando stage1/stage2/setups/trades de `old_pool` estao vazios
+        (nada dependente dela foi calculado ainda). `corrected=None` remove a linha (reclassificada como
+        `nao_resolvida` no re-parse: nunca um pool morto, so sai da tabela). `corrected` com
+        {"pool","mint","quote","status"} substitui pela versao corrigida (mesmo period/ord/launchpad/grad_ts/
+        signature da linha antiga); levanta RuntimeError se o pool corrigido colidir com outra linha existente
+        (duplicata a resolver na mao)."""
+        for t in ("stage1", "stage2", "setups", "trades"):
+            n = self.db.execute(f"SELECT COUNT(*) FROM {t} WHERE pool=?", (old_pool,)).fetchone()[0]
+            if n:
+                raise RuntimeError(f"reprocess recusado: '{t}' tem {n} linha(s) dependente(s) de {old_pool}")
+        self.db.row_factory = sqlite3.Row
+        old = self.db.execute("SELECT * FROM graduations WHERE pool=?", (old_pool,)).fetchone()
+        self.db.row_factory = None
+        if old is None:
+            raise RuntimeError(f"reprocess: pool {old_pool} nao existe em graduations")
+        with self.db:
+            self.db.execute("DELETE FROM graduations WHERE pool=?", (old_pool,))
+            if corrected is None:
+                log.info("graduacao removida no reprocessamento (nao_resolvida apos re-parse): pool antigo %s, sig %s",
+                        old_pool, old["signature"])
+                return
+            new_pool = corrected["pool"]
+            exists = self.db.execute("SELECT 1 FROM graduations WHERE pool=?", (new_pool,)).fetchone()
+            if exists:
+                self.db.execute("INSERT OR IGNORE INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                                (old_pool, old["mint"], old["quote"], old["launchpad"], old["grad_ts"], old["signature"],
+                                 old["period"], old["ord"], old["status"]))
+                raise RuntimeError(f"reprocess recusado: pool corrigido {new_pool} ja existe (duplicata); linha antiga restaurada")
+            self.db.execute("INSERT INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                            (new_pool, corrected["mint"], corrected["quote"], old["launchpad"], old["grad_ts"],
+                             old["signature"], old["period"], old["ord"], corrected.get("status", "ok")))
+            log.info("graduacao corrigida no reprocessamento: pool antigo %s -> %s, sig %s", old_pool, new_pool, old["signature"])
+
     # -- estagios -----------------------------------------------------------------------
     def stage1(self, pool: str) -> Optional[tuple]:
         """(status, max_mc, runner, l_bc, supply, info, created_ts) — created_ts = criacao do token (so runners)."""

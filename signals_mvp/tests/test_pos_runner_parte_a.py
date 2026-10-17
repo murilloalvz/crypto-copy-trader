@@ -305,6 +305,41 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ctx.store.restamp_versao_config("outra_config", "nao deveria passar: ha setup gravado")
 
+    def test_reprocess_graduation_corrects_removes_and_refuses_duplicates(self):
+        """`reprocess_graduation` (store.py) e a UNICA forma permitida de corrigir/remover uma graduacao ja
+        gravada (achado real: parser corrigido depois da coleta) -- nunca editar o SQLite na mao."""
+        ctx = self.ctx(self.tmp, set())
+        with ctx.store.db:
+            ctx.store.db.execute("INSERT INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                                 ("POOL_LIXO", "MINT_LIXO", "QUOTE_LIXO", "pumpfun", 100, "sig1", "holdout", 0, "ok"))
+            ctx.store.db.execute("INSERT INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                                 ("POOL_JA_EXISTE", "MINT_X", "QUOTE_X", "pumpfun", 100, "sig2", "holdout", 0, "ok"))
+
+        # corrige: pool antigo sai, pool corrigido entra, mesma signature/periodo/ord/launchpad/grad_ts
+        ctx.store.reprocess_graduation("POOL_LIXO", {"pool": "POOL_CORRIGIDO", "mint": "MINT_REAL", "quote": "QUOTE_REAL"})
+        pools = {r["pool"] for r in ctx.store.graduations("holdout")}
+        self.assertNotIn("POOL_LIXO", pools)
+        self.assertIn("POOL_CORRIGIDO", pools)
+        row = next(r for r in ctx.store.graduations("holdout") if r["pool"] == "POOL_CORRIGIDO")
+        self.assertEqual((row["mint"], row["quote"], row["signature"], row["status"]), ("MINT_REAL", "QUOTE_REAL", "sig1", "ok"))
+
+        # colisao: pool corrigido ja existe -> recusa, restaura a linha antiga
+        with ctx.store.db:
+            ctx.store.db.execute("INSERT INTO graduations VALUES (?,?,?,?,?,?,?,?,?)",
+                                 ("POOL_LIXO2", "MINT_LIXO2", "QUOTE_LIXO2", "pumpfun", 100, "sig3", "holdout", 0, "ok"))
+        with self.assertRaises(RuntimeError):
+            ctx.store.reprocess_graduation("POOL_LIXO2", {"pool": "POOL_JA_EXISTE", "mint": "m", "quote": "q"})
+        self.assertIn("POOL_LIXO2", {r["pool"] for r in ctx.store.graduations("holdout")})   # restaurada
+
+        # remove: corrected=None -- nunca um pool morto, so sai da tabela
+        ctx.store.reprocess_graduation("POOL_LIXO2", None)
+        self.assertNotIn("POOL_LIXO2", {r["pool"] for r in ctx.store.graduations("holdout")})
+
+        # recusa se algo dependente de params ja foi gravado para o pool
+        ctx.store.save_stage1("POOL_JA_EXISTE", "ok", 1.0, True, 1.0, 1.0, {})
+        with self.assertRaises(RuntimeError):
+            ctx.store.reprocess_graduation("POOL_JA_EXISTE", None)
+
     def test_count_based_stop_resume_metrics_and_baseline(self):
         windows = plan().windows("discovery")
         runners = {f"P_{lp[:4]}_{windows[w][0]}_{k}" for w in range(3) for lp in ("pumpfun", "raydium_launchlab") for k in range(2)}
