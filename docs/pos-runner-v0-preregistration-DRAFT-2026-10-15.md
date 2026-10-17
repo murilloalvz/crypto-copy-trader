@@ -368,3 +368,30 @@ qualidade de enumeração, nunca retune de regra. `versao_plano`/janelas (400) i
 **Nada de regra/grade/período/baseline/corte/custo mudou** — só a qualidade do dado de enumeração (correção de
 bug de parsing + filtro defensivo, ambos documentados e testados). Commits da correção, do filtro e do re-selo
 citam este parágrafo.
+
+## 12. Segunda rodada da correção (2026-10-17) — posição do pool do pump.fun + 2 checagens "falhar fechado"
+
+Validação positiva (60 amostras) achou 5% de divergência, acima do limite de 1% combinado com o operador — parei,
+reportei (`DECISÃO NECESSÁRIA`), e segui com a opção aprovada. Causa: a instrução LEGADA `Migrate` (sem V2,
+27/25 contas) tem o pool numa posição DIFERENTE de `MigrateV2` (29 contas) — índice fixo 10 lia um endereço que
+nem existe on-chain (confirmado via `getAccountInfo`). Fix: `LaunchpadSpec.pool_after_program` (só pump.fun —
+raydium_launchlab/meteora_dbc validaram 0/20 na mesma amostra) acha o pool pela posição RELATIVA ao programa da
+AMM de destino (`accounts.index(pool_after_program) + 1`), nunca um índice fixo.
+
+Duas checagens "falhar fechado" novas, independentes do layout de contas, pedidas pelo operador: (1) mint precisa
+aparecer em `postTokenBalances`/`preTokenBalances` da própria tx (sem RPC nova); (2) pool precisa EXISTIR
+on-chain, verificado em lote (`getMultipleAccounts`, lotes de 5 — limite do plano `discover` da QuickNode,
+medido em produção) dentro de `enumerate_window`; falha de rede nesta checagem sobe como erro (nunca aceita sem
+verificar). Quem não passa vira `nao_resolvida` (fora, contado, nunca pool morto).
+
+Varredura em escala (holdout, pump.fun — os 10077 pools já enumerados, em lotes de 5, ~2016 chamadas): 1102
+(10,9%) não existiam on-chain. Reprocessados via `getTransaction` real + o parser corrigido +
+`Store.reprocess_graduation`: 100 corrigidos (pool/mint reais); 1002 eram duplicatas — a mesma migração real já
+estava correta sob OUTRA assinatura (mesmo padrão do achado anterior: migrações com sniper bot geram uma tx
+`Migrate` legada E uma `MigrateV2`/outra para o mesmo evento) — removidos sem perda de dado. 0 genuinamente
+`nao_resolvida`, 0 erros.
+
+**Re-selo** (2ª vez, mesma transparência): hash anterior `e6edb9723d10e3554c6a7c89ffe20bae` (28351 pools) → hash
+novo `3f648e9548002cef355f78c107cacef8` (27349 pools). Confirmado ANTES: `stage1`/`stage2`/`setups`/`trades` com 0
+linhas. **Nova validação positiva, amostra DIFERENTE (seed distinta, 60 entradas estratificadas por launchpad)**:
+0% de divergência. `versao_plano`/janelas (400) inalterados; nenhuma regra/grade/limiar mudou.
