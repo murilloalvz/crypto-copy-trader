@@ -96,13 +96,19 @@ BRT_OFFSET_S = 3 * 3600
 BRT_JANELA = (8, 14)   # 8h-14h inclusive vs resto
 
 
-def _hora_brt(i: dict[str, Any]) -> str:
-    ts = i.get("entry_ts")
+def hora_brt_bucket(ts: Optional[float]) -> str:
+    """BRT (UTC-3, sem horario de verao) -> "8-14h" ou "resto". Funcao publica (EMENDA 2026-10-19, secao 14):
+    reusada pelo comando `funil`, que bucketiza o `ts` do SETUP (sem precisar do `entry_ts` da simulacao -- o
+    funil nunca olha trade/EV/PF, so contagem, por isso roda com download parcial)."""
     if ts is None:
         return "sem dado"
     hour = int((ts - BRT_OFFSET_S) // 3600) % 24
     lo, hi = BRT_JANELA
     return f"{lo}-{hi}h" if lo <= hour <= hi else "resto"
+
+
+def _hora_brt(i: dict[str, Any]) -> str:
+    return hora_brt_bucket(i.get("entry_ts"))
 
 
 def _teste_vol(i: dict[str, Any]) -> str:
@@ -195,6 +201,55 @@ def choose_variant(table: dict[str, Any], min_trades: int = MIN_TRADES_DISCOVERY
     ties = [k for s, k in scored if abs(s - best) < 1e-9]
     pick = PRIMARY_COMBO if PRIMARY_COMBO in ties else sorted(ties)[0]
     return pick, table[pick]
+
+
+def choose_variant_for_tfs(table: dict[str, Any], tfs: tuple[str, ...],
+                           min_trades: int = MIN_TRADES_DISCOVERY) -> tuple[Optional[str], dict[str, Any]]:
+    """EMENDA 2026-10-19 (secao 14, rodadas): mesma regra de `choose_variant`, restrita as combinacoes cujo tf
+    esta em `tfs` -- usada para escolher 1 candidato POR RODADA (1h isolado na rodada 1, 8 combinacoes; 5m/4h na
+    rodada 2, 16 combinacoes), nunca misturando o universo de comparacao de uma rodada com o da outra."""
+    restricted = {k: v for k, v in table.items() if k.split("/", 1)[0] in tfs}
+    return choose_variant(restricted, min_trades)
+
+
+def funil(ctx: Context, period: str) -> dict[str, Any]:
+    """Comando `funil` (EMENDA 2026-10-19, secao 14): SO contagens -- nunca EV/PF/trades -- utilizavel com
+    download PARCIAL (cada numero le so o que ja esta no checkpoint, zero chamada de rede). Funil classico:
+    graduacoes enumeradas -> estagio 1 por status -> runners -> estagio 2 por tf/status (inclusive os
+    placeholders `meta_atingida`/`fora_da_rodada`, que mostram quanto cada rodada ja cobriu) -> setups primarios
+    por tf. Os 2 cortes (hora BRT, origem/launchpad) usam so a coluna `ts`/`launchpad` ja gravada em `setups`/
+    `graduations` -- nunca o resultado do trade (por isso funcionam antes de qualquer simulacao)."""
+    c = ctx.store.counts(period)
+    graduacoes_por_launchpad = dict(ctx.store.db.execute(
+        "SELECT launchpad, COUNT(*) FROM graduations WHERE period=? GROUP BY launchpad", (period,)).fetchall())
+    estagio2_por_tf: dict[str, dict[str, int]] = {}
+    for tf, status, n in ctx.store.db.execute(
+            "SELECT s.tf, s.status, COUNT(*) FROM stage2 s JOIN graduations g ON g.pool=s.pool WHERE g.period=? "
+            "GROUP BY s.tf, s.status", (period,)).fetchall():
+        estagio2_por_tf.setdefault(tf, {})[status] = n
+    setups_por_launchpad: dict[str, int] = {}
+    setups_por_hora_brt: dict[str, int] = {}
+    for lp, ts in ctx.store.db.execute(
+            "SELECT g.launchpad, s.ts FROM setups s JOIN graduations g ON g.pool=s.pool "
+            "WHERE g.period=? AND s.primary_flag=1", (period,)).fetchall():
+        setups_por_launchpad[lp] = setups_por_launchpad.get(lp, 0) + 1
+        bucket = hora_brt_bucket(ts)
+        setups_por_hora_brt[bucket] = setups_por_hora_brt.get(bucket, 0) + 1
+    parada = ctx.store.get(f"{period}:parada")
+    return {
+        "periodo": period,
+        "graduacoes": c["graduacoes"],
+        "graduacoes_por_launchpad": graduacoes_por_launchpad,
+        "enumeracao_nao_resolvida": c["enumeracao_nao_resolvida"],
+        "estagio1_por_status": c["estagio1"],
+        "runners": c["runners"],
+        "runners_sem_criacao": c["runners_sem_criacao"],
+        "estagio2_por_tf_status": estagio2_por_tf,
+        "setups_primarios_por_tf": c["setups_primarios"],
+        "setups_primarios_por_launchpad": setups_por_launchpad,
+        "setups_primarios_por_hora_brt": setups_por_hora_brt,
+        "parada": json.loads(parada) if parada else None,
+    }
 
 
 def candidate(stats: dict[str, Any], min_trades: int = MIN_TRADES_DISCOVERY) -> dict[str, Any]:

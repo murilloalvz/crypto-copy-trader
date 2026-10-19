@@ -102,11 +102,17 @@ def write_report(ctx: Context, docs: Path) -> Path:
     choice_path = out / "escolha_discovery.json"
     if choice_path.exists():
         ch = json.loads(choice_path.read_text(encoding="utf-8"))
-        L.append(f"Variante escolhida (maior EV líquido; empate → 1h/A): **{ch['variante']}** — critérios: {ch['criterios']} → "
-                 f"candidato: **{'sim' if ch['candidato'] else 'não'}**")
-        L.append("")
-        st = table.get(ch["variante"] or "", {})
-        L.extend(_cut_lines(st))
+        # EMENDA 2026-10-19 (secao 14): 1 escolha POR RODADA (1h isolado; 5m+4h) -- ate 2 candidatos, nunca 1
+        # escolha sobre as 24 combinacoes juntas; `nota` declara explicitamente a multiplicidade.
+        if ch.get("nota"):
+            L.append(ch["nota"])
+            L.append("")
+        for c in ch.get("candidatos", []):
+            L.append(f"Rodada {c['rodada']} (tfs {c['tfs']}) — variante escolhida (maior EV líquido; empate → 1h/A): "
+                     f"**{c['variante']}** — critérios: {c.get('criterios')} → candidato: **{'sim' if c.get('candidato') else 'não'}**")
+            L.append("")
+            st = table.get(c["variante"] or "", {})
+            L.extend(_cut_lines(st))
     L.append("Cortes das 6 variantes (atributos; nenhum é filtro e nenhum muda a escolha):")
     L.append("")
     for k, st in table.items():
@@ -119,13 +125,19 @@ def write_report(ctx: Context, docs: Path) -> Path:
         h = json.loads(hold_path.read_text(encoding="utf-8"))
         L.append("## 3. Holdout selado")
         L.append("")
-        s = h["estatisticas"]
-        L.append(f"Variante {h['variante']}: **{h['veredito']}** — n={s.get('n')}, EV líquido {_pct(s.get('ev_liq_pct'))}, PF {_num(s.get('pf'))}, "
-                 f"custo 2×: EV {_pct((s.get('custo_2x') or {}).get('ev_liq_pct'))}, PF {_num((s.get('custo_2x') or {}).get('pf'))}")
-        L.append("")
-        L.extend(_variant_lines({h["variante"]: s}))
-        L.append("")
-        L.extend(_cut_lines(s))
+        if h.get("nota"):
+            L.append(h["nota"])
+            L.append("")
+        # EMENDA 2026-10-19 (secao 14): no maximo 2 testes (1 por rodada do discovery), cada um reportado
+        # separado -- NUNCA combinados num so veredito.
+        for t in h.get("testes", []):
+            s = t["estatisticas"]
+            L.append(f"Variante {t['variante']}: **{t['veredito']}** — n={s.get('n')}, EV líquido {_pct(s.get('ev_liq_pct'))}, PF {_num(s.get('pf'))}, "
+                     f"custo 2×: EV {_pct((s.get('custo_2x') or {}).get('ev_liq_pct'))}, PF {_num((s.get('custo_2x') or {}).get('pf'))}")
+            L.append("")
+            L.extend(_variant_lines({t["variante"]: s}))
+            L.append("")
+            L.extend(_cut_lines(s))
     # 5 trades sorteados do discovery (ganhos e perdas) com as fases marcadas -- da combinacao PRIMARIA original
     # (1h/A/extremos/2-7); as outras 23 da grade (emenda 2026-10-16) nao entram nesta amostra
     rows = [r for r in ctx.store.trades("discovery", "setup") if r[1] == PRIMARY_TF and r[3] == "A" and r[4] == "fechado"]

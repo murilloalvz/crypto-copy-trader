@@ -3,15 +3,26 @@
     python -m signals_mvp.pos_runner.parte_a.cli plano --congelamento 2026-10-17
     python -m signals_mvp.pos_runner.parte_a.cli selar-holdout --janelas 400
     python -m signals_mvp.pos_runner.parte_a.cli baixar-bruto --periodo discovery [--max-janelas N]
-    python -m signals_mvp.pos_runner.parte_a.cli discovery [--alvo 60] [--max-janelas N]
+    python -m signals_mvp.pos_runner.parte_a.cli discovery --rodada 1 [--alvo 60] [--max-janelas N]
+    python -m signals_mvp.pos_runner.parte_a.cli discovery --rodada 2
     python -m signals_mvp.pos_runner.parte_a.cli escolher
     python -m signals_mvp.pos_runner.parte_a.cli holdout [--alvo 40]
     python -m signals_mvp.pos_runner.parte_a.cli relatorio
+    python -m signals_mvp.pos_runner.parte_a.cli funil --periodo discovery
 
 Travas (falham ANTES de qualquer download de preco):
 - o pre-registro precisa estar `PRE-REGISTRADO` (nao RASCUNHO) e citar o hash da config em uso;
 - a selagem do holdout precisa existir, bater o hash e estar commitada;
 - o checkpoint guarda o hash da config e do plano: mudar qualquer um no meio da coleta e recusado.
+
+`discovery --rodada` (EMENDA 2026-10-19, secao 14 -- cega a resultado, primeiro resultado concreto mais cedo,
+SEM cortar nenhuma das 24 combinacoes): rodada 1 = so 1h (8 combinacoes: saida A/B x medida x idade), parada ao
+chegar a 60 setups no 1h; rodada 2 = 5m e 4h JUNTOS (16 combinacoes), OBRIGATORIA e PRE-REGISTRADA (nao
+condicional ao resultado da rodada 1), executada em seguida, parada ao os DOIS chegarem a 60. `escolher` escolhe
+1 candidato POR RODADA (no maximo 2 no total); `holdout` testa cada um UMA vez, reportados como testes
+separados. `funil --periodo {discovery,holdout}` imprime SO contagens (pools, estagio 1, runners, estagio 2 por
+tf/status, setups primarios por tf/launchpad/hora BRT) -- nunca EV/PF/trade -- e funciona com download parcial,
+em qualquer momento, sem chamada de rede.
 
 `baixar-bruto` (decisao operacional de 2026-10-16): baixa enumeracao + candles de estagio 1/2 com a janela mais
 ANTIGA do calendario primeiro (nunca pela ordem sorteada), para o download nunca perder dado por causa do limite
@@ -40,7 +51,7 @@ from ..candles import OhlcvStore
 from ..lineage import creation_time
 from ..params import is_preregistered, load_params
 from ..solana_rpc import SolanaRpc, endpoints_from_env
-from .metrics import candidate, choose_variant, holdout_verdict, variant_table
+from .metrics import candidate, choose_variant_for_tfs, funil, holdout_verdict, variant_table
 from .pipeline import Context, load_seal, make_rpc_enumerator, prefetch_period, run_period, seal_holdout
 from .plan import PeriodPlan, load_plan, write_plan
 from .quotebook import QuoteBook
@@ -55,6 +66,10 @@ ENV_RPC_PER_MIN = "POS_RUNNER_RPC_PER_MIN"
 DISCOVERY_TARGET = 60      # setups primarios minimos por timeframe (parada por contagem)
 HOLDOUT_TARGET = 40        # no tf escolhido; folga para chegar aos 30 trades FECHADOS do veredito
 CREATION_MAX_PAGES = 100   # ate 100 mil assinaturas da curva por token (o SOLCAT teve ~10 mil)
+# EMENDA 2026-10-19 (secao 14, rodadas por tf -- cega a resultado, primeiro resultado concreto mais cedo, sem
+# cortar nenhuma das 24 combinacoes): rodada 1 = 1h isolado (8 combinacoes: saida A/B x medida x idade); rodada
+# 2 = 5m e 4h juntos (16 combinacoes), OBRIGATORIA e pre-registrada (nunca condicional ao resultado da rodada 1).
+ROUND_TFS = {1: ("1h",), 2: ("5m", "4h")}
 
 
 def check_preregistration(path: Path, params_version: str) -> None:
@@ -119,8 +134,11 @@ def _track_usage(ctx: Context, rpc: SolanaRpc, http: HttpClient) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Parte A do POS-RUNNER-V0 (backtest sem vies)")
-    ap.add_argument("comando", choices=["plano", "selar-holdout", "baixar-bruto", "discovery", "escolher", "holdout", "relatorio"])
-    ap.add_argument("--periodo", choices=["discovery", "holdout"], default="discovery", help="so para `baixar-bruto`")
+    ap.add_argument("comando", choices=["plano", "selar-holdout", "baixar-bruto", "discovery", "escolher", "holdout", "relatorio", "funil"])
+    ap.add_argument("--periodo", choices=["discovery", "holdout"], default="discovery", help="para `baixar-bruto` e `funil`")
+    ap.add_argument("--rodada", type=int, choices=[1, 2], default=None,
+                    help="obrigatorio em `discovery` (EMENDA secao 14): 1 = so 1h (8 combinacoes); "
+                         "2 = 5m+4h juntos (16 combinacoes), OBRIGATORIA e pre-registrada em seguida a rodada 1")
     ap.add_argument("--congelamento", help="data do congelamento (AAAA-MM-DD), so para `plano`")
     ap.add_argument("--janelas", type=int, default=400, help="janelas do holdout seladas")
     ap.add_argument("--alvo", type=int, default=None,
@@ -172,34 +190,56 @@ def main(argv: Optional[list[str]] = None) -> int:
                      f"'{args.periodo}' neste ritmo (QuickNode pode pausar e voltar sozinha no limite diario).")
             return 0
         if args.comando == "discovery":
-            counts = run_period(ctx, "discovery", args.alvo or DISCOVERY_TARGET, args.max_janelas, progress=lambda c: logging.info("%s", c))
+            if args.rodada is None:
+                raise SystemExit("--rodada 1 ou --rodada 2 e obrigatorio (EMENDA secao 14: 1h isolado primeiro "
+                                 "-- rodada 1 --, 5m+4h depois -- rodada 2, obrigatoria em seguida)")
+            tfs = ROUND_TFS[args.rodada]
+            counts = run_period(ctx, "discovery", args.alvo or DISCOVERY_TARGET, args.max_janelas,
+                                progress=lambda c: logging.info("%s", c), stop_tfs=tfs, active_tfs=tfs)
             from .baseline import run_baselines
             run_baselines(ctx, "discovery")
-            print(json.dumps(counts, indent=1))
+            print(json.dumps({"rodada": args.rodada, "tfs": tfs, **counts}, indent=1))
             return 0
         if args.comando == "escolher":
+            # EMENDA 2026-10-19 (secao 14): 1 escolha POR RODADA (universo de comparacao de cada uma nunca se
+            # mistura) -- no maximo 2 candidatos vao ao holdout; cada um e 1 teste de hipotese, declarados os 2.
             table = variant_table(ctx, "discovery")
-            pick, stats = choose_variant(table)
-            verdict = candidate(stats)
-            doc = {"variante": pick, "estatisticas": stats, **verdict, "tabela": table}
+            candidatos = []
+            for rodada, tfs in ROUND_TFS.items():
+                pick, stats = choose_variant_for_tfs(table, tfs)
+                verdict = candidate(stats) if pick else {"criterios": {}, "candidato": False}
+                candidatos.append({"rodada": rodada, "tfs": tfs, "variante": pick, "estatisticas": stats, **verdict})
+            doc = {"candidatos": candidatos, "tabela": table,
+                   "nota": "2 escolhas independentes (1 por rodada, EMENDA secao 14): rodada 1 so compete dentro "
+                           "das 8 combinacoes de 1h; rodada 2 so dentro das 16 de 5m/4h. No maximo 2 vao ao "
+                           "holdout; o relatorio declara que sao 2 testes de hipotese, nunca 1."}
             (DOCS / "escolha_discovery.json").write_text(json.dumps(doc, indent=1, default=str), encoding="utf-8")
-            print(json.dumps({"variante": pick, **verdict}, indent=1))
+            print(json.dumps({"candidatos": [{"rodada": c["rodada"], "variante": c["variante"], "candidato": c["candidato"]}
+                                             for c in candidatos]}, indent=1))
             print(f"Commite {DOCS / 'escolha_discovery.json'} ANTES de abrir o holdout.")
             return 0
         if args.comando == "holdout":
             choice = json.loads((DOCS / "escolha_discovery.json").read_text(encoding="utf-8"))
-            if not choice.get("candidato"):
-                raise SystemExit("discovery nao produziu candidato: holdout nao e aberto (hipotese fecha no discovery)")
+            candidatos = [c for c in choice["candidatos"] if c.get("candidato")]
+            if not candidatos:
+                raise SystemExit("discovery nao produziu nenhum candidato nas 2 rodadas: holdout nao e aberto")
             sealed_windows = json.loads(seal_path.read_text(encoding="utf-8"))["janelas"]
             limit = min(sealed_windows, args.max_janelas or sealed_windows)   # nunca passa das janelas seladas
-            tf = choice["variante"].split("/")[0]
-            counts = run_period(ctx, "holdout", args.alvo or HOLDOUT_TARGET, limit, progress=lambda c: logging.info("%s", c), stop_tfs=(tf,))
+            tfs = tuple(c["variante"].split("/")[0] for c in candidatos)
+            counts = run_period(ctx, "holdout", args.alvo or HOLDOUT_TARGET, limit, progress=lambda c: logging.info("%s", c),
+                                stop_tfs=tfs, active_tfs=tfs)
             from .baseline import run_baselines
             run_baselines(ctx, "holdout")
-            stats = variant_table(ctx, "holdout").get(choice["variante"], {})
-            doc = {"variante": choice["variante"], "veredito": holdout_verdict(stats), "estatisticas": stats, "contagens": counts}
+            table_h = variant_table(ctx, "holdout")
+            testes = [{"variante": c["variante"], "veredito": holdout_verdict(table_h.get(c["variante"], {})),
+                      "estatisticas": table_h.get(c["variante"], {})} for c in candidatos]
+            doc = {"testes": testes, "contagens": counts,
+                   "nota": f"{len(testes)} teste(s) de hipotese reportado(s) (1 por rodada do discovery, EMENDA secao 14)"}
             (DOCS / "resultado_holdout.json").write_text(json.dumps(doc, indent=1, default=str), encoding="utf-8")
-            print(json.dumps({k: doc[k] for k in ("variante", "veredito")}, indent=1))
+            print(json.dumps({"testes": [{"variante": t["variante"], "veredito": t["veredito"]} for t in testes]}, indent=1))
+            return 0
+        if args.comando == "funil":
+            print(json.dumps(funil(ctx, args.periodo), indent=1, ensure_ascii=False))
             return 0
         if args.comando == "relatorio":
             from .report import write_report

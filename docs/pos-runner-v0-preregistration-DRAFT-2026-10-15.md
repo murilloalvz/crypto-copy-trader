@@ -442,3 +442,62 @@ com 5m, 7 chamadas/runner (5m pagina em lotes de 1000 candles); sem 5m, 2 chamad
 entre 5% e 30% (faixa larga, não medida): total ~75,4–173,0 mil chamadas COM 5m, ~61,4–89,3 mil SEM 5m. A ~26
 chamadas/min (teto novo): **~48–111h COM 5m, ~39–57h SEM 5m** — faixa larga de propósito (decisão do operador,
 item D do pedido: 5m NÃO foi removido).
+
+## 14. EMENDA de 2026-10-19 — rodadas por tf (1h isolado, depois 5m+4h) + comando `funil` (cega a resultado,
+## ANTES de qualquer cálculo de trade; regra primária, grade de 24, atributos secundários e limiar >=60/>=30
+## inalterados; `discovery_start_override`/plano de 51 dias do §13 inalterado)
+
+Objetivo único: primeiro resultado concreto mais cedo, **sem cortar nenhuma das 24 combinações**. Confirmado
+ANTES de qualquer cálculo (checkpoint local: `stage1`/`stage2`/`setups`/`trades` com 0 linhas; holdout — 1200
+janelas, 27349 graduações — e discovery intocados por este commit).
+
+**A) Rodadas** (`run_period(..., active_tfs=...)`, novo parâmetro, default = os 3 tfs = comportamento idêntico
+a antes): rodada 1 = `active_tfs=stop_tfs=("1h",)`, 8 combinações (saída A/B × medida × idade), pára ao 1h
+sozinho chegar a 60 setups — nunca mais esperando o tf mais lento (5m ou 4h) parar primeiro, como a regra
+antiga (`stop_tfs` default = os 3) exigia. Rodada 2 = `active_tfs=stop_tfs=("5m","4h")`, 16 combinações,
+**OBRIGATÓRIA e PRÉ-REGISTRADA** (não condicional ao resultado da rodada 1), executada em seguida, pára quando
+os DOIS chegarem a 60. Rodada 2 revisita as MESMAS janelas (mesma ordem sorteada, desde o início) que a rodada 1
+já andou, para completar 5m/4h ali também — nunca uma ordem nova.
+
+Mecânica de `stage2_bars`: um tf fora do escopo da rodada atual vira `fora_da_rodada` (status explícito, 0
+candle, 0 chamada) em vez de `meta_atingida`; a diferença importa porque uma rodada FUTURA precisa voltar a
+completá-lo. Antes de escrever qualquer placeholder, confere-se o status JÁ gravado: um status REAL (não um
+placeholder desta função) NUNCA é sobrescrito — a rodada 2 nunca toca o `stage2`/setups de 1h que a rodada 1 já
+calculou de verdade. Teste dedicado (`test_active_tfs_runs_rounds_without_corrupting_a_previous_rounds_stage2`)
+roda as 2 rodadas em sequência sobre a mesma janela e confere byte-a-byte que o 1h da rodada 1 não muda.
+
+**B) Escolha e holdout** (`escolher`/`holdout`, cli.py): 1 escolha POR RODADA — rodada 1 só compete dentro das
+suas 8 combinações, rodada 2 dentro das suas 16 (`choose_variant_for_tfs`); nunca uma escolha sobre as 24
+juntas. No máximo 2 candidatos (cada um só se passar EV>0, PF>1, edge>0, >=30 trades no discovery) vão ao
+holdout; cada um é testado UMA vez (`run_period` com `active_tfs=stop_tfs=` os tfs dos 2 candidatos, para não
+baixar 2x o mesmo tf); o relatório e `resultado_holdout.json` declaram explicitamente **2 testes de hipótese**
+(nunca combinados num só veredito) — a contagem de comparações desta hipótese, já registrada no §10, não muda
+(continuam 24 combinações no discovery); o que muda é só QUANTOS desses 24 ganham uma chance de validação no
+holdout (até 2, nunca 1 só).
+
+**C) Comando `funil`** (novo, `metrics.funil` + `cli.py funil --periodo {discovery,holdout}`): imprime SÓ
+contagens — graduações por launchpad, estágio 1 por status, runners, estágio 2 por tf/status (inclui os
+placeholders, mostrando quanto cada rodada já cobriu), setups primários por tf/launchpad/hora BRT — NUNCA
+EV/PF/trade. Lê só o checkpoint (zero chamada de rede), funciona com download parcial, em qualquer momento.
+
+**D) Re-carimbação (item 6 do pedido)**: conferido ANTES e DEPOIS — nenhum campo de `PeriodPlan`/`Params` mudou
+nesta emenda (só código de orquestração), então o hash do plano (`7e6fdc65d31f`) e da config (`0de2333a7f63`)
+ficam **idênticos**; nenhum restamp foi necessário (`restamp_versao_plano`/`restamp_versao_config` não foram
+chamados) e nenhum checkpoint novo precisou ser commitado (o `parte_a_2026-10-19.sqlite.gz` do §13 continua
+valido).
+
+**E) Chamadas/horas por rodada (estimativa mecânica, não medição — mesma ressalva do §13: taxa de runner
+desconhecida)**: `stage1` (1 chamada/graduação, ~55,8 mil no total) é compartilhado pelas 2 rodadas, pago uma
+vez só (a rodada que primeiro visita uma janela paga; a outra reusa o cache, 0 chamada nova). Custo MARGINAL de
+`stage2`: rodada 1 (só 1h) = 1 chamada/runner; rodada 2 (5m+4h) = 6 chamadas/runner (5m pagina em 5 chamadas de
+1000 candles, 4h em 1; a referência de 1h para o buraco do 5m já está em cache da rodada 1, 0 chamada nova). O
+total mecânico das 2 rodadas somadas é o MESMO do §13 (~75–173 mil chamadas COM 5m, ~48–111h a 26/min) — a
+emenda não muda o trabalho total, só a ORDEM: a rodada 1 pára sozinha ao 1h bater 60 (nunca mais esperando o tf
+mais lento), por isso o primeiro resultado concreto sai numa fração desse tempo, antes da rodada 2 nem começar.
+
+### 14.1 Registro
+
+Linha `POS-RUNNER-V0` atualizada em `docs/research-hypothesis-registry-v1-2026-10-04.md`: até 2 candidatos (1
+por rodada) vão ao holdout, declarados como 2 testes de hipótese — nunca 1 escolha sobre as 24 combinações
+juntas (a contagem de comparações do discovery, 24, não muda; só quantos desses 24 ganham uma chance de
+validação no holdout).

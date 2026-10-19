@@ -16,8 +16,8 @@ from ..pos_runner.examples import EXAMPLES
 from ..pos_runner.params import Params
 from ..pos_runner.parte_a import cli as cli_mod
 from ..pos_runner.parte_a.baseline import baseline_mean, run_baselines
-from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, holdout_verdict, path_stats,
-                                          summarize, variant_table)
+from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, choose_variant_for_tfs, funil,
+                                          holdout_verdict, path_stats, summarize, variant_table)
 from ..pos_runner.parte_a.pipeline import (IDADE_FAIXAS, Context, enumerate_windows, load_seal, prefetch_period,
                                             primary_under_window, restamp_seal_versao_plano, run_period, seal_holdout)
 from ..pos_runner.parte_a.plan import DAY, PeriodPlan, _date_ts, load_plan, write_plan
@@ -487,6 +487,75 @@ class PipelineTests(unittest.TestCase):
         counts = detect_and_trade(ctx2, row2, bars_com_pular)
         self.assertEqual(counts["4h"], 0)                            # nunca roda o detector no tf pulado
         self.assertEqual(counts["4h_fecham"], 0)
+
+    def test_active_tfs_runs_rounds_without_corrupting_a_previous_rounds_stage2(self):
+        """EMENDA 2026-10-19 (secao 14, rodadas por tf -- cega a resultado, primeiro resultado mais cedo, SEM
+        cortar combinacoes): rodada 1 (`active_tfs=("1h",)`) baixa e detecta SO 1h; 5m/4h ficam `fora_da_rodada`
+        (status explicito, 0 chamada de rede, 0 setup). Rodada 2 (`active_tfs=("5m","4h")`), chamada DEPOIS sobre
+        as MESMAS janelas (mesma ordem sorteada), completa 5m/4h -- e NUNCA toca o `stage2`/setups de 1h que a
+        rodada 1 ja gravou de verdade (nunca sobrescreve dado real de uma rodada anterior com um placeholder)."""
+        windows = plan().windows("discovery")
+        lo = windows[0][0]
+        pool = f"P_pump_{lo}_0"
+        ctx = self.ctx(self.tmp, {pool}, per_window=1)
+
+        counts1 = run_period(ctx, "discovery", target_min_setups=1, max_windows=1, stop_tfs=("1h",), active_tfs=("1h",))
+        self.assertGreater(counts1["setups_primarios"].get("1h", 0), 0)
+        self.assertNotIn("5m", counts1["setups_primarios"])
+        self.assertNotIn("4h", counts1["setups_primarios"])
+        stage2_1h_apos_rodada1 = ctx.store.stage2(pool, "1h")
+        self.assertEqual(stage2_1h_apos_rodada1[0], "ok")
+        self.assertEqual(ctx.store.stage2(pool, "5m")[0], "fora_da_rodada")
+        self.assertEqual(ctx.store.stage2(pool, "4h")[0], "fora_da_rodada")
+        self.assertEqual(ctx.store.setups("discovery", "5m", primary_only=False), [])
+        self.assertEqual(ctx.store.setups("discovery", "4h", primary_only=False), [])
+        calls_apos_rodada1 = ctx.ohlcv.calls
+
+        counts2 = run_period(ctx, "discovery", target_min_setups=1, max_windows=1, stop_tfs=("5m", "4h"), active_tfs=("5m", "4h"))
+        self.assertGreater(counts2["setups_primarios"].get("5m", 0), 0)
+        self.assertGreater(counts2["setups_primarios"].get("4h", 0), 0)
+        self.assertGreater(ctx.ohlcv.calls, calls_apos_rodada1)             # 5m/4h de verdade custaram chamada nova
+        self.assertEqual(ctx.store.stage2(pool, "1h"), stage2_1h_apos_rodada1)   # rodada 2 NUNCA tocou o 1h da rodada 1
+        self.assertEqual(ctx.store.stage2(pool, "5m")[0], "ok")
+        self.assertEqual(ctx.store.stage2(pool, "4h")[0], "ok")
+        self.assertEqual(ctx.store.counts("discovery")["setups_primarios"]["1h"], counts1["setups_primarios"]["1h"])
+
+    def test_choose_variant_for_tfs_restricts_the_comparison_universe_per_round(self):
+        """EMENDA 2026-10-19 (secao 14): a escolha da rodada 1 (1h) nunca compete com a da rodada 2 (5m/4h) --
+        cada rodada so ve as proprias combinacoes, mesmo que uma de fora tivesse EV maior."""
+        table = {
+            "1h/A/extremos/2-7": {"n": 40, "ev_liq_pct": 2.0},
+            "5m/A/extremos/2-7": {"n": 40, "ev_liq_pct": 9.0},   # EV bem maior, mas de OUTRA rodada
+            "4h/B/fechamentos/1-10": {"n": 35, "ev_liq_pct": 3.0},
+        }
+        pick1, _ = choose_variant_for_tfs(table, ("1h",))
+        self.assertEqual(pick1, "1h/A/extremos/2-7")
+        pick2, _ = choose_variant_for_tfs(table, ("5m", "4h"))
+        self.assertEqual(pick2, "5m/A/extremos/2-7")             # vence dentro do SEU universo (rodada 2)
+
+    def test_funil_reports_only_counts_never_ev_pf_or_trades(self):
+        """EMENDA 2026-10-19 (secao 14): `funil` so conta -- graduacoes, estagio 1, runners, estagio 2 por
+        tf/status, setups primarios por tf/launchpad/hora BRT -- NUNCA ev_liq_pct/pf/trade; funciona com
+        download parcial (so le o que ja esta no checkpoint, zero chamada de rede)."""
+        windows = plan().windows("discovery")
+        lo = windows[0][0]
+        pool = f"P_pump_{lo}_0"
+        ctx = self.ctx(self.tmp, {pool}, per_window=1)
+        run_period(ctx, "discovery", target_min_setups=1, max_windows=1)
+        f = funil(ctx, "discovery")
+        self.assertEqual(f["graduacoes"], 3)                      # 1 pool por launchpad (pumpfun/raydium/meteora)
+        self.assertEqual(f["runners"], 1)                         # so o pumpfun e runner neste teste
+        self.assertIn("ok", f["estagio2_por_tf_status"]["1h"])
+        self.assertGreater(f["setups_primarios_por_tf"].get("1h", 0), 0)
+        self.assertEqual(set(f["setups_primarios_por_launchpad"]), {"pumpfun"})   # unico launchpad com runner
+        self.assertTrue(f["setups_primarios_por_hora_brt"])
+        calls_antes_do_funil = ctx.ohlcv.calls
+        funil(ctx, "discovery")
+        self.assertEqual(ctx.ohlcv.calls, calls_antes_do_funil)    # 2a chamada do funil tambem nao gasta rede
+        self.assertEqual(set(f) - {"periodo"}, {
+            "graduacoes", "graduacoes_por_launchpad", "enumeracao_nao_resolvida", "estagio1_por_status", "runners",
+            "runners_sem_criacao", "estagio2_por_tf_status", "setups_primarios_por_tf", "setups_primarios_por_launchpad",
+            "setups_primarios_por_hora_brt", "parada"})
 
     def test_count_based_stop_resume_metrics_and_baseline(self):
         windows = plan().windows("discovery")

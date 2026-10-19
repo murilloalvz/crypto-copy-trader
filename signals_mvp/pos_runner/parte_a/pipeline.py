@@ -198,7 +198,15 @@ def load_bars(ctx: Context, row: Any, tf: str, stats: Optional[dict] = None) -> 
     return _mc_bars(ctx, row, tf, series_end(ctx, row, tf), st[4], usd, stats)
 
 
-def stage2_bars(ctx: Context, row: Any, skip_tfs: frozenset[str] = frozenset()) -> dict[str, list[Bar]]:
+# status "placeholder" (sinteticos, escritos so por `stage2_bars` abaixo) vs "real" (os que vem de um fetch de
+# verdade): nunca sobrescrever um status REAL com um placeholder -- e assim que uma rodada futura (EMENDA
+# 2026-10-19, secao 14) pode revisitar a MESMA janela para completar um tf sem arriscar apagar o que outra
+# rodada ja calculou de verdade ali.
+PLACEHOLDER_STAGE2_STATUSES = frozenset({"meta_atingida", "fora_da_rodada"})
+
+
+def stage2_bars(ctx: Context, row: Any, skip_tfs: frozenset[str] = frozenset(),
+                fora_rodada: frozenset[str] = frozenset()) -> dict[str, list[Bar]]:
     """5m/1h/4h de graduacao ate graduacao + horizonte + saida; o 5m e conferido contra o 1h (buracos rebaixados).
 
     EMENDA 2026-10-17 (cega a resultado, operacional -- minimizar tempo de download, NUNCA o limiar de parada por
@@ -208,12 +216,25 @@ def stage2_bars(ctx: Context, row: Any, skip_tfs: frozenset[str] = frozenset()) 
     mesmo jeito, so a PROXIMA janela ve a contagem atualizada; sem isso, pools dentro da MESMA janela ja
     contariam diferente so por ordem de processamento, o que seria mudar resultado, nao so poupar rede). A regra
     de parada oficial continua sem mudar: `min(per_tf) >= target_min_setups` sobre `stop_tfs`. `prefetch_period`
-    nunca passa `skip_tfs` (baixa tudo, cronologico, sem saber ainda a contagem da ordem sorteada)."""
+    nunca passa `skip_tfs` (baixa tudo, cronologico, sem saber ainda a contagem da ordem sorteada).
+
+    EMENDA 2026-10-19 (secao 14, rodadas por tf -- cega a resultado): `fora_rodada` (sempre um subconjunto de
+    `skip_tfs`) marca um tf que esta FORA do escopo da rodada ATUAL (nao "meta ja atingida") -- uma rodada
+    FUTURA volta a esta MESMA janela para completa-lo (ex.: rodada 1 so 1h; rodada 2, em seguida, 5m e 4h nas
+    MESMAS janelas que a rodada 1 ja andou). Por isso, antes de escrever qualquer placeholder, confere-se o
+    status JA gravado: se ja for um status REAL (nao um placeholder desta funcao), o tf fica de fora de `out` e
+    NUNCA e tocado de novo -- nunca sobrescreve dado real de uma rodada anterior."""
     out: dict[str, list[Bar]] = {}
-    skip = {tf: tf in skip_tfs for tf in TFS}
-    for tf in (tf_ for tf_ in TFS if skip[tf_]):
-        ctx.store.save_stage2(row["pool"], tf, "meta_atingida", 0, 0, {"motivo": "setups_primarios[tf] >= meta"})
-        out[tf] = []
+    skip: dict[str, bool] = {}
+    for tf in TFS:
+        existing = ctx.store.stage2(row["pool"], tf)
+        already_real = existing is not None and existing[0] not in PLACEHOLDER_STAGE2_STATUSES
+        skip[tf] = (tf in skip_tfs) or already_real
+        if tf in skip_tfs and not already_real:
+            status = "fora_da_rodada" if tf in fora_rodada else "meta_atingida"
+            motivo = "fora do escopo da rodada atual (EMENDA 2026-10-19 secao 14)" if tf in fora_rodada else "setups_primarios[tf] >= meta"
+            ctx.store.save_stage2(row["pool"], tf, status, 0, 0, {"motivo": motivo})
+            out[tf] = []
     h1_stats: dict = {}
     h1_raw: list[Bar] = []
     if not skip["1h"] or not skip["5m"]:
@@ -389,24 +410,34 @@ def prefetch_period(ctx: Context, period: str, max_windows: Optional[int] = None
 
 
 def run_period(ctx: Context, period: str, target_min_setups: int, max_windows: Optional[int] = None,
-               progress: Optional[Callable[[dict], None]] = None, stop_tfs: tuple[str, ...] = TFS) -> dict[str, Any]:
+               progress: Optional[Callable[[dict], None]] = None, stop_tfs: tuple[str, ...] = TFS,
+               active_tfs: tuple[str, ...] = TFS) -> dict[str, Any]:
     """Processa janelas na ordem do sorteio ate o MENOR numero de setups primarios entre os tfs de `stop_tfs`
-    chegar a `target_min_setups` (ou acabarem as janelas). A regra so olha contagem."""
+    chegar a `target_min_setups` (ou acabarem as janelas). A regra so olha contagem.
+
+    EMENDA 2026-10-19 (secao 14, rodadas por tf -- cega a resultado, ANTES de qualquer calculo de trade; objetivo:
+    primeiro resultado concreto mais cedo, SEM cortar nenhuma das 24 combinacoes): `active_tfs` restringe quais
+    tfs REAIS esta chamada baixa/detecta (default: os 3, igual a antes). Os demais ficam `fora_da_rodada` -- uma
+    chamada FUTURA com outro `active_tfs` completa-los, revisitando as MESMAS janelas sorteadas desde o inicio
+    (nunca uma ordem nova). `stop_tfs` continua decidindo SO a parada, independente de `active_tfs` (ex.: rodada
+    1 = active_tfs=("1h",), stop_tfs=("1h",), 8 combinacoes; rodada 2, em seguida, OBRIGATORIA e pre-registrada =
+    active_tfs=("5m","4h"), stop_tfs=("5m","4h"), 16 combinacoes)."""
     windows = ctx.plan.windows(period)
     limit = len(windows) if max_windows is None else min(max_windows, len(windows))
+    fora_rodada = frozenset(tf for tf in TFS if tf not in active_tfs)
     for k in range(limit):
         # skip_tfs e decidido UMA VEZ por janela, com a contagem de ANTES dela comecar -- nunca no meio (EMENDA
         # 2026-10-17): assim toda janela e processada do mesmo jeito para todos os seus pools, so a PROXIMA
         # janela ve a contagem atualizada. Poupa rede sem mudar quais pools contam dentro de uma mesma janela.
         counts_before = ctx.store.counts(period)["setups_primarios"]
-        skip_tfs = frozenset(tf for tf in TFS if counts_before.get(tf, 0) >= target_min_setups)
+        skip_tfs = fora_rodada | frozenset(tf for tf in TFS if counts_before.get(tf, 0) >= target_min_setups)
         enumerate_windows(ctx, period, [k])
         for row in [r for r in ctx.store.graduations(period, k) if r["ord"] == k]:
             if row["status"] != "ok":
                 continue
             status, runner = stage1(ctx, row)
             if status == "ok" and runner:
-                bars = stage2_bars(ctx, row, skip_tfs=skip_tfs)
+                bars = stage2_bars(ctx, row, skip_tfs=skip_tfs, fora_rodada=fora_rodada)
                 detect_and_trade(ctx, row, bars)
         counts = ctx.store.counts(period)
         per_tf = [counts["setups_primarios"].get(tf, 0) for tf in stop_tfs]
