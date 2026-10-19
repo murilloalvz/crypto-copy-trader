@@ -1,0 +1,6 @@
+# Segredos e estado de execucao nunca vao para o git.
+.env
+dados/
+logs/
+__pycache__/
+*.py[cod]

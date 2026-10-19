@@ -1,0 +1,29 @@
+{
+ "data": [
+  {
+   "attributes": {
+    "coingecko_asset_platform_id": "ethereum",
+    "name": "Ethereum"
+   },
+   "id": "eth",
+   "type": "network"
+  },
+  {
+   "attributes": {
+    "coingecko_asset_platform_id": "binance-smart-chain",
+    "name": "BNB Chain"
+   },
+   "id": "bsc",
+   "type": "network"
+  },
+  {
+   "attributes": {
+    "coingecko_asset_platform_id": "solana",
+    "name": "Solana"
+   },
+   "id": "solana",
+   "type": "network"
+  }
+ ],
+ "links": {}
+}

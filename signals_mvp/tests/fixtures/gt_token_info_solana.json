@@ -1,0 +1,56 @@
+{
+ "data": {
+  "attributes": {
+   "address": "8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX",
+   "banner_image_url": null,
+   "categories": [],
+   "coingecko_coin_id": null,
+   "decimals": 6,
+   "description": null,
+   "developer_address": "5mWK88CiLNazCGbHWbEfC16UdyQECyy6sW2DC6RTeHt9",
+   "developer_holding_percentage": "0.0",
+   "discord_url": null,
+   "farcaster_url": null,
+   "freeze_authority": "no",
+   "gt_category_ids": [],
+   "gt_score": 20.77922077922078,
+   "gt_score_details": {
+    "creation": 0.0,
+    "holders": 31.25,
+    "info": 40.0,
+    "pool": 28.571,
+    "transaction": 0.0
+   },
+   "gt_verified": false,
+   "holders": {
+    "count": null,
+    "distribution_percentage": null,
+    "last_updated": null
+   },
+   "image": {
+    "large": "https://assets.geckoterminal.com/ncbao1zs39d7mtgnyddpwaz7l83x",
+    "small": "https://assets.geckoterminal.com/h70v9p5ssassuzramjk71dcq9of3",
+    "thumb": "https://assets.geckoterminal.com/2v93ot7u0sjq73kywd8l4kqua4uq"
+   },
+   "image_url": "https://assets.geckoterminal.com/ncbao1zs39d7mtgnyddpwaz7l83x",
+   "is_honeypot": "unknown",
+   "launchpad_details": {
+    "completed": false,
+    "completed_at": null,
+    "graduation_percentage": 18.11,
+    "migrated_destination_pool_address": null
+   },
+   "mint_authority": "no",
+   "name": "BurnCoin",
+   "symbol": "BURN",
+   "telegram_handle": null,
+   "twitter_handle": null,
+   "websites": [
+    "https://samm.live/snowball/8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX"
+   ],
+   "zora_url": null
+  },
+  "id": "solana_8qX8SWNaHAjAcDxypPAuvvadw3GW4myQKNJoEK3AEnPX",
+  "type": "token"
+ }
+}

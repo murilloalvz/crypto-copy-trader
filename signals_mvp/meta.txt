@@ -1,0 +1,21 @@
+# meta.txt - palavras-chave do META DO DIA (voce edita; o bot recarrega sozinho).
+#
+# Formato (uma linha por grupo):
+#     ROTULO: palavra1, palavra2, palavra3
+# Linha sem ":" vira um grupo com o proprio nome da palavra.
+# Linhas que comecam com # sao comentario. Maiuscula/minuscula e acento nao importam.
+#
+# O casamento e feito no NOME, no TICKER e na DESCRICAO do token. Palavra curta
+# (menos de 4 letras) so casa como palavra inteira; palavra maior tambem casa
+# dentro de outra ("agent" casa "AIAgent").
+#
+# Cada vez que voce muda este arquivo o bot calcula uma nova `versao_meta`
+# (hash do conteudo, sem contar comentarios) e grava em cada linha do sinais.csv.
+#
+# ATENCAO: os grupos abaixo sao so EXEMPLO de formato, nao um meta real.
+# Troque pelo que esta quente hoje.
+
+IA: ai, agent, agents, gpt, llm, neural, bot, robot
+GATO: cat, gato, kitty, meow, nyan
+CACHORRO: dog, doge, shiba, inu, puppy, cachorro
+POLITICA: trump, maga, biden, elon, musk

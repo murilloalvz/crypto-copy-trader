@@ -1,0 +1,595 @@
+{
+ "data": [
+  {
+   "attributes": {
+    "address": "0x2519570da0fcdaec7ee1feafadc958024518ffff",
+    "base_token_price_native_currency": "0.00000000434789691602591",
+    "base_token_price_quote_token": "0.000000004347896916",
+    "base_token_price_usd": "0.00000322022637188543",
+    "fdv_usd": "3220.226372",
+    "market_cap_usd": null,
+    "name": "feetcoin / BNB",
+    "pool_created_at": "2026-10-13T13:35:27Z",
+    "price_change_percentage": {
+     "h1": "0",
+     "h24": "0",
+     "h6": "0",
+     "m15": "0",
+     "m30": "0",
+     "m5": "0"
+    },
+    "quote_token_price_base_token": "229996253.203267",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "740.64",
+    "reserve_in_usd": "2581.3856",
+    "transactions": {
+     "h1": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     },
+     "h24": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     },
+     "h6": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m15": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m30": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     },
+     "m5": {
+      "buyers": 1,
+      "buys": 1,
+      "sellers": 0,
+      "sells": 0
+     }
+    },
+    "volume_usd": {
+     "h1": "0.001199569903",
+     "h24": "0.001199569903",
+     "h6": "0.001199569903",
+     "m15": "0.001199569903",
+     "m30": "0.001199569903",
+     "m5": "0.001199569903"
+    }
+   },
+   "id": "bsc_0x2519570da0fcdaec7ee1feafadc958024518ffff",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "bsc_0x2519570da0fcdaec7ee1feafadc958024518ffff",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "four-meme",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "bsc_0x0000000000000000000000000000000000000000",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0x25d03b29dcef610751a59bd9811bf86465e054ec",
+    "base_token_price_native_currency": "0.000000496606696539146",
+    "base_token_price_quote_token": "0.0000004966066965",
+    "base_token_price_usd": "0.000383375900780014",
+    "fdv_usd": "378442.3126",
+    "market_cap_usd": null,
+    "name": "太阳属马 / WBNB",
+    "pool_created_at": "2026-10-13T13:33:34Z",
+    "price_change_percentage": {
+     "h1": "304.643",
+     "h24": "304.643",
+     "h6": "304.643",
+     "m15": "304.643",
+     "m30": "304.643",
+     "m5": "103.386"
+    },
+    "quote_token_price_base_token": "2013665.95933765",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "741.11",
+    "reserve_in_usd": "76769.174",
+    "transactions": {
+     "h1": {
+      "buyers": 31,
+      "buys": 181,
+      "sellers": 19,
+      "sells": 63
+     },
+     "h24": {
+      "buyers": 31,
+      "buys": 181,
+      "sellers": 19,
+      "sells": 63
+     },
+     "h6": {
+      "buyers": 31,
+      "buys": 181,
+      "sellers": 19,
+      "sells": 63
+     },
+     "m15": {
+      "buyers": 31,
+      "buys": 181,
+      "sellers": 19,
+      "sells": 63
+     },
+     "m30": {
+      "buyers": 31,
+      "buys": 181,
+      "sellers": 19,
+      "sells": 63
+     },
+     "m5": {
+      "buyers": 19,
+      "buys": 78,
+      "sellers": 15,
+      "sells": 43
+     }
+    },
+    "volume_usd": {
+     "h1": "50378.9764577669",
+     "h24": "50378.9764577669",
+     "h6": "50378.9764577669",
+     "m15": "50378.9764577669",
+     "m30": "50378.9764577669",
+     "m5": "22589.2602058781"
+    }
+   },
+   "id": "bsc_0x25d03b29dcef610751a59bd9811bf86465e054ec",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "bsc_0x0ff33f4d07dade0835a33e4b664fb242a701f5e1",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "pancakeswap_v2",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "bsc_0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0x2d3de4f8f4eb03b8ff51af199064748d318eda35",
+    "base_token_price_native_currency": "0.000000365549688944111",
+    "base_token_price_quote_token": "0.0000003655496889",
+    "base_token_price_usd": "0.000263436029901223",
+    "fdv_usd": "26343.60299",
+    "market_cap_usd": null,
+    "name": "HPE / WBNB",
+    "pool_created_at": "2026-10-13T13:34:11Z",
+    "price_change_percentage": {
+     "h1": "41.834",
+     "h24": "41.834",
+     "h6": "41.834",
+     "m15": "41.834",
+     "m30": "41.834",
+     "m5": "21.94"
+    },
+    "quote_token_price_base_token": "2735606.21235514",
+    "quote_token_price_native_currency": "1.0",
+    "quote_token_price_usd": "741.31",
+    "reserve_in_usd": "44839.8404",
+    "transactions": {
+     "h1": {
+      "buyers": 15,
+      "buys": 18,
+      "sellers": 3,
+      "sells": 3
+     },
+     "h24": {
+      "buyers": 15,
+      "buys": 18,
+      "sellers": 3,
+      "sells": 3
+     },
+     "h6": {
+      "buyers": 15,
+      "buys": 18,
+      "sellers": 3,
+      "sells": 3
+     },
+     "m15": {
+      "buyers": 15,
+      "buys": 18,
+      "sellers": 3,
+      "sells": 3
+     },
+     "m30": {
+      "buyers": 15,
+      "buys": 18,
+      "sellers": 3,
+      "sells": 3
+     },
+     "m5": {
+      "buyers": 9,
+      "buys": 9,
+      "sellers": 2,
+      "sells": 2
+     }
+    },
+    "volume_usd": {
+     "h1": "7315.7825556728",
+     "h24": "7315.7825556728",
+     "h6": "7315.7825556728",
+     "m15": "7315.7825556728",
+     "m30": "7315.7825556728",
+     "m5": "4417.7409909972"
+    }
+   },
+   "id": "bsc_0x2d3de4f8f4eb03b8ff51af199064748d318eda35",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "bsc_0x27071edc2e8681c97f6682c60e656d304602b99d",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "pancakeswap_v2",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "bsc_0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0x0ccf09f90154016ef8d683268aaa5442d7f16d1d9d996dbeba52892411808e65",
+    "base_token_price_native_currency": "0.000000665964497542939",
+    "base_token_price_quote_token": "0.0004950462613",
+    "base_token_price_usd": "0.000485175828902787",
+    "fdv_usd": "4888893.11181339",
+    "market_cap_usd": "703814.105954533",
+    "name": "POP / USDT 0.194%",
+    "pool_created_at": "2026-10-13T13:34:18Z",
+    "price_change_percentage": {
+     "h1": "0.533",
+     "h24": "0.533",
+     "h6": "0.533",
+     "m15": "0.533",
+     "m30": "0.533",
+     "m5": "0.391"
+    },
+    "quote_token_price_base_token": "2020.0132355611",
+    "quote_token_price_native_currency": "0.00134525709945055",
+    "quote_token_price_usd": "0.999400494602143",
+    "reserve_in_usd": "1715.5396",
+    "transactions": {
+     "h1": {
+      "buyers": 9,
+      "buys": 18,
+      "sellers": 13,
+      "sells": 15
+     },
+     "h24": {
+      "buyers": 9,
+      "buys": 18,
+      "sellers": 13,
+      "sells": 15
+     },
+     "h6": {
+      "buyers": 9,
+      "buys": 18,
+      "sellers": 13,
+      "sells": 15
+     },
+     "m15": {
+      "buyers": 9,
+      "buys": 18,
+      "sellers": 13,
+      "sells": 15
+     },
+     "m30": {
+      "buyers": 9,
+      "buys": 18,
+      "sellers": 13,
+      "sells": 15
+     },
+     "m5": {
+      "buyers": 3,
+      "buys": 9,
+      "sellers": 8,
+      "sells": 10
+     }
+    },
+    "volume_usd": {
+     "h1": "9643.396006136",
+     "h24": "9643.396006136",
+     "h6": "9643.396006136",
+     "m15": "9643.396006136",
+     "m30": "9643.396006136",
+     "m5": "5778.7806370715"
+    }
+   },
+   "id": "bsc_0x0ccf09f90154016ef8d683268aaa5442d7f16d1d9d996dbeba52892411808e65",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "bsc_0xa3cfb853339b77f385b994799b015cb04b208fe6",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "uniswap-v4-bsc",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "bsc_0x55d398326f99059ff775485246999027b3197955",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  },
+  {
+   "attributes": {
+    "address": "0x5f98d79eece643bf541bb71b2043b5485df8ffff",
+    "base_token_price_native_currency": "0.00000000432739550999004",
+    "base_token_price_quote_token": "0.000000623029703",
+    "base_token_price_usd": "0.00000320923978416371",
+    "fdv_usd": "3209.239784",
+    "market_cap_usd": null,
+    "name": "CZ / B13B",
+    "pool_created_at": "2026-10-13T13:31:57Z",
+    "price_change_percentage": {
+     "h1": "-22.168",
+     "h24": "-22.168",
+     "h6": "-22.168",
+     "m15": "-22.168",
+     "m30": "-22.168",
+     "m5": "0"
+    },
+    "quote_token_price_base_token": "1605059.91151095",
+    "quote_token_price_native_currency": "0.00694572905433749",
+    "quote_token_price_usd": "5.15102212398723",
+    "reserve_in_usd": "2569.734",
+    "transactions": {
+     "h1": {
+      "buyers": 4,
+      "buys": 5,
+      "sellers": 4,
+      "sells": 6
+     },
+     "h24": {
+      "buyers": 4,
+      "buys": 5,
+      "sellers": 4,
+      "sells": 6
+     },
+     "h6": {
+      "buyers": 4,
+      "buys": 5,
+      "sellers": 4,
+      "sells": 6
+     },
+     "m15": {
+      "buyers": 4,
+      "buys": 5,
+      "sellers": 4,
+      "sells": 6
+     },
+     "m30": {
+      "buyers": 4,
+      "buys": 5,
+      "sellers": 4,
+      "sells": 6
+     },
+     "m5": {
+      "buyers": 0,
+      "buys": 0,
+      "sellers": 0,
+      "sells": 0
+     }
+    },
+    "volume_usd": {
+     "h1": "1743.1019495875",
+     "h24": "1743.1019495875",
+     "h6": "1743.1019495875",
+     "m15": "1743.1019495875",
+     "m30": "1743.1019495875",
+     "m5": "0.0"
+    }
+   },
+   "id": "bsc_0x5f98d79eece643bf541bb71b2043b5485df8ffff",
+   "relationships": {
+    "base_token": {
+     "data": {
+      "id": "bsc_0x5f98d79eece643bf541bb71b2043b5485df8ffff",
+      "type": "token"
+     }
+    },
+    "dex": {
+     "data": {
+      "id": "four-meme",
+      "type": "dex"
+     }
+    },
+    "quote_token": {
+     "data": {
+      "id": "bsc_0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+      "type": "token"
+     }
+    }
+   },
+   "type": "pool"
+  }
+ ],
+ "included": [
+  {
+   "attributes": {
+    "address": "0x2519570da0fcdaec7ee1feafadc958024518ffff",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": null,
+    "name": "feetcoin",
+    "symbol": "feetcoin"
+   },
+   "id": "bsc_0x2519570da0fcdaec7ee1feafadc958024518ffff",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": null,
+    "name": "BNB",
+    "symbol": "BNB"
+   },
+   "id": "bsc_0x0000000000000000000000000000000000000000",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Four.meme"
+   },
+   "id": "four-meme",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+    "coingecko_coin_id": "wbnb",
+    "decimals": 18,
+    "image_url": "https://coin-images.coingecko.com/coins/images/12591/large/binance-coin-logo.png?1696512401",
+    "name": "Wrapped BNB",
+    "symbol": "WBNB"
+   },
+   "id": "bsc_0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Pancakeswap V2 (BSC)"
+   },
+   "id": "pancakeswap_v2",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "0xa3cfb853339b77f385b994799b015cb04b208fe6",
+    "coingecko_coin_id": "pop-2",
+    "decimals": 18,
+    "image_url": "https://coin-images.coingecko.com/coins/images/69001/large/Logo-200x200.png?1757229720",
+    "name": "Zypher Token",
+    "symbol": "POP"
+   },
+   "id": "bsc_0xa3cfb853339b77f385b994799b015cb04b208fe6",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x55d398326f99059ff775485246999027b3197955",
+    "coingecko_coin_id": "binance-bridged-usdt-bnb-smart-chain",
+    "decimals": 18,
+    "image_url": "https://coin-images.coingecko.com/coins/images/35021/large/USDT.png?1707233575",
+    "name": "Tether USD",
+    "symbol": "USDT"
+   },
+   "id": "bsc_0x55d398326f99059ff775485246999027b3197955",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "name": "Uniswap V4 (BSC)"
+   },
+   "id": "uniswap-v4-bsc",
+   "type": "dex"
+  },
+  {
+   "attributes": {
+    "address": "0x27071edc2e8681c97f6682c60e656d304602b99d",
+    "coingecko_coin_id": null,
+    "decimals": 8,
+    "image_url": null,
+    "name": "Hewlett Packard Enterprise Co (Derivatives)",
+    "symbol": "HPE"
+   },
+   "id": "bsc_0x27071edc2e8681c97f6682c60e656d304602b99d",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x0ff33f4d07dade0835a33e4b664fb242a701f5e1",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": null,
+    "name": "太阳属马",
+    "symbol": "太阳属马"
+   },
+   "id": "bsc_0x0ff33f4d07dade0835a33e4b664fb242a701f5e1",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x5f98d79eece643bf541bb71b2043b5485df8ffff",
+    "coingecko_coin_id": null,
+    "decimals": 18,
+    "image_url": null,
+    "name": "CZCOIN",
+    "symbol": "CZ"
+   },
+   "id": "bsc_0x5f98d79eece643bf541bb71b2043b5485df8ffff",
+   "type": "token"
+  },
+  {
+   "attributes": {
+    "address": "0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+    "coingecko_coin_id": "cea-industries-bstocks-tokenized-stock",
+    "decimals": 18,
+    "image_url": "https://coin-images.coingecko.com/coins/images/102178415/large/CEA_bstock.png?1789526108",
+    "name": "B13B",
+    "symbol": "B13B"
+   },
+   "id": "bsc_0x4902c5ebc598265ed2212b559b042de8a5eeec3f",
+   "type": "token"
+  }
+ ]
+}

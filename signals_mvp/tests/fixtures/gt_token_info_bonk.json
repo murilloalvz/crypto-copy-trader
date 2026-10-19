@@ -1,0 +1,61 @@
+{
+ "data": {
+  "attributes": {
+   "address": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+   "banner_image_url": "https://assets.geckoterminal.com/mtbrza38irdzqv8grql1hhm2zy3f",
+   "categories": [
+    "Bonk Flippers",
+    "Charms Character"
+   ],
+   "coingecko_coin_id": "bonk",
+   "decimals": 5,
+   "description": "Bonk is a dog-themed memecoin on the Solana blockchain, launched on Christmas Day 2022 to revitalize the Solana community following the FTX collapse. Created by",
+   "developer_address": "ERo5RiMfU5GcuWwmikUr6ZpcCGy79nmMrpmTak6DmDQG",
+   "developer_holding_percentage": "0.0",
+   "discord_url": "https://discord.gg/ubqvDDFUhf",
+   "farcaster_url": null,
+   "freeze_authority": "no",
+   "gt_category_ids": [
+    "bonk-flippers",
+    "charms-character"
+   ],
+   "gt_score": 76.1038961038961,
+   "gt_score_details": {
+    "creation": 100.0,
+    "holders": 75.0,
+    "info": 100.0,
+    "pool": 62.857,
+    "transaction": 100.0
+   },
+   "gt_verified": true,
+   "holders": {
+    "count": 1024748,
+    "distribution_percentage": {
+     "11_20": "12.024",
+     "21_40": "12.119",
+     "rest": "37.5552",
+     "top_10": "38.3018"
+    },
+    "last_updated": "2026-10-10T01:28:42Z"
+   },
+   "image": {
+    "large": "https://coin-images.coingecko.com/coins/images/28600/large/bonk.jpg?1696527587",
+    "small": "https://coin-images.coingecko.com/coins/images/28600/small/bonk.jpg?1696527587",
+    "thumb": "https://coin-images.coingecko.com/coins/images/28600/thumb/bonk.jpg?1696527587"
+   },
+   "image_url": "https://coin-images.coingecko.com/coins/images/28600/large/bonk.jpg?1696527587",
+   "is_honeypot": "unknown",
+   "mint_authority": "no",
+   "name": "Bonk",
+   "symbol": "Bonk",
+   "telegram_handle": null,
+   "twitter_handle": "bonk_inu",
+   "websites": [
+    "https://www.bonkcoin.com"
+   ],
+   "zora_url": null
+  },
+  "id": "solana_DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+  "type": "token"
+ }
+}

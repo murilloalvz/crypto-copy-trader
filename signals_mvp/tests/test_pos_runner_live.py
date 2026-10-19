@@ -1,0 +1,892 @@
+"""POS-RUNNER-V0 ao vivo (Parte B), sem rede: descoberta (lista REAL do GT), linhagem (transacoes REAIS de migracao),
+candles congelados, alertas, paper A/B, CSV, reinicio, orcamento e integracao com o engine."""
+
+from __future__ import annotations
+
+import copy
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any, Optional
+
+from ..config import ConfigError, build_config, make_paths
+from ..http import ApiError, CallBudget, RateLimited
+from ..models import ChainCtx
+from ..pos_runner import charts
+from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.live import (
+    LAG_S,
+    VERIFY_MAX_ATTEMPTS,
+    Lineage,
+    LineageVerifier,
+    LiveSettings,
+    PosRunnerLive,
+    verify_lineage,
+)
+from ..pos_runner.solana_rpc import RpcError
+from ..storage import POS_RUNNER_COLUMNS, Storage
+from ..util import iso_utc, parse_iso
+from .fakes import FakeClock, FakeTelegram, load_fixture
+from .helpers import Env, read_csv, shipped_config
+from .test_pos_runner import CREATED, GRAD, H, params, textbook
+
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+SOL = "So11111111111111111111111111111111111111112"
+SUPPLY = 1e9
+CTX = ChainCtx("solana", "solana", "solana", frozenset({SOL, USDC}), frozenset({"meteora-dbc"}))
+LINKS = {"axiom": "https://axiom.trade/meme/{pool}", "gmgn": "https://gmgn.ai/{gmgn_slug}/token/{token}",
+         "dexscreener": "https://dexscreener.com/{dexscreener_slug}/{pool}"}
+TF_OF = {("minute", 5): "5m", ("hour", 1): "1h", ("hour", 4): "4h"}
+
+
+def pools_json(items: list[dict]) -> dict:
+    """Resposta no formato de `networks/solana/.../pools` do GeckoTerminal (so os campos que o parser le)."""
+    data, included = [], {
+        USDC: {"id": f"solana_{USDC}", "type": "token", "attributes": {"address": USDC, "symbol": "USDC", "name": "USD Coin"}},
+        SOL: {"id": f"solana_{SOL}", "type": "token", "attributes": {"address": SOL, "symbol": "SOL", "name": "Wrapped SOL"}},
+    }
+    for it in items:
+        quote = it.get("quote", USDC)
+        data.append({
+            "id": f"solana_{it['pool']}", "type": "pool",
+            "attributes": {"address": it["pool"], "name": f"{it['symbol']} / x", "pool_created_at": iso_utc(it["created"]),
+                           "fdv_usd": str(it["mc"]), "market_cap_usd": None, "reserve_in_usd": "100000"},
+            "relationships": {"base_token": {"data": {"id": f"solana_{it['mint']}", "type": "token"}},
+                              "quote_token": {"data": {"id": f"solana_{quote}", "type": "token"}},
+                              "dex": {"data": {"id": it.get("dex", "pumpswap"), "type": "dex"}}},
+        })
+        included[it["mint"]] = {"id": f"solana_{it['mint']}", "type": "token",
+                                "attributes": {"address": it["mint"], "symbol": it["symbol"], "name": it["symbol"]}}
+    return {"data": data, "included": list(included.values())}
+
+
+class World:
+    """GeckoTerminal de mentira: listas de pools e OHLCV (em USDC por token) que so existem ate o relogio. O candle em
+    andamento volta com valores PARCIAIS diferentes do final: se algum dia for consumido, os candles congelados divergem."""
+
+    class _Limiter:
+        @staticmethod
+        def blocked_for() -> float:
+            return 0.0
+
+    def __init__(self, clock: FakeClock):
+        self.clock = clock
+        self.headers: dict[str, str] = {}
+        self.limiter = self._Limiter()
+        self.series: dict[tuple[str, str], list[Bar]] = {}
+        self.lists: dict[str, dict] = {}
+        self.calls: list[str] = []
+        self.fail: Optional[Exception] = None
+
+    def add_series(self, pool: str, tf: str, mc_bars: list[Bar]) -> None:
+        self.series[(pool, tf)] = [Bar(b.ts, b.open / SUPPLY, b.high / SUPPLY, b.low / SUPPLY, b.close / SUPPLY, b.volume) for b in mc_bars]
+
+    def get_json(self, path: str, params: Any = None, max_wait_s: float = 5.0) -> Any:
+        self.calls.append(path)
+        if self.fail is not None:
+            exc, self.fail = self.fail, None
+            raise exc
+        if "/ohlcv/" in path:
+            pool = path.split("/pools/")[1].split("/")[0]
+            tf = TF_OF[(path.rsplit("/", 1)[1], int(params["aggregate"]))]
+            step, now, before = tf_seconds(tf), self.clock(), int(params["before_timestamp"])
+            rows = []
+            for b in self.series.get((pool, tf), []):
+                if b.ts > before or b.ts > now:
+                    continue
+                if b.ts + step > now:
+                    b = Bar(b.ts, b.open, b.open * 3, b.open * 0.3, b.open * 2, 99_999.0)
+                rows.append([b.ts, b.open, b.high, b.low, b.close, b.volume])
+            rows = rows[-int(params["limit"]):]
+            return {"data": {"attributes": {"ohlcv_list": list(reversed(rows))}}}
+        return self.lists.get(path, {"data": [], "included": []})
+
+
+def ok_lineage(grad_ts: float = GRAD + 60, launchpad: str = "pumpfun"):
+    return lambda rpc, pool, mint, created, lp: Lineage("ok", "", launchpad, grad_ts, USDC, SUPPLY, "SIG", "MigrateV2")
+
+
+def created_at(ts: Optional[float] = CREATED, seen: int = 1234):
+    """Busca da data de criacao (on-chain) de mentira: (blockTime ou None, assinaturas vistas, completo)."""
+    calls: list[tuple[str, str]] = []
+
+    def creation(rpc, mint, signature, max_pages=100):
+        calls.append((mint, signature))
+        return ts, seen, ts is not None
+
+    creation.calls = calls          # type: ignore[attr-defined]
+    return creation
+
+
+class LiveHarness:
+    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pr_live_"))
+        self.paths = make_paths(self.tmp)
+        self.storage = Storage(self.paths)
+        self.clock = FakeClock(start)
+        self.world = World(self.clock)
+        self.tg = FakeTelegram() if telegram else None
+        self.settings = settings or LiveSettings(ligado=True, timeframes=("1h",), max_pools=5, chamadas_por_ciclo=3,
+                                                 descoberta_min=3, fontes=("pumpswap",), grafico=False)
+        self.params = params()
+        self.live = self.new_live()
+        self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage(), creation=created_at())
+
+    def new_live(self, telegram: Any = None) -> PosRunnerLive:
+        return PosRunnerLive(self.settings, self.params, self.storage, self.world, CTX, telegram or self.tg, LINKS, "solana",
+                             self.paths.dados / "pos_runner", clock=self.clock)
+
+    def list_pool(self, pool: str = "POOL1", mint: str = "MINT1", symbol: str = "CAT", mc: float = 1_000_000.0,
+                  created: float = GRAD + 60, dex: str = "pumpswap") -> None:
+        self.world.lists["networks/solana/dexes/pumpswap/pools"] = pools_json(
+            [{"pool": pool, "mint": mint, "symbol": symbol, "mc": mc, "created": created, "dex": dex}])
+
+    def tick(self, budget: int = 10, keep: int = 1, live: Optional[PosRunnerLive] = None) -> dict:
+        return (live or self.live).tick(self.clock(), CallBudget(budget), keep)
+
+    def run_hours(self, hours: int, live: Optional[PosRunnerLive] = None) -> None:
+        for _ in range(hours):
+            self.clock.advance(H)
+            self.tick(live=live)
+
+    def texts(self) -> list[str]:
+        assert self.tg is not None
+        return [t for t, _ in self.tg.sent] + [c for _, c, _, _ in self.tg.photos]
+
+    def close(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def start_tracking(h: LiveHarness) -> None:
+    h.world.add_series("POOL1", "1h", textbook().bars)
+    h.list_pool()
+    h.tick()                       # descoberta -> pendente
+    h.verifier.step()              # linhagem -> verificado
+    h.tick()                       # vaga -> ativo + carga inicial do 1h
+
+
+class DiscoveryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_real_trending_list_keeps_only_young_graduation_pools_above_the_runner_floor(self) -> None:
+        from ..geckoterminal import parse_pools_response
+        now = parse_iso("2026-10-15T23:44:00Z")          # hora da captura da resposta real
+        snaps = parse_pools_response(load_fixture("gt_trending_solana.json"), CTX, now)
+        added = self.h.live.offer(snaps, now, fonte="trending")
+        rows = self.h.storage.pr_pools("pendente")
+        self.assertEqual(added, len(rows))
+        self.assertGreater(len(rows), 3)
+        expected = {s.pool for s in snaps if s.dex in ("pumpswap", "raydium", "meteora-damm-v2") and not s.both_reference
+                    and 300_000 <= (s.mcap_usd or s.fdv_usd or 0) <= 50_000_000 and now - s.created_ts <= 14 * 86400}
+        mints = {}
+        for s in snaps:
+            if s.pool in expected:
+                mints.setdefault(s.token, s.pool)
+        self.assertEqual({r["pool"] for r in rows}, set(mints.values()))     # um pool por token
+        for r in rows:
+            info = json.loads(r["info"])
+            self.assertIn(r["dex"], ("pumpswap", "raydium", "meteora-damm-v2"))
+            self.assertIsNotNone(info["created_ts"])
+            self.assertIn(info["side"], ("base", "quote"))
+        self.assertEqual(self.h.live.offer(snaps, now), 0)                  # ja vistos: nao duplica
+
+    def test_disabled_does_nothing(self) -> None:
+        self.h.live.settings = LiveSettings(ligado=False)
+        self.h.list_pool()
+        self.assertEqual(self.h.live.wanted(self.h.clock()), 0)
+        self.assertEqual(self.h.tick()["chamadas"], 0)
+        self.assertEqual(self.h.world.calls, [])
+
+
+class LineageTest(unittest.TestCase):
+    """Transacoes REAIS de migracao (getTransaction jsonParsed) dos exemplos SOLCAT, ZILLIONS e FLAME, conferidas pelo
+    mesmo criterio da enumeracao da Parte A (conta-chave do launchpad numa janela em volta da criacao)."""
+
+    CASES = {
+        "pumpfun": ("rpc_tx_migrate_pumpfun.json", "9Hr6NXw5WSffxNQnqxwZyhRw81uz3PpB7RF9J3i9nMt1", "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"),
+        "raydium_launchlab": ("rpc_tx_migrate_launchlab.json", "82BhSZXxSXBKsAmyHJ5NxkCd6JrSUBrmPsxYgu7Byvns", "8gMWXHfSwBRSLc2wKtLv24JYboCAsKaEqfC5cXLeZJXL"),
+        "meteora_dbc": ("rpc_tx_migrate_dbc.json", "23B6d3FvDu2eiZxyBLgWdm2W2vn1bdRwJTR6NCfQpxGE", "9oXA1VWKNiYDYa6VKHBFFBBvZdvuhw1b2eD5Aka7YrVt"),
+    }
+
+    class Rpc:
+        """Na janela, a conta-chave teve: uma transacao com falha, uma de outro pool (longe da criacao) e a migracao."""
+
+        def __init__(self, tx: dict, other: Optional[dict] = None, fail: Optional[Exception] = None):
+            self.tx = tx
+            self.other = other
+            self.fail = fail
+            self.accounts: list[str] = []
+            self.opened: list[str] = []
+
+        def signatures(self, address, before=None, until=None, limit=1000):
+            if self.fail:
+                raise self.fail
+            self.accounts.append(address)
+            bt = self.tx["blockTime"]
+            return [{"signature": "FALHOU", "blockTime": bt + 5, "err": {"x": 1}},
+                    {"signature": "OUTRA", "blockTime": bt + 400, "err": None},
+                    {"signature": "MIGRACAO", "blockTime": bt, "err": None}]
+
+        def call(self, method, params):
+            assert method == "getTransaction"
+            self.opened.append(params[0])
+            return self.tx if params[0] == "MIGRACAO" else self.other
+
+        def token_supply(self, mint):
+            return 975_188_456.39
+
+    @staticmethod
+    def anchor(rpc, t):
+        return "ANCORA", 1, t
+
+    def tx(self, name: str) -> dict:
+        return load_fixture(name)["result"]
+
+    def test_the_three_real_migrations_are_accepted_opening_the_closest_transaction_first(self) -> None:
+        from ..pos_runner.enumerate import LAUNCHPADS
+        for launchpad, (fixture, pool, mint) in self.CASES.items():
+            tx = self.tx(fixture)
+            rpc = self.Rpc(tx, other=tx)
+            res = verify_lineage(rpc, pool, mint, tx["blockTime"] + 30, launchpad, anchor_fn=self.anchor)
+            self.assertEqual(res.status, "ok", (launchpad, res.motivo))
+            self.assertEqual(res.launchpad, launchpad)
+            self.assertEqual(res.grad_ts, float(tx["blockTime"]))
+            self.assertEqual(rpc.accounts, list(LAUNCHPADS[launchpad].accounts))   # so a conta-chave, nunca o pool
+            self.assertEqual(rpc.opened, ["MIGRACAO"])                              # a mais proxima da criacao, e so ela
+
+    def test_other_pool_other_token_non_migration_and_wrong_launchpad_are_rejected(self) -> None:
+        fixture, pool, mint = self.CASES["pumpfun"]
+        tx = self.tx(fixture)
+        res = verify_lineage(self.Rpc(tx), "OUTROPOOL", mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor)
+        self.assertEqual(res.status, "rejeitado")
+        self.assertIn("nenhuma migracao pumpfun criou este pool", res.motivo)
+        self.assertIn("outro token", verify_lineage(self.Rpc(tx), pool, "OUTROMINT", tx["blockTime"], "pumpfun",
+                                                    anchor_fn=self.anchor).motivo)
+        swap = copy.deepcopy(tx)
+        swap["meta"]["logMessages"] = [m.replace("Instruction: MigrateV2", "Instruction: Buy") for m in swap["meta"]["logMessages"]]
+        self.assertEqual(verify_lineage(self.Rpc(swap), pool, mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor).status,
+                         "rejeitado")
+        # pool do PumpSwap conferido como se fosse da DBC: nenhuma migracao da DBC criou este pool
+        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "meteora_dbc", anchor_fn=self.anchor).status,
+                         "rejeitado")
+        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], None).status, "rejeitado")
+
+    def test_rpc_failure_is_a_retry_not_a_rejection(self) -> None:
+        fixture, pool, mint = self.CASES["pumpfun"]
+        tx = self.tx(fixture)
+        res = verify_lineage(self.Rpc(tx, fail=RpcError("exhausted", "getSignaturesForAddress: 4 tentativas sem resposta")),
+                             pool, mint, tx["blockTime"], "pumpfun", anchor_fn=self.anchor)
+        self.assertEqual(res.status, "erro")
+
+        def broken(rpc, t):
+            raise RpcError("exhausted", "getBlock: 4 tentativas sem resposta")
+
+        self.assertEqual(verify_lineage(self.Rpc(tx), pool, mint, tx["blockTime"], "pumpfun", anchor_fn=broken).status, "erro")
+
+    def test_verifier_status_flow_backoff_and_dex_mismatch(self) -> None:
+        h = LiveHarness()
+        try:
+            h.list_pool()
+            h.tick()
+            outcomes = iter([Lineage("erro", "rpc fora")] * VERIFY_MAX_ATTEMPTS)
+            h.verifier.verify = lambda *a: next(outcomes)
+            self.assertTrue(h.verifier.step())
+            self.assertFalse(h.verifier.step())                 # espera crescente antes de tentar de novo
+            for _ in range(VERIFY_MAX_ATTEMPTS - 1):
+                h.clock.advance(3600 * 24)
+                self.assertTrue(h.verifier.step())
+            self.assertEqual(h.storage.pr_pool("POOL1")["status"], "rejeitado")
+            h.list_pool(pool="POOL2", mint="MINT2", dex="meteora-damm-v2")
+            h.live.next_discovery = 0
+            h.tick()
+            h.verifier.verify = ok_lineage(launchpad="pumpfun")   # DEX da DBC, linhagem do pump.fun: nao bate
+            h.verifier.step()
+            row = h.storage.pr_pool("POOL2")
+            self.assertEqual(row["status"], "rejeitado")
+            self.assertIn("nao e a de graduacao", row["motivo"])
+        finally:
+            h.close()
+
+    def test_parte_a_enumeration_picks_the_right_instruction_when_the_tx_bundles_more_than_one(self) -> None:
+        """Achado real em producao (2026-10-16): uma tx pode chamar o MESMO programa do launchpad em mais de
+        uma instrucao de NIVEL 1 (ex.: comprar e migrar no mesmo envio, bot sniper) -- `_launchpad_instruction`
+        pegava "a 1a instrucao que casa o programId", nao necessariamente a de migracao, e lia mint/pool da
+        instrucao ERRADA (endereco nativo/de sistema em vez de token/pool real). Virou um "pool" lixo
+        (So1111...1112, o mint nativo do SOL) que acabou dentro do selo do holdout -- achado pela trava de
+        vazamento holdout/discovery, nunca por conferencia direta. Fixtures reais (getTransaction das 2
+        transacoes que causaram o achado): `rpc_tx_migrate_dbc_bundled.json` (Init+Swap+MigrationDammV2) e
+        `rpc_tx_migrate_pumpfun_bundled_buy.json` (BuyV2+MigrateV2). Agora casa pelo NOME logado
+        (`lineage.top_level_instruction_names`), nunca so pelo programId."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        native = {"So11111111111111111111111111111111111111112", "11111111111111111111111111111111",
+                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"}
+
+        tx = load_fixture("rpc_tx_migrate_dbc_bundled.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["meteora_dbc"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertNotIn(g.pool, native)
+        self.assertNotIn(g.mint, native)
+        self.assertNotEqual(g.pool, g.mint)
+
+        tx = load_fixture("rpc_tx_migrate_pumpfun_bundled_buy.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertTrue(g.mint.endswith("pump"))      # mint real do pump.fun (sufixo vanity), nunca SOL/Token-2022
+        self.assertNotIn(g.pool, native)
+        self.assertNotIn(g.quote_mint, native - {"So11111111111111111111111111111111111111112"})  # SOL e cotacao normal aqui
+
+    def test_single_instruction_classic_examples_are_unaffected_by_the_name_matching_fix(self) -> None:
+        """Regressao: os 3 exemplos classicos (1 unica instrucao de nivel 1 do launchpad por tx) continuam
+        resolvendo exatamente o mesmo pool/mint de antes -- o fix so muda o comportamento quando ha MAIS de
+        uma instrucao de nivel 1 do mesmo programa."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        for launchpad, (fixture, pool, mint) in self.CASES.items():
+            tx = self.tx(fixture)
+            g = resolve_graduation(tx, LAUNCHPADS[launchpad], "sig")
+            self.assertEqual(g.status, "ok", launchpad)
+            self.assertEqual(g.pool, pool, launchpad)
+            self.assertEqual(g.mint, mint, launchpad)
+
+    def test_pumpfun_pool_index_is_found_dynamically_not_a_fixed_position(self) -> None:
+        """Achado real em producao (2026-10-17, validacao positiva pos-fix): a instrucao LEGADA 'Migrate' (sem
+        V2) tem o pool numa posicao DIFERENTE de 'MigrateV2' (indice 9 com 27/25 contas, vs. indice 10 com 29
+        contas de MigrateV2) -- o indice fixo (2,3,10) lia um endereco que nem existe on-chain. Corrigido: pool
+        do pump.fun vem SEMPRE do indice logo depois do programa da PumpSwap (`pool_after_program`), nunca de
+        uma posicao fixa. Fixture real: `rpc_tx_migrate_pumpfun_legacy_migrate.json`
+        (pool_real=CPFDtcFmxaYEygwqgbX2WU2zAWei6vD2DwpzPhQKEbdw, confirmado on-chain, owner=PumpSwap; a leitura
+        antiga pelo indice 10 dava PraA5riypBLc3uXjKh5WRNqXBiAwF9Tk5ot2AQ29CCh, que nao existe)."""
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        tx = load_fixture("rpc_tx_migrate_pumpfun_legacy_migrate.json")["result"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "ok")
+        self.assertEqual(g.pool, "CPFDtcFmxaYEygwqgbX2WU2zAWei6vD2DwpzPhQKEbdw")
+        self.assertEqual(g.mint, "4cMBUtWzE9K6v2TwxgSXuWewu4j2ohoFXkhJTb1Ppump")
+        self.assertNotEqual(g.pool, "PraA5riypBLc3uXjKh5WRNqXBiAwF9Tk5ot2AQ29CCh")   # leitura antiga (indice fixo), nao existe
+
+    def test_mint_not_in_token_balances_is_rejected_falhar_fechado(self) -> None:
+        """EMENDA 2026-10-16/17 ("falhar fechado"): o mint extraido precisa aparecer em postTokenBalances/
+        preTokenBalances da propria tx (saldo de token realmente movido) -- checagem independente do layout de
+        contas, sem chamada de RPC nova. Um mint que nunca teve saldo tocado na tx (ex.: leitura de conta
+        errada) vira `nao_resolvida`, nunca uma graduacao aceita no palpite."""
+        import copy
+
+        from ..pos_runner.enumerate import LAUNCHPADS, resolve_graduation
+        from .fakes import load_fixture
+
+        tx = copy.deepcopy(load_fixture("rpc_tx_migrate_pumpfun.json")["result"])
+        tx["meta"]["postTokenBalances"] = [b for b in tx["meta"]["postTokenBalances"]
+                                           if b.get("mint") != "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"]
+        tx["meta"]["preTokenBalances"] = [b for b in tx["meta"].get("preTokenBalances", [])
+                                          if b.get("mint") != "9U1f18idDeySFnYrurxqT1f5n5nE4g4Uk5LLzP69bh1"]
+        g = resolve_graduation(tx, LAUNCHPADS["pumpfun"], "sig")
+        self.assertEqual(g.status, "nao_resolvida")
+        self.assertIsNone(g.mint)
+        self.assertIsNone(g.pool)
+
+
+class LiveFlowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_watch_entry_paper_exit_result_and_csv(self) -> None:
+        h = self.h
+        start_tracking(h)
+        row = h.storage.pr_pool("POOL1")
+        self.assertEqual(row["status"], "ativo")
+        self.assertAlmostEqual(row["l_bc"], textbook().bars[0].open)
+        h.run_hours(15)                                      # candle 22: zona com teste, mas ainda sem 12 candles
+        self.assertEqual([t for t in h.texts() if t.startswith("👀")], [])
+        h.run_hours(1)                                       # candle 23: zona madura (12 candles desde o fundo + 1 teste)
+        watch = [t for t in h.texts() if t.startswith("👀")]
+        self.assertEqual(len(watch), 1, h.texts())
+        self.assertIn("Zona S 150k – R 260k", watch[0])            # R inclui o 1o repique
+        self.assertIn("morre se fechar abaixo de 152k", watch[0])  # minima do teste (155k) - 2%
+        self.assertIn("1 teste(s) de suporte", watch[0])
+        self.assertIn("idade 4,0 d desde a criação", watch[0])
+        self.assertEqual([t for t in h.texts() if t.startswith("🟢")], [])
+        h.run_hours(2)                                       # candle 25: rompimento (fecha acima de R)
+        entries = [t for t in h.texts() if t.startswith("🟢")]
+        self.assertEqual(len(entries), 1, h.texts())
+        self.assertIn("ENTRADA POS-RUNNER [1h]", entries[0])
+        self.assertIn("Sinal #1 (primário)", entries[0])
+        self.assertIn("1 teste(s) de suporte", entries[0])
+        self.assertIn("(1-5M)", entries[0])
+        signal = h.storage.pr_signals()[0]
+        self.assertEqual(signal["status"], "aberto")
+        self.assertIsNotNone(signal["tg_message_id"])
+        h.run_hours(50)                                      # lateral: sai pelo stop de tempo (48 candles)
+        signal = h.storage.pr_signal(signal["id"])
+        self.assertEqual(signal["status"], "fechado")
+        self.assertEqual((signal["reason_a"], signal["reason_b"]), ("tempo", "tempo"))
+        self.assertLess(signal["result_a"], 0)               # lateral + custos = negativo
+        exits = [t for t in h.texts() if t.startswith("🟡")]
+        self.assertEqual(len(exits), 1)
+        self.assertIn("TEMPO", exits[0])
+        self.assertTrue(any(t.startswith("📊") for t in h.texts()))
+        self.assertIn(signal["tg_message_id"], h.tg.replies)   # saidas respondem a mensagem da entrada
+        h.storage.export_csvs()
+        rows = read_csv(h.paths.dados / "pos_runner.csv")
+        self.assertEqual(list(rows[0].keys()), POS_RUNNER_COLUMNS)
+        r = rows[0]
+        self.assertEqual((r["contrato"], r["launchpad"], r["tf"]), ("MINT1", "pumpfun", "1h"))
+        self.assertEqual(float(r["entrada_mc"]), 290_000.0)  # open do candle seguinte ao sinal
+        self.assertEqual(float(r["tp_mc"]), 950_000.0)        # 95% do pico
+        self.assertEqual(r["motivo_saida"], "A=tempo; B=tempo")
+        self.assertEqual(r["versao_config"], h.params.version)
+        self.assertEqual(r["n_wicks"], "1")                  # n de testes de suporte
+        self.assertAlmostEqual(float(r["idade_h"]), 24 * (GRAD + 26 * H - CREATED) / 86400, places=1)   # desde a criacao
+        detail = read_csv(h.paths.dados / "pos_runner_detalhe.csv")
+        self.assertEqual(detail[0]["status"], "fechado")
+        self.assertEqual(detail[0]["alerta_enviado"], "1")
+        self.assertEqual((detail[0]["faixa_pico"], detail[0]["S_acima_100k"]), ("1-5M", "sim"))
+        self.assertTrue(detail[0]["max_caminho_A_pct"])
+
+    def test_bankroll_table_and_daily_summary_survive_a_restart(self) -> None:
+        """Addendum de relatorio (2026-10-16): a Parte B grava a MESMA tabela de trades (banca US$100, posicao
+        5%) com o sinal real que acabou de fechar, e o estado sobrevive a um reinicio -- igual ao resto do
+        paper A/B (nunca comeca banca nova so porque o processo reiniciou no meio)."""
+        from ..pos_runner.quotes import REFERENCE_POOLS
+
+        h = self.h
+        start_tracking(h)
+        # cotacao SOL/USD cacheada (na vida real outro pool cotado em SOL ja teria disparado isso): sem ela a
+        # gestao de banca (que converte US$ -> SOL) fica sem dado -- explicito, nunca um custo inventado
+        ref_pool, _side = REFERENCE_POOLS[SOL]
+        h.world.series[(ref_pool, "1h")] = [Bar(GRAD - 30 * H + k * H, 150.0, 150.0, 150.0, 150.0, 1e6) for k in range(400)]
+
+        def run_hours_with_sol_quote(hours: int) -> None:
+            # refresca a cotacao SOL/USD a cada hora (na vida real, outro pool cotado em SOL faria isso sozinho);
+            # sem ela, a conversao US$ -> SOL da gestao de banca fica sem dado -- nunca um custo inventado
+            for _ in range(hours):
+                h.clock.advance(H)
+                h.tick()
+                h.live.http.arm(CallBudget(10), 1, 10)
+                h.live.quotes.series(SOL, GRAD, h.clock())
+                h.live.http.disarm()
+
+        run_hours_with_sol_quote(18)                          # roda o mesmo cenario ate o rompimento + fechamento
+        run_hours_with_sol_quote(50)                          # sai pelo stop de tempo (igual ao teste de cima)
+        signal = h.storage.pr_signals()[0]
+        self.assertEqual(signal["status"], "fechado")
+        h.storage.export_csvs()
+        rows = read_csv(h.paths.dados / "pos_runner_banca.csv")
+        self.assertEqual(len(rows), 2)                        # uma linha por variante (A e B), mesmo sinal
+        self.assertEqual({r["saida"] for r in rows}, {"A", "B"})
+        for r in rows:
+            self.assertEqual(r["contrato"], "MINT1")
+            self.assertEqual(r["launchpad"], "pumpfun")
+            self.assertEqual(r["tf"], "1h")
+            self.assertEqual(r["motivo_saida"], "tempo")
+            self.assertLess(float(r["resultado_usd"]), 0.0)   # mesmo trade perdedor do paper oficial
+            self.assertAlmostEqual(float(r["tamanho_posicao_usd"]), 5.0, places=6)   # 5% de US$100
+            self.assertLess(float(r["banca_depois_usd"]), 100.0)
+        resumo = h.live.daily_bankroll_summary()
+        self.assertIn("1h/A", resumo)
+        self.assertIn("1 trades", resumo)
+
+        # reinicio: outro PosRunnerLive na MESMA storage continua a MESMA banca (nunca volta a US$100)
+        banca_antes = {r["saida"]: float(r["banca_depois_usd"]) for r in rows}
+        live2 = h.new_live()
+        ledger_a = live2._bankroll_ledger("1h", "A")
+        self.assertAlmostEqual(ledger_a.state.banca, banca_antes["A"], places=6)
+        self.assertEqual(ledger_a.state.n_trades, 1)
+
+    def test_second_queda_medida_is_logged_without_any_alert_and_excluded_from_the_stable_csv(self) -> None:
+        """EMENDA 2026-10-16 (grade de 24 combinacoes): a 2a medida da queda (fechamentos) roda em paralelo, nos
+        MESMOS candles, so para CSV -- nunca manda alerta, nunca entra no contrato estavel (pos_runner.csv)."""
+        h = self.h
+        start_tracking(h)
+        h.run_hours(18)                                       # rompimento (candle 25, igual ao teste acima)
+        signals_before = h.storage.pr_signals()
+        self.assertEqual({s["tf"] for s in signals_before}, {"1h", "1h_fecham"})
+        fecham = next(s for s in signals_before if s["tf"] == "1h_fecham")
+        self.assertIsNone(fecham["tg_message_id"])
+        h.run_hours(50)                                       # fecha os dois (stop de tempo)
+        fecham = h.storage.pr_signal(fecham["id"])
+        self.assertEqual(fecham["status"], "fechado")
+        self.assertIsNone(fecham["tg_message_id"])
+        self.assertEqual(json.loads(fecham["base_json"] or "{}").get("n", 0), 0)   # sem base pareada (so a primaria tem)
+        # nenhum alerta (👀/🟢/🟡/📊) cita o rotulo da 2a medida
+        self.assertFalse(any("1h_fecham" in t for t in h.texts()))
+        h.storage.export_csvs()
+        stable = read_csv(h.paths.dados / "pos_runner.csv")
+        self.assertEqual({r["tf"] for r in stable}, {"1h"})             # nunca "1h_fecham" no contrato estavel
+        detail = read_csv(h.paths.dados / "pos_runner_detalhe.csv")
+        self.assertEqual({r["tf"] for r in detail}, {"1h", "1h_fecham"})  # mas registrada no detalhe, pra comparar depois
+
+    def test_frozen_bars_are_the_final_candles_never_the_one_in_progress(self) -> None:
+        h = self.h
+        start_tracking(h)
+        h.run_hours(30)
+        frozen = h.storage.pr_bars("POOL1", "1h")
+        world = {b.ts: b for b in h.world.series[("POOL1", "1h")]}
+        self.assertTrue(frozen)
+        for ts, o, hi, lo, c, v, filled in frozen:
+            b = world[ts]
+            self.assertAlmostEqual(c, b.close * SUPPLY)
+            self.assertAlmostEqual(hi, b.high * SUPPLY)
+            self.assertLessEqual(ts + H, h.clock() - LAG_S)       # so candle fechado (+ folga de indexacao)
+
+    def test_restart_rebuilds_the_same_state_without_repeating_alerts(self) -> None:
+        h = self.h
+        start_tracking(h)
+        h.run_hours(24)
+        before = list(h.texts())
+        bars = len(h.live.dets[("POOL1", "1h")].bars)
+        tg2 = FakeTelegram()
+        live2 = h.new_live(tg2)
+        h.clock.advance(H)
+        h.tick(live=live2)
+        self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), bars + 1)
+        self.assertEqual([t for t, _ in tg2.sent if t.startswith(("👀", "🟢"))], [])
+        self.assertEqual(len(h.storage.pr_signals()), 2)       # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
+        self.assertEqual(before, h.texts())
+
+    def test_bot_off_during_the_breakout_records_paper_but_sends_no_stale_alert(self) -> None:
+        h = self.h
+        start_tracking(h)
+        h.run_hours(14)
+        h.clock.advance(10 * H)                              # bot desligado 10 h (o rompimento acontece no meio)
+        h.tick()
+        self.assertEqual([t for t in h.texts() if t.startswith("🟢")], [])
+        signals = h.storage.pr_signals()
+        self.assertEqual(len(signals), 2)                      # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
+        self.assertTrue(all(s["tg_message_id"] is None for s in signals))
+        self.assertEqual({s["status"] for s in signals}, {"aberto"})
+
+    def test_history_before_tracking_is_not_a_paper_signal(self) -> None:
+        h = self.h
+        h.clock.advance(30 * H)                              # descoberto depois do rompimento
+        start_tracking(h)
+        h.run_hours(3)
+        self.assertEqual(h.storage.pr_signals(), [])
+        self.assertEqual([t for t in h.texts() if t.startswith(("👀", "🟢"))], [])
+        closed = int((h.clock() - LAG_S - H - GRAD) // H) + 1             # candles fechados ate agora (+ folga)
+        self.assertEqual(len(h.live.dets[("POOL1", "1h")].bars), closed)
+
+    @unittest.skipUnless(charts.available(), "matplotlib nao instalado")
+    def test_entry_alert_goes_with_a_chart_and_falls_back_to_text(self) -> None:
+        h = self.h
+        h.live.settings = LiveSettings(**{**h.settings.__dict__, "grafico": True})
+        start_tracking(h)
+        h.run_hours(24)
+        self.assertEqual(len(h.tg.photos), 1)
+        png, caption, keyboard, _ = h.tg.photos[0]
+        self.assertTrue(png.startswith(b"\x89PNG"))
+        self.assertTrue(caption.startswith("🟢"))
+        self.assertLessEqual(len(caption), 1024)
+        self.assertIn("axiom.trade/meme/POOL1", json.dumps(keyboard))
+        # foto recusada: o alerta sai em texto
+        h2 = LiveHarness()
+        try:
+            h2.live.settings = h.live.settings
+            h2.tg.fail_photo = True
+            start_tracking(h2)
+            h2.run_hours(24)
+            self.assertEqual(len([t for t, _ in h2.tg.sent if t.startswith("🟢")]), 1)
+        finally:
+            h2.close()
+
+
+class CreationAndVersionTest(unittest.TestCase):
+    """Idade desde a CRIACAO do token (buscada on-chain na thread de linhagem) e troca de versao_config."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_creation_date_is_fetched_after_the_lineage_and_unknown_creation_keeps_the_pool_out(self) -> None:
+        h = self.h
+        h.list_pool()
+        h.tick()
+        self.assertTrue(h.verifier.step())
+        row = h.storage.pr_pool("POOL1")
+        self.assertEqual(row["status"], "verificado")
+        self.assertEqual(json.loads(row["info"])["criado_ts"], CREATED)
+        self.assertEqual(h.verifier.creation.calls, [("MINT1", "SIG")])       # a partir da assinatura da migracao
+        # teto de paginas: criacao desconhecida = sem idade = nenhum sinal primario possivel -> nao entra
+        h.list_pool(pool="POOL2", mint="MINT2")
+        h.live.next_discovery = 0
+        h.tick()
+        h.verifier.creation = created_at(None, seen=100_000)
+        h.verifier.step()
+        row = h.storage.pr_pool("POOL2")
+        self.assertEqual(row["status"], "rejeitado")
+        self.assertIn("data de criacao do token desconhecida", row["motivo"])
+        # falha de RPC na busca da criacao: tenta de novo depois (nunca entra sem a data)
+        h.list_pool(pool="POOL3", mint="MINT3")
+        h.live.next_discovery = 0
+        h.tick()
+
+        def broken(rpc, mint, signature, max_pages=100):
+            raise RpcError("exhausted", "getSignaturesForAddress: 6 tentativas sem resposta")
+
+        h.verifier.creation = broken
+        h.verifier.step()
+        row = h.storage.pr_pool("POOL3")
+        self.assertEqual(row["status"], "pendente")
+        self.assertIn("data de criacao", row["motivo"])
+        h.clock.advance(3600)
+        h.verifier.creation = created_at(CREATED)
+        h.verifier.step()
+        self.assertEqual(h.storage.pr_pool("POOL3")["status"], "verificado")
+
+    def test_legacy_pool_without_creation_goes_back_to_the_queue_and_old_paper_is_discontinued(self) -> None:
+        h = self.h
+        h.world.add_series("POOL1", "1h", textbook().bars)
+        now = h.clock()
+        info = {"created_ts": GRAD + 60, "side": "base", "tentativas": 1, "linhagem": {"status": "ok", "signature": "SIGVELHA"}}
+        h.storage.pr_upsert_pool("POOL1", mint="MINT1", symbol="CAT", quote=USDC, dex="pumpswap", status="ativo", found_ts=now - 7200,
+                                 mc_found=1e6, launchpad="pumpfun", grad_ts=GRAD + 60, supply=SUPPLY, added_ts=now - 7200,
+                                 checked_ts=now - 7200, info=json.dumps(info))
+        h.storage.pr_insert_signal({"pool": "POOL1", "tf": "1h", "n": 1, "primario": 1, "decision_ts": now - 3600, "mint": "MINT1",
+                                    "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap", "versao_config": "velha",
+                                    "event_json": "{}", "status": "aberto"})
+        h.tick()
+        self.assertEqual(h.storage.pr_signals()[0]["status"], "descontinuado")   # outra regra: fora de qualquer avaliacao
+        self.assertEqual(h.storage.pr_pool("POOL1")["status"], "verificado")     # sem a data de criacao nao acompanha
+        self.assertEqual(h.storage.pr_bars("POOL1", "1h"), [])
+        self.assertTrue(h.verifier.step())                                       # so busca a criacao (linhagem ja feita)
+        self.assertEqual(h.verifier.creation.calls, [("MINT1", "SIGVELHA")])
+        h.tick()
+        row = h.storage.pr_pool("POOL1")
+        self.assertEqual(row["status"], "ativo")
+        self.assertEqual(json.loads(row["info"])["criado_ts"], CREATED)
+        self.assertTrue(h.storage.pr_bars("POOL1", "1h"))
+        self.assertEqual(h.live.dets[("POOL1", "1h")].created_ts, CREATED)
+
+    def test_a_new_config_version_never_turns_past_decisions_into_its_signals(self) -> None:
+        h = self.h
+        start_tracking(h)
+        h.run_hours(24)                                       # rompimento (candle 25) decidido com a versao 1
+        old = h.storage.pr_signals()
+        self.assertEqual(len(old), 2)                          # emenda 2026-10-16: primaria (1h) + 2a medida (1h_fecham)
+        self.assertEqual([s["versao_config"] for s in old], [h.params.version] * 2)
+        self.assertTrue(h.storage.pr_alert_seen(f"e:{h.params.version}:POOL1:1h:1"))   # chave de alerta por versao
+        sent = len(h.texts())
+        import dataclasses
+        h.params = dataclasses.replace(h.params, time_stop_candles=47)             # outra versao_config
+        live2 = h.new_live()
+        h.clock.advance(H)
+        h.tick(live=live2)
+        signals = h.storage.pr_signals()
+        self.assertEqual(len(signals), 2)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
+        self.assertEqual({s["status"] for s in signals}, {"descontinuado"})
+        self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
+        self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
+
+    def test_switching_back_to_an_old_version_does_not_adopt_what_another_version_decided(self) -> None:
+        import dataclasses
+        h = self.h
+        v1 = h.params
+        start_tracking(h)                                     # v1 roda; o rompimento ainda nao aconteceu
+        h.params = dataclasses.replace(v1, time_stop_candles=47)
+        live2 = h.new_live()
+        h.clock.advance(H)
+        h.tick(live=live2)                                    # v2 assume
+        for _ in range(23):                                   # o rompimento (candle 25) acontece com a v2 rodando
+            h.clock.advance(H)
+            h.tick(live=live2)
+        self.assertEqual({s["versao_config"] for s in h.storage.pr_signals()}, {h.params.version})
+        h.params = v1
+        live3 = h.new_live()                                  # volta para a v1: o inicio dela recomeca agora
+        h.clock.advance(H)
+        h.tick(live=live3)
+        self.assertEqual([s["versao_config"] for s in h.storage.pr_signals()],
+                         [dataclasses.replace(v1, time_stop_candles=47).version] * 2)  # primaria + 2a medida
+        self.assertGreater(live3.version_start, live2.version_start)
+
+
+class MultiTimeframeSolQuoteTest(unittest.TestCase):
+    def test_lbc_from_1h_first_then_5m_and_4h_with_sol_converted_by_the_reference_pool(self) -> None:
+        from ..pos_runner.quotes import REFERENCE_POOLS
+        settings = LiveSettings(ligado=True, timeframes=("5m", "1h", "4h"), max_pools=5, chamadas_por_ciclo=6,
+                                descoberta_min=3, fontes=("pumpswap",), grafico=False)
+        h = LiveHarness(settings=settings, start=GRAD + 3 * H + 120)
+        try:
+            ref_pool, _side = REFERENCE_POOLS[SOL]
+            sol_usd = 150.0
+            h.world.series[(ref_pool, "1h")] = [Bar(GRAD - 30 * H + k * H, sol_usd, sol_usd, sol_usd, sol_usd, 1e6) for k in range(200)]
+            mc = 400_000.0
+            for tf, n in (("5m", 12 * 48), ("1h", 48), ("4h", 12)):
+                step = tf_seconds(tf)
+                first = GRAD // step * step                    # candles do GT alinhados ao timeframe (4h: 00h, 04h...)
+                h.world.series[("POOL1", tf)] = [Bar(first + k * step, mc / SUPPLY / sol_usd, mc * 1.01 / SUPPLY / sol_usd,
+                                                     mc * 0.99 / SUPPLY / sol_usd, mc / SUPPLY / sol_usd, 10.0) for k in range(n)]
+            h.world.lists["networks/solana/dexes/pumpswap/pools"] = pools_json(
+                [{"pool": "POOL1", "mint": "MINT1", "symbol": "CAT", "mc": mc, "created": GRAD + 60, "quote": SOL}])
+            h.verifier.verify = lambda rpc, pool, mint, created, lp: Lineage("ok", "", "pumpfun", GRAD + 60, SOL, SUPPLY, "S", "MigrateV2")
+            h.tick()
+            h.verifier.step()
+            for _ in range(13):                                  # passa do fechamento do 1o candle de 4h
+                h.clock.advance(300)
+                h.tick()
+            row = h.storage.pr_pool("POOL1")
+            self.assertAlmostEqual(row["l_bc"], mc, delta=1.0)                     # preco em SOL x SOL/USD x supply
+            for tf in ("5m", "1h", "4h"):
+                bars = h.storage.pr_bars("POOL1", tf)
+                self.assertTrue(bars, tf)
+                self.assertAlmostEqual(bars[-1][4], mc, delta=1.0)
+                self.assertLessEqual(bars[-1][0] + tf_seconds(tf), h.clock() - LAG_S)
+        finally:
+            h.close()
+
+
+class BudgetTest(unittest.TestCase):
+    def test_never_spends_more_than_its_slice_nor_the_kept_calls(self) -> None:
+        h = LiveHarness()
+        try:
+            for k in range(4):
+                h.world.add_series(f"P{k}", "1h", textbook().bars)
+            h.world.lists["networks/solana/dexes/pumpswap/pools"] = pools_json(
+                [{"pool": f"P{k}", "mint": f"M{k}", "symbol": f"T{k}", "mc": 1e6, "created": GRAD + 60} for k in range(4)])
+            h.tick()
+            for _ in range(4):
+                h.verifier.step()
+            budget = CallBudget(4)
+            out = h.live.tick(h.clock(), budget, keep=2)
+            self.assertEqual(out["chamadas"], 2)               # 4 de orcamento, 2 guardadas para o v0
+            self.assertEqual(budget.used, 2)
+            budget = CallBudget(20)
+            h.clock.advance(H)
+            out = h.live.tick(h.clock(), budget, keep=1)
+            self.assertLessEqual(out["chamadas"], h.settings.chamadas_por_ciclo)
+        finally:
+            h.close()
+
+    def test_429_exhausts_the_cycle_and_is_reported(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.clock.advance(H)
+            h.world.fail = RateLimited(30.0)
+            budget = CallBudget(10)
+            out = h.live.tick(h.clock(), budget, keep=1)
+            self.assertTrue(out["rate_limited"])
+            self.assertEqual(budget.left(), 0)
+            h.clock.advance(H)
+            h.tick()                                          # proximo ciclo segue normalmente
+            self.assertGreater(len(h.storage.pr_bars("POOL1", "1h")), 9)
+        finally:
+            h.close()
+
+    def test_failed_discovery_list_does_not_stop_the_refreshes(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            bars = len(h.storage.pr_bars("POOL1", "1h"))
+            h.clock.advance(H)
+            h.live.next_discovery = 0
+            h.world.fail = ApiError("http", "GeckoTerminal: HTTP 502", 502)   # a lista de descoberta falha
+            out = h.tick()
+            self.assertEqual(out["erros"], 1)
+            self.assertEqual(len(h.storage.pr_bars("POOL1", "1h")), bars + 1)
+        finally:
+            h.close()
+
+    def test_api_error_on_one_pool_backs_off_without_stopping_the_tick(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.clock.advance(H)
+            h.live.next_discovery = h.clock() + 3600            # a falha cai no candle do pool, nao na lista
+            h.world.fail = ApiError("http", "GeckoTerminal: HTTP 500", 500)
+            out = h.tick()
+            self.assertEqual(out["erros"], 1)
+            self.assertGreater(h.live.sched[("POOL1", "1h")]["next"], h.clock())
+        finally:
+            h.close()
+
+
+class ConfigSectionTest(unittest.TestCase):
+    def test_shipped_section_is_valid_and_parsed(self) -> None:
+        cfg = shipped_config()
+        s = LiveSettings.from_config(cfg.raw["pos_runner"])
+        self.assertTrue(s.ligado)
+        self.assertEqual(s.timeframes, ("5m", "1h", "4h"))
+        self.assertTrue(s.so_primario)
+        self.assertFalse(LiveSettings.from_config(None).ligado)
+
+    def test_invalid_values_are_reported(self) -> None:
+        for patch in ({"timeframes": ["2h"]}, {"fontes": ["dexscreener"]}, {"max_pools": 0}, {"alertas": {"saida": "sim"}}):
+            raw = copy.deepcopy(shipped_config().raw)
+            section = raw["pos_runner"]
+            for key, value in patch.items():
+                if isinstance(value, dict):
+                    section[key].update(value)
+                else:
+                    section[key] = value
+            with self.assertRaises(ConfigError, msg=str(patch)):
+                build_config(raw)
+        raw = copy.deepcopy(shipped_config().raw)
+        del raw["pos_runner"]
+        build_config(raw)                                      # secao opcional
+
+
+class EngineHookTest(unittest.TestCase):
+    class Stub:
+        def __init__(self, want: int):
+            self.want = want
+            self.ticks: list[tuple[int, int]] = []
+            self.offers = 0
+
+        def enabled(self) -> bool:
+            return True
+
+        def wanted(self, now: float) -> int:
+            return self.want
+
+        def offer(self, snaps, now, fonte="bot"):
+            self.offers += 1
+            return 0
+
+        def tick(self, now, budget, keep):
+            self.ticks.append((budget.left(), keep))
+            budget.take(min(self.want, budget.left() - keep), keep=0)
+            return {"chamadas": self.want, "erros": 0, "rate_limited": False}
+
+        def update_settings(self, *a):
+            pass
+
+        def status_line(self) -> str:
+            return "POS-RUNNER: stub"
+
+    def test_engine_reserves_the_slice_and_calls_the_pos_runner_every_cycle(self) -> None:
+        from .test_engine_e2e import happy
+        quiet = Env()
+        busy = Env()
+        try:
+            for k in range(40):                                # muitos pools jovens e candidatos: o v0 comeria tudo
+                busy.gt.add(happy(pool=f"pool{k}", token=f"tok{k}", created_ts=busy.clock() - 60))
+            for env, minimum in ((quiet, 3), (busy, 1)):
+                stub = self.Stub(3)
+                env.engine.pos_runner = stub
+                env.cycle(3)
+                self.assertEqual(len(stub.ticks), 3)
+                self.assertEqual(stub.offers, 3)
+                for left, keep in stub.ticks:
+                    self.assertGreaterEqual(left - keep, minimum)  # quieto: a fatia inteira; ocupado: nunca passa fome
+                self.assertIn("POS-RUNNER: stub", env.engine.status_text())
+        finally:
+            quiet.close()
+            busy.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,13 @@
+{
+ "data": [
+  {
+   "attributes": {
+    "coingecko_asset_platform_id": "robinhood",
+    "name": "Robinhood"
+   },
+   "id": "robinhood",
+   "type": "network"
+  }
+ ],
+ "links": {}
+}

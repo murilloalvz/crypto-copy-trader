@@ -1,0 +1,47 @@
+{
+ "data": {
+  "id": "solana_G75ftaGs1zvuzywZS157f8zFt6LKUwoxNzitZpF2AVqr",
+  "type": "pool",
+  "attributes": {
+   "address": "G75ftaGs1zvuzywZS157f8zFt6LKUwoxNzitZpF2AVqr",
+   "name": "bulchi / SOL",
+   "pool_name": "bulchi / SOL"
+  },
+  "relationships": {
+   "base_token": {
+    "data": {
+     "id": "solana_36cRNBBH5P5XEEca3mmiL4nUW3DEf236TirKaQFjpump",
+     "type": "token"
+    }
+   },
+   "quote_token": {
+    "data": {
+     "id": "solana_So11111111111111111111111111111111111111112",
+     "type": "token"
+    }
+   }
+  }
+ },
+ "included": [
+  {
+   "id": "solana_36cRNBBH5P5XEEca3mmiL4nUW3DEf236TirKaQFjpump",
+   "type": "token",
+   "attributes": {
+    "address": "36cRNBBH5P5XEEca3mmiL4nUW3DEf236TirKaQFjpump",
+    "name": "bulchi",
+    "symbol": "bulchi",
+    "decimals": 6
+   }
+  },
+  {
+   "id": "solana_So11111111111111111111111111111111111111112",
+   "type": "token",
+   "attributes": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "decimals": 9
+   }
+  }
+ ]
+}
