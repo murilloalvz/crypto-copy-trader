@@ -198,12 +198,29 @@ def load_bars(ctx: Context, row: Any, tf: str, stats: Optional[dict] = None) -> 
     return _mc_bars(ctx, row, tf, series_end(ctx, row, tf), st[4], usd, stats)
 
 
-def stage2_bars(ctx: Context, row: Any) -> dict[str, list[Bar]]:
-    """5m/1h/4h de graduacao ate graduacao + horizonte + saida; o 5m e conferido contra o 1h (buracos rebaixados)."""
+def stage2_bars(ctx: Context, row: Any, skip_tfs: frozenset[str] = frozenset()) -> dict[str, list[Bar]]:
+    """5m/1h/4h de graduacao ate graduacao + horizonte + saida; o 5m e conferido contra o 1h (buracos rebaixados).
+
+    EMENDA 2026-10-17 (cega a resultado, operacional -- minimizar tempo de download, NUNCA o limiar de parada por
+    contagem em si): `skip_tfs` poupa o download dos tfs REAIS ja listados (status explicito `meta_atingida`,
+    nunca silencioso; o detector nunca roda neles -- `detect_and_trade` so roda com stage2 'ok'). Quem decide
+    `skip_tfs` e o `run_period`, UMA VEZ por janela (nunca no meio dela -- janela inteira sempre processada do
+    mesmo jeito, so a PROXIMA janela ve a contagem atualizada; sem isso, pools dentro da MESMA janela ja
+    contariam diferente so por ordem de processamento, o que seria mudar resultado, nao so poupar rede). A regra
+    de parada oficial continua sem mudar: `min(per_tf) >= target_min_setups` sobre `stop_tfs`. `prefetch_period`
+    nunca passa `skip_tfs` (baixa tudo, cronologico, sem saber ainda a contagem da ordem sorteada)."""
     out: dict[str, list[Bar]] = {}
+    skip = {tf: tf in skip_tfs for tf in TFS}
+    for tf in (tf_ for tf_ in TFS if skip[tf_]):
+        ctx.store.save_stage2(row["pool"], tf, "meta_atingida", 0, 0, {"motivo": "setups_primarios[tf] >= meta"})
+        out[tf] = []
     h1_stats: dict = {}
-    h1_raw = _fetch_history(ctx, row["pool"], "1h", row["grad_ts"], series_end(ctx, row, "1h"), h1_stats, currency="token")
+    h1_raw: list[Bar] = []
+    if not skip["1h"] or not skip["5m"]:
+        h1_raw = _fetch_history(ctx, row["pool"], "1h", row["grad_ts"], series_end(ctx, row, "1h"), h1_stats, currency="token")
     for tf in TFS:
+        if skip[tf]:
+            continue
         holes = 0
         cut: dict = dict(h1_stats) if tf == "1h" else {}
         if tf == "5m":
@@ -378,13 +395,18 @@ def run_period(ctx: Context, period: str, target_min_setups: int, max_windows: O
     windows = ctx.plan.windows(period)
     limit = len(windows) if max_windows is None else min(max_windows, len(windows))
     for k in range(limit):
+        # skip_tfs e decidido UMA VEZ por janela, com a contagem de ANTES dela comecar -- nunca no meio (EMENDA
+        # 2026-10-17): assim toda janela e processada do mesmo jeito para todos os seus pools, so a PROXIMA
+        # janela ve a contagem atualizada. Poupa rede sem mudar quais pools contam dentro de uma mesma janela.
+        counts_before = ctx.store.counts(period)["setups_primarios"]
+        skip_tfs = frozenset(tf for tf in TFS if counts_before.get(tf, 0) >= target_min_setups)
         enumerate_windows(ctx, period, [k])
         for row in [r for r in ctx.store.graduations(period, k) if r["ord"] == k]:
             if row["status"] != "ok":
                 continue
             status, runner = stage1(ctx, row)
             if status == "ok" and runner:
-                bars = stage2_bars(ctx, row)
+                bars = stage2_bars(ctx, row, skip_tfs=skip_tfs)
                 detect_and_trade(ctx, row, bars)
         counts = ctx.store.counts(period)
         per_tf = [counts["setups_primarios"].get(tf, 0) for tf in stop_tfs]
@@ -417,6 +439,27 @@ def seal_holdout(ctx: Context, n_windows: int, path: Path) -> dict[str, Any]:
     }
     Path(path).write_text(json.dumps(doc, indent=1), encoding="utf-8")
     return doc
+
+
+def restamp_seal_versao_plano(path: Path, new_versao_plano: str, reason: str) -> str:
+    """Re-grava SO a chave `versao_plano` do selo do holdout (provenance) -- NUNCA toca `graduacoes`/`hash_pools`.
+    Usado quando uma emenda muda o hash do plano sem mudar NENHUM dado do holdout (EMENDA 2026-10-17:
+    `discovery_start_override` so recorta o INICIO do discovery; holdout/embargo ficam byte-a-byte iguais, ja
+    confirmado pelo teste `test_discovery_start_override_never_touches_embargo_or_holdout`). Confirma o hash dos
+    pools ANTES e DEPOIS para provar que os dados nao mudaram. Devolve o `versao_plano` antigo."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    pools = sorted({g["pool"] for g in doc["graduacoes"]})
+    if short_hash(pools, 32) != doc["hash_pools"]:
+        raise RuntimeError("selo corrompido antes do restamp (hash_pools nao bate) -- recusado")
+    old = doc["versao_plano"]
+    doc["versao_plano"] = new_versao_plano
+    Path(path).write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    pools_depois = sorted({g["pool"] for g in doc["graduacoes"]})
+    if short_hash(pools_depois, 32) != doc["hash_pools"]:
+        raise RuntimeError("restamp quebrou o selo (hash_pools nao bate depois) -- nao deveria acontecer")
+    log.info("selo do holdout: versao_plano re-gravada (so provenance, graduacoes/hash_pools intocados): "
+            "%s -> %s | motivo: %s", old, new_versao_plano, reason)
+    return old
 
 
 def load_seal(path: Path, ctx: Context, require_commit: bool = True) -> set[str]:

@@ -395,3 +395,50 @@ estava correta sob OUTRA assinatura (mesmo padrão do achado anterior: migraçõ
 novo `3f648e9548002cef355f78c107cacef8` (27349 pools). Confirmado ANTES: `stage1`/`stage2`/`setups`/`trades` com 0
 linhas. **Nova validação positiva, amostra DIFERENTE (seed distinta, 60 entradas estratificadas por launchpad)**:
 0% de divergência. `versao_plano`/janelas (400) inalterados; nenhuma regra/grade/limiar mudou.
+
+## 13. EMENDA de 2026-10-17 — recorte operacional do início do discovery + ritmo do GeckoTerminal (cega a
+## resultado: nenhum cálculo do discovery existia antes deste commit; regra primária, grade de 24, atributos
+## secundários e limiar >=60 setups/tf inalterados)
+
+Motivo operacional: o PC do operador não fica ligado 24h; o início original do discovery (2026-04-22) ficava
+colado no horizonte móvel de ~180 dias do GeckoTerminal, obrigando a baixar o período inteiro de uma vez.
+Objetivo único: **minimizar o tempo de download sem mudar nenhum resultado**.
+
+**A) `PeriodPlan.discovery_start_override`** (`plan.py`): recorta só o INÍCIO do discovery para `2026-06-05`;
+fim do discovery, embargo e holdout continuam vindo só de `span`/`holdout_fraction`, nunca deste campo — testado
+(`test_discovery_start_override_never_touches_embargo_or_holdout`): embargo e holdout ficam byte-a-byte iguais.
+Discovery cai de 95 para 51 dias, de 4560 para 2448 janelas sorteadas (-46,3%) — redução uniforme (densidade de
+graduação por janela é uma propriedade do calendário, não da regra), então `stage1`/`stage2` também caem ~46%.
+Ordem do sorteio continua determinística pela mesma seed; parada por contagem independente por timeframe
+(`run_period`'s `skip_tfs`, já existia como `stop_tfs=TFS`, confirma-se aqui que o default já exige os 3 tfs).
+
+**B) Poupar tempo sem mudar resultado:**
+- (4) feito — limitador do GeckoTerminal: teto 20→26/min + jitter de até 1,5s só na espera que já ia ocorrer
+  (nunca atrasa uma chamada com ficha livre) — `RateLimiter.jitter_s` (`http.py`), default 0,0 (compatível com
+  todo chamador existente); testado.
+- (5)/(6) NÃO implementados — risco de mudar resultado: (5) pré-filtro de zona do 1h antes de decidir o 5m
+  arrisca pular silenciosamente um setup real; (6) agregar 4h a partir do 1h arrisca não reproduzir EXATAMENTE
+  os candles 4h nativos do GT (tratamento de buraco pode diferir). Ambos ficam de fora; 5m NÃO foi removido.
+- (7)/(8)/(10) já satisfeitos, sem mudança de código: `_fetch_history`/`series_end` já buscam só o intervalo
+  necessário (graduação até graduação + horizonte + saída do tf); `OhlcvStore` (cache em disco por
+  pool/tf/moeda/lado, com `pending`/`cursor`) + os status terminais de `stage1`/`stage2`/`window_done` já nunca
+  rebaixam o que está no checkpoint; o mesmo cache torna `baixar-bruto` interrompível (Ctrl+C) sem perda.
+
+**C) Operação:** `Store.restamp_versao_plano` (análogo a `restamp_versao_config`, mesma guarda: só aceito com
+`stage1`/`stage2`/`setups`/`trades` vazios) e `restamp_seal_versao_plano` (pipeline.py, só troca a chave
+`versao_plano` do selo, nunca `graduacoes`/`hash_pools` — confirmado byte-a-byte antes/depois). Hash do plano:
+`8a2387a3e185` → `7e6fdc65d31f` (o próprio acréscimo do campo `discovery_start_override` à dataclass já muda o
+hash de qualquer plano, mesmo sem recorte — esperado, documentado). No checkpoint local: 2 janelas / 4 graduações
+de discovery do plano antigo descartadas (ord não corresponde ao novo sorteio); holdout (1200 janelas, 27349
+graduações) intocado. Checkpoint comprimido novo commitado (`checkpoint_handoff/parte_a_2026-10-19.sqlite.gz`),
+substitui o de 10-17 (hash de plano antigo, ficaria inconsistente com `plano_parte_a.json` novo).
+
+**D) Estado real (sem olhar desempenho):** `gt_calls_total = 0` no checkpoint — nenhuma chamada de candle foi
+feita ainda em discovery (só enumeração on-chain/RPC); 0 setups por timeframe, em qualquer tf, porque nenhum
+`stage2`/detector rodou. Estimativa mecânica (não é medição; "taxa de runner" é desconhecida, 0% medida até
+agora): ~22,8 graduações/janela (medido no holdout) × 2448 janelas ≈ 55,8 mil graduações, 1 chamada de GT cada
+(`stage1`) = ~55,8 mil chamadas só de stage1 (era ~104 mil no plano antigo, -46%). `stage2` só para "runners":
+com 5m, 7 chamadas/runner (5m pagina em lotes de 1000 candles); sem 5m, 2 chamadas/runner. Com taxa de runner
+entre 5% e 30% (faixa larga, não medida): total ~75,4–173,0 mil chamadas COM 5m, ~61,4–89,3 mil SEM 5m. A ~26
+chamadas/min (teto novo): **~48–111h COM 5m, ~39–57h SEM 5m** — faixa larga de propósito (decisão do operador,
+item D do pedido: 5m NÃO foi removido).

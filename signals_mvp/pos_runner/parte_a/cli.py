@@ -70,7 +70,9 @@ def build_context(work: Path, plan: PeriodPlan) -> tuple[Context, SolanaRpc, Htt
     store = Store(work / "parte_a.sqlite")
     store.require("versao_config", params.version)
     store.require("versao_plano", plan.version)
-    http = HttpClient(GT_BASE, RateLimiter(20, 2, pause_s=30, pause_max_s=240), 30, name="GeckoTerminal")
+    # EMENDA 2026-10-17 (cega a resultado, operacional): teto 20->26/min + jitter de 1.5s -- so desincroniza o
+    # ritmo das chamadas (menos 429/pausa de 30s), nunca muda QUAL candle e baixado.
+    http = HttpClient(GT_BASE, RateLimiter(26, 2, pause_s=30, pause_max_s=240, jitter_s=1.5), 30, name="GeckoTerminal")
     ohlcv = OhlcvStore(http, work / "ohlcv")
     rpc_per_min = float(os.environ.get(ENV_RPC_PER_MIN, "100"))   # teto do limitador adaptativo; so infra, nao regra
     rpc = SolanaRpc(endpoints_from_env(), per_min=rpc_per_min)

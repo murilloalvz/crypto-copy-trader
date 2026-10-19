@@ -19,8 +19,8 @@ from ..pos_runner.parte_a.baseline import baseline_mean, run_baselines
 from ..pos_runner.parte_a.metrics import (BAND_ORDER, CUTS, candidate, choose_variant, holdout_verdict, path_stats,
                                           summarize, variant_table)
 from ..pos_runner.parte_a.pipeline import (IDADE_FAIXAS, Context, enumerate_windows, load_seal, prefetch_period,
-                                            primary_under_window, run_period, seal_holdout)
-from ..pos_runner.parte_a.plan import DAY, PeriodPlan, load_plan, write_plan
+                                            primary_under_window, restamp_seal_versao_plano, run_period, seal_holdout)
+from ..pos_runner.parte_a.plan import DAY, PeriodPlan, _date_ts, load_plan, write_plan
 from ..pos_runner.parte_a.store import Store
 from ..pos_runner.quotes import stable_series
 from ..util import iso_utc
@@ -260,6 +260,24 @@ class PlanTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_plan(path)
 
+    def test_discovery_start_override_never_touches_embargo_or_holdout(self):
+        """EMENDA 2026-10-17 (cega a resultado, ANTES de qualquer calculo): recortar o INICIO do discovery nunca
+        muda embargo/holdout (eles vem so de `span`/`holdout_fraction`, nunca de `discovery_start_override`).
+        Seed fixa continua registrada no plano (campo `seed`, parte do hash)."""
+        base = PeriodPlan("2026-10-17")
+        cut = PeriodPlan("2026-10-17", discovery_start_override="2026-06-05")
+        self.assertEqual(base.periods()["embargo"], cut.periods()["embargo"])
+        self.assertEqual(base.periods()["holdout"], cut.periods()["holdout"])
+        self.assertEqual(base.periods()["discovery"][1], cut.periods()["discovery"][1])   # fim do discovery igual
+        self.assertEqual(cut.periods()["discovery"][0], _date_ts("2026-06-05"))
+        self.assertLess(base.periods()["discovery"][0], cut.periods()["discovery"][0])     # comeco recortado p/ frente
+        self.assertLess(len(cut.windows("discovery")), len(base.windows("discovery")))
+        # determinismo: mesma seed, mesmo corte -> mesma ordem sempre
+        self.assertEqual(cut.windows("discovery"), PeriodPlan("2026-10-17", discovery_start_override="2026-06-05").windows("discovery"))
+        # override antes do inicio original: sem efeito (nunca ANTECIPA o discovery)
+        early = PeriodPlan("2026-10-17", discovery_start_override="2020-01-01")
+        self.assertEqual(early.periods()["discovery"], base.periods()["discovery"])
+
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
@@ -364,6 +382,44 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ctx.store.restamp_versao_config("outra_config", "nao deveria passar: ha setup gravado")
 
+    def test_restamp_versao_plano_discards_old_discovery_windows_but_keeps_holdout(self):
+        """`restamp_versao_plano` (store.py) e a UNICA forma permitida de trocar a versao_plano gravada no meio
+        de uma coleta (nunca editar o SQLite na mao). EMENDA 2026-10-17 (`discovery_start_override`): o sorteio de
+        'discovery' muda sempre que o conjunto de slots muda, entao qualquer `windows`/`graduations` de 'discovery'
+        gravado sob o plano antigo e descartado (ord nao corresponde mais a janela nova); 'holdout' fica intocado
+        (suas janelas nunca dependem de `discovery_start_override`). So aceito com stage1/stage2/setups/trades vazios."""
+        ctx = self.ctx(self.tmp, set())
+        ctx.store.require("versao_plano", ctx.plan.version)   # como build_context() faz no cli.py real
+        seal_holdout(ctx, 1, self.tmp / "selo.json")           # grava windows/graduations de 'holdout'
+        enumerate_windows(ctx, "discovery", [0])                # grava windows/graduations de 'discovery' (plano antigo)
+        self.assertTrue(ctx.store.graduations("holdout"))
+        self.assertTrue(ctx.store.graduations("discovery"))
+        out = ctx.store.restamp_versao_plano("novo_plano_emendado", "teste: discovery_start_override")
+        self.assertGreater(out["graduacoes_discovery_descartadas"], 0)
+        self.assertEqual(ctx.store.get("versao_plano"), "novo_plano_emendado")
+        self.assertEqual(ctx.store.graduations("discovery"), [])    # descartado (ord nao corresponde ao novo sorteio)
+        self.assertTrue(ctx.store.graduations("holdout"))           # holdout (params/plano-independente aqui) intocado
+        ctx.store.save_setups("qualquer_pool", "1h", [{"kind": "ENTRADA", "idx": 1, "ts": 1, "decision_ts": 1, "data": {}}])
+        with self.assertRaises(RuntimeError):
+            ctx.store.restamp_versao_plano("outro_plano", "nao deveria passar: ha setup gravado")
+
+    def test_restamp_seal_versao_plano_keeps_graduacoes_and_hash_pools_byte_identical(self):
+        """`restamp_seal_versao_plano` (pipeline.py) so troca a chave `versao_plano` do selo do holdout -- usado
+        quando uma emenda muda o hash do plano sem mudar NENHUM dado do holdout (EMENDA 2026-10-17:
+        `discovery_start_override` nunca afeta holdout/embargo, so o inicio do discovery)."""
+        ctx = self.ctx(self.tmp, set())
+        doc_antes = seal_holdout(ctx, 1, self.tmp / "selo.json")
+        load_seal(self.tmp / "selo.json", ctx, require_commit=False)        # ok: versao_plano bate com ctx.plan
+        old = restamp_seal_versao_plano(self.tmp / "selo.json", "outro_plano_qualquer", "teste: emenda de plano")
+        self.assertEqual(old, doc_antes["versao_plano"])
+        with self.assertRaises(RuntimeError):
+            load_seal(self.tmp / "selo.json", ctx, require_commit=False)    # agora nao bate mais
+        doc_depois = json.loads((self.tmp / "selo.json").read_text())
+        self.assertEqual(doc_depois["graduacoes"], doc_antes["graduacoes"])  # dados intocados
+        self.assertEqual(doc_depois["hash_pools"], doc_antes["hash_pools"])
+        restamp_seal_versao_plano(self.tmp / "selo.json", old, "teste: desfazer")
+        load_seal(self.tmp / "selo.json", ctx, require_commit=False)        # volta a bater
+
     def test_reprocess_graduation_corrects_removes_and_refuses_duplicates(self):
         """`reprocess_graduation` (store.py) e a UNICA forma permitida de corrigir/remover uma graduacao ja
         gravada (achado real: parser corrigido depois da coleta) -- nunca editar o SQLite na mao."""
@@ -398,6 +454,39 @@ class PipelineTests(unittest.TestCase):
         ctx.store.save_stage1("POOL_JA_EXISTE", "ok", 1.0, True, 1.0, 1.0, {})
         with self.assertRaises(RuntimeError):
             ctx.store.reprocess_graduation("POOL_JA_EXISTE", None)
+
+    def test_skip_tfs_in_stage2_bars_saves_network_without_crashing_detection(self):
+        """EMENDA 2026-10-17 (cega a resultado, operacional -- minimizar tempo de download): `stage2_bars` com
+        `skip_tfs` poupa a chamada de rede do tf listado (status explicito `meta_atingida`, 0 candles) e
+        `detect_and_trade` nunca roda nele (so roda com stage2 'ok') -- sem crash, sem contar setup nenhum."""
+        from ..pos_runner.parte_a.pipeline import detect_and_trade, stage1, stage2_bars
+
+        windows = plan().windows("discovery")
+        lo = windows[0][0]
+        pool = f"P_pump_{lo}_0"
+        ctx = self.ctx(self.tmp, {pool}, per_window=1)
+        from ..pos_runner.parte_a.pipeline import enumerate_windows
+        enumerate_windows(ctx, "discovery", [0])
+        row = next(r for r in ctx.store.graduations("discovery") if r["pool"] == pool)
+        stage1(ctx, row)
+
+        bars_sem_pular = stage2_bars(ctx, row)
+        calls_sem_pular = ctx.ohlcv.calls
+
+        ctx2 = self.ctx(self.tmp / "b", {pool}, per_window=1)
+        enumerate_windows(ctx2, "discovery", [0])
+        row2 = next(r for r in ctx2.store.graduations("discovery") if r["pool"] == pool)
+        stage1(ctx2, row2)
+        bars_com_pular = stage2_bars(ctx2, row2, skip_tfs=frozenset({"4h"}))
+        self.assertEqual(bars_com_pular["4h"], [])
+        self.assertEqual(ctx2.store.stage2(pool, "4h")[0], "meta_atingida")
+        self.assertLess(ctx2.ohlcv.calls, calls_sem_pular)         # poupou pelo menos a chamada do 4h
+        self.assertTrue(bars_com_pular["5m"])                        # os outros tfs seguem normais
+        self.assertTrue(bars_com_pular["1h"])
+
+        counts = detect_and_trade(ctx2, row2, bars_com_pular)
+        self.assertEqual(counts["4h"], 0)                            # nunca roda o detector no tf pulado
+        self.assertEqual(counts["4h_fecham"], 0)
 
     def test_count_based_stop_resume_metrics_and_baseline(self):
         windows = plan().windows("discovery")

@@ -86,6 +86,31 @@ class Store:
                 old, new_value, reason)
         return old or ""
 
+    def restamp_versao_plano(self, new_value: str, reason: str) -> dict[str, int]:
+        """Re-grava SO a chave `versao_plano` do meta (provenance) -- NUNCA na mao. Permitido apenas quando
+        stage1/stage2/setups/trades estao todos vazios (nada que dependa de deteccao foi gravado ainda).
+        A ordem sorteada das janelas de 'discovery' muda sempre que o conjunto de slots muda (ex.: EMENDA
+        2026-10-17, `discovery_start_override`), entao qualquer `windows`/`graduations` de 'discovery' gravado sob
+        o plano antigo tem `ord` que NAO corresponde mais a janela nova no mesmo indice -- essas linhas sao
+        descartadas aqui (nunca mantidas com mapeamento errado). 'holdout'/'embargo' NUNCA sao tocados: suas
+        janelas nao dependem de `discovery_start_override` (so o inicio do discovery e recortado). Devolve
+        {"windows_discovery_descartadas": N, "graduacoes_discovery_descartadas": M}."""
+        for t in ("stage1", "stage2", "setups", "trades"):
+            n = self.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            if n:
+                raise RuntimeError(f"restamp recusado: tabela '{t}' tem {n} linha(s) dependente(s) de deteccao")
+        old = self.get("versao_plano")
+        with self.db:
+            nw = self.db.execute("SELECT COUNT(*) FROM windows WHERE period='discovery'").fetchone()[0]
+            ng = self.db.execute("SELECT COUNT(*) FROM graduations WHERE period='discovery'").fetchone()[0]
+            self.db.execute("DELETE FROM windows WHERE period='discovery'")
+            self.db.execute("DELETE FROM graduations WHERE period='discovery'")
+            self.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('versao_plano', ?)", (new_value,))
+        log.info("versao_plano re-gravada (provenance; holdout/embargo intocados): %s -> %s | descartadas %d "
+                "janela(s) e %d graduacao(oes) de discovery do plano antigo (ord nao corresponde ao novo sorteio) "
+                "| motivo: %s", old, new_value, nw, ng, reason)
+        return {"windows_discovery_descartadas": nw, "graduacoes_discovery_descartadas": ng}
+
     # -- janelas e graduacoes ---------------------------------------------------------
     def window_done(self, period: str, ord_: int, launchpad: str) -> bool:
         row = self.db.execute("SELECT status FROM windows WHERE period=? AND ord=? AND launchpad=?", (period, ord_, launchpad)).fetchone()

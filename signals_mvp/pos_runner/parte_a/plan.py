@@ -45,6 +45,12 @@ class PeriodPlan:
     window_minutes: int = 30
     seed: int = 20261015
     launchpads: tuple[str, ...] = ("pumpfun", "raydium_launchlab", "meteora_dbc")
+    # EMENDA 2026-10-17 (cega a resultado, ANTES de qualquer calculo do discovery -- motivo operacional: o PC do
+    # operador nao fica ligado 24h e o inicio original do discovery ficava colado no horizonte movel de 180 dias
+    # do GeckoTerminal; objetivo e so MINIMIZAR o tempo de download). So recorta o INICIO do discovery (fim e
+    # embargo continuam vindo de `span`/`holdout_fraction`, exatamente como antes -- holdout e embargo NUNCA
+    # dependem deste campo). "AAAA-MM-DD" ou None (sem corte, comportamento original).
+    discovery_start_override: Any = None
 
     def periods(self) -> dict[str, tuple[int, int]]:
         d = _date_ts(self.freeze_date)
@@ -56,7 +62,10 @@ class PeriodPlan:
         hold_start = usable_end - int(span * self.holdout_fraction)
         hold_start -= hold_start % (self.window_minutes * 60)
         emb_start = hold_start - self.embargo_days * DAY
-        return {"discovery": (start, emb_start), "embargo": (emb_start, hold_start), "holdout": (hold_start, usable_end)}
+        disc_start = start
+        if self.discovery_start_override:
+            disc_start = max(start, _date_ts(self.discovery_start_override))
+        return {"discovery": (disc_start, emb_start), "embargo": (emb_start, hold_start), "holdout": (hold_start, usable_end)}
 
     def windows(self, period: str) -> list[tuple[int, int]]:
         """Janelas do periodo na ORDEM DO SORTEIO (deterministica pela seed)."""

@@ -7,6 +7,7 @@ O GeckoTerminal publico limita ~30 chamadas/min por IP e responde 429 com
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from email.utils import parsedate_to_datetime
@@ -51,6 +52,7 @@ class RateLimiter:
         sleep: Callable[[float], None] = time.sleep,
         min_per_min: float | None = None,
         recover_per_success: float = 0.5,
+        jitter_s: float = 0.0,
     ):
         self.max_per_min = float(per_min)
         self.min_per_min = float(min_per_min) if min_per_min is not None else max(2.0, per_min * 0.25)
@@ -59,6 +61,11 @@ class RateLimiter:
         self.burst = float(max(1, burst))
         self.pause_s = pause_s
         self.pause_max_s = pause_max_s
+        # EMENDA 2026-10-17 (cega a resultado, operacional -- desincroniza as chamadas da fronteira exata da
+        # janela de 1min do provedor, para gastar menos 429/pausa de 30s no mesmo teto efetivo; so entra quando
+        # a chamada JA ia esperar, nunca atrasa uma chamada que tinha ficha livre). 0.0 = sem jitter (default,
+        # compatibilidade retroativa com todo chamador existente).
+        self.jitter_s = max(0.0, jitter_s)
         self._clock = clock
         self._sleep = sleep
         self._lock = threading.Lock()
@@ -103,6 +110,8 @@ class RateLimiter:
             wait = (1.0 - self._tokens) / self.rate if self.rate > 0 else float("inf")
             if wait > max_wait_s:
                 raise ApiError("budget", f"limite de taxa: espera de {wait:.1f}s passa de {max_wait_s:.1f}s")
+            if self.jitter_s > 0 and wait < float("inf"):
+                wait += random.uniform(0.0, self.jitter_s)
             self._tokens = 0.0
             self._stamp = self._clock() + wait
         self._sleep(wait)

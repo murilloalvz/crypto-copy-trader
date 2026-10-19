@@ -175,6 +175,28 @@ class RateLimiterTest(unittest.TestCase):
         limiter.acquire()  # sem fichas: espera ~1 s (60/min)
         self.assertAlmostEqual(sum(slept), 1.0, places=3)
 
+    def test_jitter_only_adds_to_a_wait_that_was_already_happening(self) -> None:
+        """EMENDA 2026-10-17 (cega a resultado, operacional): jitter nunca atrasa uma chamada com ficha livre
+        (burst), so acrescenta um pouco a uma espera que ja ia ocorrer -- desincroniza sem desacelerar o caso comum."""
+        clock = FakeClock(1000.0)
+        slept: list[float] = []
+        limiter = RateLimiter(60, 2, 30, 120, clock=clock, sleep=lambda s: (slept.append(s), clock.advance(s)), jitter_s=2.0)
+        limiter.acquire()
+        limiter.acquire()
+        self.assertEqual(slept, [])  # fichas de burst livres: jitter nao se aplica
+        limiter.acquire()            # sem ficha: espera base ~1s (60/min) + jitter in [0, 2]
+        self.assertEqual(len(slept), 1)
+        self.assertGreaterEqual(slept[0], 1.0)
+        self.assertLessEqual(slept[0], 3.0)
+
+    def test_jitter_zero_by_default_is_unchanged_from_before_the_amendment(self) -> None:
+        limiter, clock, slept = self.make(per_min=60, burst=2)
+        self.assertEqual(limiter.jitter_s, 0.0)
+        limiter.acquire()
+        limiter.acquire()
+        limiter.acquire()
+        self.assertAlmostEqual(sum(slept), 1.0, places=3)
+
     def test_wait_longer_than_allowed_raises_budget_error_without_sleeping(self) -> None:
         limiter, clock, slept = self.make(per_min=6, burst=1)  # 1 ficha a cada 10 s
         limiter.acquire()
