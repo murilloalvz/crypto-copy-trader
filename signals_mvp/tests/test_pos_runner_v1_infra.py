@@ -141,5 +141,57 @@ class Pr1StorageTests(unittest.TestCase):
         self.assertEqual(header_filtrados.split(","), POS_RUNNER_V1_FILTRADOS_COLUMNS)
 
 
+class Pr1InstrumentacaoMigrationTests(unittest.TestCase):
+    """O banco do operador ja existe SEM as colunas de instrumentacao (ts_fechamento_candle, ts_alerta,
+    ts_envio_telegram, retorno_sol_dia, preco_real, slippage_*) -- `_ensure_columns` tem que acrescenta-las
+    num banco assim sem apagar nada que ja estava la."""
+
+    def test_existing_db_without_the_new_columns_gets_migrated_in_place(self):
+        import sqlite3
+
+        tmp = Path(tempfile.mkdtemp())
+        paths = make_paths(tmp)
+        paths.dados.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(paths.db))
+        con.execute(
+            "CREATE TABLE pr1_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, "
+            "tf TEXT NOT NULL, evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL, "
+            "mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v1 TEXT NOT NULL, "
+            "gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT, teste_vol_ratio REAL, "
+            "event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto', entry_price REAL, stop REAL, topo REAL, "
+            "s_suporte REAL, r_resistencia REAL, tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL, "
+            "result_net REAL, reason TEXT, tempo_h REAL, holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, "
+            "liquidez_usd REAL, tg_message_id INTEGER, alert_ts REAL, closed_ts REAL, "
+            "UNIQUE (chain, pool, tf, evento, ts_fechamento))"
+        )
+        con.execute(
+            "INSERT INTO pr1_signals (chain,pool,tf,ts_fechamento,versao_config_v1,status) "
+            "VALUES ('solana','poolOLD','1h',500,'abc123','aberto')"
+        )
+        con.execute(
+            "CREATE TABLE pr1_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER NOT NULL, "
+            "chain TEXT, pool TEXT, tf TEXT, mint TEXT, symbol TEXT, versao_config_v1 TEXT, acao TEXT NOT NULL, "
+            "voto TEXT, valor REAL, texto TEXT, chat_id TEXT, criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL, "
+            "UNIQUE (pr1_signal_id, acao))"
+        )
+        con.commit()
+        con.close()
+
+        storage = Storage(paths)
+        try:
+            row = storage.pr1_signal_by_key("solana", "poolOLD", "1h", "ENTRADA", 500)
+            self.assertIsNotNone(row, "o sinal antigo tem que sobreviver a migracao")
+            self.assertIsNone(row["ts_fechamento_candle"])   # coluna nova, dado antigo fica None (nunca inventado)
+            storage.pr1_update_signal(row["id"], ts_fechamento_candle=500, ts_alerta=600.0)
+            row2 = storage.pr1_signal(row["id"])
+            self.assertEqual(row2["ts_fechamento_candle"], 500)
+            self.assertEqual(row2["ts_alerta"], 600.0)
+            ok = storage.pr1_feedback_upsert(row["id"], "entrei", "chat1", 700.0, valor=1.0, preco_real=1.0,
+                                             slippage_entrada_pct=5.0)
+            self.assertTrue(ok)
+        finally:
+            storage.close()
+
+
 if __name__ == "__main__":
     unittest.main()

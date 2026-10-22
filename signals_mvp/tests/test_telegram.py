@@ -308,8 +308,58 @@ class V1FeedbackHandlerTest(unittest.TestCase):
 
     def test_help_mentions_the_new_v1_commands(self) -> None:
         help_text = self.handler.handle_command("/ajuda")
-        for token in ("/nota", "/relatorio", "👍 Bom"):
+        for token in ("/nota", "/relatorio", "/pulei", "👍 Bom"):
             self.assertIn(token, help_text)
+
+    def test_entrei_with_real_price_records_slippage_against_the_alert_entry(self) -> None:
+        # entry_price=1.0 no fixture; preco real 1.1 -> 10% de slippage contra o preco do alerta.
+        reply = self.handler.handle_command("/entrei poolA 1.1")
+        self.assertIn("slippage +10.0%", reply)
+        rows = self._feedback_rows()
+        self.assertEqual(rows[0]["acao"], "entrei")
+        self.assertAlmostEqual(rows[0]["preco_real"], 1.1)
+        self.assertAlmostEqual(rows[0]["slippage_entrada_pct"], 10.0)
+        self.assertIsNone(rows[0]["slippage_saida_pct"])
+
+    def test_sai_with_real_price_falls_back_to_the_stop_when_no_tp1_or_exit_full_yet(self) -> None:
+        # sem tp1_price/exit_full_price no fixture: a referencia de saida cai pro stop (0.9).
+        reply = self.handler.handle_command("/sai poolA 0.85")
+        self.assertIn("slippage -5.6%", reply)
+        rows = self._feedback_rows()
+        self.assertEqual(rows[0]["acao"], "sai")
+        self.assertAlmostEqual(rows[0]["preco_real"], 0.85)
+        self.assertAlmostEqual(rows[0]["slippage_saida_pct"], -5.555555555555556)
+        self.assertIsNone(rows[0]["slippage_entrada_pct"])
+
+    def test_entrei_sem_preco_nao_calcula_slippage(self) -> None:
+        reply = self.handler.handle_command("/entrei poolA")
+        self.assertNotIn("slippage", reply)
+        rows = self._feedback_rows()
+        self.assertIsNone(rows[0]["preco_real"])
+        self.assertIsNone(rows[0]["slippage_entrada_pct"])
+
+    def test_pulei_records_a_separate_row_never_in_pr1_feedback(self) -> None:
+        reply = self.handler.handle_command("/pulei poolA liquidez baixa")
+        self.assertIn("pulei registrado (V1)", reply)
+        self.assertIn("CAT", reply)
+        self.assertIn("liquidez baixa", reply)
+        self.assertEqual(self._feedback_rows(), [], "/pulei nunca pode criar linha em pr1_feedback")
+        rows = self.env.storage.pr1_pulados()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["pool"], "poolA")
+        self.assertEqual(rows[0]["motivo"], "liquidez baixa")
+        self.assertEqual(rows[0]["pr1_signal_id"], self.signal_id)
+
+    def test_pulei_without_a_known_signal_still_records_best_effort(self) -> None:
+        reply = self.handler.handle_command("/pulei TICKERDESCONHECIDO nao gostei")
+        self.assertIn("pulei registrado (V1)", reply)
+        rows = self.env.storage.pr1_pulados()
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["pr1_signal_id"])
+        self.assertEqual(rows[0]["pool"], "TICKERDESCONHECIDO")
+
+    def test_pulei_usage_error(self) -> None:
+        self.assertEqual(self.handler.handle_command("/pulei poolA"), "Use: /pulei <pool|ticker> <motivo>")
 
 
 class PollerTest(unittest.TestCase):

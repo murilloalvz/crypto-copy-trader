@@ -638,7 +638,9 @@ class PosRunnerLive:
                 continue
             if queued >= QUEUE_MAX:
                 break
-            info = {"fonte": fonte, "created_ts": s.created_ts, "side": s.target_side, "nome": s.name}
+            # liq_usd: so CAPTURA o que o snapshot do radar ja trouxe (zero chamada nova) -- instrumentacao
+            # de medicao da V1 (liquidez_usd em pr1_signals), nunca usada em filtro/regra.
+            info = {"fonte": fonte, "created_ts": s.created_ts, "side": s.target_side, "nome": s.name, "liq_usd": s.liq_usd}
             self.storage.pr_upsert_pool(s.pool, mint=s.token, symbol=s.symbol, quote=s.other_token, dex=s.dex, status="pendente",
                                         found_ts=now, mc_found=mc, info=json.dumps(info, ensure_ascii=False))
             queued += 1
@@ -1019,6 +1021,9 @@ class PosRunnerLive:
                 "teste_vol_ratio": ev.data.get("teste_vol_ratio"), "event_json": event_v1_to_json(ev), "status": "aberto",
                 "entry_price": ev.data.get("close"), "stop": ev.data.get("stop"), "topo": ev.data.get("TOPO"),
                 "s_suporte": ev.data.get("S"), "r_resistencia": ev.data.get("R"), "holders_tag": holders.tag,
+                # instrumentacao de medicao (nunca entra em regra/filtro/tamanho):
+                "liquidez_usd": info.get("liq_usd"), "ts_fechamento_candle": ts_fechamento,
+                "retorno_sol_dia": self._retorno_sol_dia_v1(ts_fechamento),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1033,6 +1038,9 @@ class PosRunnerLive:
             return
         if not self.storage.pr_alert_once(self._key_v1("e", pool, tf, ts_fechamento), now):
             return
+        # instrumentacao de medicao: momento em que o bot DECIDIU alertar (antes do envio em si);
+        # ts_envio_telegram (abaixo) e o momento em que o Telegram CONFIRMOU o envio.
+        self.storage.pr1_update_signal(signal["id"], ts_alerta=self.clock())
         tags = json.loads(signal["tags"] or "[]")
         gatilho = json.loads(signal["gatilho"] or "[]")
         age_h = None if ev.data.get("idade_dias") is None else ev.data["idade_dias"] * 24.0
@@ -1044,7 +1052,10 @@ class PosRunnerLive:
         )
         mid = self._send(text, self._keyboard_v1(row, signal["id"]))
         if mid is not None:
-            self.storage.pr1_update_signal(signal["id"], tg_message_id=mid, alert_ts=self.clock())
+            agora = self.clock()
+            # ts_envio_telegram duplica alert_ts (MESMO instante, nome mais claro p/ instrumentacao) --
+            # alert_ts fica como estava, nenhum consumidor existente precisa mudar.
+            self.storage.pr1_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora, ts_envio_telegram=agora)
 
     def _update_paper_v1(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
         for signal in self.storage.pr1_signals(status="aberto", pool=row["pool"], tf=tf):
@@ -1351,6 +1362,19 @@ class PosRunnerLive:
     def _sol_at(self) -> Callable[[float], Optional[float]]:
         sol = self.quotes.peek(SOL_MINT)
         return sol.at if sol is not None else (lambda t: None)
+
+    def _retorno_sol_dia_v1(self, ts: float) -> Optional[float]:
+        """Instrumentacao de medicao (item 1): retorno % do SOL/USD nas 24h antes de `ts`. So LEITURA da
+        cotacao JA cacheada (`self.quotes.peek`, zero chamada nova) -- None quando a cobertura cacheada nao
+        alcanca 24h atras (nunca busca mais dado so para isto, nunca inventa)."""
+        serie = self.quotes.peek(SOL_MINT)
+        if serie is None:
+            return None
+        agora = serie.at(ts)
+        ontem = serie.at(ts - 86_400.0)
+        if agora is None or ontem is None or ontem <= 0:
+            return None
+        return 100.0 * (agora / ontem - 1.0)
 
     def _simulate(self, bars: list[Bar], ev: Event, row: Any, costs: CostModel) -> dict[str, TradeResult]:
         dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")

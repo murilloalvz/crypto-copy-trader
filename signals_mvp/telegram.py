@@ -154,9 +154,10 @@ HELP_TEXT = (
     "recente e a chain for ambigua (ex.: 0x... em bsc ou robinhood).\n"
     "\n"
     "POS-RUNNER-V1 (feedback):\n"
-    "/entrei <pool|ticker> [preco] - registra que entrou num sinal da V1\n"
-    "/sai <pool|ticker> [preco] - registra que saiu de um sinal da V1\n"
+    "/entrei <pool|ticker> [preco] - registra que entrou num sinal da V1 (preco real -> slippage vs o alerta)\n"
+    "/sai <pool|ticker> [preco] - registra que saiu de um sinal da V1 (preco real -> slippage vs TP1/EXIT/stop)\n"
     "/nota <pool|ticker> <texto> - anota algo sobre o sinal\n"
+    "/pulei <pool|ticker> <motivo> - registra que viu o sinal e NAO executou\n"
     "/relatorio - bons vs ruins da ultima semana\n"
     "Os botoes 👍 Bom / 👎 Ruim / 📝 Nota do alerta da V1 registram o voto/nota; o 📝 pede a nota em resposta."
 )
@@ -256,6 +257,8 @@ class OperatorHandler:
             return self.relatorio_provider()
         if command == "/nota":
             return self._v1_nota_command(args)
+        if command == "/pulei":
+            return self._v1_pulei_command(args)
         if command in ("/entrei", "/sai"):
             # FASE 3 da V1 (feedback no Telegram): MESMA grafia de comando do V0, formato diferente
             # (<pool|ticker> [preco], nao <contrato> <valor> [chain]) -- tenta resolver contra um sinal da
@@ -281,6 +284,21 @@ class OperatorHandler:
             rows = [r for r in self.storage.pr1_signals() if (r["symbol"] or "").lower() == token.lower()]
         return rows[-1] if rows else None
 
+    @staticmethod
+    def _v1_slippage_pct(preco_real: float, referencia: Optional[float]) -> Optional[float]:
+        if not referencia:
+            return None
+        return 100.0 * (preco_real - referencia) / referencia
+
+    @staticmethod
+    def _v1_referencia_saida(signal: sqlite3.Row) -> Optional[float]:
+        """Ultima referencia de preco que a V1 alcancou nesse sinal: EXIT FULL, senao TP1, senao o stop.
+        None quando nenhuma existe ainda (nunca inventa referencia)."""
+        for campo in ("exit_full_price", "tp1_price", "stop"):
+            if signal[campo] is not None:
+                return signal[campo]
+        return None
+
     def _v1_trade_command(self, action: str, args: list[str]) -> Optional[str]:
         if not args:
             return None
@@ -293,11 +311,21 @@ class OperatorHandler:
             if preco is None:
                 return "Preco invalido. Exemplo: 0.0021"
         assert self.client is not None
-        self.storage.pr1_feedback_upsert(signal["id"], action, self.client.chat_id, self.clock(), valor=preco)
+        slippage_entrada = slippage_saida = None
+        if preco is not None:
+            if action == "entrei":
+                slippage_entrada = self._v1_slippage_pct(preco, signal["entry_price"])
+            else:
+                slippage_saida = self._v1_slippage_pct(preco, self._v1_referencia_saida(signal))
+        self.storage.pr1_feedback_upsert(
+            signal["id"], action, self.client.chat_id, self.clock(), valor=preco, preco_real=preco,
+            slippage_entrada_pct=slippage_entrada, slippage_saida_pct=slippage_saida)
         self.storage.export_csvs()
         rotulo = "entrada" if action == "entrei" else "saida"
         preco_txt = f" @ {preco}" if preco is not None else ""
-        return f"✅ {rotulo} registrada (V1): ${clean_text(signal['symbol'] or '?', 20)}{preco_txt}"
+        slip = slippage_entrada if action == "entrei" else slippage_saida
+        slip_txt = f" | slippage {slip:+.1f}%" if slip is not None else ""
+        return f"✅ {rotulo} registrada (V1): ${clean_text(signal['symbol'] or '?', 20)}{preco_txt}{slip_txt}"
 
     def _v1_nota_command(self, args: list[str]) -> str:
         if len(args) < 2:
@@ -310,6 +338,24 @@ class OperatorHandler:
         self.storage.pr1_feedback_upsert(signal["id"], "nota", self.client.chat_id, self.clock(), texto=texto)
         self.storage.export_csvs()
         return f"\U0001f4dd nota registrada (V1): ${clean_text(signal['symbol'] or '?', 20)}"
+
+    def _v1_pulei_command(self, args: list[str]) -> str:
+        """/pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar --
+        registro separado de pr1_feedback (aqui nunca e um trade, so uma observacao)."""
+        if len(args) < 2:
+            return "Use: /pulei <pool|ticker> <motivo>"
+        signal = self._v1_resolve_signal_token(args[0])
+        motivo = " ".join(args[1:]).strip()
+        assert self.client is not None
+        chain = signal["chain"] if signal else None
+        pool = signal["pool"] if signal else args[0]
+        symbol = signal["symbol"] if signal else None
+        versao = signal["versao_config_v1"] if signal else None
+        self.storage.pr1_pulado_insert(self.clock(), chain, pool, symbol, motivo, self.client.chat_id, versao,
+                                       signal["id"] if signal else None)
+        self.storage.export_csvs()
+        rotulo = clean_text(symbol or args[0], 20)
+        return f"⏭ pulei registrado (V1): ${rotulo} ({clean_text(motivo, 60)})"
 
     def _maybe_handle_note_reply(self, reply_to_message: dict, text: str) -> bool:
         """O botao 📝 Nota manda um prompt com "(sinal #<id>)" embutido no proprio texto (sem estado novo no
