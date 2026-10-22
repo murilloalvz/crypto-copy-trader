@@ -142,6 +142,27 @@ class ChamadasPorCicloTests(unittest.TestCase):
         self.assertEqual(out.chamadas_por_ciclo, 3)
 
 
+class EnvBoolTests(unittest.TestCase):
+    """BUG PRIORITARIO (2026-10-22, item 3): `_env_bool` decide o `SEM_LEGADO`."""
+
+    def test_absent_or_blank_is_none(self) -> None:
+        from ..worker import _env_bool
+        self.assertIsNone(_env_bool("SEM_LEGADO", env={}))
+        self.assertIsNone(_env_bool("SEM_LEGADO", env={"SEM_LEGADO": "  "}))
+
+    def test_falsy_spellings(self) -> None:
+        from ..worker import _env_bool
+        for value in ("0", "false", "False", "nao", "NAO", "não", "off"):
+            with self.subTest(value):
+                self.assertFalse(_env_bool("SEM_LEGADO", env={"SEM_LEGADO": value}))
+
+    def test_anything_else_is_true(self) -> None:
+        from ..worker import _env_bool
+        for value in ("1", "true", "sim", "on", "qualquer coisa"):
+            with self.subTest(value):
+                self.assertTrue(_env_bool("SEM_LEGADO", env={"SEM_LEGADO": value}))
+
+
 _ = shutil
 
 if __name__ == "__main__":

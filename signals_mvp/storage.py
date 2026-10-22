@@ -53,6 +53,11 @@ POS_RUNNER_V1_COLUMNS = [
     "versao_config_v1", "perdido_offline",
 ]
 POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
+# feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
+POS_RUNNER_V1_FEEDBACK_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "tf", "acao", "voto", "valor", "texto", "chat_id",
+    "versao_config_v1",
+]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -172,6 +177,16 @@ CREATE TABLE IF NOT EXISTS pr1_bankroll_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v1 TEXT NOT NULL,
   pr1_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr1_signal_id)
 );
+-- feedback do operador na V1 (FASE 3 do prompt definitivo): botoes 👍/👎/📝 e os comandos /entrei, /sai, /nota.
+-- 1 linha por (sinal, acao) -- repetir a acao (clicar 2x, rodar o comando de novo) ATUALIZA a linha, nunca
+-- duplica (item 1/2 da Fase 3). `acao` em {'voto','nota','entrei','sai'}; `voto` so para acao='voto'
+-- ('bom'/'ruim'); `valor` = preco para acao in ('entrei','sai'); `texto` = nota para acao='nota'.
+CREATE TABLE IF NOT EXISTS pr1_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER NOT NULL, chain TEXT, pool TEXT, tf TEXT,
+  mint TEXT, symbol TEXT, versao_config_v1 TEXT, acao TEXT NOT NULL, voto TEXT, valor REAL, texto TEXT,
+  chat_id TEXT, criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  UNIQUE (pr1_signal_id, acao)
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -215,7 +230,7 @@ class Storage:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
-                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True}
+                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -531,6 +546,8 @@ class Storage:
             "pos_runner_v1_filtrados": (self.paths.pos_runner_v1_filtrados_csv,
                                        lambda: (POS_RUNNER_V1_FILTRADOS_COLUMNS, self._pos_runner_v1_filtrados_rows())),
             "pos_runner_v1_banca": (self.paths.pos_runner_v1_banca_csv, self._pos_runner_v1_banca_header_rows),
+            "pos_runner_v1_feedback": (self.paths.pos_runner_v1_feedback_csv,
+                                       lambda: (POS_RUNNER_V1_FEEDBACK_COLUMNS, self._pos_runner_v1_feedback_rows())),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -910,6 +927,53 @@ class Storage:
             [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v1"]]
             for r in self._all("SELECT * FROM pr1_filtrados ORDER BY ts, id")
         ]
+
+    # -- feedback do operador na V1 (FASE 3: botoes 👍/👎/📝 + /entrei /sai /nota) -------------------------
+    def pr1_feedback_upsert(self, signal_id: int, acao: str, chat_id: str, now: float, voto: Optional[str] = None,
+                           valor: Optional[float] = None, texto: Optional[str] = None) -> bool:
+        """1 linha por (sinal, acao) -- repetir a acao (botao de novo, comando de novo) ATUALIZA, nunca
+        duplica. False quando o sinal nao existe (comando/callback aponta pra um id que nao e da V1)."""
+        signal = self.pr1_signal(signal_id)
+        if signal is None:
+            return False
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_feedback (pr1_signal_id,chain,pool,tf,mint,symbol,versao_config_v1,acao,voto,valor,texto,"
+                "chat_id,criado_ts,atualizado_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(pr1_signal_id,acao) DO UPDATE SET voto=excluded.voto, valor=excluded.valor, "
+                "texto=excluded.texto, chat_id=excluded.chat_id, atualizado_ts=excluded.atualizado_ts",
+                (signal_id, signal["chain"], signal["pool"], signal["tf"], signal["mint"], signal["symbol"],
+                 signal["versao_config_v1"], acao, voto, valor, texto, chat_id, now, now),
+            )
+            self._dirty["pos_runner_v1_feedback"] = True
+        return True
+
+    def pr1_feedback_for_signal(self, signal_id: int) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_feedback WHERE pr1_signal_id=? ORDER BY acao", (signal_id,))
+
+    def pr1_feedback_votes_since(self, since_ts: float, until_ts: float, versao_config_v1: str) -> list[sqlite3.Row]:
+        """Para o relatorio semanal (so votos 👍/👎, SO da versao atual -- nunca mistura versoes de config,
+        complemento FASE 1.1 item 3 aplicado aqui tambem)."""
+        return self._all(
+            "SELECT f.*, s.gatilho AS sig_gatilho, s.tags AS sig_tags, s.janela_ouro AS sig_janela_ouro, "
+            "s.ts_fechamento AS sig_ts_fechamento, s.result_net AS sig_result_net FROM pr1_feedback f "
+            "JOIN pr1_signals s ON s.id = f.pr1_signal_id WHERE f.acao='voto' AND f.versao_config_v1=? "
+            "AND s.ts_fechamento>=? AND s.ts_fechamento<?",
+            (versao_config_v1, since_ts, until_ts),
+        )
+
+    def _pos_runner_v1_feedback_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all(
+            "SELECT f.*, s.ts_fechamento AS sig_ts_fechamento, s.hora_brt AS sig_hora_brt FROM pr1_feedback f "
+            "JOIN pr1_signals s ON s.id = f.pr1_signal_id ORDER BY f.atualizado_ts, f.id"
+        ):
+            out.append([
+                iso_utc(r["sig_ts_fechamento"]), r["sig_hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["tf"], r["acao"], r["voto"] or "", "" if r["valor"] is None else r["valor"],
+                csv_safe(r["texto"] or ""), r["chat_id"] or "", r["versao_config_v1"],
+            ])
+        return out
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:

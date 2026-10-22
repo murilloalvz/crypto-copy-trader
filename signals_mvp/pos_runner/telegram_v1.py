@@ -1,16 +1,34 @@
 """Templates do Telegram da POS-RUNNER-V1 (item 4 do PROMPT DEFINITIVO V1): ENTRADA, TP1, EXIT FULL,
-INVALIDADO, WATCHLIST, RESUMO DIARIO. HTML-escape de ticker/nome (`chain_adapter.html_escape_ticker`); fila de
-envio com retry e botoes sao responsabilidade de quem chama (mesmo padrao do V0: `telegram.TelegramClient` +
-`alerts.delivery_variants`) -- aqui so o TEXTO e o teclado.
+INVALIDADO, WATCHLIST, RESUMO DIARIO, RELATORIO SEMANAL (FASE 3). HTML-escape de ticker/nome
+(`chain_adapter.html_escape_ticker`); fila de envio com retry e botoes sao responsabilidade de quem chama
+(mesmo padrao do V0: `telegram.TelegramClient` + `alerts.delivery_variants`) -- aqui so o TEXTO e o teclado.
+
+FASE 3 (feedback no Telegram): botoes 👍 Bom / 👎 Ruim / 📝 Nota em todo alerta de ENTRADA/TP1/EXIT FULL
+(`feedback_row`/`with_feedback`); o callback do botao e processado por `telegram.OperatorHandler` (reaproveita
+o poller/offset ja existente do V0 -- nunca um 2o long-poll no mesmo token). O botao 📝 pede a nota EM
+RESPOSTA (`note_prompt_text`): o id do sinal fica embutido no proprio texto do prompt ("(sinal #<id>)"),
+resolvido de volta por `NOTE_PROMPT_RE` quando a resposta chega -- sem precisar de nenhum estado novo no
+servidor (o historico do Telegram e o unico "estado").
 """
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Optional
 
 from ..util import fmt_usd
 from .brt import hora_brt
 from .chain_adapter import ChainAdapter, html_escape_ticker
+
+# tags que entram no relatorio semanal "bons vs ruins" (complemento FASE 3, item 3) -- as mesmas que ja
+# aparecem no alerta de ENTRADA (TAG_LABELS abaixo), exceto `holders_indisponivel`/`nao_validado` (nunca
+# avaliam qualidade do sinal em si).
+RELATORIO_TAGS = ("l_bc_suspeito", "HOLDER_CONCENTRADO", "VAMP_RISK", "risco_fora_da_faixa")
+
+# o id do sinal fica embutido no texto do prompt da nota ("...(sinal #123)."): quando a resposta chega,
+# `OperatorHandler` relê o texto da mensagem RESPONDIDA (nao um estado novo) para saber a qual sinal associar.
+NOTE_PROMPT_RE = re.compile(r"\(sinal #(\d+)\)")
 
 TAG_LABELS = {
     "na_janela_idade": None,                 # nunca aparece (e so o filtro de idade, nao uma tag visivel)
@@ -124,3 +142,89 @@ def keyboard(adapter: ChainAdapter, mint: str, pool: str, gmgn_slug: str, dexscr
         {"text": "DexScreener", "url": adapter.link_for("dexscreener", mint, pool, gmgn_slug, dexscreener_slug)},
     ]]
     return {"inline_keyboard": rows}
+
+
+# ---------------------------------------------------------------------------
+# FASE 3 -- feedback no Telegram (botoes 👍/👎/📝 + relatorio semanal)
+# ---------------------------------------------------------------------------
+
+
+def feedback_row(signal_id: int) -> list[dict[str, str]]:
+    """Linha de botoes de feedback (item 1 da FASE 3): `callback_data` no formato `v1fb:<acao>:<signal_id>`,
+    resolvido por `telegram.OperatorHandler._handle_v1_feedback_callback`. `up`/`down` gravam o voto (idempotente:
+    clicar de novo so atualiza); `note` manda o prompt em resposta (`note_prompt_text`), nunca grava nada so com
+    o clique."""
+    return [
+        {"text": "👍 Bom", "callback_data": f"v1fb:up:{signal_id}"},
+        {"text": "👎 Ruim", "callback_data": f"v1fb:down:{signal_id}"},
+        {"text": "📝 Nota", "callback_data": f"v1fb:note:{signal_id}"},
+    ]
+
+
+def feedback_keyboard(signal_id: int) -> dict:
+    """Teclado SO com a linha de feedback (usado em TP1/EXIT FULL, que respondem ao alerta de ENTRADA e por
+    isso nao precisam repetir os botoes de terminal/DexScreener -- aquele teclado ja esta na mensagem
+    original)."""
+    return {"inline_keyboard": [feedback_row(signal_id)]}
+
+
+def with_feedback(base_keyboard: dict, signal_id: int) -> dict:
+    """Acrescenta a linha de feedback a um teclado JA existente (terminal/DexScreener do ENTRADA, `keyboard()`
+    acima) -- nunca substitui as linhas que ja estavam la."""
+    rows = list(base_keyboard.get("inline_keyboard") or [])
+    rows.append(feedback_row(signal_id))
+    return {"inline_keyboard": rows}
+
+
+def note_prompt_text(symbol: str, signal_id: int) -> str:
+    """Pede a nota EM RESPOSTA (item 1 da FASE 3): o id do sinal fica no proprio texto ("(sinal #<id>)"),
+    reconhecido por `NOTE_PROMPT_RE` quando a resposta chega -- nao precisa de nenhum estado novo no servidor."""
+    return f"📝 Responda esta mensagem com a nota para ${_esc(symbol, 20)} (sinal #{signal_id})."
+
+
+def _tags_from_json(raw: Optional[str]) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_config_v1: str) -> str:
+    """"Bons vs ruins" da semana (complemento FASE 3, item 3): contagem de votos 👍/👎 por gatilho, por
+    janela_ouro/fora_da_janela e por tag (`RELATORIO_TAGS`), mais o PnL paper do periodo -- `rows` ja vem
+    filtrada por `versao_config_v1` (nunca mistura versoes de config, mesma regra de `daily_summary_v1`)."""
+    bons = sum(1 for r in rows if r["voto"] == "bom")
+    ruins = sum(1 for r in rows if r["voto"] == "ruim")
+
+    def _group(key_fn: Any) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for r in rows:
+            for key in key_fn(r):
+                slot = out.setdefault(key, {"bom": 0, "ruim": 0})
+                if r["voto"] in slot:
+                    slot[r["voto"]] += 1
+        return out
+
+    por_gatilho = _group(lambda r: _tags_from_json(r["sig_gatilho"]))
+    por_janela = _group(lambda r: [r["sig_janela_ouro"] or "s/d"])
+    por_tag = _group(lambda r: [t for t in _tags_from_json(r["sig_tags"]) if t in RELATORIO_TAGS])
+
+    def _lines(title: str, counts: dict[str, dict[str, int]]) -> list[str]:
+        if not counts:
+            return [f"{title}: sem dados"]
+        out = [f"{title}:"]
+        for key, c in sorted(counts.items()):
+            out.append(f"  {key}: 👍{c['bom']} 👎{c['ruim']}")
+        return out
+
+    pnl = "s/d" if pnl_pct is None else f"{pnl_pct:+.1f}%"
+    lines = [
+        "📊 RELATÓRIO SEMANAL — POS-RUNNER-V1 (bons vs ruins)",
+        f"Votos: 👍 {bons} | 👎 {ruins} (de {len(rows)} sinais com feedback)",
+        f"PnL paper (líquido, período): {pnl} | versão: {versao_config_v1}",
+        *_lines("Por gatilho", por_gatilho),
+        *_lines("Por janela de ouro", por_janela),
+        *_lines("Por tag", por_tag),
+    ]
+    return "\n".join(lines)

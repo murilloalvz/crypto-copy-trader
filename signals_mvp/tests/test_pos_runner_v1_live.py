@@ -219,6 +219,25 @@ class SemV0Tests(unittest.TestCase):
             h.close()
 
 
+class CicloLogTests(unittest.TestCase):
+    """BUG PRIORITARIO (2026-10-22, item 4): log INFO por ciclo do V1 (fila, chamadas, 429, tempo) -- antes
+    nao existia nenhuma linha de busca de candles do V1, dificultando confirmar "V1 famintо" so pelo log."""
+
+    def test_tick_logs_an_info_line_with_fila_chamadas_429_and_tempo(self) -> None:
+        h = LiveHarness()
+        try:
+            with self.assertLogs("signals_mvp.pos_runner.live", level="INFO") as ctx:
+                start_tracking(h)
+            lines = [m for m in ctx.output if "POS-RUNNER-V1: ciclo" in m]
+            self.assertTrue(lines, ctx.output)
+            self.assertIn("fila=", lines[0])
+            self.assertIn("chamadas=", lines[0])
+            self.assertIn("429=", lines[0])
+            self.assertIn("tempo=", lines[0])
+        finally:
+            h.close()
+
+
 def _start_tracking_shifted(h: LiveHarness, offset: float) -> None:
     """Mesmo cenario do textbook(), com TODOS os candles deslocados `offset` segundos -- muda a hora BRT do
     fechamento que dispara a ENTRADA sem mudar mais nada (idade desde a criacao continua igual: `created_ts`

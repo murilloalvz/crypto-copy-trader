@@ -29,25 +29,71 @@ console = logging.getLogger("signals_mvp.console")
 EXIT_CONFIG_ERROR = 2
 
 
+def _env_bool(name: str, env: Optional[dict] = None) -> Optional[bool]:
+    """None = variavel ausente/vazia (deixa o chamador decidir o padrao); senao, True/False por valor
+    (qualquer coisa exceto '0'/'false'/'nao'/'não'/'off' e True)."""
+    raw = (env if env is not None else os.environ).get(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip().lower() not in ("0", "false", "nao", "não", "off")
+
+
 class Heartbeat:
-    """Escreve dados/heartbeat.json (no maximo 1x/s). O supervisor usa para detectar travamento."""
+    """Escreve dados/heartbeat.json (no maximo 1x/s). O supervisor usa para detectar travamento.
+
+    BUG PRIORITARIO (2026-10-22, item 2): `ts` por si so e um falso-positivo em potencial -- antes da
+    correcao, so era atualizado dentro do loop de espera DEPOIS de `run_cycle()` terminar; um ciclo mais
+    lento que `ciclo.intervalo_s` (ex.: o motor legado em pausa de 429) fazia esse loop nao rodar nenhuma
+    vez, entao `ts` ficava parado mesmo com o worker vivo e progredindo. Agora `ts` e escrito por uma
+    THREAD SEPARADA (`HeartbeatWriter`), de tempo em tempo, independente do ciclo -- prova so que o
+    processo/interpretador ainda responde. `ultimo_progresso_ts`/`chamadas_gt_total` (atualizados so quando
+    um ciclo de verdade termina, via `mark_progress`) e que provam PROGRESSO real; o watchdog usa os dois
+    (ver `supervisor.py`)."""
 
     def __init__(self, path: Path):
         self.path = path
         self._last = 0.0
         self.cycle = 0
         self.state = "iniciando"
+        self.last_progress_ts: float = 0.0
+        self.gt_calls_total: int = 0
+
+    def mark_progress(self, gt_calls: int = 0) -> None:
+        """Chamado quando um ciclo de verdade TERMINA (nunca pela thread de escrita, que so repete o que
+        ja esta aqui)."""
+        self.last_progress_ts = utc_now()
+        self.gt_calls_total += max(0, gt_calls)
 
     def beat(self, force: bool = False) -> None:
         now = time.monotonic()
         if not force and now - self._last < 1.0:
             return
         self._last = now
-        payload = {"ts": utc_now(), "pid": os.getpid(), "ciclo": self.cycle, "estado": self.state}
+        payload = {
+            "ts": utc_now(), "pid": os.getpid(), "ciclo_atual": self.cycle, "estado": self.state,
+            "ultimo_progresso_ts": self.last_progress_ts, "chamadas_gt_total": self.gt_calls_total,
+        }
         try:
             atomic_write_text(self.path, json.dumps(payload))
         except OSError:
             pass  # heartbeat e melhor-esforco
+
+
+class HeartbeatWriter(threading.Thread):
+    """Thread dedicada (BUG PRIORITARIO item 2): grava o heartbeat a cada `interval_s` (padrao 30s) POR
+    TEMPO, nunca por ciclo -- continua vivo mesmo que o loop principal esteja ocupado numa chamada de rede
+    lenta (I/O de rede libera o GIL; so um ciclo REALMENTE travado no CPython para esta thread tambem, e
+    nesse caso faltar o heartbeat e o sinal correto de processo congelado)."""
+
+    def __init__(self, heartbeat: Heartbeat, stop: threading.Event, interval_s: float = 30.0):
+        super().__init__(name="heartbeat-writer", daemon=True)
+        self.heartbeat = heartbeat
+        self.stop_event = stop
+        self.interval_s = interval_s
+
+    def run(self) -> None:
+        while not self.stop_event.wait(self.interval_s):
+            self.heartbeat.beat(force=True)
 
 
 def make_gt(cfg: Config) -> GtClient:
@@ -79,6 +125,7 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
     for name, chain in list(engine.cfg.enabled_chains().items()):
         if chain["gt_rede"] not in ids:
             engine.disabled_chains.add(name)
+            engine.disabled_chain_reasons[name] = f"sem rede {chain['gt_rede']!r} no GeckoTerminal"
             message = f"Rede '{chain['gt_rede']}' ({chain['nome']}) nao existe no GeckoTerminal: chain {name} DESLIGADA nesta execucao."
             log.error(message)
             console.warning(message)
@@ -89,11 +136,13 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
                     pass
 
 
-def _check_fase2_capabilities(http: Any, telegram: Optional[TelegramClient], paths: Paths) -> None:
+def _check_fase2_capabilities(http: Any, telegram: Optional[TelegramClient], paths: Paths) -> dict[str, Any]:
     """FASE 2 (prompt, secao 5): so a deteccao de capacidade real (networks + OHLCV de amostra num pool real)
     + log/aviso no Telegram, 1x no startup -- nunca liga descoberta/holders de BSC/Robinhood. `capable()`
     continua False por decisao explicita do operador ("mantendo BSC e Robinhood desligadas por padrao"); isto
-    so confirma e registra o estado real (rede existe? tem OHLCV?) em vez de deixar a pergunta em aberto."""
+    so confirma e registra o estado real (rede existe? tem OHLCV?) em vez de deixar a pergunta em aberto.
+    Devolve {nome: Capability} (FASE 3, item 4) para a mensagem de startup mostrar o estado real, nunca um
+    texto fixo."""
     from .pos_runner.chain_adapter import BscAdapter, RobinhoodAdapter
 
     cache_root = paths.dados / "pos_runner"
@@ -101,11 +150,13 @@ def _check_fase2_capabilities(http: Any, telegram: Optional[TelegramClient], pat
         BscAdapter(http, telegram=telegram, cache_dir=cache_root / "bsc_ohlcv"),
         RobinhoodAdapter(http, telegram=telegram, cache_dir=cache_root / "robinhood_ohlcv"),
     )
+    capabilities: dict[str, Any] = {}
     for adapter in adapters:
         try:
-            adapter.check()
+            capabilities[adapter.name] = adapter.check()
         except Exception:
             log.exception("POS-RUNNER-V1: falha ao verificar capacidade de %s", adapter.name)
+    return capabilities
 
 
 def resolve_chamadas_por_ciclo(settings: Any, raw: dict, sem_v0: bool, env: Optional[dict] = None) -> Any:
@@ -262,6 +313,8 @@ class Worker:
         storage = Storage(self.paths)
         heartbeat = Heartbeat(self.paths.heartbeat)
         heartbeat.beat(force=True)
+        heartbeat_writer = HeartbeatWriter(heartbeat, self.stop)
+        heartbeat_writer.start()
         telegram: Optional[TelegramClient] = None
         if token and chat_id:
             try:
@@ -275,9 +328,23 @@ class Worker:
         meta = load_meta(meta_path(self.paths, cfg))
         engine = Engine(cfg, meta, storage, gt, make_goplus(cfg), telegram, heartbeat=heartbeat.beat)
         engine.pos_runner = make_pos_runner(cfg, self.paths, storage, engine, gt, telegram, self.stop)
+        # BUG PRIORITARIO (2026-10-22, item 3): o motor legado (new_pools/OHLCV/token info do `signals_mvp`
+        # raiz) compete pelo MESMO limitador/orcamento de GT que o POS-RUNNER-V1 -- com o V1 ligado, o V1 tem
+        # prioridade por padrao (SEM_LEGADO=1 implicito); `SEM_LEGADO=0` no .env religa o legado explicitamente
+        # (nunca a config da V1, so este liga/desliga operacional). Sem o V1 ligado, nada muda.
+        sem_legado_env = _env_bool("SEM_LEGADO")
+        v1_ligado = engine.pos_runner is not None and engine.pos_runner.enabled()
+        engine.legado_ligado = (not sem_legado_env) if sem_legado_env is not None else (not v1_ligado)
+        if not engine.legado_ligado:
+            console.info("Motor legado DESLIGADO (%s) -- orcamento de GT todo para o POS-RUNNER-V1",
+                         "SEM_LEGADO" if sem_legado_env else "V1 ligado, padrao")
+            for name in engine.cfg.enabled_chains():
+                engine.disabled_chains.add(name)
+                engine.disabled_chain_reasons[name] = "motor legado desligado (SEM_LEGADO)"
         self._config_mtime = self._mtime(self.paths.config)
         self._meta_mtime = self._mtime(meta_path(self.paths, cfg))
-        validate_networks(engine, gt, telegram)
+        if engine.legado_ligado:
+            validate_networks(engine, gt, telegram)
         http = getattr(gt, "http", None)
         skew_message = clock_skew_message(http.clock_skew_s() if http is not None else None)
         if skew_message:
@@ -303,8 +370,8 @@ class Worker:
             poller.start()
             self._announce_start(engine, storage, telegram)
 
-        chains = ", ".join(c["nome"] for c in engine.enabled_chains().values())
-        console.info("Bot de sinais v0 ligado | config %s | meta %s | chains: %s | PAPER/somente leitura", cfg.version, meta.version, chains)
+        console.info("Bot de sinais v0 ligado | config %s | meta %s | chains %s | PAPER/somente leitura",
+                     cfg.version, meta.version, engine.chains_status_text())
         console.info("CSVs em %s | log em %s | Ctrl+C ou 'parar' para sair", self.paths.dados, self.paths.logs / "signals_mvp.log")
 
         while not self.stop_requested():
@@ -314,6 +381,7 @@ class Worker:
             try:
                 self.reload_if_changed(engine, telegram)
                 stats = engine.run_cycle()
+                heartbeat.mark_progress(gt_calls=stats.gt_calls)   # BUG PRIORITARIO item 2: progresso de verdade
                 p50 = sorted(engine.latencies)[len(engine.latencies) // 2] if engine.latencies else None
                 console.info("ciclo %d (%.0fs) | %s", engine.cycle_count, stats.duration_s, stats.line(p50))
                 engine.maybe_send_daily_summary()
@@ -332,6 +400,7 @@ class Worker:
 
         console.info("parando... (gravando CSVs)")
         self.stop.set()
+        heartbeat_writer.join(timeout=2)
         if poller is not None:
             poller.join(timeout=3)  # o long-poll pode estar no meio de uma espera; ele sai sozinho no proximo ciclo
         if engine.pos_runner is not None:
@@ -351,9 +420,9 @@ class Worker:
         last = float(storage.get_meta("ultimo_aviso_inicio", "0") or 0)
         if now - last < 600:
             return
-        chains = ", ".join(c["nome"] for c in engine.enabled_chains().values())
         try:
-            telegram.notify(f"\U0001f916 Bot de sinais ligado (PAPER). config {engine.cfg.version} | meta {engine.meta.version} | chains: {chains}")
+            telegram.notify(f"\U0001f916 Bot de sinais ligado (PAPER). config {engine.cfg.version} | meta {engine.meta.version} | "
+                           f"chains {engine.chains_status_text()}")
             storage.set_meta("ultimo_aviso_inicio", str(now))
         except TelegramError as exc:
             log.warning("aviso de inicio nao enviado: %s", exc)

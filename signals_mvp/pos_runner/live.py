@@ -26,6 +26,7 @@ import logging
 import random
 import re
 import threading
+import time
 import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -753,12 +754,15 @@ class PosRunnerLive:
         out: dict[str, Any] = {"chamadas": 0, "erros": 0, "rate_limited": False}
         if not self.enabled():
             return out
+        t0 = time.monotonic()
         if self.version_start is None:
             self._startup(now)
         self.http.arm(budget, keep, self.settings.chamadas_por_ciclo)
+        fila_tamanho = 0
         try:
             self._promote(now)
             due = self._due_list(now)
+            fila_tamanho = len(due)
             for rank, _next, row, tf in due:
                 if rank == 0:
                     self._refresh_safe(row, tf, now, out)
@@ -784,6 +788,8 @@ class PosRunnerLive:
             removed = self.storage.pr_prune(now)
             if removed:
                 log.info("POS-RUNNER poda: %s", removed)
+        log.info("POS-RUNNER-V1: ciclo | fila=%d | chamadas=%d | 429=%s | tempo=%.2fs",
+                 fila_tamanho, out.get("chamadas", 0), out.get("rate_limited", False), time.monotonic() - t0)
         self._heartbeat_v1(now, out.get("chamadas", 0), out.get("rate_limited", False))
         self.last_tick = out
         return out
@@ -951,8 +957,13 @@ class PosRunnerLive:
     def _key_v1(self, kind: str, *parts: Any) -> str:
         return ":".join(["v1", kind, self.version_v1, *(str(p) for p in parts)])
 
-    def _keyboard_v1(self, row: Any) -> dict:
-        return telegram_v1.keyboard(self.adapter, row["mint"], row["pool"], "sol", self.dexscreener_slug)
+    def _keyboard_v1(self, row: Any, signal_id: Optional[int] = None) -> dict:
+        kb = telegram_v1.keyboard(self.adapter, row["mint"], row["pool"], "sol", self.dexscreener_slug)
+        if signal_id is not None:
+            # FASE 3: botoes de feedback (👍/👎/📝) SO no alerta de ENTRADA (quem chama passa o signal_id) --
+            # WATCHLIST/INVALIDADO nunca tem sinal pr1_signals associado, continuam sem a linha extra.
+            kb = telegram_v1.with_feedback(kb, signal_id)
+        return kb
 
     def _on_event_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool = row["pool"]
@@ -1031,7 +1042,7 @@ class PosRunnerLive:
             gatilho, tags, signal["entry_price"], signal["stop"], signal["topo"], tamanho_posicao_usd(banca, self.params_v1),
             mint, liquidez_usd=signal["liquidez_usd"],
         )
-        mid = self._send(text, self._keyboard_v1(row))
+        mid = self._send(text, self._keyboard_v1(row, signal["id"]))
         if mid is not None:
             self.storage.pr1_update_signal(signal["id"], tg_message_id=mid, alert_ts=self.clock())
 
@@ -1051,7 +1062,7 @@ class PosRunnerLive:
             if tp1_leg is not None and signal["tp1_price"] is None:
                 if signal["tg_message_id"] and self.storage.pr_alert_once(self._key_v1("tp1", signal["id"]), now):
                     text = telegram_v1.tp1_text(self.chain_name, signal["symbol"], tp1_leg.price, res.entry_price or signal["entry_price"])
-                    self._send(text, reply_to=signal["tg_message_id"])
+                    self._send(text, telegram_v1.feedback_keyboard(signal["id"]), reply_to=signal["tg_message_id"])
                 self.storage.pr1_update_signal(signal["id"], tp1_price=tp1_leg.price, tp1_ts=tp1_leg.ts)
             if res.status != "fechado":
                 continue
@@ -1059,7 +1070,7 @@ class PosRunnerLive:
             if exit_leg is not None and signal["tg_message_id"] and self.storage.pr_alert_once(self._key_v1("x", signal["id"]), now):
                 text = telegram_v1.exit_full_text(self.chain_name, signal["symbol"], exit_leg.price,
                                                   res.entry_price or signal["entry_price"], exit_leg.reason)
-                self._send(text, reply_to=signal["tg_message_id"])
+                self._send(text, telegram_v1.feedback_keyboard(signal["id"]), reply_to=signal["tg_message_id"])
             self.storage.pr1_update_signal(
                 signal["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
@@ -1107,6 +1118,19 @@ class PosRunnerLive:
 
     def send_daily_summary_v1(self) -> None:
         self._send(self.daily_summary_v1())
+
+    def relatorio_semanal_v1(self) -> str:
+        """"Bons vs ruins" da ultima semana (FASE 3, item 3): so votos (👍/👎) e so da versao congelada ATUAL
+        (`version_v1`) -- nunca mistura versoes de config, mesma regra do `daily_summary_v1`."""
+        now = self.clock()
+        since = now - 7 * 86400.0
+        rows = self.storage.pr1_feedback_votes_since(since, now, self.version_v1)
+        pnl_values = [r["sig_result_net"] for r in rows if r["sig_result_net"] is not None]
+        pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
+        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1)
+
+    def send_relatorio_semanal_v1(self) -> None:
+        self._send(self.relatorio_semanal_v1())
 
     def _usd_prefix(self, bars: list[Bar], tf: str, usd: UsdSeries) -> list[Bar]:
         """Candles ate o 1o sem cotacao/USD no fechamento (esse e os seguintes esperam: nunca convertidos no chute)."""
