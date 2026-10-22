@@ -80,6 +80,13 @@ Colunas principais: `data`/`hora_brt` (fechamento do candle de decisão), `chain
 usar notebook, marque também "A tampa fechada não faz nada" em `Configurações de energia adicionais` (senão
 fechar a tampa pausa o processo mesmo sem suspender a tela).
 
+## 6a. Heartbeat da V1
+
+A cada 4h (`PosRunnerLive.heartbeat_interval_s`) a V1 manda uma mensagem "💓 POS-RUNNER-V1 ativo" no Telegram
+com uptime, pools acompanhados, chamadas/min ao GeckoTerminal (média da janela) e os contadores
+`dado_invalido`/`filtrado_mc_baixo` desde o heartbeat anterior — confirma que o processo está vivo sem
+precisar abrir o console.
+
 ## 7. O que fazer em erro de rede/RPC
 
 - **GeckoTerminal 429**: o bot já pausa e tenta de novo sozinho (`CallBudget`/`RateLimiter` compartilhados

@@ -2,11 +2,18 @@
 
 MESMA conclusao ja revisada na EMENDA do V0 (docs/pos-runner-v0/EMENDA_QUALIDADE_DADOS_PROPOSTA.md, proposta,
 nao aplicada la porque o V0 ja estava congelado): o GeckoTerminal tem candle historico defeituoso em pools
-Meteora DBC (picos de 1 candle, `high/close` ate ~4e9; `L_bc` de US$14 a US$4bi). Sem teto fixo de `L_bc` por
-launchpad (a curva do pump.fun e fixa, mas DBC/LaunchLab sao configuraveis por projeto -- um teto
-pump.fun-especifico penalizaria graduacao legitima maior so por nao ser pump.fun). Como a V1 nasce DEPOIS
-desta conclusao, a regra entra direto em `ParamsV1` (`candle_wick_ratio_max`/`l_bc_floor_usd`) -- diferente do
-V0, que so emendaria isto depois de congelado.
+Meteora DBC (picos de 1 candle, `high/close` ate ~4e9; `L_bc` de US$14 a US$4bi). Sem teto fixo PRECISO de
+`L_bc` por launchpad (a curva do pump.fun e fixa, mas DBC/LaunchLab sao configuraveis por projeto e este repo
+nao tem o parametro de graduacao de nenhum dos dois sourced -- um teto pump.fun-especifico penalizaria
+graduacao legitima maior so por nao ser pump.fun). Como a V1 nasce DEPOIS desta conclusao, a regra entra
+direto em `ParamsV1` (`candle_wick_ratio_max`/`l_bc_floor_usd`) -- diferente do V0, que so emendaria isto
+depois de congelado.
+
+Revisao da FASE 1 (2026-10-22, evidencia do operador: 547/917 pools DBC com L_bc > 500k, alguns ~US$4bi;
+47/132 pools pump.fun com L_bc < 1k): o floor/wick ja cobrem o caso do pump.fun (<1k cai no floor de US$100
+so se for mesmo um defeito; a maioria dos <1k provavelmente cai no WICK, nao no floor). Para o lado de cima,
+`l_bc_ceiling_usd` (teto de SANIDADE, agnostico de launchpad, NAO uma precisao por launchpad) pega o cluster
+de centenas de milhares a bilhoes sem assumir nenhuma curva especifica.
 """
 
 from __future__ import annotations
@@ -46,4 +53,6 @@ def avaliar_qualidade(bars: list[Bar], params: ParamsV1) -> QualidadeResult:
         return QualidadeResult(False, "wick", wick_ratio_1o, l_bc)
     if l_bc < params.l_bc_floor_usd:
         return QualidadeResult(False, "l_bc_floor", wick_ratio_1o, l_bc)
+    if l_bc > params.l_bc_ceiling_usd:
+        return QualidadeResult(False, "l_bc_ceiling", wick_ratio_1o, l_bc)
     return QualidadeResult(True, "", wick_ratio_1o, l_bc)

@@ -180,6 +180,10 @@ class ParamsV1Tests(unittest.TestCase):
         from ..pos_runner.params import Params
         self.assertNotEqual(ParamsV1().version, Params().version)
 
+    def test_ceiling_must_be_above_the_floor(self):
+        with self.assertRaises(ValueError):
+            params_v1_from_dict({"l_bc_ceiling_usd": 50.0})   # abaixo do floor (100)
+
 
 def _ev(stop: float, topo: float, s_support: float, idx: int = 0) -> EventV1:
     return EventV1("ENTRADA", idx, T0 + idx * H, T0 + (idx + 1) * H,

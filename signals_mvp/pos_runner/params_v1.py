@@ -56,6 +56,13 @@ class ParamsV1:
     # (diferente do V0, que so emendou isto DEPOIS de congelado: aqui a V1 nasce ja com a regra)
     candle_wick_ratio_max: float = 3.0
     l_bc_floor_usd: float = 100.0
+    # teto de SANIDADE (revisao da FASE 1, 2026-10-22): agnostico de launchpad, NAO e uma precisao por
+    # launchpad -- este repo nao tem parametro de graduacao sourced para Raydium LaunchLab nem Meteora DBC
+    # (DBC e documentado como configuravel por projeto; LaunchLab nunca foi pesquisado). US$10M e generoso
+    # o bastante para nunca penalizar uma graduacao legitima de bonding curve (pump.fun mede 28-70k; mesmo
+    # uma DBC/LaunchLab fora da curva tipica do pump.fun nao raise bilhoes numa bonding curve) e pega o
+    # defeito ja diagnosticado do GT em DBC (L_bc relatado de centenas de milhares a ~US$4bi).
+    l_bc_ceiling_usd: float = 10_000_000.0
     # tamanho/banca (item 2.10)
     banca_inicial_usd: float = 100.0
     mao_fixa_usd: float = 10.0                # banca < banca_fixa_limite_usd: mao fixa
@@ -95,6 +102,8 @@ class ParamsV1:
             raise ValueError("candle_wick_ratio_max > 1")
         if self.l_bc_floor_usd < 0:
             raise ValueError("l_bc_floor_usd >= 0")
+        if self.l_bc_ceiling_usd <= self.l_bc_floor_usd:
+            raise ValueError("l_bc_ceiling_usd > l_bc_floor_usd")
         if self.mao_fixa_usd <= 0 or self.banca_fixa_limite_usd <= 0 or not 0 < self.posicao_frac < 1:
             raise ValueError("mao_fixa_usd, banca_fixa_limite_usd > 0 e 0 < posicao_frac < 1")
         if self.max_posicoes_abertas < 1:

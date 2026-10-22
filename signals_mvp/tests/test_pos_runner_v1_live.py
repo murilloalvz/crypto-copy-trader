@@ -138,6 +138,26 @@ class QualityFilterTests(unittest.TestCase):
         self.assertGreaterEqual(counts.get("filtrado_mc_baixo", 0), 1)
 
 
+class HeartbeatTests(unittest.TestCase):
+    def test_heartbeat_is_sent_periodically_with_the_counters(self) -> None:
+        h = LiveHarness()
+        try:
+            h.live.heartbeat_interval_s = 3 * H   # acelera o teste (padrao real: 4h)
+            start_tracking(h)
+            h.run_hours(3)
+            beats = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]
+            self.assertEqual(len(beats), 1, h.texts())
+            self.assertIn("pools acompanhados:", beats[0])
+            self.assertIn("chamadas/min", beats[0])
+            self.assertIn("dado_invalido:", beats[0])
+            self.assertIn("filtrado_mc_baixo:", beats[0])
+            h.run_hours(3)
+            self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 2,
+                             "o heartbeat tem que repetir a cada janela, nao so uma vez")
+        finally:
+            h.close()
+
+
 class SemV0Tests(unittest.TestCase):
     def test_sem_v0_disables_v0_alerts_but_keeps_v1(self) -> None:
         h = LiveHarness()
@@ -150,6 +170,25 @@ class SemV0Tests(unittest.TestCase):
                              "V0 nunca pode alertar com --sem-v0")
             self.assertEqual(h.storage.pr_signals(), [], "V0 nunca pode gravar sinal com --sem-v0")
             self.assertGreaterEqual(len(_entrada_v1(h)), 1, "a V1 continua alertando normalmente")
+        finally:
+            h.close()
+
+    def test_sem_v0_also_shrinks_the_timeframes_fetched(self) -> None:
+        """Revisao da FASE 1: --sem-v0 precisa parar de gastar orcamento de GT com os tfs que SO o V0 usava
+        (tipicamente 5m/4h) -- antes da correcao, `tfs()` ficava igual ligado ou nao."""
+        from ..pos_runner.live import LiveSettings
+
+        settings = LiveSettings(ligado=True, timeframes=("5m", "1h", "4h"), max_pools=5, chamadas_por_ciclo=3,
+                                descoberta_min=3, fontes=("pumpswap",), grafico=False)
+        h = LiveHarness(settings=settings)
+        try:
+            ligado = PosRunnerLive(h.settings, h.params, h.storage, h.world, CTX, h.tg, LINKS, "solana",
+                                   h.paths.dados / "pos_runner", clock=h.clock, sem_v0=False)
+            desligado = PosRunnerLive(h.settings, h.params, h.storage, h.world, CTX, h.tg, LINKS, "solana",
+                                      h.paths.dados / "pos_runner", clock=h.clock, sem_v0=True)
+            self.assertEqual(ligado.tfs(), ("5m", "1h", "4h"))
+            self.assertEqual(desligado.tfs(), desligado.params_v1.timeframes)
+            self.assertEqual(desligado.tfs(), ("1h",))
         finally:
             h.close()
 

@@ -42,6 +42,13 @@ class QualidadeV1Tests(unittest.TestCase):
         self.assertFalse(r.valido)
         self.assertEqual(r.motivo, "l_bc_floor")
 
+    def test_l_bc_above_the_sanity_ceiling_is_invalid(self):
+        bars = [Bar(0, 20_000_000.0, 21_000_000.0, 19_500_000.0, 20_500_000.0, 1.0),
+               Bar(H, 20_500_000.0, 21_500_000.0, 20_000_000.0, 21_000_000.0, 1.0)]
+        r = avaliar_qualidade(bars, ParamsV1())
+        self.assertFalse(r.valido)
+        self.assertEqual(r.motivo, "l_bc_ceiling")
+
     def test_a_plausible_graduation_is_valid(self):
         bars = [Bar(0, 40_000.0, 42_000.0, 39_000.0, 41_000.0, 1.0), Bar(H, 41_000.0, 45_000.0, 40_500.0, 44_000.0, 1.0)]
         r = avaliar_qualidade(bars, ParamsV1())

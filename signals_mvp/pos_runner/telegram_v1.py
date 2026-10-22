@@ -81,7 +81,8 @@ def watchlist_text(chain_name: str, symbol: str, s_suporte: float, r_resistencia
 
 
 def dado_invalido_text(chain_name: str, symbol: str, motivo: str) -> str:
-    rotulo = {"wick": "candle do 1º fechamento com pavio absurdo", "l_bc_floor": "L_bc abaixo do piso de precisão"}.get(motivo, motivo)
+    rotulo = {"wick": "candle do 1º fechamento com pavio absurdo", "l_bc_floor": "L_bc abaixo do piso de precisão",
+             "l_bc_ceiling": "L_bc acima do teto de sanidade (defeito de candle do GT)"}.get(motivo, motivo)
     return f"ℹ️ POS-RUNNER-V1: {_esc(symbol, 20)} ficou `dado_invalido` ({rotulo}) — nunca vira alerta."
 
 
@@ -96,8 +97,11 @@ def resumo_diario_text(sinais: int, invalidados: int, dado_invalido: int, filtra
     )
 
 
-def heartbeat_text(uptime_h: float, pools_ativos: int) -> str:
-    return f"💓 POS-RUNNER-V1 ativo | uptime {uptime_h:.1f}h | pools acompanhados: {pools_ativos}"
+def heartbeat_text(uptime_h: float, pools_ativos: int, chamadas_por_min: float, dado_invalido: int,
+                   filtrado_mc_baixo: int) -> str:
+    return (f"💓 POS-RUNNER-V1 ativo | uptime {uptime_h:.1f}h | pools acompanhados: {pools_ativos} | "
+           f"GT: {chamadas_por_min:.1f} chamadas/min | dado_invalido: {dado_invalido} | "
+           f"filtrado_mc_baixo: {filtrado_mc_baixo}")
 
 
 def keyboard(adapter: ChainAdapter, mint: str, pool: str, gmgn_slug: str, dexscreener_slug: str) -> dict:

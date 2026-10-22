@@ -48,6 +48,7 @@ parametros:
   # --- dado_invalido ao vivo (item 3.6) -------------------------------------------------------------------------
   candle_wick_ratio_max: 3.0
   l_bc_floor_usd: 100
+  l_bc_ceiling_usd: 10000000   # teto de sanidade agnostico de launchpad (revisao 2026-10-22, ver params_v1.py)
 
   # --- tamanho / banca (item 2.10) --------------------------------------------------------------------------------
   banca_inicial_usd: 100

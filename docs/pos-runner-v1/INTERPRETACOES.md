@@ -106,6 +106,19 @@ ser maior. Regras (launchpad-agnósticas, propriedades do próprio candle/pool, 
 
 `L_bc` robusto = `min(open, close do 1º candle real, open do 2º)` (mesmo robustecimento já revisado na EMENDA).
 
+**Revisão da FASE 1 (2026-10-22)**, com evidência nova do operador (GeckoTerminal, checkpoint real): 547 de 917
+pools Meteora DBC têm `L_bc > 500k` (alguns ~US$4bi); 47 de 132 pools pump.fun têm `L_bc < 1k`. Pedido do
+operador: derivar um teto dos parâmetros de graduação de cada launchpad, não de resultado. **Pesquisado e não
+encontrado**: este repositório não tem nenhum parâmetro numérico de graduação *sourced* para Raydium LaunchLab
+(nunca foi pesquisado) nem para Meteora DBC (documentado como configurável por projeto); `enumerate.py`
+também não captura a reserva/raise real da transação de migração on-chain — só identifica a transação. Sem
+isso, um teto *preciso por launchpad* seria inventado, não derivado. Adiciono em vez disso um **teto de
+sanidade único e agnóstico de launchpad**, `l_bc_ceiling_usd = US$10.000.000`: nenhuma graduação legítima por
+bonding curve (de nenhum dos 3) chega perto disso, e o valor pega exatamente o cluster de centenas de
+milhares a bilhões que o operador reportou, sem assumir a curva específica de nenhum launchpad. Uma precisão
+maior (teto mais apertado por launchpad) exigiria pesquisa nova dos parâmetros reais de cada programa —
+registrado como pendente em `docs/pos-runner-v1/STATUS_FASE1.md`.
+
 ## 7. Janela de ouro (item 2.3)
 
 `janela_ouro_brt: ["08:30","14:00"]`, fuso fixo UTC−3 sem horário de verão (Brasil não observa DST desde 2019,

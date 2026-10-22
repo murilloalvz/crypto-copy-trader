@@ -546,6 +546,12 @@ class PosRunnerLive:
         self._v1_mc_baixo_logged: set[str] = set()          # filtrado_mc_baixo: loga 1x por pool (nao reabre a cada ciclo)
         self._bankroll_v1: dict[str, BankrollLedgerV1] = {}  # tf desta versao_config_v1 -> ledger
         self._uptime_id: Optional[int] = None
+        # heartbeat periodico (revisao da FASE 1, 2026-10-22: nao existia -- telegram_v1.heartbeat_text
+        # ficava morto). Janela rolante: zera a cada envio, nunca acumula indefinidamente.
+        self.heartbeat_interval_s: float = 4 * 3600.0
+        self._heartbeat_calls = 0
+        self._heartbeat_window_start: Optional[float] = None
+        self._heartbeat_sent_at: float = 0.0
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -558,6 +564,11 @@ class PosRunnerLive:
         self.links = links
 
     def tfs(self) -> tuple[str, ...]:
+        """Revisao da FASE 1 (2026-10-22): com `--sem-v0` o V0 nunca roda, entao `_due_list` nao deve mais
+        buscar os timeframes que SO o V0 usava (tipicamente 5m/4h) -- so os da V1 (`params_v1.timeframes`,
+        padrao so 1h). Sem isto a flag silenciava o V0 mas continuava gastando o MESMO orcamento de GT."""
+        if self.sem_v0:
+            return self.params_v1.timeframes
         return self.settings.timeframes or TFS
 
     def _startup(self, now: float) -> None:
@@ -744,8 +755,30 @@ class PosRunnerLive:
             removed = self.storage.pr_prune(now)
             if removed:
                 log.info("POS-RUNNER poda: %s", removed)
+        self._heartbeat_v1(now, out.get("chamadas", 0))
         self.last_tick = out
         return out
+
+    def _heartbeat_v1(self, now: float, chamadas: int) -> None:
+        """Mensagem "vivo" a cada `heartbeat_interval_s` (padrao 4h): chamadas/min (so da janela desde o
+        ultimo heartbeat), pools acompanhados, dado_invalido/filtrado_mc_baixo contados desde a mesma janela."""
+        if self._heartbeat_window_start is None:
+            self._heartbeat_window_start = now
+            self._heartbeat_sent_at = now
+        self._heartbeat_calls += chamadas
+        if now - self._heartbeat_sent_at < self.heartbeat_interval_s:
+            return
+        elapsed_min = max((now - self._heartbeat_window_start) / 60.0, 1.0)
+        chamadas_por_min = self._heartbeat_calls / elapsed_min
+        pools_ativos = len(self.storage.pr_pools("ativo"))
+        counts = self.storage.pr1_filtrado_counts(self._heartbeat_window_start)
+        text = telegram_v1.heartbeat_text(self.storage.pr1_uptime_hours(self.version_v1_start or now, now),
+                                          pools_ativos, chamadas_por_min, counts.get("dado_invalido", 0),
+                                          counts.get("filtrado_mc_baixo", 0))
+        self._send(text)
+        self._heartbeat_sent_at = now
+        self._heartbeat_window_start = now
+        self._heartbeat_calls = 0
 
     def _refresh_safe(self, row: Any, tf: str, now: float, out: dict[str, Any]) -> None:
         key = (row["pool"], tf)
