@@ -12,6 +12,7 @@ import html
 import json
 import logging
 import re
+import sqlite3
 import threading
 from typing import Any, Callable, Optional
 
@@ -150,7 +151,14 @@ HELP_TEXT = (
     "/resumo - resumo de hoje\n"
     "Os botoes ✅ entrei / ⏭ passei do alerta registram a posicao padrao.\n"
     "Valores em USD (aceita 100 ou 100,5). [chain] so e preciso se o contrato nao for de um sinal "
-    "recente e a chain for ambigua (ex.: 0x... em bsc ou robinhood)."
+    "recente e a chain for ambigua (ex.: 0x... em bsc ou robinhood).\n"
+    "\n"
+    "POS-RUNNER-V1 (feedback):\n"
+    "/entrei <pool|ticker> [preco] - registra que entrou num sinal da V1\n"
+    "/sai <pool|ticker> [preco] - registra que saiu de um sinal da V1\n"
+    "/nota <pool|ticker> <texto> - anota algo sobre o sinal\n"
+    "/relatorio - bons vs ruins da ultima semana\n"
+    "Os botoes 👍 Bom / 👎 Ruim / 📝 Nota do alerta da V1 registram o voto/nota; o 📝 pede a nota em resposta."
 )
 
 
@@ -190,6 +198,7 @@ class OperatorHandler:
         clock: Callable[[], float],
         status_provider: Callable[[], str] = lambda: "sem status",
         summary_provider: Callable[[], str] = lambda: "sem resumo",
+        relatorio_provider: Callable[[], str] = lambda: "sem relatorio",
     ):
         self.client = client
         self.storage = storage
@@ -197,6 +206,7 @@ class OperatorHandler:
         self.clock = clock
         self.status_provider = status_provider
         self.summary_provider = summary_provider
+        self.relatorio_provider = relatorio_provider
         self._warned_chats: set[str] = set()
 
     # -- roteamento ------------------------------------------------------------------------
@@ -214,6 +224,9 @@ class OperatorHandler:
             if not self._allowed(chat):
                 return
             text = (msg.get("text") or "").strip()
+            reply_to = msg.get("reply_to_message")
+            if reply_to is not None and text and self._maybe_handle_note_reply(reply_to, text):
+                return
             if text.startswith("/"):
                 reply = self.handle_command(text)
                 if reply:
@@ -239,9 +252,81 @@ class OperatorHandler:
             return self.status_provider()
         if command == "/resumo":
             return self.summary_provider()
+        if command == "/relatorio":
+            return self.relatorio_provider()
+        if command == "/nota":
+            return self._v1_nota_command(args)
+        if command in ("/entrei", "/sai"):
+            # FASE 3 da V1 (feedback no Telegram): MESMA grafia de comando do V0, formato diferente
+            # (<pool|ticker> [preco], nao <contrato> <valor> [chain]) -- tenta resolver contra um sinal da
+            # V1 primeiro; so cai pro comando classico do V0 se nao achar nada (nunca confunde os dois:
+            # ticker nunca passa no formato de contrato que o V0 exige, e pool != endereco de token/mint).
+            v1_reply = self._v1_trade_command(command[1:], args)
+            if v1_reply is not None:
+                return v1_reply
         if command in ("/entrei", "/sai", "/passei"):
             return self._trade_command(command[1:], args)
         return "Comando desconhecido. Use /ajuda."
+
+    # -- FASE 3 da V1 (feedback no Telegram) -------------------------------------------------
+    def _v1_resolve_signal_token(self, token: str) -> Optional[sqlite3.Row]:
+        """`<pool|ticker>`: pool (endereco, chave exata em `pr1_signals`) OU ticker (simbolo, case-
+        insensitive) -- o sinal mais recente que combina. `None` = nao e um sinal da V1 (quem chama decide
+        o que fazer, nunca inventa um "nao encontrado" quando na verdade e o comando do V0)."""
+        token = (token or "").strip()
+        if not token:
+            return None
+        rows = self.storage.pr1_signals(pool=token)
+        if not rows:
+            rows = [r for r in self.storage.pr1_signals() if (r["symbol"] or "").lower() == token.lower()]
+        return rows[-1] if rows else None
+
+    def _v1_trade_command(self, action: str, args: list[str]) -> Optional[str]:
+        if not args:
+            return None
+        signal = self._v1_resolve_signal_token(args[0])
+        if signal is None:
+            return None   # nao achou sinal da V1: quem chama cai pro comando classico do V0
+        preco: Optional[float] = None
+        if len(args) > 1:
+            preco = parse_amount(args[1])
+            if preco is None:
+                return "Preco invalido. Exemplo: 0.0021"
+        assert self.client is not None
+        self.storage.pr1_feedback_upsert(signal["id"], action, self.client.chat_id, self.clock(), valor=preco)
+        self.storage.export_csvs()
+        rotulo = "entrada" if action == "entrei" else "saida"
+        preco_txt = f" @ {preco}" if preco is not None else ""
+        return f"✅ {rotulo} registrada (V1): ${clean_text(signal['symbol'] or '?', 20)}{preco_txt}"
+
+    def _v1_nota_command(self, args: list[str]) -> str:
+        if len(args) < 2:
+            return "Use: /nota <pool|ticker> <texto>"
+        signal = self._v1_resolve_signal_token(args[0])
+        if signal is None:
+            return "Sinal da V1 nao encontrado para esse pool/ticker."
+        texto = " ".join(args[1:]).strip()
+        assert self.client is not None
+        self.storage.pr1_feedback_upsert(signal["id"], "nota", self.client.chat_id, self.clock(), texto=texto)
+        self.storage.export_csvs()
+        return f"\U0001f4dd nota registrada (V1): ${clean_text(signal['symbol'] or '?', 20)}"
+
+    def _maybe_handle_note_reply(self, reply_to_message: dict, text: str) -> bool:
+        """O botao 📝 Nota manda um prompt com "(sinal #<id>)" embutido no proprio texto (sem estado novo no
+        servidor -- ver `telegram_v1.note_prompt_text`/`NOTE_PROMPT_RE`); quando o operador RESPONDE a esse
+        prompt, a resposta e a nota. `False` = a mensagem respondida nao era um prompt de nota (segue o
+        roteamento normal, ex.: um comando)."""
+        from .pos_runner.telegram_v1 import NOTE_PROMPT_RE
+
+        match = NOTE_PROMPT_RE.search(reply_to_message.get("text") or "")
+        if not match:
+            return False
+        signal_id = int(match.group(1))
+        assert self.client is not None
+        ok = self.storage.pr1_feedback_upsert(signal_id, "nota", self.client.chat_id, self.clock(), texto=text.strip())
+        self.storage.export_csvs()
+        self.client.send_message(f"\U0001f4dd nota registrada (sinal #{signal_id})." if ok else "Sinal nao encontrado.")
+        return True
 
     def _trade_command(self, action: str, args: list[str]) -> str:
         cfg = self.get_config()
@@ -304,6 +389,9 @@ class OperatorHandler:
         assert self.client is not None
         data = str(cb.get("data", ""))
         cb_id = str(cb.get("id", ""))
+        if data.startswith("v1fb:"):
+            self._handle_v1_feedback_callback(cb, data, cb_id)
+            return
         if data == "noop" or "|" not in data:
             self.client.answer_callback(cb_id)
             return
@@ -340,6 +428,51 @@ class OperatorHandler:
                 self.client.edit_reply_markup(int(message_id), keyboard_after_choice(rows, label))
             except TelegramError as exc:
                 log.debug("nao consegui atualizar o teclado: %s", exc)
+
+    # -- FASE 3 da V1: botoes de feedback (👍/👎/📝) -----------------------------------------
+    def _handle_v1_feedback_callback(self, cb: dict, data: str, cb_id: str) -> None:
+        assert self.client is not None
+        parts = data.split(":")
+        if len(parts) != 3:
+            self.client.answer_callback(cb_id, "botao invalido")
+            return
+        _, action, raw_id = parts
+        try:
+            signal_id = int(raw_id)
+        except ValueError:
+            self.client.answer_callback(cb_id, "botao invalido")
+            return
+        signal = self.storage.pr1_signal(signal_id)
+        if signal is None:
+            self.client.answer_callback(cb_id, "sinal nao encontrado")
+            return
+        chat_id = str((((cb.get("message") or {}).get("chat")) or {}).get("id", ""))
+        now = self.clock()
+        if action == "up":
+            self.storage.pr1_feedback_upsert(signal_id, "voto", chat_id, now, voto="bom")
+            self.storage.export_csvs()
+            self.client.answer_callback(cb_id, "👍 registrado")
+        elif action == "down":
+            self.storage.pr1_feedback_upsert(signal_id, "voto", chat_id, now, voto="ruim")
+            self.storage.export_csvs()
+            self.client.answer_callback(cb_id, "👎 registrado")
+        elif action == "note":
+            # idempotente so pra voto (UNIQUE(pr1_signal_id,acao) ja garante isto); o prompt da nota
+            # (texto com "(sinal #<id>)" embutido, sem estado novo no servidor) e so mandado agora.
+            self.client.answer_callback(cb_id, "responda esta mensagem com a nota")
+            from .pos_runner import telegram_v1
+
+            message = cb.get("message") or {}
+            try:
+                self.client.send_message(
+                    telegram_v1.note_prompt_text(signal["symbol"] or "?", signal_id),
+                    reply_markup={"force_reply": True, "input_field_placeholder": "Nota..."},
+                    reply_to=message.get("message_id"),
+                )
+            except TelegramError as exc:
+                log.debug("nao consegui mandar o prompt de nota: %s", exc)
+        else:
+            self.client.answer_callback(cb_id, "botao invalido")
 
 
 class TelegramPoller(threading.Thread):

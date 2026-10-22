@@ -449,6 +449,49 @@ class StatusTest(unittest.TestCase):
             env.close()
 
 
+class _FakePosRunnerForReport:
+    def __init__(self) -> None:
+        self.bankroll_calls = 0
+        self.summary_v1_calls = 0
+        self.relatorio_calls = 0
+
+    def send_daily_bankroll_summary(self) -> None:
+        self.bankroll_calls += 1
+
+    def send_daily_summary_v1(self) -> None:
+        self.summary_v1_calls += 1
+
+    def send_relatorio_semanal_v1(self) -> None:
+        self.relatorio_calls += 1
+
+
+class WeeklyReportSchedulingTest(unittest.TestCase):
+    """FASE 3 (feedback no Telegram), item 3: o relatorio semanal sai no domingo, junto do resumo diario."""
+
+    def test_weekly_report_fires_only_on_sunday_alongside_the_daily_summary(self) -> None:
+        from datetime import datetime
+
+        env = Env()
+        try:
+            fake = _FakePosRunnerForReport()
+            env.engine.pos_runner = fake
+            env.engine.c["resumo_diario"]["hora_local"] = "00:00"
+            base = env.clock()
+            # i comeca em 1 (nunca "hoje"): `now - started_at` precisa ficar bem alem dos 1800s que liberam
+            # o resumo mesmo sem dado algum (`has_data=False`) -- qualquer janela de 7 dias tem 1 domingo.
+            sunday = next(base + i * 86400 for i in range(1, 8) if datetime.fromtimestamp(base + i * 86400).weekday() == 6)
+            not_sunday = next(base + i * 86400 for i in range(1, 8) if datetime.fromtimestamp(base + i * 86400).weekday() != 6)
+            self.assertTrue(env.engine.maybe_send_daily_summary(not_sunday))
+            self.assertEqual(fake.summary_v1_calls, 1)
+            self.assertEqual(fake.relatorio_calls, 0, "nao e domingo: so o resumo diario, sem relatorio semanal")
+            env.storage.set_meta("ultimo_resumo", "")   # forca o resumo a poder sair de novo no 2o dia simulado
+            self.assertTrue(env.engine.maybe_send_daily_summary(sunday))
+            self.assertEqual(fake.summary_v1_calls, 2)
+            self.assertEqual(fake.relatorio_calls, 1, "domingo: relatorio semanal junto do resumo diario")
+        finally:
+            env.close()
+
+
 _ = Optional, TradesSummary
 
 

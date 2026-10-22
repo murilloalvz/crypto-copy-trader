@@ -361,6 +361,8 @@ class Worker:
             handler = OperatorHandler(
                 telegram, storage, lambda: engine.cfg, utc_now,
                 status_provider=engine.status_text, summary_provider=engine.build_daily_summary,
+                relatorio_provider=(lambda: engine.pos_runner.relatorio_semanal_v1()
+                                    if engine.pos_runner is not None else "POS-RUNNER desligado"),
             )
             try:
                 telegram.get_me()

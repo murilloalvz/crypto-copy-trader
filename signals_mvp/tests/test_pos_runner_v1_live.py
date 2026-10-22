@@ -307,5 +307,47 @@ class IdadeFilterTests(unittest.TestCase):
             h.close()
 
 
+class RelatorioSemanalTests(unittest.TestCase):
+    """FASE 3 (feedback no Telegram), item 3: "bons vs ruins" da semana -- por gatilho, por janela de ouro,
+    por tag, e SO da versao congelada atual (nunca mistura versoes de config)."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+        start_tracking(self.h)
+        self.h.run_hours(17)   # 1 ENTRADA real
+        rows = self.h.storage.pr1_signals()
+        self.assertEqual(len(rows), 1, self.h.texts())
+        self.signal_id = rows[0]["id"]
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_report_counts_the_vote_and_breaks_it_down_by_gatilho_and_janela(self) -> None:
+        self.h.storage.pr1_feedback_upsert(self.signal_id, "voto", "555", self.h.clock(), voto="bom")
+        text = self.h.live.relatorio_semanal_v1()
+        self.assertIn("RELATÓRIO SEMANAL", text)
+        self.assertIn("👍 1", text)
+        self.assertIn("👎 0", text)
+        self.assertIn(self.h.live.version_v1, text)
+
+    def test_report_never_mixes_feedback_from_a_discontinued_config_version(self) -> None:
+        """Um voto registrado sob uma versao_config_v1 DIFERENTE (ex.: antes de um restart com parametro
+        novo) nunca pode contar no relatorio da versao ATUAL -- mesma regra do daily_summary_v1."""
+        self.h.storage.pr1_feedback_upsert(self.signal_id, "voto", "555", self.h.clock(), voto="bom")
+        # forca a linha de feedback a carregar uma versao antiga, como se tivesse sido gravada antes de um
+        # restart com config nova (o relatorio so olha pr1_feedback.versao_config_v1, nunca o da V1 atual).
+        self.h.storage._exec("UPDATE pr1_feedback SET versao_config_v1=? WHERE pr1_signal_id=?",  # noqa: SLF001
+                             ("versao_antiga_descontinuada", self.signal_id))
+        text = self.h.live.relatorio_semanal_v1()
+        self.assertIn("👍 0", text)
+        self.assertIn("👎 0", text)
+
+    def test_report_only_counts_votes_not_entrei_sai_or_nota(self) -> None:
+        self.h.storage.pr1_feedback_upsert(self.signal_id, "entrei", "555", self.h.clock(), valor=0.002)
+        self.h.storage.pr1_feedback_upsert(self.signal_id, "nota", "555", self.h.clock(), texto="x")
+        text = self.h.live.relatorio_semanal_v1()
+        self.assertIn("de 0 sinais com feedback", text)   # nenhum VOTO ainda, so entrei/nota
+
+
 if __name__ == "__main__":
     unittest.main()

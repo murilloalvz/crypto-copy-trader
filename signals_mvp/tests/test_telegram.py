@@ -217,6 +217,101 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(self.tg.answers[-1], ("c2", ""))
 
 
+class V1FeedbackHandlerTest(unittest.TestCase):
+    """FASE 3 (feedback no Telegram): botoes 👍/👎/📝 e comandos /entrei, /sai, /nota, /relatorio da V1."""
+
+    def setUp(self) -> None:
+        self.env = Env()
+        self.env.cycle(0)
+        self.tg = FakeTelegram()
+        self.handler = OperatorHandler(
+            self.tg, self.env.storage, lambda: self.env.engine.cfg, FakeClock(),
+            status_provider=lambda: "STATUS", summary_provider=lambda: "RESUMO",
+            relatorio_provider=lambda: "RELATORIO SEMANAL",
+        )
+        self.signal_id = self.env.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "poolA", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "mintA", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "origem": "trending", "event_json": "{}", "status": "aberto",
+            "entry_price": 1.0, "stop": 0.9, "topo": 2.0, "s_suporte": 0.95, "r_resistencia": 1.5,
+        })
+
+    def tearDown(self) -> None:
+        self.env.close()
+
+    def _feedback_rows(self):
+        return self.env.storage.pr1_feedback_for_signal(self.signal_id)
+
+    def _cb(self, data: str, chat: int = 42, message_id: int = 1, cb_id: str = "c") -> dict:
+        return {"callback_query": {"id": cb_id, "data": data, "message": {"message_id": message_id, "chat": {"id": chat}}}}
+
+    def test_vote_up_then_down_is_idempotent_updates_not_duplicates(self) -> None:
+        self.handler.process_update(self._cb(f"v1fb:up:{self.signal_id}"))
+        self.assertEqual(self.tg.answers[-1], ("c", "👍 registrado"))
+        rows = self._feedback_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["voto"], "bom")
+        self.handler.process_update(self._cb(f"v1fb:down:{self.signal_id}", cb_id="c2"))
+        self.assertEqual(self.tg.answers[-1], ("c2", "👎 registrado"))
+        rows = self._feedback_rows()
+        self.assertEqual(len(rows), 1, "clicar 2x tem que ATUALIZAR a mesma linha, nunca duplicar")
+        self.assertEqual(rows[0]["voto"], "ruim")
+
+    def test_invalid_callback_data_never_crashes(self) -> None:
+        for bad in (f"v1fb:bogus:{self.signal_id}", "v1fb:up", "v1fb:up:abc", "v1fb:up:999999"):
+            with self.subTest(bad):
+                self.handler.process_update(self._cb(bad))
+                self.assertIn(self.tg.answers[-1][1], ("botao invalido", "sinal nao encontrado"))
+        self.assertEqual(len(self._feedback_rows()), 0)
+
+    def test_unauthorized_chat_is_ignored_for_v1_feedback_too(self) -> None:
+        self.handler.process_update(self._cb(f"v1fb:up:{self.signal_id}", chat=999))
+        self.assertEqual(self.tg.answers, [])
+        self.assertEqual(self._feedback_rows(), [])
+
+    def test_note_button_prompts_in_reply_and_the_reply_is_recorded(self) -> None:
+        self.handler.process_update(self._cb(f"v1fb:note:{self.signal_id}", message_id=7))
+        self.assertEqual(self.tg.answers[-1], ("c", "responda esta mensagem com a nota"))
+        prompt_text, markup = self.tg.sent[-1]
+        self.assertIn(f"sinal #{self.signal_id}", prompt_text)
+        self.assertTrue(markup.get("force_reply"))
+        self.assertEqual(self.tg.replies[-1], 7)
+        reply_update = {"message": {"text": "entrada excelente", "chat": {"id": 42},
+                                    "reply_to_message": {"text": prompt_text}}}
+        self.handler.process_update(reply_update)
+        rows = self._feedback_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["acao"], "nota")
+        self.assertEqual(rows[0]["texto"], "entrada excelente")
+
+    def test_v1_entrei_sai_nota_commands_by_pool_and_ticker(self) -> None:
+        reply = self.handler.handle_command(f"/entrei poolA 0.0021")
+        self.assertIn("entrada registrada (V1)", reply)
+        self.assertIn("CAT", reply)
+        reply = self.handler.handle_command("/sai CAT 0.0030")
+        self.assertIn("saida registrada (V1)", reply)
+        rows = self._feedback_rows()
+        self.assertEqual({r["acao"] for r in rows}, {"entrei", "sai"})
+        reply = self.handler.handle_command("/nota CAT bom gatilho")
+        self.assertIn("nota registrada (V1)", reply)
+        self.assertEqual(self.handler.handle_command("/nota semprevaizero"), "Use: /nota <pool|ticker> <texto>")
+
+    def test_v1_commands_never_shadow_the_classic_v0_entrei_for_a_real_contract(self) -> None:
+        """Mesma grafia de comando (/entrei), formato diferente -- um contrato que nao e nem pool nem ticker
+        de nenhum sinal da V1 tem que continuar caindo no comando classico do V0, sem regressao."""
+        reply = self.handler.handle_command(f"/entrei {SOL_TOKEN} 100")
+        self.assertIn("entrei registrado", reply)   # resposta do V0 (_trade_command), nao da V1
+
+    def test_relatorio_command_calls_the_provider(self) -> None:
+        self.assertEqual(self.handler.handle_command("/relatorio"), "RELATORIO SEMANAL")
+
+    def test_help_mentions_the_new_v1_commands(self) -> None:
+        help_text = self.handler.handle_command("/ajuda")
+        for token in ("/nota", "/relatorio", "👍 Bom"):
+            self.assertIn(token, help_text)
+
+
 class PollerTest(unittest.TestCase):
     def test_poller_processes_allowed_updates_and_persists_offset(self) -> None:
         api = MockBotApi()
