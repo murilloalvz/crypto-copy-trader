@@ -544,12 +544,16 @@ class PosRunnerLive:
         self.dets_v1: dict[tuple[str, str], DetectorV1] = {}
         self._v1_invalid: set[tuple[str, str]] = set()      # dado_invalido definitivo (nunca re-tenta)
         self._v1_mc_baixo_logged: set[str] = set()          # filtrado_mc_baixo: loga 1x por pool (nao reabre a cada ciclo)
+        self._v1_suspeito: dict[tuple[str, str], bool] = {}        # l_bc_suspeito (FASE 1.1): tag suave, nunca bloqueia
+        self._v1_suspeito_logged: set[tuple[str, str]] = set()     # conta 1x por pool/tf (nao reabre a cada ciclo)
         self._bankroll_v1: dict[str, BankrollLedgerV1] = {}  # tf desta versao_config_v1 -> ledger
         self._uptime_id: Optional[int] = None
         # heartbeat periodico (revisao da FASE 1, 2026-10-22: nao existia -- telegram_v1.heartbeat_text
-        # ficava morto). Janela rolante: zera a cada envio, nunca acumula indefinidamente.
-        self.heartbeat_interval_s: float = 4 * 3600.0
+        # ficava morto; revisao da FASE 1.1: sai ja no startup -- nao espera a 1a janela -- e a cada 6h, nao
+        # 4h). Janela rolante: zera a cada envio, nunca acumula indefinidamente.
+        self.heartbeat_interval_s: float = 6 * 3600.0
         self._heartbeat_calls = 0
+        self._heartbeat_429 = 0
         self._heartbeat_window_start: Optional[float] = None
         self._heartbeat_sent_at: float = 0.0
 
@@ -566,7 +570,15 @@ class PosRunnerLive:
     def tfs(self) -> tuple[str, ...]:
         """Revisao da FASE 1 (2026-10-22): com `--sem-v0` o V0 nunca roda, entao `_due_list` nao deve mais
         buscar os timeframes que SO o V0 usava (tipicamente 5m/4h) -- so os da V1 (`params_v1.timeframes`,
-        padrao so 1h). Sem isto a flag silenciava o V0 mas continuava gastando o MESMO orcamento de GT."""
+        padrao so 1h). Sem isto a flag silenciava o V0 mas continuava gastando o MESMO orcamento de GT.
+
+        Nota (revisao FASE 1.1): `_discover`/`offer`/`_promote` (descoberta/promocao de pools) NAO tem um
+        modo "so V0" para cortar -- e a MESMA fila de pools ativos que a V1 consome (`pr_pools("ativo")`,
+        item 0 do prompt: "V1 roda sobre os MESMOS candles/pools do V0", nunca uma descoberta separada).
+        Cortar isso com `--sem-v0` desligaria a V1 tambem, o que NAO foi pedido -- entao continua rodando;
+        o corte real de "chamadas so do V0" e exatamente este metodo (timeframes) e `det=None`/
+        `det_fecham=None` em `_refresh` (nenhum Detector do V0 e criado, nenhum candle extra e pedido so
+        para ele)."""
         if self.sem_v0:
             return self.params_v1.timeframes
         return self.settings.timeframes or TFS
@@ -772,30 +784,50 @@ class PosRunnerLive:
             removed = self.storage.pr_prune(now)
             if removed:
                 log.info("POS-RUNNER poda: %s", removed)
-        self._heartbeat_v1(now, out.get("chamadas", 0))
+        self._heartbeat_v1(now, out.get("chamadas", 0), out.get("rate_limited", False))
         self.last_tick = out
         return out
 
-    def _heartbeat_v1(self, now: float, chamadas: int) -> None:
-        """Mensagem "vivo" a cada `heartbeat_interval_s` (padrao 4h): chamadas/min (so da janela desde o
-        ultimo heartbeat), pools acompanhados, dado_invalido/filtrado_mc_baixo contados desde a mesma janela."""
+    def _phase_counts_v1(self) -> dict[str, int]:
+        """Pools acompanhados AGORA por fase do detector da V1 (item do heartbeat da revisao FASE 1.1)."""
+        fases = {"sem_fase": 0, "runner": 0, "pullback": 0}
+        for det in self.dets_v1.values():
+            if det.phase == PHASE_PULLBACK:
+                fases["pullback"] += 1
+            elif det.phase == PHASE_RUNNER:
+                fases["runner"] += 1
+            else:
+                fases["sem_fase"] += 1
+        return fases
+
+    def _heartbeat_v1(self, now: float, chamadas: int, rate_limited: bool) -> None:
+        """Mensagem "vivo": sai JA no 1o ciclo (nao espera a 1a janela) e depois a cada `heartbeat_interval_s`
+        (padrao 6h, revisao FASE 1.1). Contadores (chamadas/min, 429, dado_invalido/l_bc_suspeito/
+        filtrado_mc_baixo/filtrado_idade) sao so da janela desde o heartbeat anterior; pools por fase e fila
+        de atualizacao sao o estado AGORA (nao acumulam)."""
         if self._heartbeat_window_start is None:
             self._heartbeat_window_start = now
-            self._heartbeat_sent_at = now
+            self._heartbeat_sent_at = now - self.heartbeat_interval_s   # forca o 1o heartbeat a sair ja no startup
         self._heartbeat_calls += chamadas
+        if rate_limited:
+            self._heartbeat_429 += 1
         if now - self._heartbeat_sent_at < self.heartbeat_interval_s:
             return
         elapsed_min = max((now - self._heartbeat_window_start) / 60.0, 1.0)
         chamadas_por_min = self._heartbeat_calls / elapsed_min
         pools_ativos = len(self.storage.pr_pools("ativo"))
         counts = self.storage.pr1_filtrado_counts(self._heartbeat_window_start)
-        text = telegram_v1.heartbeat_text(self.storage.pr1_uptime_hours(self.version_v1_start or now, now),
-                                          pools_ativos, chamadas_por_min, counts.get("dado_invalido", 0),
-                                          counts.get("filtrado_mc_baixo", 0))
+        text = telegram_v1.heartbeat_text(
+            self.storage.pr1_uptime_hours(self.version_v1_start or now, now), pools_ativos, chamadas_por_min,
+            self._heartbeat_429, self._phase_counts_v1(), len(self._due_list(now)), counts.get("dado_invalido", 0),
+            counts.get("l_bc_suspeito", 0), counts.get("filtrado_mc_baixo", 0), counts.get("filtrado_idade", 0),
+            self.version_v1,
+        )
         self._send(text)
         self._heartbeat_sent_at = now
         self._heartbeat_window_start = now
         self._heartbeat_calls = 0
+        self._heartbeat_429 = 0
 
     def _refresh_safe(self, row: Any, tf: str, now: float, out: dict[str, Any]) -> None:
         key = (row["pool"], tf)
@@ -873,6 +905,11 @@ class PosRunnerLive:
             self.storage.pr1_add_filtrado(now, "solana", row["pool"], row["mint"], row["symbol"], "dado_invalido",
                                           qual.motivo, self.version_v1)
             return None
+        self._v1_suspeito[key] = qual.suspeito
+        if qual.suspeito and key not in self._v1_suspeito_logged:
+            self._v1_suspeito_logged.add(key)
+            self.storage.pr1_add_filtrado(now, "solana", row["pool"], row["mint"], row["symbol"], "l_bc_suspeito",
+                                          f"{qual.l_bc_robusto:.0f}", self.version_v1)
         mc_atual = bars[-1].close if bars else None
         if mc_atual is not None and mc_atual < self.params_v1.min_mc_usd:
             if row["pool"] not in self._v1_mc_baixo_logged:
@@ -953,6 +990,8 @@ class PosRunnerLive:
             tags: list[str] = []
             if ev.data.get("risco_fora_da_faixa"):
                 tags.append("risco_fora_da_faixa")
+            if self._v1_suspeito.get((pool, tf)):
+                tags.append("l_bc_suspeito")
             holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
             if holders.tag:
                 tags.append(holders.tag)

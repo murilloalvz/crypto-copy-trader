@@ -10,10 +10,18 @@ direto em `ParamsV1` (`candle_wick_ratio_max`/`l_bc_floor_usd`) -- diferente do 
 depois de congelado.
 
 Revisao da FASE 1 (2026-10-22, evidencia do operador: 547/917 pools DBC com L_bc > 500k, alguns ~US$4bi;
-47/132 pools pump.fun com L_bc < 1k): o floor/wick ja cobrem o caso do pump.fun (<1k cai no floor de US$100
-so se for mesmo um defeito; a maioria dos <1k provavelmente cai no WICK, nao no floor). Para o lado de cima,
+47/132 pools pump.fun com L_bc < 1k): o floor/wick ja cobrem o caso do pump.fun (<1k cai no floor so se for
+mesmo um defeito; a maioria dos <1k provavelmente cai no WICK, nao no floor). Para o lado de cima,
 `l_bc_ceiling_usd` (teto de SANIDADE, agnostico de launchpad, NAO uma precisao por launchpad) pega o cluster
 de centenas de milhares a bilhoes sem assumir nenhuma curva especifica.
+
+Revisao da FASE 1.1 (2026-10-22, evidencia do operador: a menor graduacao legitima medida neste repo e
+~28k, N=8; o checkpoint do operador tem 164 pools com L_bc entre US$14 e US$1.000, fisicamente impossivel
+para uma graduacao real): o piso subiu de US$100 para US$5.000 (ainda bem abaixo do minimo legitimo medido,
+sem alcancar o cluster impossivel). Alem do piso/teto DUROS (bloqueiam, nunca viram alerta), existe agora
+uma faixa SUSPEITA (`l_bc_suspeito_baixo_usd`/`l_bc_suspeito_alto_usd`) que NUNCA bloqueia -- so adiciona a
+tag `l_bc_suspeito` ao alerta/CSV/contadores para o operador conferir a mao no GeckoTerminal quando o L_bc
+foge do grosso da distribuicao sem ser um defeito obvio de candle.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ class QualidadeResult:
     motivo: str = ""
     wick_ratio_1o: Optional[float] = None
     l_bc_robusto: Optional[float] = None
+    suspeito: bool = False   # tag suave `l_bc_suspeito` (FASE 1.1): NUNCA bloqueia, so acompanha o alerta
 
 
 def l_bc_robusto(bars: list[Bar]) -> float:
@@ -55,4 +64,5 @@ def avaliar_qualidade(bars: list[Bar], params: ParamsV1) -> QualidadeResult:
         return QualidadeResult(False, "l_bc_floor", wick_ratio_1o, l_bc)
     if l_bc > params.l_bc_ceiling_usd:
         return QualidadeResult(False, "l_bc_ceiling", wick_ratio_1o, l_bc)
-    return QualidadeResult(True, "", wick_ratio_1o, l_bc)
+    suspeito = l_bc < params.l_bc_suspeito_baixo_usd or l_bc > params.l_bc_suspeito_alto_usd
+    return QualidadeResult(True, "", wick_ratio_1o, l_bc, suspeito)

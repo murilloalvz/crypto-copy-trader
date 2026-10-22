@@ -15,7 +15,8 @@ from unittest import mock
 import yaml
 
 from ..config import PACKAGE_DIR, make_paths
-from ..worker import Worker
+from ..pos_runner.live import LiveSettings
+from ..worker import Worker, resolve_chamadas_por_ciclo
 from .fakes import FakeClock, FakeGoPlus, FakeGt, FakeTelegram
 from .helpers import read_csv
 
@@ -109,6 +110,36 @@ class WorkerLifecycleTest(unittest.TestCase):
             self.paths.stop_flag.write_text("parar")   # sobe, valida as redes e sai sem rodar ciclo
             self.assertEqual(worker.run(), 0)
         self.assertTrue(any("robinhood" in text and "DESLIGADA" in text for text in fake_tg[0].notified))
+
+
+class ChamadasPorCicloTests(unittest.TestCase):
+    """FASE 1.1 (revisao 2026-10-22): orcamento de chamadas/ciclo do POS-RUNNER configuravel por env."""
+
+    def test_env_var_always_wins(self) -> None:
+        settings = LiveSettings(chamadas_por_ciclo=3)
+        out = resolve_chamadas_por_ciclo(settings, {}, sem_v0=False, env={"POS_RUNNER_CHAMADAS_POR_CICLO": "5"})
+        self.assertEqual(out.chamadas_por_ciclo, 5)
+
+    def test_env_var_wins_even_over_an_explicit_config_value_with_sem_v0(self) -> None:
+        settings = LiveSettings(chamadas_por_ciclo=20)
+        out = resolve_chamadas_por_ciclo(settings, {"chamadas_por_ciclo": 20}, sem_v0=True,
+                                         env={"POS_RUNNER_CHAMADAS_POR_CICLO": "5"})
+        self.assertEqual(out.chamadas_por_ciclo, 5)
+
+    def test_sem_v0_defaults_to_8_when_the_operator_never_set_it(self) -> None:
+        settings = LiveSettings(chamadas_por_ciclo=3)   # default do dataclass (V0 ligado)
+        out = resolve_chamadas_por_ciclo(settings, {}, sem_v0=True, env={})
+        self.assertEqual(out.chamadas_por_ciclo, 8)
+
+    def test_sem_v0_never_overrides_an_explicit_operator_value_in_the_config(self) -> None:
+        settings = LiveSettings(chamadas_por_ciclo=12)
+        out = resolve_chamadas_por_ciclo(settings, {"chamadas_por_ciclo": 12}, sem_v0=True, env={})
+        self.assertEqual(out.chamadas_por_ciclo, 12)
+
+    def test_with_v0_ligado_and_no_env_the_config_value_is_untouched(self) -> None:
+        settings = LiveSettings(chamadas_por_ciclo=3)
+        out = resolve_chamadas_por_ciclo(settings, {}, sem_v0=False, env={})
+        self.assertEqual(out.chamadas_por_ciclo, 3)
 
 
 _ = shutil

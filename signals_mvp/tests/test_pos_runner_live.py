@@ -691,7 +691,9 @@ class CreationAndVersionTest(unittest.TestCase):
         signals = h.storage.pr_signals()
         self.assertEqual(len(signals), 2)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
         self.assertEqual({s["status"] for s in signals}, {"descontinuado"})
-        self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
+        # +1: o heartbeat da V1 sai ja no 1o tick de QUALQUER instancia nova (revisao FASE 1.1) -- nao e um
+        # alerta novo do V0 (o que este teste verifica), e sim o heartbeat do live2 recem-criado.
+        self.assertEqual(len(h.texts()), sent + 1)
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
     def test_switching_back_to_an_old_version_does_not_adopt_what_another_version_decided(self) -> None:

@@ -45,9 +45,11 @@ parametros:
   risk_min: 0.15                # faixa de risco esperado (ATRIBUTO risco_fora_da_faixa, nunca descarta)
   risk_max: 0.22
 
-  # --- dado_invalido ao vivo (item 3.6) -------------------------------------------------------------------------
+  # --- dado_invalido ao vivo (item 3.6, piso/faixa suspeita revisados 2026-10-22, ver params_v1.py) --------------
   candle_wick_ratio_max: 3.0
-  l_bc_floor_usd: 100
+  l_bc_floor_usd: 5000          # menor graduacao legitima medida (pump.fun, N=8) ~28k; 164 pools do operador entre US$14-1000 sao impossiveis
+  l_bc_suspeito_baixo_usd: 20000    # faixa suspeita (tag l_bc_suspeito, nunca bloqueia): abaixo disto
+  l_bc_suspeito_alto_usd: 500000    # ... ou acima disto (ate o teto de sanidade)
   l_bc_ceiling_usd: 10000000   # teto de sanidade agnostico de launchpad (revisao 2026-10-22, ver params_v1.py)
 
   # --- tamanho / banca (item 2.10) --------------------------------------------------------------------------------

@@ -15,7 +15,8 @@ chat, print ou log; o arquivo já está no `.gitignore` e o token nunca aparece 
 | `TELEGRAM_BOT_TOKEN` | sim | token do @BotFather |
 | `TELEGRAM_CHAT_ID` | sim | seu chat id (@userinfobot) |
 | `POS_RUNNER_RPC_URLS` | não (recomendada) | RPC Solana próprio (Helius/QuickNode); sem isto usa o RPC público, mais lento |
-| `POS_RUNNER_SEM_V0` | não | qualquer valor não vazio desliga o V0 por completo (a V1 continua) — poupa orçamento de GT/RPC |
+| `POS_RUNNER_SEM_V0` | não | qualquer valor não vazio desliga o V0 por completo (a V1 continua); zero chamada ao GT que seria SÓ do V0 (5m/4h, Detector do V0) — a descoberta/promoção de pools continua (é a MESMA fila que a V1 usa, item 0 do prompt: nunca uma descoberta separada) |
+| `POS_RUNNER_CHAMADAS_POR_CICLO` | não | sobrescreve `pos_runner.chamadas_por_ciclo` do `config.yaml` (sempre manda quando setado). Sem isto: com `POS_RUNNER_SEM_V0` ligado e sem o campo no `config.yaml`, o padrão muda de 3 para **8**/ciclo (~10/min) — a V1 sozinha (só 1h) precisa de muito menos do que as 3 tfs do V0 |
 
 Nunca rode `type .env` nem cole o conteúdo do `.env` em lugar nenhum — se precisar confirmar que uma
 variável está definida, use `Test-Path env:TELEGRAM_BOT_TOKEN` (só diz `True`/`False`, nunca o valor).
@@ -58,7 +59,7 @@ Tudo dentro de `signals_mvp\dados\`:
 | `estado.sqlite` | fonte da verdade (V0 e V1); pode abrir com DB Browser for SQLite se quiser olhar direto |
 | `pos_runner.csv` / `pos_runner_detalhe.csv` / `pos_runner_banca.csv` | contrato estável do V0 |
 | `pos_runner_v1.csv` | um sinal por linha da V1 (gatilho, S/R/stop/TOPO, TP1, resultado, tags, hora BRT, origem) |
-| `pos_runner_v1_filtrados.csv` | tudo que a V1 cortou sem alertar: `dado_invalido`, `filtrado_mc_baixo`, `filtrado_idade` |
+| `pos_runner_v1_filtrados.csv` | tudo que a V1 contou: bloqueantes (nunca alertam) `dado_invalido`, `filtrado_mc_baixo`, `filtrado_idade`; e o suave `l_bc_suspeito` (SEMPRE alerta, só acompanha — ver §5) |
 | `pos_runner_v1_banca.csv` | gestão de banca da V1 (US$100 inicial, tamanho híbrido) |
 | `heartbeat.json` | usado pelo supervisor para detectar travamento |
 
@@ -71,8 +72,14 @@ Colunas principais: `data`/`hora_brt` (fechamento do candle de decisão), `chain
 `topo`/`L_bc`/`queda_pct`/`S`/`R`/`n_wicks`, `gatilho` (um ou mais de `reacao_suporte`,
 `power_candle_rompimento`, `rompimento_volume`), `entrada_mc`/`stop_mc`/`risco_pct`, `tp1_mc`/`exit_full_mc`,
 `resultado_liq_pct`, `tempo_trade_h`, `motivo_saida`, `tags` (`risco_fora_da_faixa`, `HOLDER_CONCENTRADO`,
-`holders_indisponivel`, `VAMP_RISK`), `holders_tag`, `mint_authority`/`freeze_authority`/`liquidez_usd`
+`holders_indisponivel`, `VAMP_RISK`, `l_bc_suspeito` — este último NUNCA bloqueia o sinal, só avisa pra
+conferir o `L_bc` a mão no GeckoTerminal), `holders_tag`, `mint_authority`/`freeze_authority`/`liquidez_usd`
 (ainda `None` — reservado), `teste_vol_ratio`, `origem`, `versao_config_v1`, `perdido_offline`.
+
+**`dado_invalido` (nunca vira sinal, revisão 2026-10-22):** piso de `L_bc` US$5.000, teto de sanidade
+US$10.000.000 (agnóstico de launchpad), wick do 1º candle ≥ 3,0×. **`l_bc_suspeito` (tag suave, SEMPRE
+alerta):** `L_bc` < US$20.000 ou entre US$500.000 e o teto — fora do grosso da distribuição medida, mas não
+é um defeito óbvio de candle; vale conferir no GeckoTerminal antes de confiar 100% no sinal.
 
 ## 6. Evitar que o Windows suspenda o PC
 
@@ -82,10 +89,12 @@ fechar a tampa pausa o processo mesmo sem suspender a tela).
 
 ## 6a. Heartbeat da V1
 
-A cada 4h (`PosRunnerLive.heartbeat_interval_s`) a V1 manda uma mensagem "💓 POS-RUNNER-V1 ativo" no Telegram
-com uptime, pools acompanhados, chamadas/min ao GeckoTerminal (média da janela) e os contadores
-`dado_invalido`/`filtrado_mc_baixo` desde o heartbeat anterior — confirma que o processo está vivo sem
-precisar abrir o console.
+Sai **já no 1º ciclo** (não espera a primeira janela) e depois a cada 6h (`PosRunnerLive.heartbeat_interval_s`,
+revisão 2026-10-22) uma mensagem "💓 POS-RUNNER-V1 ativo" no Telegram com: uptime, `versao_config_v1`, pools
+acompanhados (e quantos em cada fase do detector — `runner`/`pullback`/`sem_fase`), fila de atualização
+pendente, chamadas/min ao GeckoTerminal (média da janela) e 429 recebidos na janela, e os contadores
+`dado_invalido`/`l_bc_suspeito`/`filtrado_mc_baixo`/`filtrado_idade` desde o heartbeat anterior — confirma
+que o processo está vivo e com que orçamento, sem precisar abrir o console.
 
 ## 7. O que fazer em erro de rede/RPC
 

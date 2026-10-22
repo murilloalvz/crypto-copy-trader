@@ -42,6 +42,28 @@ class QualidadeV1Tests(unittest.TestCase):
         self.assertFalse(r.valido)
         self.assertEqual(r.motivo, "l_bc_floor")
 
+    def test_l_bc_between_the_old_and_the_new_floor_is_now_invalid(self):
+        # revisao FASE 1.1 (2026-10-22): piso subiu de US$100 para US$5.000 -- a menor graduacao legitima
+        # medida neste repo (pump.fun, N=8) e ~28k; o checkpoint do operador tem 164 pools com L_bc entre
+        # US$14 e US$1.000 (impossivel para uma graduacao real). US$1.000 so caia no piso ANTIGO se fosse <100.
+        bars = [Bar(0, 900.0, 950.0, 850.0, 920.0, 1.0), Bar(H, 920.0, 1_000.0, 900.0, 980.0, 1.0)]
+        r = avaliar_qualidade(bars, ParamsV1())
+        self.assertFalse(r.valido)
+        self.assertEqual(r.motivo, "l_bc_floor")
+
+    def test_l_bc_just_above_the_floor_is_valid_but_flagged_suspeito(self):
+        bars = [Bar(0, 8_000.0, 8_500.0, 7_800.0, 8_200.0, 1.0), Bar(H, 8_200.0, 9_000.0, 8_000.0, 8_800.0, 1.0)]
+        r = avaliar_qualidade(bars, ParamsV1())
+        self.assertTrue(r.valido)
+        self.assertTrue(r.suspeito)
+
+    def test_l_bc_between_the_suspeito_alto_and_the_ceiling_is_valid_but_flagged_suspeito(self):
+        bars = [Bar(0, 600_000.0, 620_000.0, 590_000.0, 610_000.0, 1.0),
+               Bar(H, 610_000.0, 650_000.0, 600_000.0, 630_000.0, 1.0)]
+        r = avaliar_qualidade(bars, ParamsV1())
+        self.assertTrue(r.valido)
+        self.assertTrue(r.suspeito)
+
     def test_l_bc_above_the_sanity_ceiling_is_invalid(self):
         bars = [Bar(0, 20_000_000.0, 21_000_000.0, 19_500_000.0, 20_500_000.0, 1.0),
                Bar(H, 20_500_000.0, 21_500_000.0, 20_000_000.0, 21_000_000.0, 1.0)]
@@ -53,6 +75,7 @@ class QualidadeV1Tests(unittest.TestCase):
         bars = [Bar(0, 40_000.0, 42_000.0, 39_000.0, 41_000.0, 1.0), Bar(H, 41_000.0, 45_000.0, 40_500.0, 44_000.0, 1.0)]
         r = avaliar_qualidade(bars, ParamsV1())
         self.assertTrue(r.valido)
+        self.assertFalse(r.suspeito)   # dentro do grosso da distribuicao: nem baixo nem alto demais
         self.assertEqual(l_bc_robusto(bars), min(40_000.0, 41_000.0, 41_000.0))
 
     def test_no_bars_yet_is_valid_by_default(self):

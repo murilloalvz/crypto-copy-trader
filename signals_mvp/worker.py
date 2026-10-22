@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -107,6 +108,21 @@ def _check_fase2_capabilities(http: Any, telegram: Optional[TelegramClient], pat
             log.exception("POS-RUNNER-V1: falha ao verificar capacidade de %s", adapter.name)
 
 
+def resolve_chamadas_por_ciclo(settings: Any, raw: dict, sem_v0: bool, env: Optional[dict] = None) -> Any:
+    """Orcamento de chamadas/ciclo do POS-RUNNER (FASE 1.1, revisao 2026-10-22). Prioridade:
+    `POS_RUNNER_CHAMADAS_POR_CICLO` (env) sempre manda quando setado; senao, V0 desligado troca o padrao de 3
+    para 8/ciclo (~10/min: a V1 sozinha, so 1h, precisa de muito menos do que as 3 tfs do V0) -- MAS nunca
+    pisa um valor que o operador ja escreveu explicitamente no config.yaml. O backoff adaptativo em 429 e o
+    mesmo RateLimiter (AIMD) que toda chamada do GT ja usa (http.py) -- nada novo aqui, so o orcamento."""
+    env = os.environ if env is None else env
+    chamadas_env = env.get("POS_RUNNER_CHAMADAS_POR_CICLO")
+    if chamadas_env is not None:
+        return dataclasses.replace(settings, chamadas_por_ciclo=int(chamadas_env))
+    if sem_v0 and raw.get("chamadas_por_ciclo") is None:
+        return dataclasses.replace(settings, chamadas_por_ciclo=8)
+    return settings
+
+
 def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine, gt: GtClient,
                     telegram: Optional[TelegramClient], stop: threading.Event) -> Optional[object]:
     """POS-RUNNER ao vivo (Parte B): V0 (silencioso ou nao, conforme `pos_runner.alertas.*`) e V1 ("regras do
@@ -122,6 +138,8 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     from .pos_runner.solana_rpc import SolanaRpc, endpoints_from_env, host_of
 
     settings = LiveSettings.from_config(raw)
+    sem_v0 = bool(os.environ.get("POS_RUNNER_SEM_V0"))   # item 0 (regras inegociaveis): flag --sem-v0
+    settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)
     path = Path(settings.parametros)
     if not path.is_absolute():
         path = paths.base / path if (paths.base / path).exists() else PACKAGE_DIR / path
@@ -137,7 +155,6 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
         return None
     chain = cfg.raw["chains"]["solana"]
     rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=6)
-    sem_v0 = bool(os.environ.get("POS_RUNNER_SEM_V0"))   # item 0 (regras inegociaveis): flag --sem-v0
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
                          chain_name=chain["nome"])
@@ -145,10 +162,10 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     _check_fase2_capabilities(http, telegram, paths)
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
-    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | RPC: %s",
+    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | %s chamadas/ciclo | RPC: %s",
                  "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
                  params.version, live.status, " [V0 DESLIGADO: POS_RUNNER_SEM_V0]" if sem_v0 else "",
-                 live.version_v1, ", ".join(host_of(u) for u in rpc.endpoints))
+                 live.version_v1, settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints))
     return live
 
 

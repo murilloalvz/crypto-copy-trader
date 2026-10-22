@@ -139,21 +139,28 @@ class QualityFilterTests(unittest.TestCase):
 
 
 class HeartbeatTests(unittest.TestCase):
-    def test_heartbeat_is_sent_periodically_with_the_counters(self) -> None:
+    def test_heartbeat_fires_at_startup_and_then_periodically_with_the_counters(self) -> None:
+        """Revisao FASE 1.1: o 1o heartbeat sai JA no startup (nao espera a 1a janela de 6h/`heartbeat_interval_s`)."""
         h = LiveHarness()
         try:
-            h.live.heartbeat_interval_s = 3 * H   # acelera o teste (padrao real: 4h)
+            h.live.heartbeat_interval_s = 3 * H   # acelera o teste (padrao real: 6h)
             start_tracking(h)
-            h.run_hours(3)
             beats = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]
-            self.assertEqual(len(beats), 1, h.texts())
+            self.assertEqual(len(beats), 1, h.texts())   # ja sai no 1o ciclo, antes de qualquer run_hours
             self.assertIn("pools acompanhados:", beats[0])
             self.assertIn("chamadas/min", beats[0])
+            self.assertIn("429 na janela:", beats[0])
+            self.assertIn("fila de atualização:", beats[0])
             self.assertIn("dado_invalido:", beats[0])
+            self.assertIn("l_bc_suspeito:", beats[0])
             self.assertIn("filtrado_mc_baixo:", beats[0])
+            self.assertIn("filtrado_idade:", beats[0])
+            self.assertIn(h.live.version_v1, beats[0])
             h.run_hours(3)
             self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 2,
                              "o heartbeat tem que repetir a cada janela, nao so uma vez")
+            h.run_hours(3)
+            self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 3)
         finally:
             h.close()
 
@@ -170,6 +177,11 @@ class SemV0Tests(unittest.TestCase):
                              "V0 nunca pode alertar com --sem-v0")
             self.assertEqual(h.storage.pr_signals(), [], "V0 nunca pode gravar sinal com --sem-v0")
             self.assertGreaterEqual(len(_entrada_v1(h)), 1, "a V1 continua alertando normalmente")
+            # revisao FASE 1.1: descoberta/promocao NAO sao "so do V0" -- sao a MESMA fila de pools ativos que
+            # a V1 consome (item 0 do prompt); --sem-v0 nunca pode corta-las, senao mataria a V1 tambem. O
+            # corte real de chamada "so do V0" e nenhum Detector do V0 ser criado.
+            self.assertEqual(h.storage.pr_pool("POOL1")["status"], "ativo", "descoberta/promocao continuam rodando")
+            self.assertEqual(h.live.dets, {}, "com --sem-v0 o V0 nunca cria detector (zero chamada so dele)")
         finally:
             h.close()
 

@@ -55,7 +55,16 @@ class ParamsV1:
     # dado_invalido ao vivo (item 3.6 + INTERPRETACOES.md #6) -- parte do hash da V1 desde o 1o congelamento
     # (diferente do V0, que so emendou isto DEPOIS de congelado: aqui a V1 nasce ja com a regra)
     candle_wick_ratio_max: float = 3.0
-    l_bc_floor_usd: float = 100.0
+    # piso (revisao FASE 1.1, 2026-10-22, evidencia do operador): a menor graduacao legitima MEDIDA neste
+    # repo (pump.fun, N=8) e ~28k; o checkpoint do operador tem 164 pools com L_bc entre US$14 e US$1.000
+    # (fisicamente impossivel para uma graduacao real) -- US$100 deixava passar esse cluster inteiro.
+    # US$5.000 fica bem abaixo do minimo legitimo medido (28k) sem chegar perto do cluster impossivel.
+    l_bc_floor_usd: float = 5_000.0
+    # faixa SUSPEITA (nunca bloqueia -- tag `l_bc_suspeito` no alerta/CSV/contadores para o operador conferir
+    # a mao no GeckoTerminal): abaixo disto ainda e raro para uma graduacao legitima (so acima do piso de
+    # precisao); acima disto ja esta no territorio do defeito de candle do GT em DBC (ver l_bc_ceiling_usd).
+    l_bc_suspeito_baixo_usd: float = 20_000.0
+    l_bc_suspeito_alto_usd: float = 500_000.0
     # teto de SANIDADE (revisao da FASE 1, 2026-10-22): agnostico de launchpad, NAO e uma precisao por
     # launchpad -- este repo nao tem parametro de graduacao sourced para Raydium LaunchLab nem Meteora DBC
     # (DBC e documentado como configuravel por projeto; LaunchLab nunca foi pesquisado). US$10M e generoso
@@ -102,8 +111,8 @@ class ParamsV1:
             raise ValueError("candle_wick_ratio_max > 1")
         if self.l_bc_floor_usd < 0:
             raise ValueError("l_bc_floor_usd >= 0")
-        if self.l_bc_ceiling_usd <= self.l_bc_floor_usd:
-            raise ValueError("l_bc_ceiling_usd > l_bc_floor_usd")
+        if not (self.l_bc_floor_usd <= self.l_bc_suspeito_baixo_usd <= self.l_bc_suspeito_alto_usd <= self.l_bc_ceiling_usd):
+            raise ValueError("precisa l_bc_floor_usd <= l_bc_suspeito_baixo_usd <= l_bc_suspeito_alto_usd <= l_bc_ceiling_usd")
         if self.mao_fixa_usd <= 0 or self.banca_fixa_limite_usd <= 0 or not 0 < self.posicao_frac < 1:
             raise ValueError("mao_fixa_usd, banca_fixa_limite_usd > 0 e 0 < posicao_frac < 1")
         if self.max_posicoes_abertas < 1:
