@@ -31,10 +31,14 @@ class _ConsoleFilter(logging.Filter):
 
 
 def make_stdout_safe() -> None:
-    """Console do Windows (cp1252) quebra com emoji/chines no print: troca por '?' em vez de cair."""
+    """Console do Windows: forca UTF-8 (BUG PRIORITARIO 2026-10-22, item 6) -- antes so trocava o tratamento
+    de erro (`errors="replace"`), mas mantinha o encoding que o Windows ja tinha escolhido pro processo (cp1252
+    ou similar, nao UTF-8). Como o arquivo de log JA e gravado em UTF-8 (`setup_logging`), um console com
+    outro encoding produz mojibake (em-dash "—" virando "â€”") sempre que um emoji/acento sai direto no
+    print -- a causa e a INCONSISTENCIA de encoding entre console e arquivo, nao so o erro de codificacao."""
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError):
             pass
 

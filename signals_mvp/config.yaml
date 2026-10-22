@@ -261,10 +261,13 @@ pos_runner:
   mc_max_usd: 50000000       # acima disso o numero e lixo/manipulado
   idade_max_dias: 14         # acompanha cada token ate 14 dias depois da graduacao (o horizonte da Parte A; sinal primario so ate 7 dias desde a criacao)
   alertas:
-    watchlist: true          # WATCHLIST: zona da fase 2 madura (>= 12 candles desde o fundo e >= 1 teste de suporte)
-    entrada: true            # ENTRADA: rompimento valido (com mini-grafico) e NAO ENTRAR: candle absurdo
-    invalidado: true         # INVALIDADO: fechou abaixo do ultimo teste -2%, queda > 90% ou fundo < 0,75 x L_bc (so de quem teve WATCHLIST)
-    saida: true              # SAIDA SUGERIDA (stop, alvo, trailing, exaustao, tempo) e o resultado do paper
+    # V0 silencioso por padrao (revisao da FASE 1 da V1, 2026-10-22, pedido explicito do operador: "por
+    # padrao ele deve apenas gravar"): so grava em banco/CSV, nunca manda Telegram. A V1 (sempre com
+    # alerta proprio) e quem passa a alertar. Para voltar o V0 a alertar, troque os 4 para true.
+    watchlist: false         # WATCHLIST: zona da fase 2 madura (>= 12 candles desde o fundo e >= 1 teste de suporte)
+    entrada: false           # ENTRADA: rompimento valido (com mini-grafico) e NAO ENTRAR: candle absurdo
+    invalidado: false        # INVALIDADO: fechou abaixo do ultimo teste -2%, queda > 90% ou fundo < 0,75 x L_bc (so de quem teve WATCHLIST)
+    saida: false             # SAIDA SUGERIDA (stop, alvo, trailing, exaustao, tempo) e o resultado do paper
     so_primario: true        # true = alerta so o 1o setup de cada token/tf com idade 2-7 dias desde a criacao (o resto vira so paper)
   grafico: true              # mini-grafico PNG no alerta de entrada (precisa do matplotlib; sem ele vai so o texto)
 

@@ -30,6 +30,13 @@ STARTUP_GRACE_S = 90.0
 RAPID_CRASH_S = 30.0
 GRACEFUL_STOP_S = 20.0
 EXIT_CONFIG_ERROR = 2
+# BUG PRIORITARIO (2026-10-22, item 2): `ts` (gravado por `worker.HeartbeatWriter`, a cada 30s, independente
+# do ciclo) so prova que o PROCESSO ainda responde -- folga curta. `ultimo_progresso_ts` (so avanca quando um
+# ciclo de verdade termina) prova PROGRESSO real -- folga longa e configuravel, porque um ciclo legitimo pode
+# demorar (429 do GT, RPC lento). O watchdog so reinicia por falta de progresso real, nunca por um ciclo que
+# so esta demorando mais que o normal (ver `_watch`).
+DEFAULT_PROGRESS_STALL_S = 900.0        # 15 min sem progresso real
+HEARTBEAT_WRITER_GRACE_S = 120.0        # thread dedicada escreve a cada 30s; 120s sem nada = processo congelado/morto
 
 
 def pid_alive(pid: int) -> bool:
@@ -115,6 +122,16 @@ class Supervisor:
             return float(load_config(self.paths.config)["ciclo"]["stall_guard_s"])
         except (ConfigError, KeyError, OSError):
             return DEFAULT_STALL_S
+
+    def _progress_stall_limit(self) -> float:
+        """Folga (seg) sem PROGRESSO real (`ultimo_progresso_ts`) antes do watchdog decidir que travou de
+        verdade -- configuravel via `ciclo.progresso_stall_s` no config.yaml (BUG PRIORITARIO, item 2)."""
+        if self.stall_limit_override is not None:
+            return max(self.stall_limit_override, DEFAULT_PROGRESS_STALL_S)
+        try:
+            return float(load_config(self.paths.config)["ciclo"]["progresso_stall_s"])
+        except (ConfigError, KeyError, OSError):
+            return DEFAULT_PROGRESS_STALL_S
 
     def _spawn(self) -> subprocess.Popen:
         env = dict(os.environ)
@@ -215,8 +232,19 @@ class Supervisor:
                 pass
 
     def _watch(self, proc: subprocess.Popen, started: float) -> str:
-        """Bloqueia ate o worker sair, travar ou pedirem para parar. Devolve o motivo."""
+        """Bloqueia ate o worker sair, travar ou pedirem para parar. Devolve o motivo.
+
+        BUG PRIORITARIO (2026-10-22, item 2): um heartbeat NOVO (grava `ultimo_progresso_ts`, por uma thread
+        dedicada independente do ciclo -- ver `worker.HeartbeatWriter`) usa dois criterios, nunca so `ts`:
+        `ts` parado por `HEARTBEAT_WRITER_GRACE_S` = processo/interpretador mesmo congelado ou morto (folga
+        curta, a thread deveria escrever a cada 30s custe o que custar); `ultimo_progresso_ts` parado por
+        `progress_limit` (configuravel, padrao 15 min) = nenhum ciclo terminou de verdade por muito tempo,
+        AINDA QUE o processo continue respondendo. Um ciclo so lento (ex.: 429 do GT) nunca derruba isto --
+        `ultimo_progresso_ts` avanca no fim de CADA ciclo que termina, nao no meio dele. Heartbeat ANTIGO
+        (sem o campo -- worker nao atualizado) cai no criterio de sempre, so `ts`, como rede de seguranca."""
         stall_limit = self._stall_limit()
+        progress_limit = self.stall_limit_override if self.stall_limit_override is not None else self._progress_stall_limit()
+        writer_grace = min(HEARTBEAT_WRITER_GRACE_S, stall_limit) if self.stall_limit_override is not None else HEARTBEAT_WRITER_GRACE_S
         while True:
             if self._should_stop():
                 return "stop"
@@ -230,13 +258,23 @@ class Supervisor:
             uptime = time.time() - started
             beat = read_heartbeat(self.paths)
             fresh = beat is not None and beat.get("pid") == proc.pid
-            last = float(beat["ts"]) if fresh and "ts" in beat else None
-            if last is None and uptime > self.startup_grace_s + stall_limit:
+            ts = float(beat["ts"]) if fresh and "ts" in beat else None
+            has_progress_field = fresh and "ultimo_progresso_ts" in beat
+            if ts is None and uptime > self.startup_grace_s + stall_limit:
                 log.error("STALL: worker sem heartbeat desde o inicio (%.0fs)", uptime)
                 return f"stall: sem heartbeat ha {uptime:.0f}s"
-            if last is not None and time.time() - last > stall_limit:
-                log.error("STALL: sem ciclo ha %.0fs (limite %.0fs) — reiniciando o worker", time.time() - last, stall_limit)
-                return f"stall: sem ciclo ha {time.time() - last:.0f}s"
+            if ts is not None and not has_progress_field and time.time() - ts > stall_limit:
+                log.error("STALL: sem ciclo ha %.0fs (limite %.0fs) — reiniciando o worker", time.time() - ts, stall_limit)
+                return f"stall: sem ciclo ha {time.time() - ts:.0f}s"
+            if ts is not None and has_progress_field and time.time() - ts > writer_grace:
+                log.error("STALL: processo congelado (sem heartbeat ha %.0fs) — reiniciando o worker", time.time() - ts)
+                return f"stall: processo congelado ha {time.time() - ts:.0f}s"
+            if has_progress_field:
+                progress = float(beat.get("ultimo_progresso_ts") or 0.0)
+                if progress > 0 and time.time() - progress > progress_limit:
+                    log.error("STALL: sem progresso real ha %.0fs (limite %.0fs) — reiniciando o worker",
+                             time.time() - progress, progress_limit)
+                    return f"stall: sem progresso real ha {time.time() - progress:.0f}s"
             time.sleep(self.poll_s)
 
 
