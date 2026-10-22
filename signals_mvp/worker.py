@@ -9,7 +9,7 @@ import signal
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .config import PACKAGE_DIR, Config, ConfigError, Paths, load_config
 from .engine import Engine
@@ -88,6 +88,25 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
                     pass
 
 
+def _check_fase2_capabilities(http: Any, telegram: Optional[TelegramClient], paths: Paths) -> None:
+    """FASE 2 (prompt, secao 5): so a deteccao de capacidade real (networks + OHLCV de amostra num pool real)
+    + log/aviso no Telegram, 1x no startup -- nunca liga descoberta/holders de BSC/Robinhood. `capable()`
+    continua False por decisao explicita do operador ("mantendo BSC e Robinhood desligadas por padrao"); isto
+    so confirma e registra o estado real (rede existe? tem OHLCV?) em vez de deixar a pergunta em aberto."""
+    from .pos_runner.chain_adapter import BscAdapter, RobinhoodAdapter
+
+    cache_root = paths.dados / "pos_runner"
+    adapters = (
+        BscAdapter(http, telegram=telegram, cache_dir=cache_root / "bsc_ohlcv"),
+        RobinhoodAdapter(http, telegram=telegram, cache_dir=cache_root / "robinhood_ohlcv"),
+    )
+    for adapter in adapters:
+        try:
+            adapter.check()
+        except Exception:
+            log.exception("POS-RUNNER-V1: falha ao verificar capacidade de %s", adapter.name)
+
+
 def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine, gt: GtClient,
                     telegram: Optional[TelegramClient], stop: threading.Event) -> Optional[object]:
     """POS-RUNNER ao vivo (Parte B): V0 (silencioso ou nao, conforme `pos_runner.alertas.*`) e V1 ("regras do
@@ -123,6 +142,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
                          chain_name=chain["nome"])
     live.alerts_on = cfg.raw["alertas"]["ligado"]
+    _check_fase2_capabilities(http, telegram, paths)
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
     console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | RPC: %s",

@@ -217,10 +217,14 @@ class SolanaAdapter(ChainAdapter):
 
 
 def detect_capability(http: Any, network_name_candidates: tuple[str, ...]) -> Capability:
-    """Consulta `/networks` do GeckoTerminal (1 chamada, cacheavel pelo chamador) e procura um id que combine
-    com `network_name_candidates` (ex.: ("bsc","bnb_chain") -- o nome exato do id no GT nao esta confirmado
-    para BSC/Robinhood ainda, por isso a lista de candidatos). Sem OHLCV documentado para o id achado -> motivo
-    explicito; a Fase 2 confirma isso com uma chamada real de OHLCV de 1 pool conhecido daquela rede."""
+    """Consulta `/networks` do GeckoTerminal e procura um id que combine com `network_name_candidates`, depois
+    confirma OHLCV de verdade com um pool de amostra real (`/trending_pools` + 1 chamada de `/ohlcv`) -- nunca
+    assume. Ate 3 chamadas, 1x no startup (nao por ciclo).
+
+    Medido em 2026-10-22 (pesquisa da revisao da FASE 1 da V1): os ids `bsc` e `robinhood` SAO reais no GT
+    (confirmados direto na API publica); `bsc` tambem teve OHLCV real confirmado (pool TartSwap/WBNB,
+    `pancakeswap_v2`). Mesmo assim esta funcao refaz a verificacao em tempo real a cada chamada -- a API pode
+    mudar, e o resultado nunca deve vir de um valor memorizado."""
     try:
         data = http.get_json("networks", {"page": 1}, max_wait_s=15.0)
     except (ApiError, RateLimited) as exc:
@@ -229,35 +233,74 @@ def detect_capability(http: Any, network_name_candidates: tuple[str, ...]) -> Ca
     match = next((c for c in network_name_candidates if c in ids), None)
     if match is None:
         return Capability(None, False, f"nenhum dos ids candidatos {network_name_candidates} existe no GT ({sorted(ids)[:20]}...)")
-    return Capability(match, has_ohlcv=False, motivo="rede encontrada, mas Fase 2 ainda nao confirmou OHLCV")
+    try:
+        trending = http.get_json(f"networks/{match}/trending_pools", {"page": 1}, max_wait_s=15.0)
+    except (ApiError, RateLimited) as exc:
+        return Capability(match, False, f"rede {match} encontrada, mas /trending_pools falhou: {exc}")
+    pools = (trending or {}).get("data") or []
+    sample = next((p.get("attributes", {}).get("address") for p in pools if isinstance(p, dict) and p.get("attributes", {}).get("address")), None)
+    if not sample:
+        return Capability(match, False, f"rede {match} encontrada, mas sem pool de amostra para confirmar OHLCV")
+    try:
+        ohlcv = http.get_json(f"networks/{match}/pools/{sample}/ohlcv/hour", {"aggregate": 1, "limit": 1, "currency": "usd"}, max_wait_s=15.0)
+    except (ApiError, RateLimited) as exc:
+        return Capability(match, False, f"rede {match} encontrada, mas /ohlcv falhou no pool de amostra: {exc}")
+    has_ohlcv = bool(((ohlcv or {}).get("data") or {}).get("attributes", {}).get("ohlcv_list"))
+    if not has_ohlcv:
+        return Capability(match, False, f"rede {match} encontrada, mas OHLCV veio vazio para o pool de amostra")
+    return Capability(match, True, "")
 
 
 class _DisabledAdapter(ChainAdapter):
-    """BscAdapter/RobinhoodAdapter antes da Fase 2: capacidade real verificada, mas sempre desligado -- log claro
-    e aviso no Telegram (quem chama `capable()` decide o aviso), nunca derruba o bot."""
+    """BscAdapter/RobinhoodAdapter na FASE 2: capacidade real verificada (rede + OHLCV com pool de amostra) e
+    OHLCV ja funciona de verdade (mesmo `OhlcvStore` da Solana, so troca a rede) -- mas descoberta/holders
+    ainda sao Fase 2 e `capable()` fica sempre False por decisao explicita do operador ("mantendo BSC e
+    Robinhood desligadas por padrao"), nao porque a deteccao falhou. Log claro + aviso no Telegram (1x por
+    processo) quando a rede nao e encontrada ou nao tem OHLCV -- nunca derruba o bot."""
 
-    def __init__(self, name: str, network_candidates: tuple[str, ...], http: Any, links: Optional[dict[str, str]] = None):
+    def __init__(self, name: str, network_candidates: tuple[str, ...], http: Any, links: Optional[dict[str, str]] = None,
+                telegram: Any = None, cache_dir: Any = None):
         self.name = name
         self._network_candidates = network_candidates
         self._http = http
         self._links = links or {}
+        self._telegram = telegram
+        self._cache_dir = cache_dir
         self._capability: Optional[Capability] = None
+        self._ohlcv_store: Optional[OhlcvStore] = None
+        self._warned = False
 
     def check(self) -> Capability:
         if self._capability is None:
             self._capability = detect_capability(self._http, self._network_candidates)
-            if not self._capability.ok:
+            if not self._capability.ok and not self._warned:
+                self._warned = True
                 log.warning("POS-RUNNER-V1: chain %s desligada (%s)", self.name, self._capability.motivo)
+                if self._telegram is not None:
+                    try:
+                        self._telegram.notify(f"⚠ POS-RUNNER-V1: chain {self.name} desligada ({self._capability.motivo})")
+                    except Exception:  # noqa: BLE001 - aviso e melhor-esforco, nunca derruba o startup
+                        log.exception("POS-RUNNER-V1: falha ao avisar no Telegram sobre %s", self.name)
         return self._capability
 
     def capable(self) -> bool:
-        return False   # Fase 2 implementa descoberta/candles/holders antes disto poder virar True
+        return False   # decisao explicita do operador: BSC/Robinhood ficam desligadas por padrao na Fase 2
 
     def discover(self, source: str, now: float) -> DiscoveredPool:
         raise NotImplementedError(f"{self.name}: descoberta e Fase 2")
 
     def ohlcv(self, pool: str, tf: str, start_ts: int, end_ts: int, currency: str = "usd", side: str = "base") -> list[Bar]:
-        raise NotImplementedError(f"{self.name}: OHLCV e Fase 2")
+        """Ja funciona de verdade (mesmo `OhlcvStore` da Solana) -- so chega aqui se algum chamador pedir
+        candles direto do adapter; nunca e chamado pelo ciclo ao vivo enquanto `capable()` for False."""
+        cap = self.check()
+        if not cap.ok or cap.network_id is None:
+            raise NotImplementedError(f"{self.name}: capacidade nao confirmada ({cap.motivo})")
+        if self._ohlcv_store is None:
+            import tempfile
+            from pathlib import Path
+            cache_dir = Path(self._cache_dir) if self._cache_dir is not None else Path(tempfile.mkdtemp(prefix=f"pos_runner_{self.name}_"))
+            self._ohlcv_store = OhlcvStore(self._http, cache_dir, network=cap.network_id)
+        return self._ohlcv_store.history(pool, tf, start_ts, end_ts, currency=currency, side=side)
 
     def link_for(self, kind: str, mint: str, pool: str, gmgn_slug: str, dexscreener_slug: str) -> str:
         fields = {"pool": pool, "token": mint, "gmgn_slug": gmgn_slug, "dexscreener_slug": dexscreener_slug}
@@ -268,13 +311,16 @@ class _DisabledAdapter(ChainAdapter):
 
 
 class BscAdapter(_DisabledAdapter):
-    def __init__(self, http: Any, links: Optional[dict[str, str]] = None):
-        super().__init__("bsc", ("bsc", "bnb_chain", "binance-smart-chain"), http, links)
+    def __init__(self, http: Any, links: Optional[dict[str, str]] = None, telegram: Any = None, cache_dir: Any = None):
+        # "bsc" e o id real confirmado no GT (medido 2026-10-22); os outros ficam so como fallback.
+        super().__init__("bsc", ("bsc", "bnb_chain", "binance-smart-chain"), http, links, telegram, cache_dir)
 
 
 class RobinhoodAdapter(_DisabledAdapter):
-    def __init__(self, http: Any, links: Optional[dict[str, str]] = None):
-        super().__init__("robinhood", ("robinhood",), http, links)
+    def __init__(self, http: Any, links: Optional[dict[str, str]] = None, telegram: Any = None, cache_dir: Any = None):
+        # "robinhood" e o id real confirmado no GT (medido 2026-10-22; OHLCV ainda nao confirmado -- a rede
+        # ficou indisponivel por rate limit durante a pesquisa, `check()` confirma isso de verdade no startup).
+        super().__init__("robinhood", ("robinhood",), http, links, telegram, cache_dir)
 
 
 def html_escape_ticker(value: str, limit: int = 20) -> str:

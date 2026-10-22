@@ -2,11 +2,12 @@
 
 **FASE 1 concluída, ligada ao bot ao vivo e revisada em 2026-10-22** (revisão do operador com evidência real
 encontrou 3 problemas reais — teto de `dado_invalido`, `--sem-v0` não cortava chamada nenhuma, heartbeat
-nunca implementado — todos corrigidos, ver §2). Branch `signals-mvp` (espelho `claude/pensive-wright-62usq8`,
-PR #7). PAPER / READ ONLY inalterado. Nada do V0 foi alterado em *comportamento interno* — só aditivos no
-código (novas colunas/tabelas, novos parâmetros opcionais) — mas **o `config.yaml` de produção mudou**: os 4
-flags `pos_runner.alertas.*` do V0 foram para `false` (ver §2). Os 296 testes originais do V0 continuam
-verdes, mais 69 testes novos da V1 (**365/365** no total nesta branch).
+nunca implementado — todos corrigidos, ver §2). **Fase 2 também feita nesta revisão** (detecção de capacidade
+real de BSC/Robinhood, `capable()` continua `False` por decisão explícita — ver §3). Branch `signals-mvp`
+(espelho `claude/pensive-wright-62usq8`, PR #7). PAPER / READ ONLY inalterado. Nada do V0 foi alterado em
+*comportamento interno* — só aditivos no código (novas colunas/tabelas, novos parâmetros opcionais) — mas **o
+`config.yaml` de produção mudou**: os 4 flags `pos_runner.alertas.*` do V0 foram para `false` (ver §2). Os 296
+testes originais do V0 continuam verdes, mais 78 testes novos da V1 (**374/374** no total nesta branch).
 
 ## 1. O que está pronto, testado e LIGADO
 
@@ -18,7 +19,7 @@ verdes, mais 69 testes novos da V1 (**365/365** no total nesta branch).
 | `simulate_v1.py` | TP1 (30% no TOPO com exaustão) + EXIT FULL (fecha abaixo de S) + stop (2% abaixo do menor wick) | 4 |
 | `qualidade_v1.py` | `dado_invalido`: wick do 1º candle, `L_bc` abaixo do piso OU acima do teto de sanidade (novo) | 5 |
 | `brt.py` | hora BRT (UTC-3 fixo) e janela de ouro (nunca filtra, só rotula) | 2 |
-| `chain_adapter.py` | `ChainAdapter`/`SolanaAdapter` (descoberta, OHLCV, links com assert https://, `holders()`, `vamp_risk()`); `BscAdapter`/`RobinhoodAdapter` com detecção de capacidade real, sempre desligadas (Fase 2) | 15 |
+| `chain_adapter.py` | `ChainAdapter`/`SolanaAdapter` (descoberta, OHLCV, links com assert https://, `holders()`, `vamp_risk()`); `BscAdapter`/`RobinhoodAdapter` com detecção de capacidade real (3 passos: `/networks`→`/trending_pools`→`/ohlcv`), OHLCV funcional, aviso no Telegram 1x, sempre `capable()=False` (Fase 2, decisão explícita) | 24 |
 | `bankroll_v1.py` | gestão híbrida (mão fixa US$10 < US$200 de banca, 10% acima disso) | 8 |
 | `telegram_v1.py` | os 6 templates + heartbeat (novo) + teclado via `link_for` | 6 |
 | `storage.py` (`pr1_*`) | `pr1_signals` (idempotente), `pr1_filtrados`, `pr1_uptime`, `pr1_bankroll_*`; 3 CSVs | 6 |
@@ -61,13 +62,32 @@ Suite inteira: `python -m unittest discover -s signals_mvp/tests -t .` → **365
 - **`python -m signals_mvp teste-pos-runner`**: continua testando só o V0; não manda nenhuma mensagem de
   teste da V1 (templates/heartbeat). Não pedido explicitamente, mas seria uma extensão natural.
 
-### Fase 2 (explicitamente não começada agora, por pedido do operador — "mantendo BSC e Robinhood desligadas por padrão")
-- `BscAdapter`/`RobinhoodAdapter`: descoberta, OHLCV, holders (via API de explorer) reais — hoje só
-  detecção de capacidade (`/networks` do GT), sempre `capable()=False`.
-- Resolver os network ids reais de BSC/Robinhood no GeckoTerminal (candidatos `("bsc","bnb_chain",
-  "binance-smart-chain")`/`("robinhood",)` nunca foram confirmados contra a API real).
-- Tag `nao_validado` para sinais fora da Solana (parâmetros calibrados na Solana) — não implementada
-  porque não há sinal fora da Solana ainda.
+### Fase 2 — feita nesta revisão (2026-10-22), mantendo BSC e Robinhood desligadas por padrão
+- **Network ids confirmados contra a API real do GeckoTerminal** (não mais candidatos nunca testados):
+  `bsc` e `robinhood` SÃO ids reais; `bsc` teve OHLCV real confirmado (pool TartSwap/WBNB, `pancakeswap_v2`);
+  o OHLCV de `robinhood` não pôde ser confirmado por rate-limit (429) durante a pesquisa — `check()` refaz essa
+  confirmação de verdade, em tempo real, a cada processo (nunca memoriza o resultado da pesquisa).
+- `detect_capability()` agora faz uma verificação real de 3 passos (`/networks` → `/trending_pools` → `/ohlcv`
+  de um pool de amostra), em vez de só olhar `/networks` e assumir `has_ohlcv=False`.
+- `_DisabledAdapter.ohlcv()` agora funciona de verdade (mesmo `OhlcvStore` da Solana, rede diferente) — só não
+  é chamado pelo ciclo ao vivo enquanto `capable()` for `False`.
+- `check()` manda um aviso no Telegram (1x por processo, nunca repete) quando a rede não é encontrada ou não
+  tem OHLCV — antes só logava.
+- `worker.py` (`_check_fase2_capabilities`, chamado 1x no startup de `make_pos_runner`) roda esse `check()`
+  para BSC e Robinhood assim que o bot liga, só para registrar/avisar o estado real — nunca liga descoberta.
+- 9 testes novos (`test_chain_adapter.py`): os 3 passos do probe (sucesso completo, sem rede listada, sem pool
+  de amostra, OHLCV vazio), aviso no Telegram 1x (inclusive com um cliente de Telegram que lança exceção —
+  nunca derruba o startup), `ohlcv()` com erro claro quando a capacidade não foi confirmada, `ohlcv()`
+  delegando pro `OhlcvStore` real quando é confirmada, e que o `OhlcvStore` é construído só uma vez (não a
+  cada chamada).
+
+**Ainda não feito (decisão explícita do operador, não um esquecimento):**
+- `capable()` continua `False` sempre — descoberta/holders reais de BSC/Robinhood (via API de explorer) não
+  foram implementados; é só detecção de capacidade + OHLCV.
+- Tag `nao_validado` para sinais fora da Solana (parâmetros calibrados na Solana) — não implementada porque
+  não há sinal fora da Solana ainda (`capable()=False` garante isso).
+- `BSCSCAN_API_KEY`/`HELIUS_API_KEY`/`COINGECKO_API_KEY` no `.env.example` — só fazem sentido quando a
+  descoberta/holders EVM existirem de verdade.
 
 ### Fase 3 (não começada)
 - Botões de feedback (👍/👎/📝), comandos `/entrei`/`/sai`/`/nota`, tabela própria, relatório semanal de

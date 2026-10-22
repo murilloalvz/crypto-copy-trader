@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from typing import Any
+from unittest import mock
 
 from ..http import ApiError
 from ..models import ChainCtx
@@ -173,18 +174,64 @@ class SolanaAdapterTests(unittest.TestCase):
         self.assertIsNone(result.tag)
 
 
+class _FakeTelegram:
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def notify(self, text: str) -> None:
+        self.messages.append(text)
+
+
+def _trending_with_sample(address: str = "0xsample") -> dict:
+    return {"data": [{"attributes": {"address": address}}]}
+
+
+def _ohlcv_with_bars(rows: list[list[Any]]) -> dict:
+    return {"data": {"attributes": {"ohlcv_list": rows}}}
+
+
 class CapabilityTests(unittest.TestCase):
     def test_detect_capability_finds_a_matching_network_id(self):
         http = _FakeHttp({"networks": {"data": [{"id": "bsc"}, {"id": "solana"}]}})
         cap = detect_capability(http, ("bsc", "bnb_chain"))
         self.assertEqual(cap.network_id, "bsc")
-        self.assertFalse(cap.ok)   # OHLCV ainda nao confirmado -- Fase 2
+        self.assertFalse(cap.ok)   # /trending_pools nao foi mockado -- falha explicita, nunca assume OHLCV
 
     def test_detect_capability_explicit_reason_when_the_network_is_not_listed(self):
         http = _FakeHttp({"networks": {"data": [{"id": "solana"}]}})
         cap = detect_capability(http, ("robinhood",))
         self.assertIsNone(cap.network_id)
         self.assertIn("robinhood", cap.motivo)
+
+    def test_detect_capability_confirms_real_ohlcv_end_to_end(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": _trending_with_sample(),
+            "networks/bsc/pools/0xsample/ohlcv/hour": _ohlcv_with_bars([[3600, 1, 2, 0.5, 1.5, 100]]),
+        })
+        cap = detect_capability(http, ("bsc",))
+        self.assertEqual(cap.network_id, "bsc")
+        self.assertTrue(cap.ok)
+        self.assertEqual(cap.motivo, "")
+
+    def test_detect_capability_explicit_reason_when_there_is_no_sample_pool(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": {"data": []},
+        })
+        cap = detect_capability(http, ("bsc",))
+        self.assertFalse(cap.ok)
+        self.assertIn("amostra", cap.motivo)
+
+    def test_detect_capability_explicit_reason_when_ohlcv_comes_back_empty(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": _trending_with_sample(),
+            "networks/bsc/pools/0xsample/ohlcv/hour": _ohlcv_with_bars([]),
+        })
+        cap = detect_capability(http, ("bsc",))
+        self.assertFalse(cap.ok)
+        self.assertIn("vazio", cap.motivo)
 
     def test_bsc_and_robinhood_adapters_are_disabled_by_default(self):
         http = _FakeHttp({"networks": {"data": [{"id": "bsc"}]}})
@@ -195,6 +242,72 @@ class CapabilityTests(unittest.TestCase):
         adapter = BscAdapter(_FakeHttp({}), links=LINKS)
         url = adapter.link_for("terminal", "0xabc", "0xpool", "", "")
         self.assertTrue(url.startswith("https://gmgn.ai"))
+
+    def test_check_notifies_telegram_once_when_capability_is_not_confirmed(self):
+        http = _FakeHttp({"networks": {"data": [{"id": "solana"}]}})   # bsc nao existe
+        telegram = _FakeTelegram()
+        adapter = BscAdapter(http, telegram=telegram)
+        adapter.check()
+        adapter.check()   # repetir nao pode mandar um 2o aviso
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("bsc", telegram.messages[0])
+
+    def test_check_never_notifies_when_capability_is_confirmed(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": _trending_with_sample(),
+            "networks/bsc/pools/0xsample/ohlcv/hour": _ohlcv_with_bars([[3600, 1, 2, 0.5, 1.5, 100]]),
+        })
+        telegram = _FakeTelegram()
+        adapter = BscAdapter(http, telegram=telegram)
+        cap = adapter.check()
+        self.assertTrue(cap.ok)
+        self.assertEqual(telegram.messages, [])
+
+    def test_check_survives_a_broken_telegram_client(self):
+        http = _FakeHttp({"networks": {"data": [{"id": "solana"}]}})
+
+        class _BrokenTelegram:
+            def notify(self, text: str) -> None:
+                raise RuntimeError("rede fora")
+
+        adapter = BscAdapter(http, telegram=_BrokenTelegram())
+        cap = adapter.check()   # nunca derruba o startup
+        self.assertFalse(cap.ok)
+
+    def test_ohlcv_raises_a_clear_error_when_capability_is_not_confirmed(self):
+        http = _FakeHttp({"networks": {"data": [{"id": "solana"}]}})
+        adapter = BscAdapter(http)
+        with self.assertRaises(NotImplementedError):
+            adapter.ohlcv("0xpool", "1h", 0, 3600)
+
+    def test_ohlcv_builds_the_store_for_the_confirmed_network_once_capability_is_ok(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": _trending_with_sample(),
+            "networks/bsc/pools/0xsample/ohlcv/hour": _ohlcv_with_bars([[3600, 1, 2, 0.5, 1.5, 100]]),
+        })
+        bars = [Bar(0, 1, 1, 1, 1, 1)]
+        fake_store = _FakeOhlcv(bars)
+        with mock.patch("signals_mvp.pos_runner.chain_adapter.OhlcvStore", return_value=fake_store) as ctor:
+            adapter = BscAdapter(http)
+            out = adapter.ohlcv("0xpool", "1h", 0, 3600)
+        self.assertEqual(out, bars)
+        ctor.assert_called_once_with(http, mock.ANY, network="bsc")
+        self.assertEqual(fake_store.calls, [("0xpool", "1h", 0, 3600, "usd", "base")])
+
+    def test_ohlcv_reuses_the_same_store_across_calls(self):
+        http = _FakeHttp({
+            "networks": {"data": [{"id": "bsc"}]},
+            "networks/bsc/trending_pools": _trending_with_sample(),
+            "networks/bsc/pools/0xsample/ohlcv/hour": _ohlcv_with_bars([[3600, 1, 2, 0.5, 1.5, 100]]),
+        })
+        fake_store = _FakeOhlcv([])
+        with mock.patch("signals_mvp.pos_runner.chain_adapter.OhlcvStore", return_value=fake_store) as ctor:
+            adapter = BscAdapter(http)
+            adapter.ohlcv("0xpool", "1h", 0, 3600)
+            adapter.ohlcv("0xpool", "4h", 0, 3600)
+        ctor.assert_called_once()   # /networks + /trending_pools + /ohlcv so uma vez no processo, nunca por ciclo
 
 
 if __name__ == "__main__":
