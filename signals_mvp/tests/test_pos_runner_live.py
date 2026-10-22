@@ -408,10 +408,13 @@ class LiveFlowTest(unittest.TestCase):
         row = h.storage.pr_pool("POOL1")
         self.assertEqual(row["status"], "ativo")
         self.assertAlmostEqual(row["l_bc"], textbook().bars[0].open)
+        # "👀 WATCHLIST POS-RUNNER" e o prefixo exato do V0 (`watch_text`); a V1 roda em paralelo sobre os
+        # mesmos candles e tem seu proprio alerta de watchlist ("👀 [POS_RUNNER] WATCHLIST") -- o filtro aqui
+        # pega so o do V0, que e o que este teste verifica.
         h.run_hours(15)                                      # candle 22: zona com teste, mas ainda sem 12 candles
-        self.assertEqual([t for t in h.texts() if t.startswith("👀")], [])
+        self.assertEqual([t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")], [])
         h.run_hours(1)                                       # candle 23: zona madura (12 candles desde o fundo + 1 teste)
-        watch = [t for t in h.texts() if t.startswith("👀")]
+        watch = [t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")]
         self.assertEqual(len(watch), 1, h.texts())
         self.assertIn("Zona S 150k – R 260k", watch[0])            # R inclui o 1o repique
         self.assertIn("morre se fechar abaixo de 152k", watch[0])  # minima do teste (155k) - 2%

@@ -164,6 +164,14 @@ CREATE TABLE IF NOT EXISTS pr1_filtrados (
 CREATE TABLE IF NOT EXISTS pr1_uptime (
   id INTEGER PRIMARY KEY AUTOINCREMENT, inicio_ts REAL NOT NULL, fim_ts REAL, motivo_fim TEXT
 );
+-- gestao de banca da V1 (item 2.10): mesmo padrao do pr_bankroll_* do V0, 1 ajuste por tf (sem variante A/B).
+CREATE TABLE IF NOT EXISTS pr1_bankroll_state (
+  tf TEXT NOT NULL, versao_config_v1 TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (tf, versao_config_v1)
+);
+CREATE TABLE IF NOT EXISTS pr1_bankroll_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v1 TEXT NOT NULL,
+  pr1_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr1_signal_id)
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -207,7 +215,7 @@ class Storage:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
-                       "pos_runner_v1_filtrados": True}
+                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -522,6 +530,7 @@ class Storage:
             "pos_runner_v1": (self.paths.pos_runner_v1_csv, lambda: (POS_RUNNER_V1_COLUMNS, self._pos_runner_v1_rows())),
             "pos_runner_v1_filtrados": (self.paths.pos_runner_v1_filtrados_csv,
                                        lambda: (POS_RUNNER_V1_FILTRADOS_COLUMNS, self._pos_runner_v1_filtrados_rows())),
+            "pos_runner_v1_banca": (self.paths.pos_runner_v1_banca_csv, self._pos_runner_v1_banca_header_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -836,6 +845,19 @@ class Storage:
             )
             self._dirty["pos_runner_v1_filtrados"] = True
 
+    def pr1_version_start(self, version: str, ts: float) -> float:
+        """Mesma ideia de `pr_version_start`, chave propria (nunca colide com a contagem do V0)."""
+        key = f"pr1_versao_inicio:{version}"
+        with self._lock:
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr1_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr1_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return float(row[0])
+
     def pr1_filtrado_counts(self, since_ts: float) -> dict[str, int]:
         return {r[0]: r[1] for r in self._all(
             "SELECT motivo, COUNT(*) FROM pr1_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
@@ -888,3 +910,39 @@ class Storage:
             [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v1"]]
             for r in self._all("SELECT * FROM pr1_filtrados ORDER BY ts, id")
         ]
+
+    # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
+    def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:
+        row = self._one("SELECT state_json FROM pr1_bankroll_state WHERE tf=? AND versao_config_v1=?", (tf, versao_config_v1))
+        return row[0] if row else None
+
+    def pr1_bankroll_save(self, tf: str, versao_config_v1: str, state_json: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO pr1_bankroll_state (tf, versao_config_v1, state_json) VALUES (?, ?, ?)",
+                (tf, versao_config_v1, state_json))
+
+    def pr1_bankroll_append(self, tf: str, versao_config_v1: str, pr1_signal_id: int, row: dict, ts: float) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr1_bankroll_trades (ts, tf, versao_config_v1, pr1_signal_id, row_json) VALUES (?, ?, ?, ?, ?)",
+                (ts, tf, versao_config_v1, pr1_signal_id, json.dumps(row, default=str)))
+            if cur.rowcount:
+                self._dirty["pos_runner_v1_banca"] = True
+            return bool(cur.rowcount)
+
+    def pr1_bankroll_resumos(self) -> dict[str, dict]:
+        from .pos_runner.bankroll_v1 import BankrollStateV1
+        out = {}
+        for r in self._all("SELECT tf, versao_config_v1, state_json FROM pr1_bankroll_state"):
+            out[f"{r['tf']}@{r['versao_config_v1'][:12]}"] = BankrollStateV1.from_json(r["state_json"]).resumo()
+        return out
+
+    def _pos_runner_v1_banca_header_rows(self) -> tuple[list[str], list[list[Any]]]:
+        from .pos_runner.bankroll_v1 import COLUMNS, HEADER_LABELS
+        header = [HEADER_LABELS.get(c, c) for c in COLUMNS]
+        rows = []
+        for r in self._all("SELECT row_json FROM pr1_bankroll_trades ORDER BY ts, id"):
+            d = json.loads(r[0])
+            rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
+        return header, rows

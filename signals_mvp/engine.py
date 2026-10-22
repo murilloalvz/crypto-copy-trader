@@ -785,6 +785,7 @@ class Engine:
             return False
         if self.pos_runner is not None:
             self.pos_runner.send_daily_bankroll_summary()   # _send ja trata falha do Telegram sem propagar
+            self.pos_runner.send_daily_summary_v1()
         self.storage.set_meta("ultimo_resumo", today)
         return True
 

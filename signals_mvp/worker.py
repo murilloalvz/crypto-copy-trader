@@ -90,8 +90,11 @@ def validate_networks(engine: Engine, gt: GtClient, telegram: Optional[TelegramC
 
 def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine, gt: GtClient,
                     telegram: Optional[TelegramClient], stop: threading.Event) -> Optional[object]:
-    """POS-RUNNER-V0 ao vivo (Parte B). Sem a secao `pos_runner` no config.yaml, ou com o arquivo de parametros
-    invalido, o bot v0 roda normalmente sem ele (avisa no console). A linhagem on-chain roda numa thread propria."""
+    """POS-RUNNER ao vivo (Parte B): V0 (silencioso ou nao, conforme `pos_runner.alertas.*`) e V1 ("regras do
+    professor", sempre com alerta proprio) rodam juntos sobre os MESMOS candles. Sem a secao `pos_runner` no
+    config.yaml, ou com o arquivo de parametros do V0 invalido, o bot roda normalmente sem nenhum dos dois
+    (avisa no console). A linhagem on-chain roda numa thread propria. Env `POS_RUNNER_SEM_V0=1` desliga o V0
+    por completo (a V1 continua)."""
     raw = cfg.raw.get("pos_runner")
     if not raw:
         return None
@@ -114,14 +117,18 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
         console.warning("POS-RUNNER desligado: falta a chain solana no config.yaml (ou o cliente do GeckoTerminal)")
         return None
     chain = cfg.raw["chains"]["solana"]
-    live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
-                         paths.dados / "pos_runner")
-    live.alerts_on = cfg.raw["alertas"]["ligado"]
     rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=6)
+    sem_v0 = bool(os.environ.get("POS_RUNNER_SEM_V0"))   # item 0 (regras inegociaveis): flag --sem-v0
+    live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
+                         paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
+                         chain_name=chain["nome"])
+    live.alerts_on = cfg.raw["alertas"]["ligado"]
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
-    console.info("POS-RUNNER %s | config %s (%s) | RPC: %s", "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
-                 params.version, live.status, ", ".join(host_of(u) for u in rpc.endpoints))
+    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | RPC: %s",
+                 "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
+                 params.version, live.status, " [V0 DESLIGADO: POS_RUNNER_SEM_V0]" if sem_v0 else "",
+                 live.version_v1, ", ".join(host_of(u) for u in rpc.endpoints))
     return live
 
 
@@ -290,6 +297,8 @@ class Worker:
         self.stop.set()
         if poller is not None:
             poller.join(timeout=3)  # o long-poll pode estar no meio de uma espera; ele sai sozinho no proximo ciclo
+        if engine.pos_runner is not None:
+            engine.pos_runner.shutdown(utc_now())
         try:
             storage.export_csvs(force=True)
         finally:

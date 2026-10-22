@@ -24,8 +24,11 @@ from ..http import ApiError, RateLimited
 from ..models import ChainCtx, PoolSnap
 from .candles import Bar, OhlcvStore
 from .enumerate import LAUNCHPADS
-from .live import GRAD_DEX, LAUNCHPAD_NAME, SOURCES
 from .solana_rpc import RpcError, SolanaRpc
+
+# `GRAD_DEX`/`LAUNCHPAD_NAME`/`SOURCES` vivem em `live.py` (o V0 ja os usa); importados aqui dentro dos
+# metodos que precisam deles (nunca no topo do modulo) para nao formar um import circular -- `live.py`
+# importa este modulo (`SolanaAdapter`), entao este modulo nunca pode importar `live` no nivel do modulo.
 
 log = logging.getLogger("signals_mvp.pos_runner.chain_adapter")
 
@@ -136,6 +139,7 @@ class SolanaAdapter(ChainAdapter):
         return True   # Solana e a rede completa da V1 (item 5, FASE 1)
 
     def discover(self, source: str, now: float) -> DiscoveredPool:
+        from .live import GRAD_DEX, SOURCES   # import tardio: ver nota de import circular no topo do arquivo
         path, query = SOURCES[source]
         data = self.http.get_json(path, query, max_wait_s=15.0)
         snaps = [s for s in parse_pools_response(data, self.ctx, now) if s.dex in GRAD_DEX]
@@ -152,11 +156,15 @@ class SolanaAdapter(ChainAdapter):
         return url
 
     def launchpad_name(self, dex: str) -> str:
+        from .live import GRAD_DEX, LAUNCHPAD_NAME   # import tardio: ver nota de import circular no topo do arquivo
         key = GRAD_DEX.get(dex, dex)
         return LAUNCHPAD_NAME.get(key, key)
 
     # -- holders (item 2.7 + INTERPRETACOES.md #5) ---------------------------------------------------
-    def _excluded_accounts(self, pool: str, mint: str, launchpad: Optional[str]) -> frozenset[str]:
+    def excluded_accounts(self, pool: str, mint: str, launchpad: Optional[str]) -> frozenset[str]:
+        """Vaults/programas a excluir do calculo de HOLDER_CONCENTRADO deste pool especifico (quem chama
+        passa isto como `exclude_accounts` de `holders()`; a queima e os programas base ja entram sempre,
+        dentro de `holders()`)."""
         excluded = set(BASE_EXCLUDED_PROGRAMS) | set(BURN_ADDRESSES)
         spec = LAUNCHPADS.get(launchpad or "")
         if spec is not None:

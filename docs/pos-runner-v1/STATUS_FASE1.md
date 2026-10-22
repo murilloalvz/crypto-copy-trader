@@ -1,10 +1,11 @@
 # POS-RUNNER-V1 — status da FASE 1 (PROMPT DEFINITIVO)
 
-Branch `signals-mvp` (espelho `claude/pensive-wright-62usq8`, PR #7). PAPER / READ ONLY inalterado. Nada do V0
-foi tocado além de aditivos (novas colunas/tabelas no `storage.py`, novos campos em `config.Paths`) — os 296
-testes originais do V0 continuam verdes, mais 58 testes novos da V1 (354 no total nesta branch).
+**FASE 1 concluída e ligada ao bot ao vivo.** Branch `signals-mvp` (espelho `claude/pensive-wright-62usq8`,
+PR #7). PAPER / READ ONLY inalterado. Nada do V0 foi alterado em comportamento — só aditivos (novas
+colunas/tabelas no `storage.py`, novos campos opcionais em `config.Paths`/`PosRunnerLive.__init__`); os 296
+testes originais do V0 continuam verdes, mais 64 testes novos da V1 (360 no total nesta branch).
 
-## O que está pronto e testado (independente, sem tocar `live.py`)
+## O que está pronto, testado e LIGADO
 
 | módulo | o que faz | testes |
 |---|---|---|
@@ -17,58 +18,44 @@ testes originais do V0 continuam verdes, mais 58 testes novos da V1 (354 no tota
 | `chain_adapter.py` | `ChainAdapter`/`SolanaAdapter` (descoberta, OHLCV, links com assert https://, `holders()` com exclusão de vaults/programas/queima, `vamp_risk()`); `BscAdapter`/`RobinhoodAdapter` com detecção de capacidade real (sempre `capable()=False` — Fase 2) | 15 |
 | `bankroll_v1.py` | gestão híbrida (mão fixa US$10 < US$200 de banca, 10% acima disso), mesmo padrão de pausa diária/semanal do V0 | 8 |
 | `telegram_v1.py` | os 6 templates (ENTRADA no formato exato do operador, TP1, EXIT FULL, INVALIDADO, WATCHLIST, RESUMO) + teclado via `link_for` | 6 |
-| `storage.py` (pr1_\*) | tabelas `pr1_signals` (idempotente pela UNIQUE chain+pool+tf+evento+ts_fechamento), `pr1_filtrados`, `pr1_uptime`; CSVs `pos_runner_v1.csv`/`pos_runner_v1_filtrados.csv` | 6 |
+| `storage.py` (`pr1_*`) | `pr1_signals` (idempotente pela UNIQUE chain+pool+tf+evento+ts_fechamento), `pr1_filtrados`, `pr1_uptime`, `pr1_bankroll_*`; 3 CSVs novos | 6 |
+| `live.py` (`PosRunnerLive`, integração) | `_detector_v1`/`_on_event_v1`/`_entry_v1`/`_update_paper_v1`/`_update_bankroll_v1` alimentados no MESMO `_refresh` do V0, mesmos candles (`pr_bars`); `--sem-v0` via env `POS_RUNNER_SEM_V0`; `shutdown()` fecha a sessão de uptime | 6 |
 
-Tudo acima é testado isoladamente (fakes, sem rede) e **pronto para ser ligado**.
+Suite inteira: `python -m unittest discover -s signals_mvp/tests -t .` → **360/360**.
 
-## O que FALTA (a integração em si — ainda não aplicada, de propósito)
+## Como a integração funciona (resumo do que foi aplicado em `live.py`)
 
-`live.py` (`PosRunnerLive`) hoje só conhece o V0. A integração é **aditiva**, no exato padrão que já existe
-para a 2ª medida da queda do V0 (`dets_fecham`/`_detector_fecham`/`_on_event_fecham`, alimentados dentro de
-`_refresh` junto com o detector primário, candle a candle, do mesmo `pr_bars`):
+Mesmo padrão que já existia para a 2ª medida da queda do V0 (`dets_fecham`/`_detector_fecham`): a V1 tem seu
+próprio dicionário de detectores (`dets_v1`) alimentado **dentro do mesmo `_refresh`**, candle a candle, a
+partir dos mesmos `pr_bars` — nunca uma descoberta/candle-fetch separada. Antes de criar o `DetectorV1` de um
+pool, `qualidade_v1.avaliar_qualidade` decide `dado_invalido` (nunca cria o detector, conta em
+`pr1_filtrados`) e o MC do primeiro candle disponível decide `filtrado_mc_baixo` (idem, mas não é definitivo —
+tenta de novo se o MC crescer). `ENTRADA` grava em `pr1_signals` (idempotente), monta as tags
+(`risco_fora_da_faixa`, `HOLDER_CONCENTRADO`/`holders_indisponivel` via `adapter.holders`, `VAMP_RISK` via
+`adapter.vamp_risk`) e manda o alerta; cada `_refresh` seguinte re-simula (`simulate_v1`) o sinal aberto e
+alerta TP1/EXIT FULL quando aparecem, chamando `BankrollLedgerV1.step` só quando o trade fecha de verdade.
+`ONDA_INVALIDA`/`WATCHLIST` mandam `invalidado_text`/`watchlist_text`. Ao reiniciar (`_startup`), um evento
+cuja decisão ficou velha demais (processo desligado/hibernado) vira `perdido_offline` em vez de alertar
+atrasado; o resumo diário da V1 (`telegram_v1.resumo_diario_text`) sai junto com o resumo do V0.
 
-1. `__init__`: `self.params_v1 = load_params_v1()`, `self.adapter = SolanaAdapter(self.http, ctx, self.ohlcv, rpc, links)`,
-   `self.dets_v1: dict[(pool,tf), DetectorV1] = {}`, `self._bankroll_v1: dict[str, BankrollLedgerV1] = {}`,
-   `self.version_v1 = self.params_v1.version`, `self.version_v1_start` (mesmo padrão de `pr_version_start`, chave
-   própria `pr1_versao_inicio:<hash>`), `self._uptime_id = self.storage.pr1_uptime_start(now)` no 1º ciclo.
-2. `_refresh`: depois de `det_fecham = self._detector_fecham(...)`, acrescentar `det_v1 = self._detector_v1(row, tf, now)`;
-   depois do laço de `det_fecham.update(b)`, o laço equivalente de `det_v1.update(b)` → `self._on_event_v1(row, tf, det_v1, ev, now)`.
-3. **Antes** de criar o `DetectorV1` de um pool (mesmo ponto em que `row["l_bc"] is None` decide o 1º candle):
-   rodar `qualidade_v1.avaliar_qualidade(bars_ja_vistos, self.params_v1)` — `dado_invalido` grava
-   `pr1_add_filtrado(..., "dado_invalido", motivo, self.version_v1)` e **nunca** cria o `DetectorV1` para aquele
-   pool (filtro permanente, não por ciclo). Mesmo ponto: MC atual < `min_mc_usd` → `filtrado_mc_baixo` (idem,
-   nunca bloqueia o V0/a Parte A, só a V1).
-4. `_on_event_v1`: `RUNNER`/`FASE2`/`TESTE` → nada (uso interno); `WATCHLIST` → `telegram_v1.watchlist_text` +
-   `pr_alert_once` (reaproveita a MESMA tabela `pr_alerts` do V0, só com chave `f"v1:w:..."`); `FORA_DA_IDADE` →
-   `pr1_add_filtrado(..., "filtrado_idade", ...)`, nunca alerta; `ENTRADA` → `pr1_insert_signal` (idempotente pela
-   UNIQUE), tags (`risco_fora_da_faixa` do próprio evento; `HOLDER_CONCENTRADO`/`holders_indisponivel` via
-   `adapter.holders(mint, excluded)`; `VAMP_RISK` via `adapter.vamp_risk`), `telegram_v1.entrada_text` +
-   `telegram_v1.keyboard`, e registra a entrada aberta para a 2ª passada (TP1/EXIT FULL) continuar simulando a
-   cada novo candle (mesmo padrão do `_update_paper` do V0: reconsulta `simulate_v1` a cada `_refresh`, grava
-   TP1/EXIT FULL quando aparecem nos `legs`, manda `tp1_text`/`exit_full_text` uma vez cada via `pr_alert_once`,
-   e só então chama `BankrollLedgerV1.step`).
-5. Resumo diário: `engine.maybe_send_daily_summary` ganha uma chamada a mais, `telegram_v1.resumo_diario_text`
-   com `pr1_filtrado_counts`/contagem de `pr1_signals`/`pr1_uptime_hours`.
-6. `--sem-v0` (regra 0 do prompt): flag de CLI/env que, quando ligada, pula `self._detector`/`self._detector_fecham`
-   inteiros em `_refresh` (o V1 continua) — não gasta orçamento de GT/RPC com o V0 quando o operador quiser.
-7. `perdido_offline`: ao religar (`_startup`), qualquer `ENTRADA`/`TESTE` cujo `decision_ts` caia numa lacuna maior
-   que o intervalo esperado do tf (processo desligado/hibernado) marca `status='perdido_offline'` em vez de
-   tentar alertar com atraso — mesmo `_late()` já usado pelo V0, só mudando o destino do que falha esse teste.
+`PosRunnerLive` ganhou parâmetros novos, todos com default seguro (nenhum chamador existente quebra):
+`rpc` (para `adapter.holders`), `sem_v0` (desliga o V0 por completo), `terminal`/`chain_name` (Axiom/GMGN e
+"Solana" nos templates). `worker.py` já passa tudo isso (`rpc` reaproveitado da mesma instância que alimenta
+`LineageVerifier`, `sem_v0` lido do env `POS_RUNNER_SEM_V0`) e chama `live.shutdown(now)` no desligamento
+limpo.
 
-## Por que parei aqui em vez de aplicar
+## O que ainda falta (fora do escopo desta FASE 1 — itens explicitamente adiados)
 
-`live.py` é o arquivo mais crítico e mais testado do módulo (296 testes do V0 dependem do comportamento exato
-dele). Toda a "cabeça" da V1 (regras, simulação, qualidade, banca, textos, adapter) já está pronta e testada
-isoladamente — o que falta é mecânico (os 7 pontos acima), mas colar tudo dentro do ciclo ao vivo sem uma
-sessão dedicada a isso arrisca um bug sutil num bot que decide alertas de dinheiro (ainda que paper) sem
-revisão. Prefiro entregar isto pronto para a próxima sessão/revisão do operador em vez de arriscar.
+- **`liquidez_usd`/`mint_authority`/`freeze_authority`**: colunas já existem no CSV/tabela, continuam
+  `None` ("forward columns", igual ao Bloco 1 original pedia) — preencher isso é uma fonte de dado nova
+  (GoPlus ou RPC direto), não decidida ainda.
+- **BSC/Robinhood (Fase 2)**: `BscAdapter`/`RobinhoodAdapter` já detectam capacidade real via `/networks`
+  do GT, mas ficam `capable()=False` até a Fase 2 implementar descoberta/OHLCV/holders próprios.
+- **Botões de feedback (Fase 3)**: `/entrei`, `/sai`, `/nota`, relatório semanal — não começado.
+- **`--sem-v0` como flag de CLI** (em vez de variável de ambiente `POS_RUNNER_SEM_V0`): funcionalmente
+  idêntico, só não tem a sintaxe literal `--sem-v0` na linha de comando; documentado no RUNBOOK.
 
-## Comandos (Windows, raiz do repo, venv ativo)
+## Documentos desta fase
 
-```powershell
-git pull
-python -m unittest discover -s signals_mvp/tests -t .   # 354 testes, offline
-```
-
-O bot ao vivo (`python -m signals_mvp live` / `teste-pos-runner`) continua exatamente como antes — a V1 ainda
-não manda nenhum alerta nem grava nenhuma linha em `pr1_*` até o passo acima ser aplicado.
+- `docs/pos-runner-v1/INTERPRETACOES.md` — decisões sobre os pontos ambíguos (pendente de confirmação do operador).
+- `docs/pos-runner-v0/RUNBOOK_PARTE_B_WINDOWS.md` — comandos Windows, onde ficam os arquivos, como ler o CSV, erros comuns.
