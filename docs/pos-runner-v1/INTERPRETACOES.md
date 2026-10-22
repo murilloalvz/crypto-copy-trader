@@ -1,11 +1,13 @@
 # POS-RUNNER-V1 — Interpretações do Claude (pendentes de confirmação do operador)
 
-Status: **PROPOSTA DE INTERPRETAÇÃO**, não uma regra fechada. O "PROMPT DEFINITIVO: POS_RUNNER V1" pede
-explicitamente que os pontos abaixo sejam documentados para o operador confirmar antes do gatilho valer de
-verdade (itens 2.6, 2.7, 2.9). Nada aqui está hasheado em `Params` ainda — a implementação em
-`signals_mvp/pos_runner/params_v1.py`/`detector_v1.py` segue exatamente o que está escrito aqui; se o operador
-mudar algo, é só reabrir este documento, ajustar e re-hashear (a V1 ainda não tem alerta em produção, então
-mudar antes do 1º alerta real não quebra nada — ver regra do hash no prompt original, item 0).
+Status: **PROPOSTA DE INTERPRETAÇÃO**, não uma regra fechada, até o operador confirmar cada ponto. O "PROMPT
+DEFINITIVO: POS_RUNNER V1" pede explicitamente que os pontos abaixo sejam documentados para o operador
+confirmar antes do gatilho valer de verdade (itens 2.6, 2.7, 2.9).
+
+**Confirmado pelo operador em 2026-10-22** (complemento à revisão FASE 1.1): `reacao_suporte` (§1a),
+exaustão/TP1 30% só no TOPO (§2), stop 2% abaixo do wick mais baixo (§3), idade como filtro estrito (§10a).
+Cada seção confirmada tem sua própria marca abaixo. `VAMP_RISK` (§4) e as exclusões de `HOLDER_CONCENTRADO`
+(§5) **continuam sem confirmação** — ainda são interpretação do Claude, não confirmadas pelo operador.
 
 ## 1. Gatilhos (item 2.6)
 
@@ -17,6 +19,8 @@ recupera de volta para dentro/acima da caixa — ou seja, reaproveito literalmen
 suporte" do detector V0 (`detector.py`, `Zone.tests`), só trocando os nomes para o vocabulário do prompt V1.
 
 ### (a) `reacao_suporte`
+**CONFIRMADO PELO OPERADOR em 2026-10-22.**
+
 **Interpretação:** candle verde (fechamento > abertura) cujo fechamento **fecha acima da máxima do candle do
 wick** mais recente, e cuja própria mínima (ou a mínima do wick que ele reage a) está na zona `S × (1 ± 5%)`.
 Concretamente: seja `w` o último wick de rejeição registrado (como teste de suporte do V0); o gatilho dispara
@@ -37,6 +41,8 @@ Os 3 são mutuamente não exclusivos num mesmo candle (ex.: um `power_candle_rom
 
 ## 2. Saídas — exaustão / pavio superior longo (item 2.9)
 
+**CONFIRMADO PELO OPERADOR em 2026-10-22** (exaustão do TP1 e TP1 de 30% só no TOPO).
+
 TP1 = 30% da posição, **no TOPO** (resistência anterior = `P_peak` da onda, igual ao conceito já usado no V0),
 "diante de sinal de exaustão". Como o preço pode nunca negociar exatamente no nível de `P_peak`, a execução é:
 quando a **máxima do candle atinge `P_peak`** (`high >= P_peak`) **e** o candle mostra exaustão, TP1 preenche em
@@ -52,6 +58,8 @@ EXIT FULL (os 70% restantes) é literal no prompt, sem interpretação: novo ale
 
 ## 3. Stop (item 2.8)
 
+**CONFIRMADO PELO OPERADOR em 2026-10-22** (stop 2% abaixo da mínima do wick mais baixo).
+
 "2% abaixo da mínima do MENOR wick da consolidação": interpreto "menor" como **a mínima mais baixa** entre os 1
 a 3 wicks de rejeição contados na caixa (o pavio que desceu mais, não o pavio visualmente mais curto) — porque o
 stop precisa ficar abaixo do ponto mais testado/mais profundo, não do mais raso. Na prática isso quase sempre
@@ -65,6 +73,8 @@ sinal, só avisa).
 
 ## 4. `VAMP_RISK` (item 2.7)
 
+**Ainda sem confirmação do operador** (confirmado em 2026-10-22: só §1a/§2/§3/§10a — ver topo do documento).
+
 **Interpretação (heurística do Claude, via DexScreener/GeckoTerminal):** buscar por ticker (símbolo, comparação
 case-insensitive, igualdade exata — não substring, para não gerar falso positivo em tickers comuns tipo "AI")
 outros tokens na mesma chain com (a) data de criação mais antiga que a do candidato **e** (b) MC atual ou de
@@ -75,6 +85,8 @@ OHLCV (a API pública dele não tem histórico, conforme já registrado no `CLAU
 de busca (erro de rede, API fora) = tag ausente, nunca um "sim" ou "não" adivinhado.
 
 ## 5. `HOLDER_CONCENTRADO` — exclusões (item 2.7)
+
+**Ainda sem confirmação do operador** (confirmado em 2026-10-22: só §1a/§2/§3/§10a — ver topo do documento).
 
 "Holder individual > 1,5% do supply, excluindo vaults do pool/AMM, bonding curve, contas de queima e
 programas." Lista de exclusão concreta (Solana, via `getTokenLargestAccounts` + `getAccountInfo` dos top N para
@@ -143,6 +155,8 @@ sem introduzir `asyncio` — evita duplicar infraestrutura de concorrência no m
 ser Windows).
 
 ## 10a. Idade (item 2.2) — filtro, não atributo
+
+**CONFIRMADO PELO OPERADOR em 2026-10-22** (idade `[2,7]` dias como filtro estrito, não atributo).
 
 Diferente do V0 (onde a idade só separa sinal "primário" de "diagnóstico", mas o setup ainda é detectado e
 registrado fora da janela), a V1 é uma estratégia de negócio nova, não um teste de hipótese estatística com

@@ -10,10 +10,10 @@ import unittest
 
 from ..http import CallBudget
 from ..pos_runner.candles import Bar
-from ..pos_runner.live import PosRunnerLive
+from ..pos_runner.live import LineageVerifier, PosRunnerLive
 from ..pos_runner.quotes import REFERENCE_POOLS, SOL_MINT
 from .test_pos_runner import CREATED, GRAD, H, textbook
-from .test_pos_runner_live import CTX, LINKS, LiveHarness, start_tracking
+from .test_pos_runner_live import CTX, LINKS, LiveHarness, created_at, ok_lineage, start_tracking
 
 
 def _watch_v1(h: LiveHarness) -> list[str]:
@@ -215,6 +215,75 @@ class SemV0Tests(unittest.TestCase):
             h.run_hours(12)   # entra na fase 2 (zona) antes do rompimento -- fica "quente" so na V1
             self.assertEqual(h.live.dets, {}, "com --sem-v0 o V0 nunca cria detector")
             self.assertEqual(h.live._heat("POOL1", "1h"), 0, "a V1 sozinha ja deveria marcar o pool como quente")
+        finally:
+            h.close()
+
+
+def _start_tracking_shifted(h: LiveHarness, offset: float) -> None:
+    """Mesmo cenario do textbook(), com TODOS os candles deslocados `offset` segundos -- muda a hora BRT do
+    fechamento que dispara a ENTRADA sem mudar mais nada (idade desde a criacao continua igual: `created_ts`
+    desloca junto)."""
+    shifted = [Bar(b.ts + offset, b.open, b.high, b.low, b.close, b.volume) for b in textbook().bars]
+    h.world.add_series("POOL1", "1h", shifted)
+    h.list_pool(created=GRAD + offset + 60)
+    h.verifier = LineageVerifier(h.storage, None, clock=h.clock, verify=ok_lineage(grad_ts=GRAD + offset + 60),
+                                 creation=created_at(ts=CREATED + offset))
+    h.tick()
+    h.verifier.step()
+    h.tick()
+
+
+class JanelaDeOuroTests(unittest.TestCase):
+    """Complemento FASE 1.1 (2026-10-22): a janela de ouro (item 2.3) NUNCA filtra -- o alerta sai igual fora
+    dela, so com a tag/rotulo diferente. Teste explicito para nao confundir com `filtrado_idade` (que
+    BLOQUEIA, ver IdadeFilterTests abaixo)."""
+
+    def test_a_signal_outside_the_golden_window_still_alerts_with_the_fora_da_janela_tag(self) -> None:
+        h = LiveHarness()
+        try:
+            _start_tracking_shifted(h, offset=4 * H)   # desloca a ENTRADA de 11:00 BRT (dentro) p/ 15:00 (fora)
+            h.run_hours(21)
+            entradas = _entrada_v1(h)
+            self.assertEqual(len(entradas), 1, h.texts())   # NUNCA bloqueia: o alerta sai normal
+            self.assertIn("fora da janela de ouro", entradas[0])
+            row = h.storage.pr1_signals()[0]
+            self.assertEqual(row["janela_ouro"], "fora_da_janela")
+        finally:
+            h.close()
+
+    def test_a_signal_inside_the_golden_window_alerts_with_the_janela_ouro_tag(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)   # mesmo cenario padrao: ENTRADA cai as 11:00 BRT, dentro da janela
+            entradas = _entrada_v1(h)
+            self.assertEqual(len(entradas), 1, h.texts())
+            self.assertIn("dentro da janela de ouro", entradas[0])
+            row = h.storage.pr1_signals()[0]
+            self.assertEqual(row["janela_ouro"], "janela_ouro")
+        finally:
+            h.close()
+
+
+class IdadeFilterTests(unittest.TestCase):
+    """Complemento FASE 1.1 (2026-10-22): idade fora de [2,7] dias (item 2.2 + INTERPRETACOES.md #10a) e um
+    FILTRO REAL -- bloqueia o alerta e o paper (diferente da janela de ouro, que nunca bloqueia)."""
+
+    def test_entry_outside_the_age_window_never_alerts_never_enters_paper_and_counts_filtrado_idade(self) -> None:
+        h = LiveHarness()
+        try:
+            h.world.add_series("POOL1", "1h", textbook().bars)
+            h.list_pool()
+            h.verifier = LineageVerifier(h.storage, None, clock=h.clock, verify=ok_lineage(),
+                                         creation=created_at(ts=GRAD))   # criado soh ~1 dia antes da entrada: < 2 dias
+            h.tick()
+            h.verifier.step()
+            h.tick()
+            h.run_hours(17)
+            self.assertEqual(_entrada_v1(h), [], h.texts())        # nunca alerta
+            self.assertEqual(h.storage.pr1_signals(), [])          # nunca entra no paper
+            counts = h.storage.pr1_filtrado_counts(0.0)
+            self.assertGreaterEqual(counts.get("filtrado_idade", 0), 1)
         finally:
             h.close()
 

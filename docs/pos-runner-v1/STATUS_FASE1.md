@@ -1,12 +1,18 @@
 # POS-RUNNER-V1 — status da FASE 1 (PROMPT DEFINITIVO)
 
-**FASE 1 concluída, ligada ao bot ao vivo e revisada em 2026-10-22, em DUAS rodadas** (ver §2 — rodada 1 — e
-§2b — rodada 1.1, mesmo dia, nova evidência do operador). **Fase 2 também feita** (detecção de capacidade
+**V1 CONGELADA em 2026-10-22, hash `279b79ffa3f0`** (`ParamsV1.version` sobre `pos_runner_v1.yaml`, ao fim da
+revisão FASE 1.1 — ver §2c). A partir deste commit, qualquer mudança de parâmetro em `pos_runner_v1.yaml`
+gera um hash novo (versão nova); nunca um retune silencioso da congelada — exatamente a mesma disciplina já
+usada no pré-registro do V0. A V1 ainda não teve nenhum alerta real em produção até este congelamento.
+
+**FASE 1 concluída, ligada ao bot ao vivo e revisada em 2026-10-22, em TRÊS rodadas no mesmo dia** (ver §2 —
+rodada 1 — §2b — rodada 1.1 — e §2c — complemento: confirmações, testes explícitos e congelamento).
+**Fase 2 também feita** (detecção de capacidade
 real de BSC/Robinhood, `capable()` continua `False` por decisão explícita — ver §3). Branch `signals-mvp`
 (espelho `claude/pensive-wright-62usq8`, PR #7). PAPER / READ ONLY inalterado. Nada do V0 foi alterado em
 *comportamento interno* — só aditivos no código (novas colunas/tabelas, novos parâmetros opcionais) — mas **o
 `config.yaml` de produção mudou**: os 4 flags `pos_runner.alertas.*` do V0 foram para `false` (ver §2). Os 296
-testes originais do V0 continuam verdes, mais 86 testes novos da V1 (**382/382** no total nesta branch).
+testes originais do V0 continuam verdes, mais 89 testes novos da V1 (**385/385** no total nesta branch).
 
 ## 1. O que está pronto, testado e LIGADO
 
@@ -22,10 +28,10 @@ testes originais do V0 continuam verdes, mais 86 testes novos da V1 (**382/382**
 | `bankroll_v1.py` | gestão híbrida (mão fixa US$10 < US$200 de banca, 10% acima disso) | 8 |
 | `telegram_v1.py` | os 6 templates + heartbeat (startup + a cada 6h, campos expandidos na rodada 1.1) + teclado via `link_for` | 6 |
 | `storage.py` (`pr1_*`) | `pr1_signals` (idempotente), `pr1_filtrados` (agora também `l_bc_suspeito`), `pr1_uptime`, `pr1_bankroll_*`; 3 CSVs | 6 |
-| `live.py` (`PosRunnerLive`, integração) | V1 alimentada no MESMO `_refresh` do V0; `--sem-v0` corta de verdade o orçamento (descoberta/promoção continuam — ver §2b); `_heat` considera a V1; heartbeat no startup + periódico, com fases/fila/429 | 9 |
+| `live.py` (`PosRunnerLive`, integração) | V1 alimentada no MESMO `_refresh` do V0; `--sem-v0` corta de verdade o orçamento (descoberta/promoção continuam — ver §2b); `_heat` considera a V1; heartbeat no startup + periódico, com fases/fila/429; janela de ouro nunca bloqueia, idade sempre bloqueia (testes explícitos — ver §2c) | 12 |
 | `worker.py` (`make_pos_runner`) | `resolve_chamadas_por_ciclo` (env `POS_RUNNER_CHAMADAS_POR_CICLO` sempre manda; padrão 8/ciclo com `--sem-v0` se o operador não setou nada); checagem de capacidade da Fase 2 no startup | 5 |
 
-Suite inteira: `python -m unittest discover -s signals_mvp/tests -t .` → **382/382**.
+Suite inteira: `python -m unittest discover -s signals_mvp/tests -t .` → **385/385**.
 
 ## 2. Revisão de 2026-10-22 — o que a evidência do operador corrigiu
 
@@ -46,6 +52,29 @@ Suite inteira: `python -m unittest discover -s signals_mvp/tests -t .` → **382
 | **`--sem-v0` e a descoberta/promoção** | pedido: cortar "chamadas do V0" na descoberta/promoção também | **Não é separável**: descoberta/promoção (`_discover`/`offer`/`_promote`) é a MESMA fila de pools ativos que a V1 consome (item 0 do prompt — nunca uma descoberta separada); cortar isso mataria a V1 também, o que não foi pedido. O corte real de "chamada só do V0" já é total: `tfs()` (zero 5m/4h), `det=None`/`det_fecham=None` (zero `Detector` do V0 criado) — documentado em `live.py: tfs()` e testado (`h.live.dets == {}`) |
 | **Orçamento configurável** | `pos_runner.chamadas_por_ciclo` só vinha do `config.yaml` (padrão 3) | `POS_RUNNER_CHAMADAS_POR_CICLO` (env) sempre manda quando setado; sem ele, `--sem-v0` muda o padrão para **8**/ciclo (~10/min) se o operador não escreveu nada no `config.yaml`. O backoff adaptativo em 429 (AIMD) já existia, compartilhado por toda chamada do GT (`http.py`) — nada novo construído aí |
 | **Heartbeat só depois da 1ª janela, poucos campos, 4h** | esperava a 1ª janela inteira para o 1º beat; só uptime/pools/chamadas-min/2 contadores | Sai **já no 1º ciclo** (não espera a janela) e a cada **6h**; agora traz `versao_config_v1`, pools por FASE do detector (`runner`/`pullback`/`sem_fase`), fila de atualização pendente, 429 na janela, e os 4 contadores (`dado_invalido`/`l_bc_suspeito`/`filtrado_mc_baixo`/`filtrado_idade`) |
+
+## 2c. Complemento à FASE 1.1 (2026-10-22, mesmo dia): confirmações, testes explícitos e congelamento
+
+**Confirmações do operador** — `docs/pos-runner-v1/INTERPRETACOES.md` agora marca com data: `reacao_suporte`
+(§1a), exaustão do TP1 e TP1 de 30% só no TOPO (§2), stop 2% abaixo do wick mais baixo (§3), idade `[2,7]`
+dias como filtro estrito (§10a). Piso `l_bc_floor_usd=US$5.000` e teto `l_bc_ceiling_usd=US$10M` também
+confirmados (sem mudança de código — já estavam assim desde a rodada 1.1, ver §2b). `VAMP_RISK` (§4) e as
+exclusões de `HOLDER_CONCENTRADO` (§5) **continuam sem confirmação** — o documento agora diz isso
+explicitamente em cada seção, para não dar a impressão de que tudo foi validado.
+
+**Testes explícitos** (`test_pos_runner_v1_live.py`, para não confundir os dois conceitos):
+- `JanelaDeOuroTests`: um sinal **fora** da janela de ouro (08:30–14:00 BRT) **alerta igual** (`janela_ouro`
+  nunca bloqueia, item 2.3), com "fora da janela de ouro" no texto do alerta e `janela_ouro=fora_da_janela`
+  no `pr1_signals`/CSV; e o caso simétrico (dentro da janela) para contraste.
+- `IdadeFilterTests`: um sinal com idade fora de `[2,7]` dias (token criado ~1 dia antes da entrada, abaixo
+  do mínimo de 2) **nunca alerta, nunca entra no `pr1_signals`** (paper), e incrementa `filtrado_idade` —
+  confirma que idade e janela de ouro têm comportamentos OPOSTOS (uma bloqueia, a outra nunca bloqueia).
+
+**Congelamento** — `ParamsV1().version` sobre o `pos_runner_v1.yaml` final desta revisão: hash
+**`279b79ffa3f0`**. **V1 congelada em 2026-10-22, hash `279b79ffa3f0`.** `pos_runner_v1.yaml` já documenta
+isso no cabeçalho. A partir de agora, qualquer mudança em `parametros:` do YAML produz um `versao_config_v1`
+novo (nunca um retune silencioso) — mesma disciplina do pré-registro do V0 (`CLAUDE.md` raiz, regra de
+hash). 3 testes novos (`JanelaDeOuroTests`×2, `IdadeFilterTests`×1): **385/385** na suite inteira.
 
 ## 3. O que ainda falta do PROMPT DEFINITIVO (revisão item a item)
 

@@ -1,9 +1,10 @@
 # POS-RUNNER-V1 — parametros da estrategia do professor (PAPER / somente leitura).
 #
-# ESTADO: RASCUNHO. V1 e INDEPENDENTE do V0 (pos_runner_v0.yaml): mudar este arquivo nunca muda o hash do V0 e
-# vice-versa. Cada linha de log/CSV/alerta da V1 carrega `versao_config_v1` = hash deste arquivo. Qualquer
-# mudanca aqui DEPOIS do 1o alerta real da V1 e uma versao nova (estatisticas de versoes diferentes nunca se
-# misturam). Justificativa de cada limiar: docs/pos-runner-v1/INTERPRETACOES.md.
+# ESTADO: CONGELADA em 2026-10-22 ao fim da revisao FASE 1.1, hash `279b79ffa3f0` (ver
+# docs/pos-runner-v1/STATUS_FASE1.md). V1 e INDEPENDENTE do V0 (pos_runner_v0.yaml): mudar este arquivo nunca
+# muda o hash do V0 e vice-versa. Cada linha de log/CSV/alerta da V1 carrega `versao_config_v1` = hash deste
+# arquivo. QUALQUER mudanca aqui a partir de agora e uma versao NOVA, nunca um retune da congelada (estatisticas
+# de versoes diferentes nunca se misturam). Justificativa de cada limiar: docs/pos-runner-v1/INTERPRETACOES.md.
 # Duracoes em NUMERO DE CANDLES do timeframe. MC = preco USD x supply total.
 
 parametros:
