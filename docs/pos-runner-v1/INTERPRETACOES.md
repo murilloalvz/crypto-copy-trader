@@ -1,0 +1,148 @@
+# POS-RUNNER-V1 — Interpretações do Claude (pendentes de confirmação do operador)
+
+Status: **PROPOSTA DE INTERPRETAÇÃO**, não uma regra fechada. O "PROMPT DEFINITIVO: POS_RUNNER V1" pede
+explicitamente que os pontos abaixo sejam documentados para o operador confirmar antes do gatilho valer de
+verdade (itens 2.6, 2.7, 2.9). Nada aqui está hasheado em `Params` ainda — a implementação em
+`signals_mvp/pos_runner/params_v1.py`/`detector_v1.py` segue exatamente o que está escrito aqui; se o operador
+mudar algo, é só reabrir este documento, ajustar e re-hashear (a V1 ainda não tem alerta em produção, então
+mudar antes do 1º alerta real não quebra nada — ver regra do hash no prompt original, item 0).
+
+## 1. Gatilhos (item 2.6)
+
+Pré-requisito comum aos 3: zona madura (Setup 1 já formado — pico ≥ 300k, queda 80–90%, fundo acima de L_bc,
+consolidação ≥ 12 candles com 1 a 3 wicks de rejeição inferior), fechamento do candle do tf principal, execução
+no open do candle seguinte. R = teto da caixa (maior máxima da consolidação). "Wick de rejeição inferior" =
+candle cuja mínima entra na região do suporte (mesma definição do V0: mínima ≤ S × 1,10) e cujo fechamento
+recupera de volta para dentro/acima da caixa — ou seja, reaproveito literalmente o conceito de "teste de
+suporte" do detector V0 (`detector.py`, `Zone.tests`), só trocando os nomes para o vocabulário do prompt V1.
+
+### (a) `reacao_suporte`
+**Interpretação:** candle verde (fechamento > abertura) cujo fechamento **fecha acima da máxima do candle do
+wick** mais recente, e cuja própria mínima (ou a mínima do wick que ele reage a) está na zona `S × (1 ± 5%)`.
+Concretamente: seja `w` o último wick de rejeição registrado (como teste de suporte do V0); o gatilho dispara
+no primeiro candle verde depois de `w` cujo `close > high(w)`, contanto que `low(w)` esteja em `[S×0,95,
+S×1,05]`. Não exige rompimento de R — é um gatilho de reação dentro da caixa, mais cedo que (b)/(c).
+
+### (b) `power_candle_rompimento`
+**Interpretação:** candle verde com amplitude (`high - low`) `>= 3 × ATR(20)` (mesmo limiar `power_atr_mult`
+do V0) **e** que fecha acima de R. Sem exigência de volume (diferente de (c) — o prompt já separa os dois).
+
+### (c) `rompimento_volume`
+Literal no prompt, sem interpretação: fechamento acima de R com volume `>= 2×` a média de volume dos candles da
+caixa (mesma `vol_ratio` já calculada no V0).
+
+Os 3 são mutuamente não exclusivos num mesmo candle (ex.: um `power_candle_rompimento` pode também satisfazer
+`rompimento_volume`); quando mais de um dispara no mesmo candle, o alerta registra **todos** em `gatilho`
+(lista), não escolhe um.
+
+## 2. Saídas — exaustão / pavio superior longo (item 2.9)
+
+TP1 = 30% da posição, **no TOPO** (resistência anterior = `P_peak` da onda, igual ao conceito já usado no V0),
+"diante de sinal de exaustão". Como o preço pode nunca negociar exatamente no nível de `P_peak`, a execução é:
+quando a **máxima do candle atinge `P_peak`** (`high >= P_peak`) **e** o candle mostra exaustão, TP1 preenche em
+`min(high, P_peak)` (nunca acima do nível — não persegue o preço).
+
+**Exaustão** (qualquer uma das duas, OU):
+- **power candle de exaustão**: `high - low >= 3 × ATR(20)` (mesmo limiar de (b) acima), de qualquer cor;
+- **pavio superior longo**: pavio superior (`high - max(open, close)`) `>= 2 ×` o corpo (`|close - open|`); se o
+  corpo for ~0 (candle doji), pavio superior `>= 60%` da amplitude total do candle.
+
+EXIT FULL (os 70% restantes) é literal no prompt, sem interpretação: novo alerta quando um candle de 1h
+**FECHAR** abaixo de S (o suporte da consolidação que gerou a entrada) — nunca pela máxima/mínima, só fechamento.
+
+## 3. Stop (item 2.8)
+
+"2% abaixo da mínima do MENOR wick da consolidação": interpreto "menor" como **a mínima mais baixa** entre os 1
+a 3 wicks de rejeição contados na caixa (o pavio que desceu mais, não o pavio visualmente mais curto) — porque o
+stop precisa ficar abaixo do ponto mais testado/mais profundo, não do mais raso. Na prática isso quase sempre
+coincide com S (a mínima da própria caixa), já que S é definido como a mínima da zona: `stop = S × (1 − 0,02)`.
+Guardo os 1–3 wicks individualmente (não só S) para o caso raro de a mínima global da caixa não ter sido
+classificada como "wick de rejeição" (ex.: um candle de queda brusca sem recuperação, que fixa S mas não é um
+teste) — nesse caso o stop usa a mínima do wick de rejeição mais baixo, que pode ser ligeiramente acima de S.
+
+Risco esperado (`(entrada − stop) / entrada`) fora de `[15%, 22%]` → tag `risco_fora_da_faixa` (nunca descarta o
+sinal, só avisa).
+
+## 4. `VAMP_RISK` (item 2.7)
+
+**Interpretação (heurística do Claude, via DexScreener/GeckoTerminal):** buscar por ticker (símbolo, comparação
+case-insensitive, igualdade exata — não substring, para não gerar falso positivo em tickers comuns tipo "AI")
+outros tokens na mesma chain com (a) data de criação mais antiga que a do candidato **e** (b) MC atual ou de
+pico histórico maior que o MC atual do candidato. Se existir pelo menos um → tag `⚠️ VAMP_RISK` (nunca bloqueia
+o alerta). Fonte de busca: GeckoTerminal `/search/pools?query=<ticker>` (já appendado, 1 chamada cacheável por
+ticker) como primário; DexScreener só para o link/metadado do achado (confirma nome/MC), nunca como fonte de
+OHLCV (a API pública dele não tem histórico, conforme já registrado no `CLAUDE.md` deste módulo). Sem resultado
+de busca (erro de rede, API fora) = tag ausente, nunca um "sim" ou "não" adivinhado.
+
+## 5. `HOLDER_CONCENTRADO` — exclusões (item 2.7)
+
+"Holder individual > 1,5% do supply, excluindo vaults do pool/AMM, bonding curve, contas de queima e
+programas." Lista de exclusão concreta (Solana, via `getTokenLargestAccounts` + `getAccountInfo` dos top N para
+achar o `owner`):
+
+- os 2 vaults (base/quote) do(s) pool(s) já conhecidos da linhagem deste token (endereços vêm de
+  `Lineage`/`pr_pools`);
+- a conta/PDA da bonding curve do launchpad de origem (pump.fun/LaunchLab/DBC — endereços derivados pelo
+  programa, mesmo método de `enumerate.py`/`lineage.py` já usado para achar a graduação);
+- conta de queima conhecida (`1nc1nerator11111111111111111111111111111` — padrão Solana/pump.fun) e qualquer
+  conta cujo `owner` seja o System Program seguida de supply zerado por burn explícito;
+- qualquer conta cujo `owner` seja um id de programa conhecido (Token Program, Associated Token Program, o
+  programa do próprio launchpad, o programa do DEX de graduação) — presume-se custódia operacional, não um
+  holder humano.
+
+Holder cuja conta não resolve (`getAccountInfo` falha) fica de fora da comparação só com um aviso de log — o
+pool não é descartado, e se **nenhum** holder resolver a tag fica `holders_indisponivel` em vez de "não".
+
+## 6. `dado_invalido` ao vivo (item 3.6) — faixa plausível de `L_bc`
+
+Mesma conclusão já revisada e aceita na EMENDA do V0 (`docs/pos-runner-v0/EMENDA_QUALIDADE_DADOS_PROPOSTA.md`,
+proposta, mesma lógica agora adotada para o V1 desde o início): **sem teto fixo por launchpad** — a curva do
+pump.fun é fixa (medido 28–51k em 16/10/2026, ver `CLAUDE.md`), mas Meteora DBC e Raydium LaunchLab são
+configuráveis por projeto; um teto pump.fun-específico penalizaria graduação legítima de DBC/LaunchLab só por
+ser maior. Regras (launchpad-agnósticas, propriedades do próprio candle/pool, nunca de resultado):
+- `wick_ratio_1º_candle_real = high/close >= 3,0` → `dado_invalido` (defeito de candle, já confirmado via
+  `mc_auditoria.py` como defeito específico de histórico GT em DBC);
+- `L_bc robusto < US$100` → `dado_invalido` (pool morto/precisão, não um teto de legitimidade).
+
+`L_bc` robusto = `min(open, close do 1º candle real, open do 2º)` (mesmo robustecimento já revisado na EMENDA).
+
+## 7. Janela de ouro (item 2.3)
+
+`janela_ouro_brt: ["08:30","14:00"]`, fuso fixo UTC−3 sem horário de verão (Brasil não observa DST desde 2019,
+então UTC−3 é constante). Pela hora de **fechamento** do candle de entrada (não da abertura). Limites
+inclusivos nos dois lados: `08:30 <= hora_fechamento_brt <= 14:00`.
+
+## 8. Anti-lixo (item 2.4)
+
+"Pool ainda em bonding curve" = pré-graduação — fora do universo do V1 (igual ao V0: só pools já graduados
+entram). O filtro real é: pool graduado cujo MC **atual** (mais recente candle fechado) ainda está abaixo de
+`min_mc_usd=100000`. Esse pool nunca gera alerta nem é promovido a watchlist, mas fica registrado como
+`filtrado_mc_baixo` com `(pool, mc_atual)` e contado no resumo diário — exatamente como pedido, para o operador
+ver o efeito do filtro sem virar motivo de alerta.
+
+## 9. Modelo de execução (sync vs async) — item 3.2
+
+O repositório inteiro (`engine.py`, `live.py`, `worker.py`, `TelegramPoller`, `LineageVerifier`) é **síncrono
+com threads dedicadas** (nenhum `asyncio` em uso). A V1 mantém esse modelo: `ChainAdapter`/detector/notificador
+V1 seguem o mesmo padrão de thread-por-responsabilidade-lenta (linhagem RPC, poller do Telegram) já usado no V0,
+sem introduzir `asyncio` — evita duplicar infraestrutura de concorrência no mesmo processo e mantém
+`KeyboardInterrupt` como único sinal de desligamento (sem `loop.add_signal_handler`, que o prompt já exclui por
+ser Windows).
+
+## 10a. Idade (item 2.2) — filtro, não atributo
+
+Diferente do V0 (onde a idade só separa sinal "primário" de "diagnóstico", mas o setup ainda é detectado e
+registrado fora da janela), a V1 é uma estratégia de negócio nova, não um teste de hipótese estatística com
+registro de primário/secundário — então trato `age_window_days=[2,7]` como **filtro real**: fora da janela, o
+gatilho simplesmente não dispara alerta nem entra no paper (fica só como contagem em `filtrado_idade` no resumo
+diário, mesmo espírito do `filtrado_mc_baixo`). Isso é diferente de `janela_ouro_brt` (item 2.3), que o próprio
+prompt diz explicitamente que NUNCA filtra ("o alerta é SEMPRE enviado"; só rotula e prioriza a fila).
+
+## 10b. V0 silencioso (item 0 das regras inegociáveis)
+
+"Continua rodando em silêncio sobre os mesmos candles" = a MESMA instância de `PosRunnerLive` (V0) já em
+produção continua recebendo os candles (via `offer`/`tick`), mas com todos os `alerta_*` de `LiveSettings`
+efetivamente `False` quando a flag `--sem-v0` NÃO está ligada e o V1 está ativo — ou seja, "silencioso" não é um
+modo novo: é o V0 de sempre com a configuração de alertas zerada, gravando só em banco/CSV para a comparação
+pedida. `--sem-v0` desliga o V0 por completo (nem roda, nem grava) quando o operador quiser economizar
+orçamento de chamadas.
