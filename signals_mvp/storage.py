@@ -51,13 +51,20 @@ POS_RUNNER_V1_COLUMNS = [
     "tp1_mc", "exit_full_mc", "resultado_liq_pct", "tempo_trade_h", "motivo_saida", "tags",
     "holders_tag", "mint_authority", "freeze_authority", "liquidez_usd", "teste_vol_ratio", "origem",
     "versao_config_v1", "perdido_offline",
+    # instrumentacao de medicao (sem mudar regra nenhuma): colunas acrescentadas no FIM, nunca no meio.
+    "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia",
 ]
 POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
 # feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
 POS_RUNNER_V1_FEEDBACK_COLUMNS = [
     "data", "hora_brt", "chain", "token", "contrato", "tf", "acao", "voto", "valor", "texto", "chat_id",
     "versao_config_v1",
+    # instrumentacao de medicao: preco real do /entrei|/sai e o slippage contra a referencia do alerta/saida.
+    "preco_real", "slippage_entrada_pct", "slippage_saida_pct",
 ]
+# /pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar (registro separado
+# de pr1_feedback -- feedback e sobre um trade que o operador fez; aqui e o oposto, nunca um trade).
+POS_RUNNER_V1_PULADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "versao_config_v1"]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -156,6 +163,12 @@ CREATE TABLE IF NOT EXISTS pr1_signals (
   result_net REAL, reason TEXT, tempo_h REAL,
   holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, liquidez_usd REAL,
   tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  -- instrumentacao de medicao (sem mudar regra nenhuma -- ver _ensure_columns para bancos ja existentes):
+  -- ts_fechamento_candle duplica ts_fechamento (epoch explicito p/ analise); ts_alerta e quando o bot DECIDIU
+  -- alertar (antes do envio); ts_envio_telegram e o MESMO instante de alert_ts, so com nome mais claro;
+  -- retorno_sol_dia e o retorno % do SOL/USD nas 24h antes de ts_fechamento (so leitura da cotacao JA
+  -- cacheada, nunca uma chamada nova -- None quando a cobertura cacheada nao alcanca).
+  ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
   UNIQUE (chain, pool, tf, evento, ts_fechamento)
 );
 CREATE INDEX IF NOT EXISTS pr1_signals_open ON pr1_signals (status);
@@ -185,7 +198,19 @@ CREATE TABLE IF NOT EXISTS pr1_feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER NOT NULL, chain TEXT, pool TEXT, tf TEXT,
   mint TEXT, symbol TEXT, versao_config_v1 TEXT, acao TEXT NOT NULL, voto TEXT, valor REAL, texto TEXT,
   chat_id TEXT, criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- instrumentacao de medicao: preco_real duplica `valor` p/ nome claro (so para acao in ('entrei','sai'));
+  -- slippage_entrada_pct = preco_real contra entry_price do alerta; slippage_saida_pct = preco_real contra
+  -- a ULTIMA referencia que a V1 alcancou (exit_full_price, senao tp1_price, senao stop) -- None quando
+  -- nenhuma existe ainda (nunca inventa referencia).
+  preco_real REAL, slippage_entrada_pct REAL, slippage_saida_pct REAL,
   UNIQUE (pr1_signal_id, acao)
+);
+-- /pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar. Tabela separada de
+-- pr1_feedback (feedback e sobre um trade que o operador FEZ; aqui e o oposto) -- nunca conta como paper
+-- nem como execucao manual, so como "visto e pulado".
+CREATE TABLE IF NOT EXISTS pr1_pulados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER, chain TEXT, pool TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, chat_id TEXT, versao_config_v1 TEXT, criado_ts REAL NOT NULL
 );
 """
 
@@ -223,6 +248,15 @@ class Storage:
             self._db.execute("PRAGMA busy_timeout=30000")
             self._db.executescript(SCHEMA)
             self._migrate_pr_signals()
+            # instrumentacao de medicao: banco do operador ja existe SEM essas colunas (CREATE TABLE IF NOT
+            # EXISTS acima nao alcanca tabela ja criada) -- ALTER TABLE idempotente, nunca muda dado existente.
+            self._ensure_columns("pr1_signals", {
+                "ts_fechamento_candle": "INTEGER", "ts_alerta": "REAL", "ts_envio_telegram": "REAL",
+                "retorno_sol_dia": "REAL",
+            })
+            self._ensure_columns("pr1_feedback", {
+                "preco_real": "REAL", "slippage_entrada_pct": "REAL", "slippage_saida_pct": "REAL",
+            })
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -230,7 +264,8 @@ class Storage:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
-                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True}
+                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True,
+                       "pos_runner_v1_pulados": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -253,6 +288,14 @@ class Storage:
         except Exception:
             self._db.execute("ROLLBACK")
             raise
+
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        """ALTER TABLE ... ADD COLUMN idempotente (so para colunas que ainda nao existem) -- nunca toca em
+        coluna/linha ja existente, so acrescenta."""
+        existentes = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})").fetchall()}
+        for nome, tipo in columns.items():
+            if nome not in existentes:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {nome} {tipo}")
 
     def close(self) -> None:
         with self._lock:
@@ -548,6 +591,8 @@ class Storage:
             "pos_runner_v1_banca": (self.paths.pos_runner_v1_banca_csv, self._pos_runner_v1_banca_header_rows),
             "pos_runner_v1_feedback": (self.paths.pos_runner_v1_feedback_csv,
                                        lambda: (POS_RUNNER_V1_FEEDBACK_COLUMNS, self._pos_runner_v1_feedback_rows())),
+            "pos_runner_v1_pulados": (self.paths.pos_runner_v1_pulados_csv,
+                                      lambda: (POS_RUNNER_V1_PULADOS_COLUMNS, self._pos_runner_v1_pulados_rows())),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -918,7 +963,10 @@ class Storage:
                 _num(r["tp1_price"]), _num(r["exit_full_price"]), _num(None if r["result_net"] is None else 100 * r["result_net"], 2),
                 _num(r["tempo_h"], 1), motivo_saida, ",".join(tags),
                 r["holders_tag"] or "", r["mint_authority"] or "", r["freeze_authority"] or "", _num(r["liquidez_usd"]),
-                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v1"], 0,
+                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v1"],
+                1 if r["status"] == "perdido_offline" else 0,
+                r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
+                _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
             ])
         return out
 
@@ -930,20 +978,27 @@ class Storage:
 
     # -- feedback do operador na V1 (FASE 3: botoes 👍/👎/📝 + /entrei /sai /nota) -------------------------
     def pr1_feedback_upsert(self, signal_id: int, acao: str, chat_id: str, now: float, voto: Optional[str] = None,
-                           valor: Optional[float] = None, texto: Optional[str] = None) -> bool:
+                           valor: Optional[float] = None, texto: Optional[str] = None,
+                           preco_real: Optional[float] = None, slippage_entrada_pct: Optional[float] = None,
+                           slippage_saida_pct: Optional[float] = None) -> bool:
         """1 linha por (sinal, acao) -- repetir a acao (botao de novo, comando de novo) ATUALIZA, nunca
-        duplica. False quando o sinal nao existe (comando/callback aponta pra um id que nao e da V1)."""
+        duplica. False quando o sinal nao existe (comando/callback aponta pra um id que nao e da V1).
+        `preco_real`/`slippage_*`: so para acao in ('entrei','sai') com preco informado (instrumentacao)."""
         signal = self.pr1_signal(signal_id)
         if signal is None:
             return False
         with self._lock:
             self._db.execute(
                 "INSERT INTO pr1_feedback (pr1_signal_id,chain,pool,tf,mint,symbol,versao_config_v1,acao,voto,valor,texto,"
-                "chat_id,criado_ts,atualizado_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "chat_id,criado_ts,atualizado_ts,preco_real,slippage_entrada_pct,slippage_saida_pct) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(pr1_signal_id,acao) DO UPDATE SET voto=excluded.voto, valor=excluded.valor, "
-                "texto=excluded.texto, chat_id=excluded.chat_id, atualizado_ts=excluded.atualizado_ts",
+                "texto=excluded.texto, chat_id=excluded.chat_id, atualizado_ts=excluded.atualizado_ts, "
+                "preco_real=excluded.preco_real, slippage_entrada_pct=excluded.slippage_entrada_pct, "
+                "slippage_saida_pct=excluded.slippage_saida_pct",
                 (signal_id, signal["chain"], signal["pool"], signal["tf"], signal["mint"], signal["symbol"],
-                 signal["versao_config_v1"], acao, voto, valor, texto, chat_id, now, now),
+                 signal["versao_config_v1"], acao, voto, valor, texto, chat_id, now, now,
+                 preco_real, slippage_entrada_pct, slippage_saida_pct),
             )
             self._dirty["pos_runner_v1_feedback"] = True
         return True
@@ -972,8 +1027,31 @@ class Storage:
                 iso_utc(r["sig_ts_fechamento"]), r["sig_hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
                 r["tf"], r["acao"], r["voto"] or "", "" if r["valor"] is None else r["valor"],
                 csv_safe(r["texto"] or ""), r["chat_id"] or "", r["versao_config_v1"],
+                _num(r["preco_real"], 6), _num(r["slippage_entrada_pct"], 2), _num(r["slippage_saida_pct"], 2),
             ])
         return out
+
+    # -- /pulei (sinal visto e NAO executado -- instrumentacao, separado de pr1_feedback) -----------------
+    def pr1_pulado_insert(self, ts: float, chain: Optional[str], pool: Optional[str], symbol: Optional[str],
+                          motivo: str, chat_id: str, versao_config_v1: Optional[str],
+                          pr1_signal_id: Optional[int]) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_pulados (pr1_signal_id,chain,pool,symbol,motivo,chat_id,versao_config_v1,criado_ts) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (pr1_signal_id, chain, pool, symbol, motivo, chat_id, versao_config_v1, ts),
+            )
+            self._dirty["pos_runner_v1_pulados"] = True
+
+    def pr1_pulados(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_pulados ORDER BY criado_ts, id")
+
+    def _pos_runner_v1_pulados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["criado_ts"]), r["chain"] or "", csv_safe(r["symbol"] or ""), r["pool"] or "",
+             csv_safe(r["motivo"]), r["versao_config_v1"] or ""]
+            for r in self._all("SELECT * FROM pr1_pulados ORDER BY criado_ts, id")
+        ]
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:
