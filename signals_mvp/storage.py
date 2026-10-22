@@ -41,6 +41,18 @@ POS_RUNNER_DETALHE_COLUMNS = [
     # atributos das regras do operador (2026-10-16): nenhum e filtro
     "faixa_pico", "S_acima_100k", "R_S", "idade_grad_d", "max_caminho_A_pct", "max_caminho_B_pct",
 ]
+# POS-RUNNER-V1 ("regras do professor"): contrato CSV proprio, independente do V0 (mesmo espirito das colunas
+# do handoff do V0 -- data/token/contrato/launchpad/tf/idade/pico/L_bc/queda/S/R/n_wicks/entrada/stop/tp/rr/
+# power_candle/resultado/tempo/motivo/versao_config -- mais o que a V1 pede: hora BRT, origem, tags, janela de
+# ouro, teste_vol_ratio, holders/authority/liquidez (None por ora) e perdido_offline).
+POS_RUNNER_V1_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "launchpad", "tf", "idade_h", "janela_ouro",
+    "topo", "L_bc", "queda_pct", "S", "R", "n_wicks", "gatilho", "entrada_mc", "stop_mc", "risco_pct",
+    "tp1_mc", "exit_full_mc", "resultado_liq_pct", "tempo_trade_h", "motivo_saida", "tags",
+    "holders_tag", "mint_authority", "freeze_authority", "liquidez_usd", "teste_vol_ratio", "origem",
+    "versao_config_v1", "perdido_offline",
+]
+POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -124,6 +136,34 @@ CREATE TABLE IF NOT EXISTS pr_bankroll_trades (
   versao_config TEXT NOT NULL, pr_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL,
   UNIQUE (pr_signal_id, variante)
 );
+-- POS-RUNNER-V1 ("regras do professor", PROMPT DEFINITIVO): estrategia INDEPENDENTE do V0 (versao_config_v1
+-- e um hash separado); candles compartilhados com o V0 (mesmo pr_bars, por pool+tf). Idempotencia pela chave
+-- UNIQUE (chain, pool, tf, evento, ts_fechamento) do item 3.7: um sinal por decisao, nunca duplicado num
+-- reinicio, reconstruido a partir dos candles congelados.
+CREATE TABLE IF NOT EXISTS pr1_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v1 TEXT NOT NULL,
+  gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT, teste_vol_ratio REAL,
+  event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto',
+  entry_price REAL, stop REAL, topo REAL, s_suporte REAL, r_resistencia REAL,
+  tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, tempo_h REAL,
+  holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, liquidez_usd REAL,
+  tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  UNIQUE (chain, pool, tf, evento, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr1_signals_open ON pr1_signals (status);
+-- tudo que o filtro cortou (dado_invalido, filtrado_mc_baixo, filtrado_idade): contado no resumo diario,
+-- nunca silencioso (item 2.4/3.6 do prompt).
+CREATE TABLE IF NOT EXISTS pr1_filtrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, valor TEXT, versao_config_v1 TEXT
+);
+-- uptime (item "registro completo"): um par inicio/fim por execucao continua do processo.
+CREATE TABLE IF NOT EXISTS pr1_uptime (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, inicio_ts REAL NOT NULL, fim_ts REAL, motivo_fim TEXT
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -166,7 +206,8 @@ class Storage:
             elif current > SCHEMA_VERSION:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
-                       "pos_runner_detalhe": True, "pos_runner_banca": True}
+                       "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
+                       "pos_runner_v1_filtrados": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -478,6 +519,9 @@ class Storage:
             "pos_runner": (self.paths.pos_runner_csv, lambda: (POS_RUNNER_COLUMNS, self._pos_runner_rows())),
             "pos_runner_detalhe": (self.paths.pos_runner_detalhe_csv, self._pos_runner_detail_rows),
             "pos_runner_banca": (self.paths.pos_runner_banca_csv, self._pos_runner_banca_header_rows),
+            "pos_runner_v1": (self.paths.pos_runner_v1_csv, lambda: (POS_RUNNER_V1_COLUMNS, self._pos_runner_v1_rows())),
+            "pos_runner_v1_filtrados": (self.paths.pos_runner_v1_filtrados_csv,
+                                       lambda: (POS_RUNNER_V1_FILTRADOS_COLUMNS, self._pos_runner_v1_filtrados_rows())),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -682,6 +726,14 @@ class Storage:
             return {}
         return value if isinstance(value, dict) else {}
 
+    @staticmethod
+    def _pr_list(text: Optional[str]) -> list[str]:
+        try:
+            value = json.loads(text or "[]")
+        except ValueError:
+            return []
+        return [str(x) for x in value] if isinstance(value, list) else []
+
     def _pos_runner_rows(self) -> list[list[Any]]:
         """EMENDA 2026-10-16 (grade de 24 combinacoes): o contrato ESTAVEL do handoff continua so a combinacao
         primaria (extremos); a 2a medida da queda (fechamentos) vai so em `pos_runner_detalhe.csv` (fora do
@@ -736,3 +788,103 @@ class Storage:
                 _num(det.get("max_caminho_B"), 1),
             ])
         return POS_RUNNER_DETALHE_COLUMNS, rows
+
+    # -- POS-RUNNER-V1 ("regras do professor") ------------------------------------------------------------
+    def pr1_insert_signal(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (chain,pool,tf,evento,ts_fechamento): reinicio nunca duplica um sinal."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr1_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols],
+            )
+            self._dirty["pos_runner_v1"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr1_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr1_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), signal_id])
+            self._dirty["pos_runner_v1"] = True
+
+    def pr1_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr1_signals WHERE id=?", (signal_id,))
+
+    def pr1_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr1_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
+                         (chain, pool, tf, evento, ts_fechamento))
+
+    def pr1_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr1_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr1_add_filtrado(self, ts: float, chain: str, pool: str, mint: str, symbol: str, motivo: str, valor: str,
+                         versao_config_v1: str) -> None:
+        """Nunca silencioso (item 2.4/3.6): filtrado_mc_baixo, filtrado_idade e dado_invalido entram aqui e
+        contam no resumo diario, mesmo sem nunca virar alerta."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_filtrados (ts,chain,pool,mint,symbol,motivo,valor,versao_config_v1) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, motivo, valor, versao_config_v1),
+            )
+            self._dirty["pos_runner_v1_filtrados"] = True
+
+    def pr1_filtrado_counts(self, since_ts: float) -> dict[str, int]:
+        return {r[0]: r[1] for r in self._all(
+            "SELECT motivo, COUNT(*) FROM pr1_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
+
+    def pr1_uptime_start(self, ts: float) -> int:
+        with self._lock:
+            cur = self._db.execute("INSERT INTO pr1_uptime (inicio_ts) VALUES (?)", (ts,))
+            return int(cur.lastrowid)
+
+    def pr1_uptime_stop(self, uptime_id: int, ts: float, motivo: str = "") -> None:
+        self._exec("UPDATE pr1_uptime SET fim_ts=?, motivo_fim=? WHERE id=?", (ts, motivo, uptime_id))
+
+    def pr1_uptime_hours(self, since_ts: float, now: float) -> float:
+        """Horas ligado desde `since_ts` (uma sessao ainda aberta conta ate `now`)."""
+        total = 0.0
+        for row in self._all("SELECT inicio_ts, fim_ts FROM pr1_uptime WHERE COALESCE(fim_ts, ?)>=?", (now, since_ts)):
+            ini = max(row["inicio_ts"], since_ts)
+            fim = row["fim_ts"] if row["fim_ts"] is not None else now
+            total += max(0.0, fim - ini)
+        return total / 3600.0
+
+    def _pos_runner_v1_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all("SELECT * FROM pr1_signals WHERE evento='ENTRADA' ORDER BY ts_fechamento, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            age = d.get("idade_dias")
+            gatilho = self._pr_list(r["gatilho"])
+            tags = self._pr_list(r["tags"])
+            if r["status"] == "aberto":
+                motivo_saida = "em_aberto"
+            elif r["reason"]:
+                motivo_saida = r["reason"]
+            else:
+                motivo_saida = r["status"]
+            out.append([
+                iso_utc(r["ts_fechamento"]), r["hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["launchpad"], r["tf"], _num(None if age is None else age * 24, 1), r["janela_ouro"] or "",
+                _num(r["topo"]), _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(r["s_suporte"]), _num(r["r_resistencia"]),
+                d.get("n_testes", ""), ",".join(gatilho),
+                _num(r["entry_price"]), _num(r["stop"]), _num(d.get("risco_pct"), 1),
+                _num(r["tp1_price"]), _num(r["exit_full_price"]), _num(None if r["result_net"] is None else 100 * r["result_net"], 2),
+                _num(r["tempo_h"], 1), motivo_saida, ",".join(tags),
+                r["holders_tag"] or "", r["mint_authority"] or "", r["freeze_authority"] or "", _num(r["liquidez_usd"]),
+                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v1"], 0,
+            ])
+        return out
+
+    def _pos_runner_v1_filtrados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v1"]]
+            for r in self._all("SELECT * FROM pr1_filtrados ORDER BY ts, id")
+        ]
