@@ -192,6 +192,20 @@ class SemV0Tests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_heat_scheduling_works_from_v1_alone_when_v0_is_off(self) -> None:
+        """Revisao da FASE 1: `_heat` so olhava `self.dets`/`pr_signals` (V0) -- com --sem-v0 (`self.dets`
+        sempre vazio) todo pool parecia "sem carga" e perdia a prioridade de fase 2/trade aberto da V1."""
+        h = LiveHarness()
+        try:
+            h.live = PosRunnerLive(h.settings, h.params, h.storage, h.world, CTX, h.tg, LINKS, "solana",
+                                   h.paths.dados / "pos_runner", clock=h.clock, sem_v0=True)
+            start_tracking(h)
+            h.run_hours(12)   # entra na fase 2 (zona) antes do rompimento -- fica "quente" so na V1
+            self.assertEqual(h.live.dets, {}, "com --sem-v0 o V0 nunca cria detector")
+            self.assertEqual(h.live._heat("POOL1", "1h"), 0, "a V1 sozinha ja deveria marcar o pool como quente")
+        finally:
+            h.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -684,11 +684,28 @@ class PosRunnerLive:
 
     # -- agenda ------------------------------------------------------------------------------------
     def _heat(self, pool: str, tf: str) -> int:
-        """0 = quente (fase 2 ou trade aberto: atualiza a cada candle), 1 = morno (runner), 2 = frio, -1 = sem carga."""
+        """0 = quente (fase 2 ou trade aberto: atualiza a cada candle), 1 = morno (runner), 2 = frio, -1 = sem carga.
+        Revisao da FASE 1: o calor e o MELHOR entre V0 e V1 -- com `--sem-v0` o `self.dets` do V0 fica sempre
+        vazio, e sem isto todo pool parecia "sem carga" (perdia a prioridade de fase 2/trade aberto da V1)."""
+        v0 = self._heat_v0(pool, tf)
+        v1 = self._heat_v1(pool, tf)
+        if v0 == -1 and v1 == -1:
+            return -1
+        return min(h for h in (v0, v1) if h != -1)
+
+    def _heat_v0(self, pool: str, tf: str) -> int:
         det = self.dets.get((pool, tf))
         if det is None:
             return -1
         if det.phase == PHASE_PULLBACK or self.storage.pr_signals(status="aberto", pool=pool, tf=tf):
+            return 0
+        return 1 if det.phase == PHASE_RUNNER else 2
+
+    def _heat_v1(self, pool: str, tf: str) -> int:
+        det = self.dets_v1.get((pool, tf))
+        if det is None:
+            return -1
+        if det.phase == PHASE_PULLBACK or self.storage.pr1_signals(status="aberto", pool=pool, tf=tf):
             return 0
         return 1 if det.phase == PHASE_RUNNER else 2
 
