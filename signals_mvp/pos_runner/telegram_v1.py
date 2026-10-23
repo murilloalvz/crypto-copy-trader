@@ -24,7 +24,7 @@ from .chain_adapter import ChainAdapter, html_escape_ticker
 # tags que entram no relatorio semanal "bons vs ruins" (complemento FASE 3, item 3) -- as mesmas que ja
 # aparecem no alerta de ENTRADA (TAG_LABELS abaixo), exceto `holders_indisponivel`/`nao_validado` (nunca
 # avaliam qualidade do sinal em si).
-RELATORIO_TAGS = ("l_bc_suspeito", "HOLDER_CONCENTRADO", "VAMP_RISK", "risco_fora_da_faixa")
+RELATORIO_TAGS = ("l_bc_suspeito", "HOLDER_CONCENTRADO", "VAMP_RISK", "risco_fora_da_faixa", "base_ge_2d")
 
 # o id do sinal fica embutido no texto do prompt da nota ("...(sinal #123)."): quando a resposta chega,
 # `OperatorHandler` relê o texto da mensagem RESPONDIDA (nao um estado novo) para saber a qual sinal associar.
@@ -38,6 +38,7 @@ TAG_LABELS = {
     "VAMP_RISK": "⚠️ VAMP_RISK",
     "nao_validado": "⚠️ nao_validado (parametros calibrados na Solana)",
     "l_bc_suspeito": "⚠️ l_bc_suspeito (confira a mao no GeckoTerminal)",
+    "base_ge_2d": "base ≥ 2 dias (≥48 candles de 1h)",
 }
 
 
@@ -56,7 +57,8 @@ def _head(emoji: str, title: str, chain_name: str, symbol: str) -> str:
 
 def entrada_text(chain_name: str, symbol: str, mc_usd: Optional[float], idade_h: Optional[float], janela_ouro: str,
                  gatilho: list[str], tags: list[str], entry_price: float, stop: float, tp1_price: float,
-                 tamanho_usd: float, mint: str, liquidez_usd: Optional[float] = None) -> str:
+                 tamanho_usd: float, mint: str, liquidez_usd: Optional[float] = None,
+                 mint_authority: Optional[str] = None, freeze_authority: Optional[str] = None) -> str:
     stop_pct = 100.0 * (stop / entry_price - 1.0) if entry_price else None
     lines = [
         _head("🚨", "SINAL DE ENTRADA DETECTADO", chain_name, symbol),
@@ -73,6 +75,8 @@ def entrada_text(chain_name: str, symbol: str, mc_usd: Optional[float], idade_h:
     lines.append(f"Recomendação de tamanho (gestão híbrida): {fmt_usd(tamanho_usd)}")
     if liquidez_usd is not None:
         lines.append(f"Liquidez do pool: {fmt_usd(liquidez_usd)}")
+    if mint_authority is not None or freeze_authority is not None:
+        lines.append(f"Authority: mint {mint_authority or 'indisponivel'} | freeze {freeze_authority or 'indisponivel'}")
     lines.append(f"<code>{_esc(mint, 60)}</code>")
     return "\n".join(lines)
 
@@ -106,12 +110,15 @@ def dado_invalido_text(chain_name: str, symbol: str, motivo: str) -> str:
 
 
 def resumo_diario_text(sinais: int, invalidados: int, dado_invalido: int, filtrado_mc_baixo: int, filtrado_idade: int,
-                       pnl_pct: Optional[float], uptime_h: float) -> str:
+                       pnl_pct: Optional[float], uptime_h: float, filtrado_queda_90_96: int = 0,
+                       base_ge_2d: int = 0) -> str:
     pnl = "s/d" if pnl_pct is None else f"{pnl_pct:+.1f}%"
     return (
         "📋 RESUMO DIÁRIO — POS-RUNNER-V1\n"
         f"Sinais: {sinais} | Invalidados: {invalidados} | dado_invalido: {dado_invalido} | "
-        f"filtrado_mc_baixo: {filtrado_mc_baixo} | filtrado_idade: {filtrado_idade}\n"
+        f"filtrado_mc_baixo: {filtrado_mc_baixo} | filtrado_idade: {filtrado_idade} | "
+        f"filtrado_queda_90_96: {filtrado_queda_90_96}\n"
+        f"base ≥ 2 dias (base_ge_2d): {base_ge_2d}\n"
         f"PnL paper (líquido): {pnl} | Uptime: {uptime_h:.1f}h"
     )
 
@@ -209,6 +216,9 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
     por_gatilho = _group(lambda r: _tags_from_json(r["sig_gatilho"]))
     por_janela = _group(lambda r: [r["sig_janela_ouro"] or "s/d"])
     por_tag = _group(lambda r: [t for t in _tags_from_json(r["sig_tags"]) if t in RELATORIO_TAGS])
+    # item 3 da FASE 2 de medicao/UX: quebra por authority ativa vs revogada.
+    por_mint_authority = _group(lambda r: [f"mint {r['sig_mint_authority'] or 'indisponivel'}"])
+    por_freeze_authority = _group(lambda r: [f"freeze {r['sig_freeze_authority'] or 'indisponivel'}"])
 
     def _lines(title: str, counts: dict[str, dict[str, int]]) -> list[str]:
         if not counts:
@@ -226,5 +236,6 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
         *_lines("Por gatilho", por_gatilho),
         *_lines("Por janela de ouro", por_janela),
         *_lines("Por tag", por_tag),
+        *_lines("Por authority", {**por_mint_authority, **por_freeze_authority}),
     ]
     return "\n".join(lines)

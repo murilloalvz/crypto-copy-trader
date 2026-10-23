@@ -993,6 +993,15 @@ class PosRunnerLive:
                 self._send(text, self._keyboard_v1(row))
                 self.storage.pr1_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "invalidado",
                                               str(ev.data.get("motivo", "")), self.version_v1)
+                # item 4 da FASE 2 de medicao/UX: contador SEPARADO, nunca alerta, so pra faixa de
+                # queda 90-96% -- diagnostico de quao perto do limiar atual (drop_max=90%) os
+                # candidatos descartados ficam; nao muda nem promete mudar o limiar em si.
+                queda_pct = ev.data.get("queda_pct")
+                if queda_pct is not None and 90.0 <= queda_pct < 96.0:
+                    mc = ev.data.get("P_peak")
+                    valor = f"MC={fmt_usd(mc) if mc is not None else 's/d'} queda={queda_pct:.1f}%"
+                    self.storage.pr1_add_filtrado(now, "solana", pool, row["mint"], row["symbol"],
+                                                  "filtrado_queda_90_96", valor, self.version_v1)
 
     def _entry_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
@@ -1003,11 +1012,18 @@ class PosRunnerLive:
             tags: list[str] = []
             if ev.data.get("risco_fora_da_faixa"):
                 tags.append("risco_fora_da_faixa")
+            # item 4 da FASE 2 de medicao/UX: so atributo (nunca filtra/descarta) -- consolidacao com
+            # >= 48 candles do tf principal (1h) = pelo menos 2 dias de base antes do rompimento.
+            if tf == "1h" and (ev.data.get("box_len") or 0) >= 48:
+                tags.append("base_ge_2d")
             if self._v1_suspeito.get((pool, tf)):
                 tags.append("l_bc_suspeito")
             holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
             if holders.tag:
                 tags.append(holders.tag)
+            # item 2 da FASE 2 de medicao/UX: 1 chamada RPC por mint (cacheada no adapter) -- nunca
+            # filtra/descarta o sinal, so preenche dado.
+            authority = self.adapter.authorities(mint)
             vamp = self.adapter.vamp_risk(symbol, ev.data.get("P_peak"), self._vamp_search)
             if vamp.tag:
                 tags.append(vamp.tag)
@@ -1024,6 +1040,7 @@ class PosRunnerLive:
                 # instrumentacao de medicao (nunca entra em regra/filtro/tamanho):
                 "liquidez_usd": info.get("liq_usd"), "ts_fechamento_candle": ts_fechamento,
                 "retorno_sol_dia": self._retorno_sol_dia_v1(ts_fechamento),
+                "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1048,7 +1065,8 @@ class PosRunnerLive:
         text = telegram_v1.entrada_text(
             self.chain_name, symbol, ev.data.get("P_peak"), age_h or 0.0, signal["janela_ouro"] or "fora_da_janela",
             gatilho, tags, signal["entry_price"], signal["stop"], signal["topo"], tamanho_posicao_usd(banca, self.params_v1),
-            mint, liquidez_usd=signal["liquidez_usd"],
+            mint, liquidez_usd=signal["liquidez_usd"], mint_authority=signal["mint_authority"],
+            freeze_authority=signal["freeze_authority"],
         )
         mid = self._send(text, self._keyboard_v1(row, signal["id"]))
         if mid is not None:
@@ -1073,7 +1091,10 @@ class PosRunnerLive:
             if tp1_leg is not None and signal["tp1_price"] is None:
                 if signal["tg_message_id"] and self.storage.pr_alert_once(self._key_v1("tp1", signal["id"]), now):
                     text = telegram_v1.tp1_text(self.chain_name, signal["symbol"], tp1_leg.price, res.entry_price or signal["entry_price"])
-                    self._send(text, telegram_v1.feedback_keyboard(signal["id"]), reply_to=signal["tg_message_id"])
+                    # item 1 da FASE 2 de medicao/UX: TP1/EXIT FULL ganham os MESMOS botoes de
+                    # terminal/DexScreener do alerta de ENTRADA (antes so tinham feedback), para o
+                    # operador nunca precisar rolar pra cima pra achar o link.
+                    self._send(text, self._keyboard_v1(row, signal["id"]), reply_to=signal["tg_message_id"])
                 self.storage.pr1_update_signal(signal["id"], tp1_price=tp1_leg.price, tp1_ts=tp1_leg.ts)
             if res.status != "fechado":
                 continue
@@ -1081,7 +1102,7 @@ class PosRunnerLive:
             if exit_leg is not None and signal["tg_message_id"] and self.storage.pr_alert_once(self._key_v1("x", signal["id"]), now):
                 text = telegram_v1.exit_full_text(self.chain_name, signal["symbol"], exit_leg.price,
                                                   res.entry_price or signal["entry_price"], exit_leg.reason)
-                self._send(text, telegram_v1.feedback_keyboard(signal["id"]), reply_to=signal["tg_message_id"])
+                self._send(text, self._keyboard_v1(row, signal["id"]), reply_to=signal["tg_message_id"])
             self.storage.pr1_update_signal(
                 signal["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
@@ -1114,7 +1135,9 @@ class PosRunnerLive:
         now = self.clock()
         since = now - 86400.0
         filtrados = self.storage.pr1_filtrado_counts(since)
-        sinais = len([s for s in self.storage.pr1_signals() if s["ts_fechamento"] >= since])
+        recentes = [s for s in self.storage.pr1_signals() if s["ts_fechamento"] >= since]
+        sinais = len(recentes)
+        base_ge_2d = sum(1 for s in recentes if "base_ge_2d" in (json.loads(s["tags"] or "[]")))
         invalidados = filtrados.get("invalidado", 0)
         resumos = self.storage.pr1_bankroll_resumos()
         pnl = None
@@ -1125,7 +1148,7 @@ class PosRunnerLive:
         uptime_h = self.storage.pr1_uptime_hours(version_ts, now)
         return telegram_v1.resumo_diario_text(sinais, invalidados, filtrados.get("dado_invalido", 0),
                                               filtrados.get("filtrado_mc_baixo", 0), filtrados.get("filtrado_idade", 0),
-                                              pnl, uptime_h)
+                                              pnl, uptime_h, filtrados.get("filtrado_queda_90_96", 0), base_ge_2d)
 
     def send_daily_summary_v1(self) -> None:
         self._send(self.daily_summary_v1())

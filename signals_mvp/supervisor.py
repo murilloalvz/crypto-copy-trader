@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import PACKAGE_DIR, ConfigError, Paths, load_config
+from .instance_lock import acquire_instance_lock
 from .logging_setup import setup_logging
 from .telegram import TelegramClient, TelegramError
 from .util import load_env
@@ -286,7 +287,18 @@ def run_supervisor(paths: Paths, force: bool = False) -> int:
     if existing and pid_alive(existing) and not force:
         console.error("O bot ja esta rodando (pid %s). Use 'parar' antes, ou 'iniciar --forcar' se tiver certeza que e um pid velho.", existing)
         return 1
-    return Supervisor(paths).run()
+    # trava real sobre o banco (item 3 do deploy Linux): ao contrario do pid_file acima, o SO libera
+    # este lock sozinho se o processo cair -- nunca falso-positivo por pid reciclado, e NUNCA ignorado
+    # por --forcar (--forcar so pula a mensagem acima; dois processos escrevendo no mesmo banco e
+    # exatamente o que isto impede).
+    lock = acquire_instance_lock(paths.db)
+    if lock is None:
+        console.error("O bot ja esta rodando (outra instancia tem o lock de %s.lock). Pare-a antes de iniciar outra.", paths.db.name)
+        return 1
+    try:
+        return Supervisor(paths).run()
+    finally:
+        lock.release()
 
 
 def request_stop(paths: Paths, wait_s: float = 40.0) -> int:

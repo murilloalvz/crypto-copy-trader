@@ -4,14 +4,14 @@ e deteccao de capacidade do BscAdapter/RobinhoodAdapter. Sem rede real."""
 from __future__ import annotations
 
 import unittest
-from typing import Any
+from typing import Any, Optional
 from unittest import mock
 
 from ..http import ApiError
 from ..models import ChainCtx
 from ..pos_runner.candles import Bar
 from ..pos_runner.chain_adapter import (
-    BscAdapter, HOLDER_CONCENTRADO_PCT, RobinhoodAdapter, SolanaAdapter, VampCheck, detect_capability,
+    AuthorityCheck, BscAdapter, HOLDER_CONCENTRADO_PCT, RobinhoodAdapter, SolanaAdapter, VampCheck, detect_capability,
 )
 from ..pos_runner.solana_rpc import RpcError
 
@@ -172,6 +172,82 @@ class SolanaAdapterTests(unittest.TestCase):
 
         result = adapter.vamp_risk("AAA", mc_usd=500_000.0, search=broken)
         self.assertIsNone(result.tag)
+
+
+class _FakeMintRpc:
+    """So pra `authorities()` (item 2 da FASE 2 de medicao/UX) -- formato de resposta diferente do
+    `_FakeRpc` acima (que simula so o fluxo de holders/owner)."""
+
+    def __init__(self, mint_info: Optional[dict[str, dict]] = None, fail: bool = False):
+        self.mint_info = mint_info or {}
+        self.fail = fail
+        self.calls = 0
+
+    def call(self, method: str, params: list) -> Any:
+        assert method == "getAccountInfo"
+        self.calls += 1
+        if self.fail:
+            raise RpcError("transport", "timeout")
+        info = self.mint_info.get(params[0])
+        if info is None:
+            return {"value": None}
+        return {"value": {"data": {"parsed": {"info": info}}}}
+
+    def token_supply(self, mint: str) -> float:
+        raise AssertionError("authorities() nunca deveria chamar token_supply")
+
+
+class AuthoritiesTests(unittest.TestCase):
+    def test_both_authorities_revoked(self):
+        rpc = _FakeMintRpc({"mintA": {"mintAuthority": None, "freezeAuthority": None}})
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.authorities("mintA")
+        self.assertEqual(result, AuthorityCheck("revogada", "revogada"))
+
+    def test_both_authorities_still_active(self):
+        rpc = _FakeMintRpc({"mintA": {"mintAuthority": "SomeAuthority111", "freezeAuthority": "SomeAuthority222"}})
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.authorities("mintA")
+        self.assertEqual(result, AuthorityCheck("ativa", "ativa"))
+
+    def test_mixed_authorities(self):
+        rpc = _FakeMintRpc({"mintA": {"mintAuthority": None, "freezeAuthority": "SomeAuthority222"}})
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.authorities("mintA")
+        self.assertEqual(result, AuthorityCheck("revogada", "ativa"))
+
+    def test_rpc_failure_never_guesses_a_value(self):
+        rpc = _FakeMintRpc(fail=True)
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        self.assertEqual(adapter.authorities("mintA"), AuthorityCheck("indisponivel", "indisponivel"))
+
+    def test_unexpected_response_shape_never_guesses_a_value(self):
+        rpc = _FakeMintRpc({"mintA": {"someOtherField": 1}})   # sem mintAuthority/freezeAuthority
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        self.assertEqual(adapter.authorities("mintA"), AuthorityCheck("indisponivel", "indisponivel"))
+
+    def test_no_rpc_configured_is_indisponivel(self):
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        self.assertEqual(adapter.authorities("mintA"), AuthorityCheck("indisponivel", "indisponivel"))
+
+    def test_result_is_cached_one_rpc_call_per_mint(self):
+        rpc = _FakeMintRpc({"mintA": {"mintAuthority": None, "freezeAuthority": None}})
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        adapter.authorities("mintA")
+        adapter.authorities("mintA")
+        adapter.authorities("mintA")
+        self.assertEqual(rpc.calls, 1, "tem que cachear -- nunca repete a chamada RPC pro mesmo mint")
+
+    def test_different_mints_each_get_their_own_call(self):
+        rpc = _FakeMintRpc({
+            "mintA": {"mintAuthority": None, "freezeAuthority": None},
+            "mintB": {"mintAuthority": "x", "freezeAuthority": "x"},
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        a = adapter.authorities("mintA")
+        b = adapter.authorities("mintB")
+        self.assertEqual(rpc.calls, 2)
+        self.assertNotEqual(a, b)
 
 
 class _FakeTelegram:
