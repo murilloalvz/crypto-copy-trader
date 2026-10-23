@@ -65,6 +65,16 @@ class VampCheck:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AuthorityCheck:
+    """Item 2 da FASE 2 de medicao/UX: mint_authority/freeze_authority revogados ou ainda ativos
+    (instrumentacao -- nunca filtra nem descarta sinal). 'indisponivel' explicito em qualquer falha,
+    NUNCA promovido a 'revogada'/'ativa' no chute."""
+
+    mint_authority: str = "indisponivel"    # "revogada" | "ativa" | "indisponivel"
+    freeze_authority: str = "indisponivel"
+
+
 @dataclass
 class Capability:
     """Resultado da deteccao de capacidade (item 3.1): rede listada no GT E com OHLCV. `motivo` vai pro log/aviso
@@ -105,6 +115,10 @@ class ChainAdapter(abc.ABC):
         """Melhor esforco (item 2.7): sem dado = `holders_indisponivel`, nunca um 'nao' adivinhado."""
         return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"{self.name}: sem suporte a holders ainda"})
 
+    def authorities(self, mint: str) -> AuthorityCheck:
+        """Item 2 da FASE 2 de medicao/UX: melhor esforco, 'indisponivel' explicito sem dado."""
+        return AuthorityCheck()
+
     def vamp_risk(self, symbol: str, mc_usd: Optional[float], search: Callable[[str], list[dict]]) -> VampCheck:
         """Item 2.7 + INTERPRETACOES.md #4: outro token com o MESMO ticker (case-insensitive, igualdade exata),
         mais antigo e com MC atual/de pico maior. `search` busca por ticker (GT `/search/pools`, ja cacheavel
@@ -134,6 +148,9 @@ class SolanaAdapter(ChainAdapter):
         self.rpc = rpc
         self.links = links
         self.terminal = terminal
+        # item 2 da FASE 2 de medicao/UX: 1 chamada RPC por mint, cacheada em memoria pela vida do
+        # processo -- nunca repete a chamada so porque o mesmo token apareceu de novo (outro tf, etc.).
+        self._authority_cache: dict[str, AuthorityCheck] = {}
 
     def capable(self) -> bool:
         return True   # Solana e a rede completa da V1 (item 5, FASE 1)
@@ -209,6 +226,30 @@ class SolanaAdapter(ChainAdapter):
         if top_pct >= HOLDER_CONCENTRADO_PCT:
             return HolderCheck(tag="HOLDER_CONCENTRADO", top_holder_pct=top_pct)
         return HolderCheck(top_holder_pct=top_pct)
+
+    # -- mint/freeze authority (item 2 da FASE 2 de medicao/UX) ---------------------------------------
+    def authorities(self, mint: str) -> AuthorityCheck:
+        """UMA chamada RPC por mint (getAccountInfo, jsonParsed), cacheada -- nunca filtra nem
+        descarta sinal, so preenche dado (CSV/SQLite/texto do alerta). Falha ou formato inesperado
+        vira 'indisponivel' explicito, nunca 'revogada'/'ativa' adivinhado."""
+        cached = self._authority_cache.get(mint)
+        if cached is not None:
+            return cached
+        result = AuthorityCheck()
+        if self.rpc is not None:
+            try:
+                info = self.rpc.call("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
+                parsed = (((info or {}).get("value") or {}).get("data") or {}).get("parsed") or {}
+                fields = parsed.get("info") or {}
+                if "mintAuthority" in fields and "freezeAuthority" in fields:
+                    result = AuthorityCheck(
+                        mint_authority="revogada" if fields.get("mintAuthority") is None else "ativa",
+                        freeze_authority="revogada" if fields.get("freezeAuthority") is None else "ativa",
+                    )
+            except RpcError:
+                pass   # fica 'indisponivel' (valor padrao de AuthorityCheck) -- nunca cai o resto do sinal
+        self._authority_cache[mint] = result
+        return result
 
 
 # ---------------------------------------------------------------------------

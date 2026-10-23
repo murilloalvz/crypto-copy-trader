@@ -1011,7 +1011,9 @@ class Storage:
         complemento FASE 1.1 item 3 aplicado aqui tambem)."""
         return self._all(
             "SELECT f.*, s.gatilho AS sig_gatilho, s.tags AS sig_tags, s.janela_ouro AS sig_janela_ouro, "
-            "s.ts_fechamento AS sig_ts_fechamento, s.result_net AS sig_result_net FROM pr1_feedback f "
+            "s.ts_fechamento AS sig_ts_fechamento, s.result_net AS sig_result_net, "
+            "s.mint_authority AS sig_mint_authority, s.freeze_authority AS sig_freeze_authority "
+            "FROM pr1_feedback f "
             "JOIN pr1_signals s ON s.id = f.pr1_signal_id WHERE f.acao='voto' AND f.versao_config_v1=? "
             "AND s.ts_fechamento>=? AND s.ts_fechamento<?",
             (versao_config_v1, since_ts, until_ts),

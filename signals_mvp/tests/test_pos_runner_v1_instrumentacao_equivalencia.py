@@ -34,7 +34,10 @@ GOLDEN_CORE = {
     "entry_price": 240000.0, "stop": 151900.0, "topo": 1000000.0, "s_suporte": 150000.0,
     "r_resistencia": 259999.99999999997, "tp1_price": 700000.0, "exit_full_price": 151900.0,
     "result_net": 0.2557752505264488, "reason": "stop", "tempo_h": 5.0,
-    "holders_tag": "holders_indisponivel", "mint_authority": None, "freeze_authority": None,
+    # mint_authority/freeze_authority eram sempre None antes da FASE 2 de medicao/UX (item 2: 1
+    # chamada RPC por mint, cacheada) -- nesta fixture nao ha RPC configurado, entao o valor correto
+    # e o "indisponivel" explicito (nunca None de novo, e nunca "ativa"/"revogada" adivinhado).
+    "holders_tag": "holders_indisponivel", "mint_authority": "indisponivel", "freeze_authority": "indisponivel",
 }
 
 GOLDEN_BANCA_CSV = (

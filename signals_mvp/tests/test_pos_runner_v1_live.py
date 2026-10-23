@@ -6,6 +6,7 @@ silencio sobre os MESMOS candles")."""
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from ..http import CallBudget
@@ -100,6 +101,18 @@ class EntradaTests(unittest.TestCase):
         written = self.h.storage.export_csvs(force=True)
         self.assertIn("pos_runner_v1.csv", written)
         self.assertIn("pos_runner_v1_banca.csv", written)
+        # item 1 da FASE 2 (medicao/UX): TP1 e EXIT FULL tem que ter os MESMOS botoes de
+        # terminal/DexScreener do alerta de ENTRADA (nao so o feedback), pra nunca precisar rolar
+        # pra cima pra achar o link.
+        tp1_markup = next(markup for text, markup in self.h.tg.sent if text.startswith("🟡 [POS_RUNNER] TP1"))
+        exit_markup = next(markup for text, markup in self.h.tg.sent if text.startswith("🔴 [POS_RUNNER] EXIT FULL"))
+        for markup in (tp1_markup, exit_markup):
+            labels = {b["text"] for row_ in markup["inline_keyboard"] for b in row_}
+            self.assertIn("DexScreener", labels)
+            self.assertTrue(any("Axiom" in lbl or "GMGN" in lbl for lbl in labels), labels)
+            self.assertIn("👍 Bom", labels)
+            urls = [b["url"] for row_ in markup["inline_keyboard"] for b in row_ if "url" in b]
+            self.assertTrue(all(u.startswith("https://") for u in urls), urls)
 
 
 class QualityFilterTests(unittest.TestCase):
@@ -305,6 +318,57 @@ class IdadeFilterTests(unittest.TestCase):
             self.assertGreaterEqual(counts.get("filtrado_idade", 0), 1)
         finally:
             h.close()
+
+
+class MedicaoUxTests(unittest.TestCase):
+    """FASE 2 de medicao/UX, item 4: contador filtrado_queda_90_96 (nunca alerta) e tag base_ge_2d
+    (nunca filtra) -- os dois so instrumentacao, nenhuma regra/limiar da V1 muda."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_filtrado_queda_90_96_counter_without_any_alert(self) -> None:
+        start_tracking(self.h)
+        bars = list(textbook(start_flat=0).bars)
+        bars[11] = Bar(bars[11].ts, 250_000, 255_000, 70_000, 75_000, 1_000.0)   # queda ~93% do pico (1M)
+        self.h.world.add_series("POOL1", "1h", bars)
+        self.h.list_pool()
+        self.h.tick()
+        self.h.verifier.step()
+        self.h.run_hours(len(bars) + 5)
+        self.assertEqual(_entrada_v1(self.h), [], self.h.texts())
+        counts = self.h.storage.pr1_filtrado_counts(0.0)
+        self.assertGreaterEqual(counts.get("filtrado_queda_90_96", 0), 1)
+
+    def test_a_drop_below_90_percent_never_counts_as_filtrado_queda_90_96(self) -> None:
+        self._run_to_entrada_default()
+        counts = self.h.storage.pr1_filtrado_counts(0.0)
+        self.assertEqual(counts.get("filtrado_queda_90_96", 0), 0)
+
+    def _run_to_entrada_default(self) -> None:
+        start_tracking(self.h)
+        self.h.run_hours(17)
+
+    def test_base_ge_2d_tag_when_the_consolidation_box_is_long_enough(self) -> None:
+        start_tracking(self.h)
+        s = textbook(range_len=90, start_flat=0)   # medido: box_len=50 >= 48 (ver detector_v1.py: box_len=i-anchor)
+        self.h.world.add_series("POOL1", "1h", s.bars)
+        self.h.list_pool()
+        self.h.tick()
+        self.h.verifier.step()
+        self.h.run_hours(len(s.bars) + 5)
+        rows = self.h.storage.pr1_signals()
+        self.assertEqual(len(rows), 1, self.h.texts())
+        self.assertIn("base_ge_2d", json.loads(rows[0]["tags"] or "[]"))
+
+    def test_base_ge_2d_tag_absent_when_the_box_is_short(self) -> None:
+        self._run_to_entrada_default()   # textbook() padrao: range_len=8 -> box_len=13 (< 48)
+        rows = self.h.storage.pr1_signals()
+        self.assertEqual(len(rows), 1, self.h.texts())
+        self.assertNotIn("base_ge_2d", json.loads(rows[0]["tags"] or "[]"))
 
 
 class RelatorioSemanalTests(unittest.TestCase):
