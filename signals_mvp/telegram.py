@@ -549,8 +549,15 @@ class TelegramPoller(threading.Thread):
                 backoff = 2.0
                 self.last_error = None
             except TelegramError as exc:
-                self.last_error = str(exc)
-                log.warning("Telegram getUpdates falhou: %s", exc)
+                if exc.status == 409:
+                    # Conflito: o Telegram so deixa UMA sessao de getUpdates por token (item 3 do
+                    # deploy Linux) -- quase sempre significa duas instancias do bot rodando com o
+                    # MESMO token (ex.: supervisor local + systemd na VM ao mesmo tempo).
+                    self.last_error = "conflito 409: outra instancia deste bot (mesmo TELEGRAM_BOT_TOKEN) ja esta rodando getUpdates -- pare uma das duas"
+                    log.error(self.last_error)
+                else:
+                    self.last_error = str(exc)
+                    log.warning("Telegram getUpdates falhou: %s", exc)
                 self.stop_event.wait(max(backoff, exc.retry_after or 0))
                 backoff = min(60.0, backoff * 2)
                 continue

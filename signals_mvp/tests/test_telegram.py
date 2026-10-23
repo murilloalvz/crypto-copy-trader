@@ -414,6 +414,34 @@ class PollerTest(unittest.TestCase):
             env.close()
             api.stop()
 
+    def test_409_conflict_gets_a_clear_distinct_message(self) -> None:
+        """FASE 1 do deploy Linux (item 3): duas instancias com o MESMO token fazendo getUpdates ->
+        o Telegram devolve 409. O poller nunca pode confundir isso com um erro generico."""
+        api = MockBotApi()
+        env = Env()
+        try:
+            client = TelegramClient(TOKEN, "42", base_url=api.url, timeout_s=5)
+            api.answers["getUpdates"] = [
+                (409, {"ok": False, "description": "Conflict: terminated by other getUpdates request"}),
+                (200, {"ok": True, "result": []}),
+            ]
+            handler = OperatorHandler(client, env.storage, lambda: env.engine.cfg, FakeClock())
+            stop = threading.Event()
+            poller = TelegramPoller(client, handler, env.storage, stop, poll_timeout=1)
+            poller.start()
+            for _ in range(200):
+                if poller.last_error is not None:
+                    break
+                stop.wait(0.02)
+            stop.set()
+            poller.join(timeout=8)
+            self.assertIsNotNone(poller.last_error)
+            self.assertIn("409", poller.last_error)
+            self.assertIn("outra instancia", poller.last_error)
+        finally:
+            env.close()
+            api.stop()
+
 
 _ = (Callable, Optional)
 

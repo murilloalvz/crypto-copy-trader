@@ -15,8 +15,9 @@ from pathlib import Path
 
 import yaml
 
+from ..instance_lock import acquire_instance_lock
 from ..logging_setup import make_stdout_safe
-from ..supervisor import Supervisor, pid_alive, read_pid, request_stop
+from ..supervisor import Supervisor, pid_alive, read_pid, request_stop, run_supervisor
 from ..worker import Heartbeat, Worker
 from .helpers import TEST_META, Env, config_with
 
@@ -275,6 +276,26 @@ class StopCommandTest(unittest.TestCase):
         self.assertTrue(pid_alive(os.getpid()))
         self.assertFalse(pid_alive(99999999))
         self.assertFalse(pid_alive(0))
+
+
+class RunSupervisorInstanceLockTest(unittest.TestCase):
+    """FASE 1 do deploy Linux (item 3): `run_supervisor` tem que recusar quando outra instancia ja
+    tem o lock real sobre o banco -- mesmo sem nenhum pid_file (o cenario que o pid_file sozinho NAO
+    cobre: outro processo/host com o mesmo banco compartilhado, ou um pid reciclado)."""
+
+    def test_refuses_to_start_when_the_db_lock_is_already_held(self) -> None:
+        env = Env()
+        try:
+            env.paths.dados.mkdir(parents=True, exist_ok=True)
+            held = acquire_instance_lock(env.paths.db)
+            self.assertIsNotNone(held)
+            try:
+                self.assertEqual(run_supervisor(env.paths), 1, "nao pode subir um 2o supervisor com o lock ocupado")
+                self.assertFalse(env.paths.pid_file.exists(), "recusado antes de sequer escrever o pid_file")
+            finally:
+                held.release()
+        finally:
+            env.close()
 
 
 if __name__ == "__main__":
