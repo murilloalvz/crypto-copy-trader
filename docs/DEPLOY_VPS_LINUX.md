@@ -135,6 +135,44 @@ instância, o comando recusa com uma mensagem clara em vez de corromper o estado
 
 ## 7. Backup do banco
 
+### Automatico (PEDIDO ADICIONAL FASE 6, item 1)
+
+O bot já tira, sozinho, 1 backup por dia (checado a cada ciclo; dispara quando passar 24h desde o
+último) usando a **API de backup nativa do SQLite** (`sqlite3.Connection.backup`, não uma cópia de
+arquivo "crua" — funciona com o banco aberto e em modo WAL, sem travar nem arriscar pegar uma escrita
+no meio). Os arquivos ficam em `signals_mvp/backups/` (fora de `dados/`, **nunca vai pro git** — já
+está no `.gitignore`), nomeados `estado-<timestamp UTC>.sqlite`. Retenção configurável (padrão 7
+dias — backups mais antigos são apagados automaticamente a cada rodada, só depois de confirmar que o
+novo terminou sem erro):
+
+```bash
+# opcional no .env; sem isto o padrao (7 dias) ja vale
+echo "BACKUP_RETENCAO_DIAS=7" >> signals_mvp/.env
+```
+
+Nada a fazer para ligar — é automático desde que o bot suba. Para confirmar que está rodando:
+
+```bash
+ls -la /opt/crypto-copy-trader/signals_mvp/backups/
+```
+
+### Baixar para o notebook
+
+De qualquer backup (automático ou manual) para o seu notebook Windows, com o PowerShell (`scp` já vem
+com o OpenSSH Client do Windows 10/11):
+
+```powershell
+scp signalsbot@<ip-da-vm>:/opt/crypto-copy-trader/signals_mvp/backups/estado-*.sqlite .
+```
+
+Ou, para sempre pegar só o mais recente:
+
+```powershell
+scp signalsbot@<ip-da-vm>:"$(ssh signalsbot@<ip-da-vm> 'ls -t /opt/crypto-copy-trader/signals_mvp/backups/estado-*.sqlite | head -1')" .
+```
+
+### Manual (copia direta do banco em uso, sem esperar o automatico)
+
 O estado inteiro do bot (sinais, banca, feedback) fica em `signals_mvp/dados/estado.sqlite`. Para
 copiar com o bot rodando (SQLite em modo WAL — seguro copiar os 3 arquivos juntos):
 
@@ -213,3 +251,17 @@ No painel do check, em "Integrations", o Healthchecks.io já tem uma integraçã
 e escolha o chat que deve receber o aviso — pode ser o MESMO bot/chat que já recebe os alertas do
 `signals_mvp`, ou outro separado, à sua escolha. A partir daí, qualquer atraso além do "Grace
 Time" manda uma mensagem automática, sem precisar manter nenhum servidor de webhook seu.
+
+### Alertas operacionais internos (PEDIDO ADICIONAL FASE 6, item 2)
+
+Além do dead man's switch (bot inteiro sumiu), o POS-RUNNER-V1 já manda, sozinho, 1 aviso por
+Telegram por **ocorrência** (nunca spam — só repete depois de normalizar e piorar de novo) quando:
+
+- a taxa de **HTTP 429** do GeckoTerminal fica acima de um teto (padrão 30%) numa janela de tempo
+  (padrão 2h) — sinal de que o IP está sendo limitado além do normal;
+- a **fila de atualização** dos candles de 1h ainda não esvaziou **30 minutos** depois do
+  fechamento da hora (padrão) — sinal de atraso real no acompanhamento, não só uma demora pontual.
+
+Ambos têm padrão seguro e são ajustáveis por `.env` (`POS_RUNNER_429_TETO_PCT`,
+`POS_RUNNER_429_JANELA_H`, `POS_RUNNER_FILA_ATRASO_MIN` — ver `signals_mvp/.env.example`); não
+precisam de nenhum serviço externo.

@@ -578,6 +578,11 @@ class PosRunnerLive:
         self._v2_suspeito: dict[tuple[str, str], bool] = {}
         self._v2_suspeito_logged: set[tuple[str, str]] = set()
         self._bankroll_v2: dict[str, BankrollLedgerV1] = {}
+        # PEDIDO ADICIONAL FASE 6, item 2: alertas operacionais (saude do bot, nunca um sinal) -- 1x por
+        # OCORRENCIA, sem spam. `_tick_history` e uma janela rolante (ts, rate_limited) por ciclo.
+        self._tick_history: list[tuple[float, bool]] = []
+        self._alerta_429_ativo = False
+        self._fila_alertada_hora: Optional[int] = None
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -789,6 +794,7 @@ class PosRunnerLive:
             self._startup(now)
         self.http.arm(budget, keep, self.settings.chamadas_por_ciclo)
         fila_tamanho = 0
+        due: list[tuple[int, float, Any, str]] = []
         try:
             self._promote(now)
             due = self._due_list(now)
@@ -821,8 +827,76 @@ class PosRunnerLive:
         log.info("POS-RUNNER-V1: ciclo | fila=%d | chamadas=%d | 429=%s | tempo=%.2fs",
                  fila_tamanho, out.get("chamadas", 0), out.get("rate_limited", False), time.monotonic() - t0)
         self._heartbeat_v1(now, out.get("chamadas", 0), out.get("rate_limited", False))
+        self._checar_alerta_429(now, bool(out.get("rate_limited", False)))
+        self._checar_fila_atrasada(now, due)
         self.last_tick = out
         return out
+
+    # -- PEDIDO ADICIONAL FASE 6, item 2: alertas operacionais (saude do bot, nunca um sinal) -------------
+    def _send_alerta_operacional(self, text: str) -> None:
+        """Sempre tenta sair (nao depende de `alerts_on`, que e so da FASE das decisoes de trade), mas
+        nunca derruba o ciclo se o Telegram falhar."""
+        if self.tg is None:
+            return
+        try:
+            self.tg.notify(text)
+        except TelegramError as exc:
+            log.warning("POS-RUNNER: falha ao mandar alerta operacional (%s)", exc)
+
+    @staticmethod
+    def _teto_429_pct() -> float:
+        return float(os.environ.get("POS_RUNNER_429_TETO_PCT", "0.3"))
+
+    @staticmethod
+    def _janela_429_s() -> float:
+        return float(os.environ.get("POS_RUNNER_429_JANELA_H", "2")) * 3600.0
+
+    def _checar_alerta_429(self, now: float, rate_limited: bool) -> None:
+        """Taxa de 429 do GeckoTerminal acima de um teto configuravel por N horas -- 1 alerta por
+        OCORRENCIA: so dispara na TRANSICAO de normal->alto, nunca de novo enquanto continuar alto
+        (sem spam); libera um novo alerta so depois de a taxa voltar a ficar <= o teto."""
+        janela = self._janela_429_s()
+        self._tick_history.append((now, rate_limited))
+        corte = now - janela
+        self._tick_history = [(t, r) for (t, r) in self._tick_history if t >= corte]
+        if len(self._tick_history) < 5:   # poucas amostras: nunca alerta em cima de ruido
+            return
+        taxa = sum(1 for _, r in self._tick_history if r) / len(self._tick_history)
+        teto = self._teto_429_pct()
+        if taxa > teto:
+            if not self._alerta_429_ativo:
+                self._alerta_429_ativo = True
+                self._send_alerta_operacional(
+                    f"⚠ POS-RUNNER: taxa de 429 do GeckoTerminal em {100 * taxa:.0f}% nas ultimas "
+                    f"{janela / 3600.0:.1f}h (teto {100 * teto:.0f}%).")
+        else:
+            self._alerta_429_ativo = False
+
+    @staticmethod
+    def _teto_fila_atraso_min() -> float:
+        return float(os.environ.get("POS_RUNNER_FILA_ATRASO_MIN", "30"))
+
+    def _checar_fila_atrasada(self, now: float, due: list[tuple[int, float, Any, str]]) -> None:
+        """Fila de atualizacao (candles 1h) que nao esvazia ate N min (padrao 30) depois do fechamento
+        da hora -- 1 alerta por hora fechada (nunca repete na mesma hora; libera de novo quando a fila
+        esvaziar ou quando a proxima hora fechar e ainda estiver atrasada)."""
+        hora_boundary = (now // 3600) * 3600
+        minutos_desde_fechamento = (now - hora_boundary) / 60.0
+        if minutos_desde_fechamento < self._teto_fila_atraso_min():
+            return
+        pendentes_1h = sum(1 for _rank, _next, _row, tf in due if tf == "1h")
+        hora_marcador = int(hora_boundary)
+        if pendentes_1h == 0:
+            if self._fila_alertada_hora == hora_marcador:
+                self._fila_alertada_hora = None
+            return
+        if self._fila_alertada_hora == hora_marcador:
+            return
+        self._fila_alertada_hora = hora_marcador
+        self._send_alerta_operacional(
+            f"⚠ POS-RUNNER: fila de atualizacao (1h) ainda com {pendentes_1h} pool(s)/tf pendente(s) "
+            f"{minutos_desde_fechamento:.0f} min depois do fechamento da hora (teto "
+            f"{self._teto_fila_atraso_min():.0f} min).")
 
     def _phase_counts_v1(self) -> dict[str, int]:
         """Pools acompanhados AGORA por fase do detector da V1 (item do heartbeat da revisao FASE 1.1)."""

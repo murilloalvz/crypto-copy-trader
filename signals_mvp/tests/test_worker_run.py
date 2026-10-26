@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import yaml
@@ -161,6 +162,81 @@ class EnvBoolTests(unittest.TestCase):
         for value in ("1", "true", "sim", "on", "qualquer coisa"):
             with self.subTest(value):
                 self.assertTrue(_env_bool("SEM_LEGADO", env={"SEM_LEGADO": value}))
+
+
+class _FakeLive:
+    def __init__(self, chain_name: str, ligado: bool) -> None:
+        self.chain_name = chain_name
+        self._ligado = ligado
+        self.chain_capabilities: dict = {}
+
+    def enabled(self) -> bool:
+        return self._ligado
+
+
+class _FakeCapability:
+    def __init__(self, ok: bool, motivo: str = "") -> None:
+        self.ok = ok
+        self.motivo = motivo
+
+
+class _FakeEngineForStartupText:
+    def __init__(self, legado_ligado: bool, pos_runner: Any, cfg_raw: dict) -> None:
+        self.legado_ligado = legado_ligado
+        self.pos_runner = pos_runner
+        self.cfg = type("_Cfg", (), {"raw": cfg_raw})()
+
+    def chains_status_text(self) -> str:
+        return "ativas: nenhuma"
+
+
+class PosRunnerStartupTextTests(unittest.TestCase):
+    """PEDIDO ADICIONAL FASE 6, item 3: "Bot ligado" nunca pode mostrar "chains ativas: nenhuma" so
+    porque o motor legado (V0) foi desligado para a V1 assumir o orcamento de GT -- tem que mostrar o
+    estado real da V1 (e de BSC/Robinhood, via a deteccao de capacidade real do startup)."""
+
+    CFG_RAW = {"chains": {"solana": {"nome": "SOL"}, "bsc": {"nome": "BSC"}, "robinhood": {"nome": "ROBINHOOD"}}}
+
+    def test_pos_runner_chains_status_text_shows_the_real_v1_and_adapter_state(self) -> None:
+        from ..worker import _pos_runner_chains_status_text
+
+        live = _FakeLive("SOL", ligado=True)
+        capabilities = {"bsc": _FakeCapability(True), "robinhood": _FakeCapability(False, "sem rede no GeckoTerminal")}
+        text = _pos_runner_chains_status_text(type("_Cfg", (), {"raw": self.CFG_RAW})(), live, capabilities)
+        self.assertEqual(text, "POS-RUNNER V1 (SOL): ativo | BSC: só detecção | ROBINHOOD: desligada (sem rede no GeckoTerminal)")
+
+    def test_pos_runner_chains_status_text_shows_desligado_when_not_enabled(self) -> None:
+        from ..worker import _pos_runner_chains_status_text
+
+        live = _FakeLive("SOL", ligado=False)
+        text = _pos_runner_chains_status_text(type("_Cfg", (), {"raw": self.CFG_RAW})(), live, {})
+        self.assertEqual(text, "POS-RUNNER V1 (SOL): desligado")
+
+    def test_startup_text_uses_pos_runner_alone_when_legado_is_off(self) -> None:
+        from ..worker import _startup_chains_text
+
+        live = _FakeLive("SOL", ligado=True)
+        live.chain_capabilities = {"bsc": _FakeCapability(True)}
+        engine = _FakeEngineForStartupText(legado_ligado=False, pos_runner=live, cfg_raw=self.CFG_RAW)
+        text = _startup_chains_text(engine)
+        self.assertNotIn("nenhuma", text)
+        self.assertIn("POS-RUNNER V1 (SOL): ativo", text)
+        self.assertIn("BSC: só detecção", text)
+
+    def test_startup_text_shows_both_when_legado_and_pos_runner_are_both_on(self) -> None:
+        from ..worker import _startup_chains_text
+
+        live = _FakeLive("SOL", ligado=True)
+        engine = _FakeEngineForStartupText(legado_ligado=True, pos_runner=live, cfg_raw=self.CFG_RAW)
+        text = _startup_chains_text(engine)
+        self.assertIn("ativas: nenhuma", text)   # texto do V0 (fake), nunca escondido
+        self.assertIn("POS-RUNNER V1 (SOL): ativo", text)
+
+    def test_startup_text_falls_back_to_the_legacy_text_without_any_pos_runner(self) -> None:
+        from ..worker import _startup_chains_text
+
+        engine = _FakeEngineForStartupText(legado_ligado=False, pos_runner=None, cfg_raw=self.CFG_RAW)
+        self.assertEqual(_startup_chains_text(engine), "ativas: nenhuma")
 
 
 _ = shutil

@@ -15,7 +15,7 @@ from typing import Any, Optional
 from .config import PACKAGE_DIR, Config, ConfigError, Paths, load_config
 from .engine import Engine
 from .geckoterminal import GtClient
-from . import healthchecks
+from . import backup, healthchecks
 from .goplus import GoPlusClient
 from .http import ApiError, HttpClient, RateLimiter
 from .logging_setup import setup_logging
@@ -213,7 +213,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
                          chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
-    _check_fase2_capabilities(http, telegram, paths)
+    live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
     dp_status = "desligado"
@@ -226,6 +226,35 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                  live.version_v1, live.version_v2, " [V2 DESLIGADA: SEM_V2]" if sem_v2 else "",
                  settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints), dp_status)
     return live
+
+
+def _pos_runner_chains_status_text(cfg: Config, live: Any, capabilities: dict[str, Any]) -> str:
+    """PEDIDO ADICIONAL FASE 6, item 3: o que a V1 esta fazendo de verdade por chain -- "ativo" so quando
+    `live.enabled()` confirma (nunca so porque `pos_runner.ligado: true` no config.yaml). BSC/Robinhood vem
+    de `capabilities` (`_check_fase2_capabilities`, deteccao real 1x no startup, nunca um texto fixo):
+    "so deteccao" quando a rede+OHLCV foram confirmados (decisao explicita da FASE 2, capable() continua
+    False), "desligada (<motivo real>)" quando a deteccao falhou (ex.: rede ausente no GeckoTerminal)."""
+    parts = [f"POS-RUNNER V1 ({live.chain_name}): {'ativo' if live.enabled() else 'desligado'}"]
+    for name, cap in capabilities.items():
+        nome = cfg.raw["chains"].get(name, {}).get("nome", name.upper())
+        if cap is None:
+            continue
+        parts.append(f"{nome}: só detecção" if cap.ok else f"{nome}: desligada ({cap.motivo})")
+    return " | ".join(parts)
+
+
+def _startup_chains_text(engine: Engine) -> str:
+    """FASE 6, item 3: corrige "chains ativas: nenhuma" quando o motor legado (V0) esta desligado
+    (SEM_LEGADO, padrao com a V1 ligada) -- mostra o estado real da V1/BSC/Robinhood nesse caso, e some
+    as 2 informacoes quando os dois motores estao ativos ao mesmo tempo. Sem POS-RUNNER nenhum, comportamento
+    IDENTICO ao de antes desta revisao (so `engine.chains_status_text()`)."""
+    parts = []
+    if engine.legado_ligado:
+        parts.append(engine.chains_status_text())
+    if engine.pos_runner is not None:
+        parts.append(_pos_runner_chains_status_text(
+            engine.cfg, engine.pos_runner, getattr(engine.pos_runner, "chain_capabilities", {}) or {}))
+    return " | ".join(parts) if parts else engine.chains_status_text()
 
 
 def _relatorio_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
@@ -418,7 +447,7 @@ class Worker:
             self._announce_start(engine, storage, telegram)
 
         console.info("Bot de sinais v0 ligado | config %s | meta %s | chains %s | PAPER/somente leitura",
-                     cfg.version, meta.version, engine.chains_status_text())
+                     cfg.version, meta.version, _startup_chains_text(engine))
         console.info("CSVs em %s | log em %s | Ctrl+C ou 'parar' para sair", self.paths.dados, self.paths.logs / "signals_mvp.log")
         if healthchecks_url:
             console.info("Healthchecks: dead man's switch ligado (ping a cada ciclo bem sucedido)")
@@ -435,6 +464,11 @@ class Worker:
                 p50 = sorted(engine.latencies)[len(engine.latencies) // 2] if engine.latencies else None
                 console.info("ciclo %d (%.0fs) | %s", engine.cycle_count, stats.duration_s, stats.line(p50))
                 engine.maybe_send_daily_summary()
+                try:
+                    backup.maybe_run_backup(storage, self.paths.base / "backups", utc_now(),
+                                            retencao_dias=float(os.environ.get("BACKUP_RETENCAO_DIAS", str(backup.RETENCAO_DIAS_PADRAO))))
+                except Exception:  # noqa: BLE001 - backup e melhor-esforco, nunca derruba o ciclo
+                    log.exception("falha no backup diario do banco")
                 healthchecks.ping(healthchecks_url, "ok")
             except Exception:  # noqa: BLE001 - o worker nao morre por erro de ciclo
                 log.exception("erro no loop principal")
@@ -474,7 +508,7 @@ class Worker:
             return
         try:
             telegram.notify(f"\U0001f916 Bot de sinais ligado (PAPER). config {engine.cfg.version} | meta {engine.meta.version} | "
-                           f"chains {engine.chains_status_text()}")
+                           f"chains {_startup_chains_text(engine)}")
             storage.set_meta("ultimo_aviso_inicio", str(now))
         except TelegramError as exc:
             log.warning("aviso de inicio nao enviado: %s", exc)

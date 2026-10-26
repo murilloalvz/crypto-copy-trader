@@ -11,6 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from .config import Paths
@@ -379,6 +380,19 @@ class Storage:
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+    def backup_to(self, dest_path: Path) -> None:
+        """PEDIDO ADICIONAL FASE 6, item 1: backup consistente com a API nativa de backup do SQLite
+        (`Connection.backup`) -- funciona com o banco aberto e em modo WAL, nunca uma copia de arquivo
+        "crua" que poderia pegar uma escrita no meio. `dest_path` e um arquivo NOVO (nunca sobrescreve o
+        banco em uso)."""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(dest_path))
+        try:
+            with self._lock:
+                self._db.backup(dest)
+        finally:
+            dest.close()
 
     # -- util -------------------------------------------------------------------------
     def _one(self, sql: str, params: Sequence[Any] = ()) -> Optional[sqlite3.Row]:
