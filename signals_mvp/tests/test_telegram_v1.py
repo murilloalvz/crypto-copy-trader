@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from ..pos_runner.chain_adapter import SolanaAdapter
@@ -21,7 +22,9 @@ class TemplateTests(unittest.TestCase):
             stop=90.0, tp1_price=200.0, tamanho_usd=10.0, mint="mintA", liquidez_usd=50_000.0,
         )
         self.assertIn("SINAL DE ENTRADA DETECTADO", text)
-        self.assertIn("Market Cap: $500K" if False else "Market Cap:", text)
+        self.assertIn("Pico (MC):", text)
+        self.assertIn("MC na entrada: 100", text)
+        self.assertIn("Mão sugerida por risco", text)
         self.assertIn("janela de ouro", text)
         self.assertIn("power_candle_rompimento", text)
         self.assertIn("risco fora da faixa", text)
@@ -29,6 +32,27 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("Liquidez do pool", text)
         self.assertIn("mintA", text)
         self.assertNotIn("<script>", text)   # HTML-escape do ticker
+
+    def test_entrada_text_mao_sugerida_por_risco_e_capada_em_10_dolares(self):
+        # risco baixo (5%) faria US$2/0,05=US$40 -- a linha tem que mostrar o teto de US$10, nunca mais.
+        text = tv1.entrada_text("Solana", "AAA", 500_000.0, 72.0, "janela_ouro", [], [], entry_price=100.0,
+                                stop=95.0, tp1_price=200.0, tamanho_usd=10.0, mint="mintA")
+        self.assertIn(
+            "Mão sugerida por risco (informativo, não é o tamanho usado no paper): 10 "
+            "(mín(US$10, US$2÷risco%); risco 5.0%)", text)
+
+    def test_entrada_text_mao_sugerida_por_risco_sem_cap_quando_risco_alto(self):
+        # risco alto (50%) da US$2/0,50=US$4 -- abaixo do teto de US$10, mostra o valor sem capar.
+        text = tv1.entrada_text("Solana", "AAA", 500_000.0, 72.0, "janela_ouro", [], [], entry_price=100.0,
+                                stop=50.0, tp1_price=200.0, tamanho_usd=10.0, mint="mintA")
+        self.assertIn(
+            "Mão sugerida por risco (informativo, não é o tamanho usado no paper): 4 "
+            "(mín(US$10, US$2÷risco%); risco 50.0%)", text)
+
+    def test_entrada_text_mao_sugerida_por_risco_e_s_d_sem_entry_price(self):
+        text = tv1.entrada_text("Solana", "AAA", 500_000.0, 72.0, "janela_ouro", [], [], entry_price=0.0,
+                                stop=0.0, tp1_price=200.0, tamanho_usd=10.0, mint="mintA")
+        self.assertIn("Mão sugerida por risco (informativo, não é o tamanho usado no paper): s/d", text)
 
     def test_entrada_text_omits_liquidity_line_when_unknown(self):
         text = tv1.entrada_text("Solana", "AAA", 500_000.0, 72.0, "fora_da_janela", [], [], 100.0, 90.0, 200.0,
@@ -59,6 +83,53 @@ class TemplateTests(unittest.TestCase):
         urls = [b["url"] for b in kb["inline_keyboard"][0]]
         self.assertTrue(all(u.startswith("https://") for u in urls))
         self.assertEqual(urls[0], "https://axiom.trade/t/poolA")
+
+
+class RelatorioSemanalTextTests(unittest.TestCase):
+    """Itens 2 e 4 do pedido de ajustes de alerta/medicao: agrupamento por token (dos votos) e, a partir
+    de `sinais_semana` (universo maior, independente de feedback), a quebra de risco_fora_da_faixa por
+    gatilho e o histograma do % de stop."""
+
+    def _sinal(self, gatilho, tags, entry_price, stop):
+        return {"gatilho": json.dumps(gatilho), "tags": json.dumps(tags),
+               "entry_price": entry_price, "stop": stop}
+
+    def test_por_token_agrupa_os_votos_pelo_symbol(self):
+        rows = [
+            {"voto": "bom", "sig_gatilho": "[]", "sig_tags": "[]", "sig_janela_ouro": "janela_ouro",
+             "sig_mint_authority": None, "sig_freeze_authority": None, "symbol": "AAA"},
+            {"voto": "ruim", "sig_gatilho": "[]", "sig_tags": "[]", "sig_janela_ouro": "janela_ouro",
+             "sig_mint_authority": None, "sig_freeze_authority": None, "symbol": "AAA"},
+            {"voto": "bom", "sig_gatilho": "[]", "sig_tags": "[]", "sig_janela_ouro": "janela_ouro",
+             "sig_mint_authority": None, "sig_freeze_authority": None, "symbol": "BBB"},
+        ]
+        text = tv1.relatorio_semanal_text(rows, None, "versaoX")
+        self.assertIn("Por token:", text)
+        self.assertIn("AAA: 👍1 👎1", text)
+        self.assertIn("BBB: 👍1 👎0", text)
+
+    def test_risco_fora_da_faixa_por_gatilho_e_histograma_de_stop(self):
+        sinais = [
+            self._sinal(["reacao_suporte"], ["risco_fora_da_faixa"], 100.0, 95.0),    # risco 5% -> 0-10%
+            self._sinal(["power_candle_rompimento"], ["risco_fora_da_faixa"], 100.0, 95.0),
+            self._sinal(["reacao_suporte"], [], 100.0, 82.0),                         # sem a tag: nao conta
+            self._sinal([], [], 100.0, 50.0),                                         # risco 50% -> 50-60% (sem tag)
+            self._sinal([], [], 0.0, 0.0),                                            # sem entry_price -> s/d
+        ]
+        text = tv1.relatorio_semanal_text([], None, "versaoX", sinais)
+        self.assertIn("Risco fora da faixa por gatilho:", text)
+        self.assertIn("reacao_suporte: 1", text)
+        self.assertIn("power_candle_rompimento: 1", text)
+        self.assertIn("Histograma do % de stop:", text)
+        self.assertIn("0-10%: 2", text)
+        self.assertIn("10-20%: 1", text)
+        self.assertIn("50-60%: 1", text)
+        self.assertIn("s/d: 1", text)
+
+    def test_sem_sinais_semana_mostra_sem_dados(self):
+        text = tv1.relatorio_semanal_text([], None, "versaoX")
+        self.assertIn("Risco fora da faixa por gatilho: sem dados", text)
+        self.assertIn("Histograma do % de stop: sem dados", text)
 
 
 if __name__ == "__main__":

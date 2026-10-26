@@ -107,6 +107,8 @@ class InstrumentacaoNuncaMudaOSinalTests(unittest.TestCase):
         self.assertEqual(row["ts_envio_telegram"], row["alert_ts"])  # mesmo instante, nome mais claro
         # liquidez_usd veio do PoolSnap do radar (zero chamada nova) -- fixture ja fornece 100000.
         self.assertEqual(row["liquidez_usd"], 100_000.0)
+        # token_signal_seq (pedido de ajustes de alerta/medicao, item 2): 1o sinal desse mint na fixture.
+        self.assertEqual(row["token_signal_seq"], 1)
 
 
 if __name__ == "__main__":

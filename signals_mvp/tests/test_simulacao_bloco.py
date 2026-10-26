@@ -18,8 +18,8 @@ from signals_mvp.analise.simulacao_bloco import (
     _carregar_sinais_fechados,
     _EstadoLedgerSim,
     _juntar,
-    _pesos_dias,
-    _preparar_dias,
+    _pesos_blocos,
+    _preparar_blocos,
     _simular_uma_rodada,
     _todas_semanas_observadas,
     calcular_estatisticas,
@@ -67,7 +67,7 @@ class TestRecusaAmostraInsuficiente(unittest.TestCase):
             for i in range(30)
         ]
         relatorios = executar(trades=trades, n_simulacoes=40, n_semanas=4, n_bootstrap_expectancia=100)
-        self.assertEqual(len(relatorios), 2)  # normal + estresse
+        self.assertEqual(len(relatorios), 3)  # normal + estresse (dia) + estresse (token)
         for rel in relatorios:
             self.assertEqual(rel.n_trades_historicos, 30)
             self.assertGreater(rel.banca_mediana, 0.0)
@@ -121,16 +121,16 @@ class TestBlocoPorDiaPreservaCorrelacao(unittest.TestCase):
         dist_fixa = DistribuicaoFrequencia(tipo="fixa", media=10.0)
 
         stats_agrupado = calcular_estatisticas(agrupado)
-        dias_a = _preparar_dias(stats_agrupado.por_dia)
-        pesos_a = _pesos_dias(dias_a, stats_agrupado.dias_ruins, 1.0)
+        dias_a = _preparar_blocos(stats_agrupado.por_dia)
+        pesos_a = _pesos_blocos(dias_a, stats_agrupado.dias_ruins, 1.0)
         resultado_agrupado = _simular_uma_rodada(
-            np.random.default_rng(7), params, stats_agrupado, dist_fixa, 1, dias_a, pesos_a)
+            np.random.default_rng(7), params, stats_agrupado, stats_agrupado.por_dia, dist_fixa, 1, dias_a, pesos_a)
 
         stats_espalhado = calcular_estatisticas(espalhado)
-        dias_e = _preparar_dias(stats_espalhado.por_dia)
-        pesos_e = _pesos_dias(dias_e, stats_espalhado.dias_ruins, 1.0)
+        dias_e = _preparar_blocos(stats_espalhado.por_dia)
+        pesos_e = _pesos_blocos(dias_e, stats_espalhado.dias_ruins, 1.0)
         resultado_espalhado = _simular_uma_rodada(
-            np.random.default_rng(7), params, stats_espalhado, dist_fixa, 1, dias_e, pesos_e)
+            np.random.default_rng(7), params, stats_espalhado, stats_espalhado.por_dia, dist_fixa, 1, dias_e, pesos_e)
 
         perda_por_trade = 10.0 * 0.20  # mao_fixa_usd=10 (banca<200) x 20% de perda liquida
         self.assertAlmostEqual(
@@ -138,6 +138,40 @@ class TestBlocoPorDiaPreservaCorrelacao(unittest.TestCase):
             100.0 - params.stop_diario_perdas_seguidas * perda_por_trade, places=6)
         self.assertAlmostEqual(resultado_espalhado.banca_final, 100.0 - 10 * perda_por_trade, places=6)
         self.assertGreater(resultado_agrupado.banca_final, resultado_espalhado.banca_final)
+
+
+class TestBlocoPorTokenPreservaCorrelacao(unittest.TestCase):
+    """Mesma ideia do bloco por dia (item 2 do pedido de ajustes de alerta/medicao): 10 perdas identicas no
+    MESMO token (repique, ver INTERPRETACOES.md #11) travam o stop diario mais rapido que as mesmas 10
+    perdas espalhadas por 10 tokens diferentes -- mesmo quando todas caem no mesmo dia real (o que isola o
+    efeito do agrupamento por TOKEN, nao por dia)."""
+
+    def test_mesmo_token_aciona_stop_diario_mais_rapido_que_tokens_diferentes(self) -> None:
+        params = load_params_v1()
+        mesmo_token = [_trade_fixo(dia_offset=0, contrato="REPIQUE", lucro_liquido_pct=-20.0, risco_pct=100.0)
+                      for _ in range(10)]
+        tokens_diferentes = [_trade_fixo(dia_offset=0, contrato=f"T{i}", lucro_liquido_pct=-20.0, risco_pct=100.0)
+                            for i in range(10)]
+        dist_fixa = DistribuicaoFrequencia(tipo="fixa", media=10.0)
+
+        stats_mesmo = calcular_estatisticas(mesmo_token)
+        blocos_m = _preparar_blocos(stats_mesmo.por_token)
+        pesos_m = _pesos_blocos(blocos_m, stats_mesmo.tokens_ruins, 1.0)
+        resultado_mesmo = _simular_uma_rodada(
+            np.random.default_rng(7), params, stats_mesmo, stats_mesmo.por_token, dist_fixa, 1, blocos_m, pesos_m)
+
+        stats_diff = calcular_estatisticas(tokens_diferentes)
+        blocos_d = _preparar_blocos(stats_diff.por_token)
+        pesos_d = _pesos_blocos(blocos_d, stats_diff.tokens_ruins, 1.0)
+        resultado_diff = _simular_uma_rodada(
+            np.random.default_rng(7), params, stats_diff, stats_diff.por_token, dist_fixa, 1, blocos_d, pesos_d)
+
+        perda_por_trade = 10.0 * 0.20  # mao_fixa_usd=10 (banca<200) x 20% de perda liquida
+        self.assertAlmostEqual(
+            resultado_mesmo.banca_final,
+            100.0 - params.stop_diario_perdas_seguidas * perda_por_trade, places=6)
+        self.assertAlmostEqual(resultado_diff.banca_final, 100.0 - 10 * perda_por_trade, places=6)
+        self.assertGreater(resultado_mesmo.banca_final, resultado_diff.banca_final)
 
 
 class TestCalibrarFrequencia(unittest.TestCase):

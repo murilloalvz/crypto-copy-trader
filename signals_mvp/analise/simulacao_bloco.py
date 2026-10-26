@@ -22,9 +22,11 @@ Algoritmo do Monte Carlo (por rodada):
   1. sorteia uma taxa de acerto `p_win ~ Beta(n_ganhos+1, n_perdas+1)` UMA vez (incerteza do edge);
   2. para cada semana simulada, sorteia a quantidade de sinais da semana (Poisson ou binomial
      negativa, calibrada pela frequencia semanal observada -- nunca fixa);
-  3. preenche a semana sorteando DIAS HISTORICOS inteiros (bloco por dia, com reposicao) at'e atingir
-     a meta -- isso preserva o agrupamento real de quantos sinais caem no mesmo dia (dias ruins tem
-     peso 2x no cenario de estresse); cada bloco cai num dia simulado novo e distinto;
+  3. preenche a semana sorteando BLOCOS HISTORICOS inteiros (com reposicao) ate atingir a meta -- isso
+     preserva o agrupamento real de quantos sinais caem juntos; o cenario "normal"/"estresse" usa bloco
+     por DIA (dias ruins tem peso 2x no estresse), e ha um 3o cenario de bloco por TOKEN (repique no
+     mesmo mint, ver INTERPRETACOES.md #11) com o mesmo peso 2x nos tokens de resultado negativo; cada
+     bloco cai num dia simulado novo e distinto;
   4. cada sinal dentro do bloco tem seu resultado resorteado: Bernoulli(p_win) decide ganho/perda,
      e o tamanho (R-multiplo + risco + tempo no trade) vem de bootstrap do pool historico de ganhos
      ou de perdas (o par R-multiplo/risco sempre vem do MESMO trade real -- nunca se mistura R de um
@@ -262,6 +264,12 @@ class EstatisticasHistoricas:
     perdas: list[TradeRealizado]
     por_dia: dict[str, list[TradeRealizado]]
     dias_ruins: frozenset[str]
+    por_token: dict[str, list[TradeRealizado]]
+    tokens_ruins: frozenset[str]
+
+
+def _blocos_ruins(grupos: dict[str, list[TradeRealizado]]) -> frozenset[str]:
+    return frozenset(chave for chave, ts in grupos.items() if sum(t.r_multiplo for t in ts) < 0)
 
 
 def calcular_estatisticas(trades: Sequence[TradeRealizado]) -> EstatisticasHistoricas:
@@ -269,12 +277,14 @@ def calcular_estatisticas(trades: Sequence[TradeRealizado]) -> EstatisticasHisto
     ganhos = [t for t in trades if t.r_multiplo > 0]
     perdas = [t for t in trades if t.r_multiplo <= 0]
     por_dia: dict[str, list[TradeRealizado]] = defaultdict(list)
+    por_token: dict[str, list[TradeRealizado]] = defaultdict(list)
     for t in trades:
         por_dia[t.dia_utc].append(t)
-    dias_ruins = frozenset(dia for dia, ts in por_dia.items() if sum(t.r_multiplo for t in ts) < 0)
+        por_token[t.contrato].append(t)
     return EstatisticasHistoricas(
         n_trades=len(trades), n_ganhos=len(ganhos), r_multiplos=r_multiplos,
-        ganhos=ganhos, perdas=perdas, por_dia=dict(por_dia), dias_ruins=dias_ruins,
+        ganhos=ganhos, perdas=perdas, por_dia=dict(por_dia), dias_ruins=_blocos_ruins(por_dia),
+        por_token=dict(por_token), tokens_ruins=_blocos_ruins(por_token),
     )
 
 
@@ -415,19 +425,24 @@ class ResultadoRodada:
     tocou_50pct: bool
 
 
-def _preparar_dias(por_dia: dict[str, list[TradeRealizado]]) -> list[str]:
-    return sorted(por_dia)
+def _preparar_blocos(por_bloco: dict[str, list[TradeRealizado]]) -> list[str]:
+    return sorted(por_bloco)
 
 
-def _pesos_dias(dias: list[str], dias_ruins: frozenset[str], peso_stress: float) -> np.ndarray:
-    pesos = np.array([peso_stress if d in dias_ruins else 1.0 for d in dias], dtype=float)
+def _pesos_blocos(blocos: list[str], blocos_ruins: frozenset[str], peso_stress: float) -> np.ndarray:
+    pesos = np.array([peso_stress if b in blocos_ruins else 1.0 for b in blocos], dtype=float)
     return pesos / pesos.sum()
 
 
 def _simular_uma_rodada(
     rng: np.random.Generator, params: ParamsV1, stats: EstatisticasHistoricas,
-    dist_freq: DistribuicaoFrequencia, n_semanas: int, dias: list[str], pesos_dias: np.ndarray,
+    por_bloco: dict[str, list[TradeRealizado]], dist_freq: DistribuicaoFrequencia, n_semanas: int,
+    blocos: list[str], pesos_blocos: np.ndarray,
 ) -> ResultadoRodada:
+    """`por_bloco`/`blocos`/`pesos_blocos` decidem a UNIDADE de correlacao preservada no sorteio (bloco por
+    dia -- quantos sinais caem no mesmo dia real -- ou bloco por token -- quantos sinais repicam no MESMO
+    token, ver INTERPRETACOES.md #11); o resultado de cada sinal dentro do bloco sempre vem do bootstrap
+    ganhos/perdas (nunca do bloco historico em si, so o TAMANHO do bloco e preservado)."""
     p_win = rng.beta(stats.n_ganhos + 1, (stats.n_trades - stats.n_ganhos) + 1)
     estado = _EstadoLedgerSim.novo(params.banca_inicial_usd)
     sim_ts = 0.0
@@ -437,8 +452,8 @@ def _simular_uma_rodada(
         semana_chave = f"s{semana_idx}"
         trades_da_semana = 0
         while trades_da_semana < alvo:
-            dia_sorteado = dias[int(rng.choice(len(dias), p=pesos_dias))]
-            bloco = stats.por_dia[dia_sorteado]
+            bloco_sorteado = blocos[int(rng.choice(len(blocos), p=pesos_blocos))]
+            bloco = por_bloco[bloco_sorteado]
             sim_ts += SEGUNDOS_POR_DIA
             dia_chave = f"d{int(sim_ts // SEGUNDOS_POR_DIA)}"
             for i in range(len(bloco)):
@@ -456,11 +471,20 @@ def _simular_uma_rodada(
 def rodar_monte_carlo(
     params: ParamsV1, stats: EstatisticasHistoricas, dist_freq: DistribuicaoFrequencia,
     n_simulacoes: int, n_semanas: int, peso_stress: float, seed: int,
+    *, por_bloco: Optional[dict[str, list[TradeRealizado]]] = None,
+    blocos_ruins: Optional[frozenset[str]] = None,
 ) -> list[ResultadoRodada]:
+    """Sem `por_bloco`/`blocos_ruins` (padrao): bloco por DIA (`stats.por_dia`/`stats.dias_ruins`), igual
+    desde a 1a versao. Passar `stats.por_token`/`stats.tokens_ruins` troca a unidade de correlacao do
+    sorteio para bloco por TOKEN -- cenario de estresse adicional (item 2 do pedido de ajustes de
+    alerta/medicao: "agrupar por token... bloco por token alem do bloco por dia")."""
     rng = np.random.default_rng(seed)
-    dias = _preparar_dias(stats.por_dia)
-    pesos = _pesos_dias(dias, stats.dias_ruins, peso_stress)
-    return [_simular_uma_rodada(rng, params, stats, dist_freq, n_semanas, dias, pesos) for _ in range(n_simulacoes)]
+    grupos = por_bloco if por_bloco is not None else stats.por_dia
+    ruins = blocos_ruins if blocos_ruins is not None else stats.dias_ruins
+    blocos = _preparar_blocos(grupos)
+    pesos = _pesos_blocos(blocos, ruins, peso_stress)
+    return [_simular_uma_rodada(rng, params, stats, grupos, dist_freq, n_semanas, blocos, pesos)
+            for _ in range(n_simulacoes)]
 
 
 def expectancia_r_limite_inferior(
@@ -587,11 +611,13 @@ def executar(
     dist_freq = calibrar_frequencia(_todas_semanas_observadas(trades))
     exp_r, exp_r_lb = expectancia_r_limite_inferior(stats, n_bootstrap_expectancia, seed + 100)
     relatorios = []
-    for i, (cenario, peso_stress) in enumerate((
-        ("normal", 1.0),
-        ("estresse (2x frequencia de dias ruins)", 2.0),
+    for i, (cenario, peso_stress, por_bloco, blocos_ruins) in enumerate((
+        ("normal", 1.0, None, None),
+        ("estresse (2x frequencia de dias ruins)", 2.0, None, None),
+        ("estresse (bloco por token -- repique no mesmo token)", 2.0, stats.por_token, stats.tokens_ruins),
     )):
-        resultados = rodar_monte_carlo(params, stats, dist_freq, n_simulacoes, n_semanas, peso_stress, seed + i)
+        resultados = rodar_monte_carlo(params, stats, dist_freq, n_simulacoes, n_semanas, peso_stress, seed + i,
+                                       por_bloco=por_bloco, blocos_ruins=blocos_ruins)
         relatorios.append(montar_relatorio(cenario, stats, resultados, exp_r, exp_r_lb))
     return relatorios
 

@@ -53,6 +53,11 @@ POS_RUNNER_V1_COLUMNS = [
     "versao_config_v1", "perdido_offline",
     # instrumentacao de medicao (sem mudar regra nenhuma): colunas acrescentadas no FIM, nunca no meio.
     "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia",
+    # sequencial do sinal dentro do MESMO token (mint): 1o ENTRADA do mint = 1, 2o = 2, etc. -- agrupamento
+    # por token no /relatorio e na analise Monte Carlo (ver detector_v1.py: "uma decisao por zona; nova
+    # maxima acima de P_peak = nova onda" -- varias ENTRADA no mesmo mint, com a 1a ainda aberta, sao POR
+    # DESENHO, nao erro; ver docs/pos-runner-v1/INTERPRETACOES.md #11).
+    "token_signal_seq",
 ]
 POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
 # feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
@@ -169,6 +174,8 @@ CREATE TABLE IF NOT EXISTS pr1_signals (
   -- retorno_sol_dia e o retorno % do SOL/USD nas 24h antes de ts_fechamento (so leitura da cotacao JA
   -- cacheada, nunca uma chamada nova -- None quando a cobertura cacheada nao alcanca).
   ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
+  -- sequencial do sinal dentro do MESMO token (mint) -- ver POS_RUNNER_V1_COLUMNS acima.
+  token_signal_seq INTEGER,
   UNIQUE (chain, pool, tf, evento, ts_fechamento)
 );
 CREATE INDEX IF NOT EXISTS pr1_signals_open ON pr1_signals (status);
@@ -252,7 +259,7 @@ class Storage:
             # EXISTS acima nao alcanca tabela ja criada) -- ALTER TABLE idempotente, nunca muda dado existente.
             self._ensure_columns("pr1_signals", {
                 "ts_fechamento_candle": "INTEGER", "ts_alerta": "REAL", "ts_envio_telegram": "REAL",
-                "retorno_sol_dia": "REAL",
+                "retorno_sol_dia": "REAL", "token_signal_seq": "INTEGER",
             })
             self._ensure_columns("pr1_feedback", {
                 "preco_real": "REAL", "slippage_entrada_pct": "REAL", "slippage_saida_pct": "REAL",
@@ -887,6 +894,15 @@ class Storage:
         return self._one("SELECT * FROM pr1_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
                          (chain, pool, tf, evento, ts_fechamento))
 
+    def pr1_token_next_seq(self, mint: Optional[str]) -> int:
+        """Sequencial do sinal dentro do MESMO token (mint): 1 para o 1o ENTRADA desse mint, 2 para o 2o,
+        etc. -- varias ENTRADA no mesmo mint sao por desenho (zonas/ondas diferentes, ver detector_v1.py),
+        token_signal_seq so marca a ordem pra agrupar por token no /relatorio e na analise Monte Carlo."""
+        if not mint:
+            return 1
+        row = self._one("SELECT COUNT(*) AS n FROM pr1_signals WHERE mint=? AND evento='ENTRADA'", (mint,))
+        return (row["n"] if row else 0) + 1
+
     def pr1_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
         where, args = [], []
         for col, value in (("status", status), ("pool", pool), ("tf", tf)):
@@ -967,6 +983,7 @@ class Storage:
                 1 if r["status"] == "perdido_offline" else 0,
                 r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
                 _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
+                r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
             ])
         return out
 

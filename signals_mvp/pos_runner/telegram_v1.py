@@ -60,9 +60,16 @@ def entrada_text(chain_name: str, symbol: str, mc_usd: Optional[float], idade_h:
                  tamanho_usd: float, mint: str, liquidez_usd: Optional[float] = None,
                  mint_authority: Optional[str] = None, freeze_authority: Optional[str] = None) -> str:
     stop_pct = 100.0 * (stop / entry_price - 1.0) if entry_price else None
+    risco_pct = abs(stop_pct) if stop_pct is not None else None
+    # "mao sugerida por risco": sizing informativo so (NUNCA o campo que o paper usa, esse continua sendo
+    # `tamanho_usd`/gestao hibrida acima) -- US$2 de risco fixo dividido pela distancia entrada->stop em %,
+    # limitado a US$10 (o mesmo teto da mao fixa hibrida); risco_pct ausente/zero => s/d, nunca um numero
+    # inventado.
+    mao_risco_usd = min(10.0, 2.0 / (risco_pct / 100.0)) if risco_pct else None
     lines = [
         _head("🚨", "SINAL DE ENTRADA DETECTADO", chain_name, symbol),
-        f"Market Cap: {fmt_usd(mc_usd)}",
+        f"Pico (MC): {fmt_usd(mc_usd)}",
+        f"MC na entrada: {fmt_usd(entry_price)}",
         f"Idade: {idade_h:.1f}h | Janela: {'dentro da janela de ouro' if janela_ouro == 'janela_ouro' else 'fora da janela de ouro'}",
         f"Setup 1 (Range/Bear Trap) | Gatilho: {', '.join(gatilho) if gatilho else 's/d'}",
     ]
@@ -73,6 +80,11 @@ def entrada_text(chain_name: str, symbol: str, mc_usd: Optional[float], idade_h:
         + (f" ({stop_pct:+.1f}%)" if stop_pct is not None else "") + f" | TP1 {fmt_usd(tp1_price)}"
     )
     lines.append(f"Recomendação de tamanho (gestão híbrida): {fmt_usd(tamanho_usd)}")
+    lines.append(
+        "Mão sugerida por risco (informativo, não é o tamanho usado no paper): "
+        + (f"{fmt_usd(mao_risco_usd)} (mín(US$10, US$2÷risco%); risco {risco_pct:.1f}%)"
+           if mao_risco_usd is not None else "s/d")
+    )
     if liquidez_usd is not None:
         lines.append(f"Liquidez do pool: {fmt_usd(liquidez_usd)}")
     if mint_authority is not None or freeze_authority is not None:
@@ -197,10 +209,62 @@ def _tags_from_json(raw: Optional[str]) -> list[str]:
     return value if isinstance(value, list) else []
 
 
-def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_config_v1: str) -> str:
+def _risco_pct_do_sinal(entry_price: Optional[float], stop: Optional[float]) -> Optional[float]:
+    """Mesma formula de `entrada_text` (distancia entrada->stop em %) -- reaproveitada aqui so pra
+    relatorio, nunca recalculada com outro criterio."""
+    if not entry_price or stop is None:
+        return None
+    return 100.0 * (1.0 - stop / entry_price)
+
+
+def _risco_fora_da_faixa_por_gatilho(sinais: list[Any]) -> dict[str, int]:
+    """Item 4 do pedido de ajustes de alerta/medicao: entre os sinais marcados `risco_fora_da_faixa`,
+    quantos vieram de cada gatilho (um sinal pode ter mais de um gatilho; cada um soma)."""
+    out: dict[str, int] = {}
+    for s in sinais:
+        if "risco_fora_da_faixa" not in _tags_from_json(s["tags"]):
+            continue
+        for g in _tags_from_json(s["gatilho"]):
+            out[g] = out.get(g, 0) + 1
+    return out
+
+
+def _histograma_stop_pct(sinais: list[Any]) -> dict[str, int]:
+    """Item 4: histograma do % de stop (distancia entrada->stop) em faixas de 10 pontos percentuais."""
+    out: dict[str, int] = {}
+    for s in sinais:
+        risco = _risco_pct_do_sinal(s["entry_price"], s["stop"])
+        label = "s/d" if risco is None else f"{int(risco // 10) * 10}-{int(risco // 10) * 10 + 10}%"
+        out[label] = out.get(label, 0) + 1
+    return out
+
+
+def _contagem_lines(title: str, counts: dict[str, int]) -> list[str]:
+    if not counts:
+        return [f"{title}: sem dados"]
+
+    def _ordem(chave: str) -> tuple[int, int]:
+        if chave == "s/d":
+            return (1, 0)
+        try:
+            return (0, int(chave.split("-")[0]))
+        except ValueError:
+            return (0, 0)
+
+    out = [f"{title}:"]
+    for key in sorted(counts, key=_ordem):
+        out.append(f"  {key}: {counts[key]}")
+    return out
+
+
+def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_config_v1: str,
+                           sinais_semana: Optional[list[Any]] = None) -> str:
     """"Bons vs ruins" da semana (complemento FASE 3, item 3): contagem de votos 👍/👎 por gatilho, por
-    janela_ouro/fora_da_janela e por tag (`RELATORIO_TAGS`), mais o PnL paper do periodo -- `rows` ja vem
-    filtrada por `versao_config_v1` (nunca mistura versoes de config, mesma regra de `daily_summary_v1`)."""
+    janela_ouro/fora_da_janela, por tag (`RELATORIO_TAGS`) e por token, mais o PnL paper do periodo --
+    `rows` ja vem filtrada por `versao_config_v1` (nunca mistura versoes de config, mesma regra de
+    `daily_summary_v1`). `sinais_semana` (opcional, pedido de ajustes de alerta/medicao item 4) e TODOS os
+    ENTRADA da semana -- universo maior que `rows` (que so tem os com feedback do operador) -- usado so
+    para a quebra de risco_fora_da_faixa por gatilho e o histograma do % de stop."""
     bons = sum(1 for r in rows if r["voto"] == "bom")
     ruins = sum(1 for r in rows if r["voto"] == "ruim")
 
@@ -219,6 +283,8 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
     # item 3 da FASE 2 de medicao/UX: quebra por authority ativa vs revogada.
     por_mint_authority = _group(lambda r: [f"mint {r['sig_mint_authority'] or 'indisponivel'}"])
     por_freeze_authority = _group(lambda r: [f"freeze {r['sig_freeze_authority'] or 'indisponivel'}"])
+    # item 2 do pedido de ajustes de alerta/medicao: agrupamento por token (bons/ruins dos votos).
+    por_token = _group(lambda r: [r["symbol"] or "s/d"])
 
     def _lines(title: str, counts: dict[str, dict[str, int]]) -> list[str]:
         if not counts:
@@ -228,6 +294,7 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
             out.append(f"  {key}: 👍{c['bom']} 👎{c['ruim']}")
         return out
 
+    sinais_semana = sinais_semana or []
     pnl = "s/d" if pnl_pct is None else f"{pnl_pct:+.1f}%"
     lines = [
         "📊 RELATÓRIO SEMANAL — POS-RUNNER-V1 (bons vs ruins)",
@@ -237,5 +304,8 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
         *_lines("Por janela de ouro", por_janela),
         *_lines("Por tag", por_tag),
         *_lines("Por authority", {**por_mint_authority, **por_freeze_authority}),
+        *_lines("Por token", por_token),
+        *_contagem_lines("Risco fora da faixa por gatilho", _risco_fora_da_faixa_por_gatilho(sinais_semana)),
+        *_contagem_lines("Histograma do % de stop", _histograma_stop_pct(sinais_semana)),
     ]
     return "\n".join(lines)

@@ -173,3 +173,26 @@ efetivamente `False` quando a flag `--sem-v0` NÃO está ligada e o V1 está ati
 modo novo: é o V0 de sempre com a configuração de alertas zerada, gravando só em banco/CSV para a comparação
 pedida. `--sem-v0` desliga o V0 por completo (nem roda, nem grava) quando o operador quiser economizar
 orçamento de chamadas.
+
+## 11. Segunda ENTRADA no mesmo token (mint) com a primeira ainda aberta — por desenho, não erro
+
+**Pergunta do operador (pedido de ajustes de alerta/medição, item 2): é esperado o bot alertar uma 2ª
+ENTRADA no mesmo token enquanto a 1ª ainda está `aberto` em `pr1_signals`?**
+
+Sim, é por desenho — e já estava documentado em `detector_v1.py` (linha ~27): "Uma decisão (ENTRADA) por
+zona; depois dela a zona recomeça. Nova máxima acima de `P_peak` = nova onda." A chave `UNIQUE` de
+`pr1_signals` é `(chain, pool, tf, evento, ts_fechamento)` — um sinal por **decisão** (candle de
+fechamento), não um sinal por token. Depois de uma ENTRADA, a zona atual é descartada
+(`_new_zone(i + 1)`) e o detector volta a procurar fase RUNNER → FASE2 → zona madura outra vez; se o preço
+fizer uma nova máxima acima do `P_peak` anterior antes disso, começa uma **onda nova** (`_new_wave`), com
+seu próprio pico/queda/zona, inteiramente independente da onda que gerou a 1ª ENTRADA. Não há nenhum
+bloqueio "1 posição aberta por token" no detector — isso é responsabilidade da gestão de banca
+(`bankroll_v1.py`: `max_posicoes_abertas`, compartilhado entre TODOS os tokens, não por token), que decide
+se o trade entra ("pulado: limite") ou não, igual trataria 2 tokens diferentes.
+
+Em outras palavras: múltiplas ENTRADA simultaneamente abertas no mesmo mint não são um bug de
+deduplicação — são setups/wicks genuinamente diferentes (onda 1 e onda 2 do mesmo gráfico), cada um
+avaliado e simulado de forma independente, exatamente como o prompt pede para qualquer par
+`(pool, tf, zona)`. `token_signal_seq` (novo campo de instrumentação, mesmo pedido) só numera essa ordem
+(1º sinal do token = 1, 2º = 2, ...) para facilitar agrupar por token no `/relatorio` e na análise Monte
+Carlo — nunca muda a decisão de entrada/saída/tamanho.

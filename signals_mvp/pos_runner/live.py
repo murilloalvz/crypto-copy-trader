@@ -989,14 +989,19 @@ class PosRunnerLive:
                 self._send(text, self._keyboard_v1(row))
         elif ev.kind == "ONDA_INVALIDA":
             if self.storage.pr_alert_once(self._key_v1("x", pool, tf, ev.data.get("onda")), now):
-                text = telegram_v1.invalidado_text(self.chain_name, row["symbol"], str(ev.data.get("motivo", "")))
+                motivo = str(ev.data.get("motivo", ""))
+                text = telegram_v1.invalidado_text(self.chain_name, row["symbol"], motivo)
                 self._send(text, self._keyboard_v1(row))
+                queda_pct = ev.data.get("queda_pct")
+                # item 3 do pedido de ajustes de alerta/medicao: gravar a queda % MAXIMA (desde o pico da
+                # onda, igual ao campo que a V1 ja usa pra decidir a invalidacao -- nunca inventa outro
+                # numero) junto do motivo, nunca so o motivo sozinho; so medicao, nunca muda a decisao.
+                valor = motivo if queda_pct is None else f"{motivo} | queda_maxima={queda_pct:.1f}%"
                 self.storage.pr1_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "invalidado",
-                                              str(ev.data.get("motivo", "")), self.version_v1)
+                                              valor, self.version_v1)
                 # item 4 da FASE 2 de medicao/UX: contador SEPARADO, nunca alerta, so pra faixa de
                 # queda 90-96% -- diagnostico de quao perto do limiar atual (drop_max=90%) os
                 # candidatos descartados ficam; nao muda nem promete mudar o limiar em si.
-                queda_pct = ev.data.get("queda_pct")
                 if queda_pct is not None and 90.0 <= queda_pct < 96.0:
                     mc = ev.data.get("P_peak")
                     valor = f"MC={fmt_usd(mc) if mc is not None else 's/d'} queda={queda_pct:.1f}%"
@@ -1041,6 +1046,7 @@ class PosRunnerLive:
                 "liquidez_usd": info.get("liq_usd"), "ts_fechamento_candle": ts_fechamento,
                 "retorno_sol_dia": self._retorno_sol_dia_v1(ts_fechamento),
                 "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
+                "token_signal_seq": self.storage.pr1_token_next_seq(mint),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1161,7 +1167,12 @@ class PosRunnerLive:
         rows = self.storage.pr1_feedback_votes_since(since, now, self.version_v1)
         pnl_values = [r["sig_result_net"] for r in rows if r["sig_result_net"] is not None]
         pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
-        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1)
+        # item 4 do pedido de ajustes de alerta/medicao: quebra de risco_fora_da_faixa por gatilho e
+        # histograma do % de stop vem de TODOS os sinais ENTRADA da semana (nao so os com feedback do
+        # operador, que e um subconjunto bem menor) -- so leitura, nunca muda o que ja esta em pr1_signals.
+        sinais_semana = [s for s in self.storage.pr1_signals()
+                         if s["versao_config_v1"] == self.version_v1 and s["ts_fechamento"] >= since]
+        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1, sinais_semana)
 
     def send_relatorio_semanal_v1(self) -> None:
         self._send(self.relatorio_semanal_v1())
