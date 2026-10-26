@@ -1767,6 +1767,16 @@ class PosRunnerLive:
     def send_relatorio_semanal_v2(self) -> None:
         self._send(self.relatorio_semanal_v2())
 
+    # -- PEDIDO (PARTE 1 de 2) FASE 2c: /analise [v1|v2] (analise condicional pre-registrada) ---------------
+    def analise_texto(self, versao: str) -> str:
+        from ..analise import condicional
+
+        try:
+            rel = condicional.executar(self.storage, versao)
+        except condicional.PlanoAlteradoError as exc:
+            return str(exc)
+        return condicional.formatar_telegram(rel)
+
     def _usd_prefix(self, bars: list[Bar], tf: str, usd: UsdSeries) -> list[Bar]:
         """Candles ate o 1o sem cotacao/USD no fechamento (esse e os seguintes esperam: nunca convertidos no chute)."""
         step = tf_seconds(tf)

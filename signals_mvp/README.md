@@ -225,6 +225,23 @@ os sinais reais. Resumo diário por ajuste sai no Telegram no mesmo horário do 
 
 ---
 
+## POS-RUNNER-V1/V2 ("regras do professor") e análise condicional
+
+Estratégia separada (congelada, hash próprio por versão) rodando em paralelo ao v0/V0 acima — comandos,
+alertas e CSVs completos em `docs/pos-runner-v1/` (`INTERPRETACOES.md`, `PROTOCOLO_VALIDACAO.md`). Só o
+que é novo nesta revisão (trajetória pós-entrada + linha de base pareada, PAPER/leitura, zero chamada
+nova de API — usa só candles já em cache):
+
+- `SEM_EVIDENCIA=1` no `.env` desliga essa medição por completo (a V1/V2 continuam normais);
+- `/analise [v1|v2]` no Telegram roda a análise condicional pré-registrada
+  (`docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md`) — com menos de 30 sinais fechados distintos só
+  responde "amostra insuficiente (n/30)";
+- **o plano pré-registrado não pode ser editado depois que a 1ª análise rodar** — o bot trava o hash do
+  arquivo (`meta.plano_analise_hash`) e recusa rodar de novo se o texto mudar; uma interpretação nova
+  precisa de uma seção/versão nova, nunca reescrever a que já foi julgada.
+
+---
+
 ## Meta do dia (`meta.txt`)
 
 ```

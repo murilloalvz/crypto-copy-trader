@@ -230,6 +230,7 @@ class V1FeedbackHandlerTest(unittest.TestCase):
             relatorio_provider=lambda args: "RELATORIO SEMANAL",
             abertos_provider=lambda: "ABERTOS",
             fechados_provider=lambda n: f"FECHADOS:{n}",
+            analise_provider=lambda args: f"ANALISE:{args[0] if args else 'v1'}",
         )
         self.signal_id = self.env.storage.pr1_insert_signal({
             "chain": "solana", "pool": "poolA", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
@@ -308,9 +309,14 @@ class V1FeedbackHandlerTest(unittest.TestCase):
     def test_relatorio_command_calls_the_provider(self) -> None:
         self.assertEqual(self.handler.handle_command("/relatorio"), "RELATORIO SEMANAL")
 
+    def test_analise_command_calls_the_provider_with_the_default_and_explicit_versao(self) -> None:
+        self.assertEqual(self.handler.handle_command("/analise"), "ANALISE:v1")
+        self.assertEqual(self.handler.handle_command("/analise v2"), "ANALISE:v2")
+
     def test_help_mentions_the_new_v1_commands(self) -> None:
         help_text = self.handler.handle_command("/ajuda")
-        for token in ("/nota", "/relatorio", "/pulei", "👍 Bom", "/scam", "/abertos", "/fechados", "/exportar"):
+        for token in ("/nota", "/relatorio", "/pulei", "👍 Bom", "/scam", "/abertos", "/fechados", "/exportar",
+                      "/analise"):
             self.assertIn(token, help_text)
 
     def test_entrei_with_real_price_records_slippage_against_the_alert_entry(self) -> None:

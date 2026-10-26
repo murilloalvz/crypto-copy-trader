@@ -269,6 +269,16 @@ def _relatorio_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
     return "uso: /relatorio [v1|v2]"
 
 
+def _analise_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
+    """PEDIDO (PARTE 1 de 2) FASE 2c: "/analise [v1|v2]" -- mesma convencao do /relatorio. Nunca
+    mistura estatistica das 2 versoes; a recusa por amostra insuficiente/plano alterado vem do proprio
+    `analise_texto` (signals_mvp/analise/condicional.py)."""
+    versao = args[0].lower() if args else "v1"
+    if versao not in ("v1", "v2"):
+        return "uso: /analise [v1|v2]"
+    return pos_runner.analise_texto(versao)
+
+
 def make_dexpaprika_provider() -> Optional[Any]:
     """PEDIDO CONSOLIDADO FASE 1: `DEXPAPRIKA=0` desliga por completo (zero chamada); chave SO em
     `.env` (`DEXPAPRIKA_API_KEY`, opcional), NUNCA logada/impressa. Os outros ajustes (atraso de
@@ -438,6 +448,9 @@ class Worker:
                                   if engine.pos_runner is not None else "POS-RUNNER desligado"),
                 fechados_provider=(lambda n: engine.pos_runner.fechados_texto(n)
                                    if engine.pos_runner is not None else "POS-RUNNER desligado"),
+                # PEDIDO (PARTE 1 de 2) FASE 2c: /analise [v1|v2] -- analise condicional pre-registrada.
+                analise_provider=(lambda args: _analise_v1_ou_v2(engine.pos_runner, args)
+                                  if engine.pos_runner is not None else "POS-RUNNER desligado"),
             )
             try:
                 telegram.get_me()

@@ -1,0 +1,348 @@
+"""PEDIDO (PARTE 1 de 2) FASE 2c: analise condicional da baseline pareada (`pr_baseline`), seguindo
+`docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md` -- H1 (primaria/confirmatoria) e H2-H8
+(exploratorias, Holm-Bonferroni sobre as testadas). PAPER / so leitura; nunca escreve em pr1_signals/
+pr2_signals/pr_baseline/pr_trajetoria.
+
+O plano precisa estar registrado (hash do arquivo em `meta`) ANTES de qualquer analise -- a 1a chamada
+registra; chamadas seguintes recusam se o arquivo em disco mudou depois do registro (o plano nao pode
+ser editado no meio da coleta).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Optional, Sequence
+
+import numpy as np
+
+from ..config import Paths, make_paths
+from ..pos_runner.bankroll_v1 import _dia_utc
+from ..util import short_hash
+
+PLANO_PATH = Path(__file__).resolve().parents[2] / "docs" / "pos-runner-v1" / "PLANO_ANALISE_PREREGISTRADO.md"
+META_KEY_HASH = "plano_analise_hash"
+MIN_TOKENS_H1 = 30
+MIN_TOKENS_FUTILIDADE = 15
+LIMITE_FUTILIDADE_R = -0.5
+MIN_TOKENS_GRUPO = 10
+SEED_PADRAO = 20_261_026
+N_BOOTSTRAP_PADRAO = 10_000
+CONFIANCA_H1 = 0.90
+ALPHA_HOLM = 0.05
+
+
+class PlanoAlteradoError(RuntimeError):
+    """O plano pre-registrado em disco nao bate com o hash registrado -- a analise recusa rodar."""
+
+
+def hash_do_plano(path: Path = PLANO_PATH) -> str:
+    return short_hash(path.read_text(encoding="utf-8"))
+
+
+def garantir_plano_registrado(storage: Any, path: Path = PLANO_PATH) -> str:
+    """1a chamada registra o hash atual do arquivo; chamadas seguintes recusam (`PlanoAlteradoError`)
+    se o arquivo em disco mudou depois do registro."""
+    atual = hash_do_plano(path)
+    registrado = storage.get_meta(META_KEY_HASH)
+    if registrado is None:
+        storage.set_meta(META_KEY_HASH, atual)
+        return atual
+    if registrado != atual:
+        raise PlanoAlteradoError(
+            f"docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md mudou depois de registrado "
+            f"(registrado {registrado}, atual {atual}) -- o plano pre-registrado nao pode ser editado "
+            "no meio da coleta. Abra uma nova secao/versao em vez de reescrever o texto ja em vigor."
+        )
+    return atual
+
+
+# ---------------------------------------------------------------------------
+# carga
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SinalResolvido:
+    entry_id: int
+    mint: str
+    symbol: str
+    t_entrada: float
+    dif_pareada: float
+    gatilho: tuple[str, ...]
+    risco_pct: Optional[float]
+    liquidez_usd: Optional[float]
+    holders_tag: Optional[str]
+    tags: tuple[str, ...]
+    janela_ouro: Optional[str]
+
+    @property
+    def dia_utc(self) -> str:
+        return _dia_utc(self.t_entrada)
+
+
+def carregar_sinais_resolvidos(storage: Any, versao: str) -> list[SinalResolvido]:
+    """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
+    `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
+    `t_entrada` (pr_baseline nao guarda isso) e com pr1_signals/pr2_signals para os campos de grupo."""
+    out: list[SinalResolvido] = []
+    sinal_lookup = storage.pr1_signal if versao == "v1" else storage.pr2_signal
+    for b in storage.pr_baseline_resolvidas_com_dif(versao):
+        traj = storage.pr_trajetoria_get(versao, b["entry_id"])
+        sinal = sinal_lookup(b["entry_id"])
+        if traj is None or sinal is None or traj["t_entrada"] is None or not sinal["mint"]:
+            continue
+        entry_price, stop = sinal["entry_price"], sinal["stop"]
+        risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
+        out.append(SinalResolvido(
+            entry_id=b["entry_id"], mint=sinal["mint"], symbol=sinal["symbol"] or "",
+            t_entrada=traj["t_entrada"], dif_pareada=b["dif_pareada"],
+            gatilho=tuple(json.loads(sinal["gatilho"] or "[]")), risco_pct=risco_pct,
+            liquidez_usd=sinal["liquidez_usd"], holders_tag=sinal["holders_tag"],
+            tags=tuple(json.loads(sinal["tags"] or "[]")), janela_ouro=sinal["janela_ouro"],
+        ))
+    return out
+
+
+def n_tokens_distintos(sinais: Sequence[SinalResolvido]) -> int:
+    return len({s.mint for s in sinais})
+
+
+# ---------------------------------------------------------------------------
+# bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _blocos(sinais: Sequence[SinalResolvido], chave_fn: Callable[[SinalResolvido], str]) -> dict[str, list[float]]:
+    grupos: dict[str, list[float]] = defaultdict(list)
+    for s in sinais:
+        grupos[chave_fn(s)].append(s.dif_pareada)
+    return dict(grupos)
+
+
+def bootstrap_media_e_limite_inferior(
+    sinais: Sequence[SinalResolvido], chave_fn: Callable[[SinalResolvido], str],
+    n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO, confianca: float = CONFIANCA_H1,
+) -> tuple[float, float]:
+    """Media observada + limite inferior unilateral (bootstrap da media, em blocos de `chave_fn` --
+    dia ou token -- pra preservar a correlacao entre sinais do mesmo bloco). Mesmo metodo de
+    `analise.simulacao_bloco.expectancia_r_limite_inferior`, generalizado pra qualquer chave de bloco."""
+    grupos = _blocos(sinais, chave_fn)
+    chaves = sorted(grupos)
+    n = len(chaves)
+    if n == 0:
+        return 0.0, 0.0
+    rng = np.random.default_rng(seed)
+    medias = np.empty(n_bootstrap, dtype=float)
+    for i in range(n_bootstrap):
+        escolhidos = rng.integers(0, n, size=n)
+        valores = [v for idx in escolhidos for v in grupos[chaves[idx]]]
+        medias[i] = float(np.mean(valores)) if valores else 0.0
+    media_observada = float(np.mean([s.dif_pareada for s in sinais])) if sinais else 0.0
+    limite_inferior = float(np.percentile(medias, 100 * (1 - confianca)))
+    return media_observada, limite_inferior
+
+
+def bootstrap_p_valor_unilateral(
+    sinais: Sequence[SinalResolvido], n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO,
+) -> float:
+    """P(media bootstrap <= 0), em blocos por DIA (mesma unidade de correlacao do H1; usado pelas
+    sub-hipoteses exploratorias H2-H7)."""
+    grupos = _blocos(sinais, lambda s: s.dia_utc)
+    chaves = sorted(grupos)
+    n = len(chaves)
+    if n == 0:
+        return 1.0
+    rng = np.random.default_rng(seed)
+    medias = np.empty(n_bootstrap, dtype=float)
+    for i in range(n_bootstrap):
+        escolhidos = rng.integers(0, n, size=n)
+        valores = [v for idx in escolhidos for v in grupos[chaves[idx]]]
+        medias[i] = float(np.mean(valores)) if valores else 0.0
+    return float(np.mean(medias <= 0.0))
+
+
+def holm_bonferroni(p_valores: Sequence[float], alpha: float = ALPHA_HOLM) -> list[bool]:
+    """Step-down classico: ordena p-valores crescente, compara o i-esimo (rank 0-based) contra
+    alpha/(m-rank); para no 1o que falha (os seguintes, com p maior, tambem falham)."""
+    m = len(p_valores)
+    significativo = [False] * m
+    ordem = sorted(range(m), key=lambda i: p_valores[i])
+    for rank, idx in enumerate(ordem):
+        limiar = alpha / (m - rank)
+        if p_valores[idx] <= limiar:
+            significativo[idx] = True
+        else:
+            break
+    return significativo
+
+
+# ---------------------------------------------------------------------------
+# H1 + exploratorias
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResultadoH1:
+    status: str  # 'AMOSTRA_INSUFICIENTE' | 'FUTIL' | 'PASS' | 'FAIL'
+    n_tokens: int
+    media_dif_pareada: Optional[float] = None
+    limite_inferior_dia: Optional[float] = None
+    limite_inferior_token: Optional[float] = None
+
+
+def rodar_h1(sinais: Sequence[SinalResolvido]) -> ResultadoH1:
+    n = n_tokens_distintos(sinais)
+    if n < MIN_TOKENS_FUTILIDADE:
+        return ResultadoH1("AMOSTRA_INSUFICIENTE", n)
+    media_bruta = float(np.mean([s.dif_pareada for s in sinais])) if sinais else 0.0
+    if n < MIN_TOKENS_H1:
+        if media_bruta < LIMITE_FUTILIDADE_R:
+            return ResultadoH1("FUTIL", n, media_dif_pareada=media_bruta)
+        return ResultadoH1("AMOSTRA_INSUFICIENTE", n, media_dif_pareada=media_bruta)
+    if media_bruta < LIMITE_FUTILIDADE_R:
+        return ResultadoH1("FUTIL", n, media_dif_pareada=media_bruta)
+    media_dia, lim_dia = bootstrap_media_e_limite_inferior(sinais, lambda s: s.dia_utc)
+    _media_token, lim_token = bootstrap_media_e_limite_inferior(sinais, lambda s: s.mint)
+    status = "PASS" if (lim_dia > 0 and lim_token > 0) else "FAIL"
+    return ResultadoH1(status, n, media_dia, lim_dia, lim_token)
+
+
+@dataclass(frozen=True)
+class GrupoExploratorio:
+    hipotese: str
+    grupo: str
+    n_tokens: int
+    media_dif_pareada: float
+    p_valor: float
+    significativo_holm: bool = False
+
+
+def _grupos_h2_h7(sinais: Sequence[SinalResolvido]) -> list[tuple[str, str, list[SinalResolvido]]]:
+    """[(hipotese, nome_do_grupo, sinais_do_grupo), ...] -- so a particao, sem calcular nada ainda."""
+    mediana_liq = float(np.median([s.liquidez_usd for s in sinais if s.liquidez_usd is not None])) \
+        if any(s.liquidez_usd is not None for s in sinais) else None
+    out: list[tuple[str, str, list[SinalResolvido]]] = []
+    for gatilho in ("reacao_suporte", "power_candle_rompimento", "rompimento_volume"):
+        out.append(("H2 tipo de gatilho", gatilho, [s for s in sinais if gatilho in s.gatilho]))
+    out.append(("H3 risco", "risco < 25%", [s for s in sinais if s.risco_pct is not None and s.risco_pct < 25.0]))
+    out.append(("H3 risco", "risco >= 25%", [s for s in sinais if s.risco_pct is not None and s.risco_pct >= 25.0]))
+    if mediana_liq is not None:
+        out.append(("H4 liquidez", "acima da mediana",
+                    [s for s in sinais if s.liquidez_usd is not None and s.liquidez_usd >= mediana_liq]))
+        out.append(("H4 liquidez", "abaixo da mediana",
+                    [s for s in sinais if s.liquidez_usd is not None and s.liquidez_usd < mediana_liq]))
+    out.append(("H5 holder concentrado", "sim", [s for s in sinais if s.holders_tag == "HOLDER_CONCENTRADO"]))
+    out.append(("H5 holder concentrado", "nao", [s for s in sinais if s.holders_tag is None]))
+    out.append(("H6 base_ge_2d", "sim", [s for s in sinais if "base_ge_2d" in s.tags]))
+    out.append(("H6 base_ge_2d", "nao", [s for s in sinais if "base_ge_2d" not in s.tags]))
+    out.append(("H7 janela de ouro", "janela_ouro", [s for s in sinais if s.janela_ouro == "janela_ouro"]))
+    out.append(("H7 janela de ouro", "fora_da_janela", [s for s in sinais if s.janela_ouro == "fora_da_janela"]))
+    return out
+
+
+def rodar_exploratorias(sinais: Sequence[SinalResolvido]) -> list[GrupoExploratorio]:
+    """H2-H7: so grupos com n >= 10 tokens distintos entram; Holm aplicado sobre a familia completa.
+    H8 fica de fora (carteiras_pro_presentes sempre NULL nesta entrega -- ver INTERPRETACOES.md #12e)."""
+    candidatos = []
+    for hipotese, grupo, membros in _grupos_h2_h7(sinais):
+        n = n_tokens_distintos(membros)
+        if n < MIN_TOKENS_GRUPO:
+            continue
+        media = float(np.mean([s.dif_pareada for s in membros]))
+        p = bootstrap_p_valor_unilateral(membros)
+        candidatos.append(GrupoExploratorio(hipotese, grupo, n, media, p))
+    if not candidatos:
+        return []
+    significativos = holm_bonferroni([c.p_valor for c in candidatos])
+    return [GrupoExploratorio(c.hipotese, c.grupo, c.n_tokens, c.media_dif_pareada, c.p_valor, sig)
+            for c, sig in zip(candidatos, significativos)]
+
+
+# ---------------------------------------------------------------------------
+# relatorio
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RelatorioCondicional:
+    versao: str
+    h1: ResultadoH1
+    exploratorias: list[GrupoExploratorio] = field(default_factory=list)
+    h8_status: str = "nao_testada"
+
+
+def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
+    garantir_plano_registrado(storage, plano_path)
+    sinais = carregar_sinais_resolvidos(storage, versao)
+    h1 = rodar_h1(sinais)
+    exploratorias = rodar_exploratorias(sinais) if h1.status in ("PASS", "FAIL") else []
+    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias)
+
+
+def formatar_markdown(rel: RelatorioCondicional) -> str:
+    linhas = [f"# Análise condicional — POS-RUNNER-{rel.versao.upper()}", ""]
+    linhas.append(f"## H1 (primária): {rel.h1.status}")
+    linhas.append(f"n (tokens distintos): {rel.h1.n_tokens}")
+    if rel.h1.media_dif_pareada is not None:
+        linhas.append(f"média de `dif_pareada`: {rel.h1.media_dif_pareada:+.3f} R")
+    if rel.h1.limite_inferior_dia is not None:
+        linhas.append(f"limite inferior 90% (bloco por dia): {rel.h1.limite_inferior_dia:+.3f} R")
+    if rel.h1.limite_inferior_token is not None:
+        linhas.append(f"limite inferior 90% (bloco por token): {rel.h1.limite_inferior_token:+.3f} R")
+    linhas.append("")
+    linhas.append("## H2–H8 (exploratórias, Holm sobre as testadas)")
+    if not rel.exploratorias:
+        linhas.append("(nenhum grupo com n >= 10 tokens distintos ainda, ou H1 não rodou)")
+    for g in rel.exploratorias:
+        marca = "**candidato (Holm)**" if g.significativo_holm else "não significativo"
+        linhas.append(f"- {g.hipotese} / {g.grupo}: n={g.n_tokens}, média={g.media_dif_pareada:+.3f} R, "
+                      f"p={g.p_valor:.4f} -> {marca}")
+    linhas.append(f"- H8 (carteiras_pro_presentes): {rel.h8_status} (coluna NULL nesta entrega)")
+    return "\n".join(linhas)
+
+
+def formatar_telegram(rel: RelatorioCondicional) -> str:
+    if rel.h1.status == "AMOSTRA_INSUFICIENTE":
+        return f"amostra insuficiente ({rel.h1.n_tokens}/{MIN_TOKENS_H1})"
+    linhas = [f"📐 ANÁLISE CONDICIONAL — {rel.versao.upper()} | H1: {rel.h1.status} (n={rel.h1.n_tokens})"]
+    if rel.h1.media_dif_pareada is not None:
+        linhas.append(f"dif_pareada médio: {rel.h1.media_dif_pareada:+.2f} R")
+    candidatos = [g for g in rel.exploratorias if g.significativo_holm]
+    if candidatos:
+        linhas.append("Candidatos (Holm): " + ", ".join(f"{g.hipotese}/{g.grupo}" for g in candidatos))
+    else:
+        linhas.append("Sem candidato exploratório significativo (Holm) ainda.")
+    return "\n".join(linhas)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Analise condicional da baseline pareada (PAPER / so leitura).")
+    parser.add_argument("--versao", choices=("v1", "v2"), default="v1")
+    args = parser.parse_args(argv)
+    from ..storage import Storage
+
+    paths: Paths = make_paths()
+    storage = Storage(paths)
+    try:
+        rel = executar(storage, args.versao)
+    except PlanoAlteradoError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        storage.close()
+    print(formatar_markdown(rel))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

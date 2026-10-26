@@ -155,5 +155,23 @@ class BaselineIntegrationTests(unittest.TestCase):
         self.assertEqual([c["idx"] for c in baseline1], [c["idx"] for c in baseline2])
 
 
+class AnaliseTextoTests(unittest.TestCase):
+    """PEDIDO (PARTE 1 de 2) FASE 2c: PosRunnerLive.analise_texto (reusado pelo /analise do Telegram)."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_reports_amostra_insuficiente_before_any_resolved_baseline(self) -> None:
+        texto = self.h.live.analise_texto("v1")
+        self.assertEqual(texto, "amostra insuficiente (0/30)")
+
+    def test_v1_and_v2_are_reported_independently(self) -> None:
+        self.assertEqual(self.h.live.analise_texto("v1"), "amostra insuficiente (0/30)")
+        self.assertEqual(self.h.live.analise_texto("v2"), "amostra insuficiente (0/30)")
+
+
 if __name__ == "__main__":
     unittest.main()

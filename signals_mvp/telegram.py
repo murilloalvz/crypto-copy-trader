@@ -189,6 +189,8 @@ HELP_TEXT = (
     "/abertos - posicoes paper abertas (V1 e V2), com R nao realizado\n"
     "/fechados [n] - ultimos n trades fechados (padrao 10), com R realizado e motivo da saida\n"
     "/exportar - manda um .zip com sinais, trades, feedback e divergencias de candle (sem segredos)\n"
+    "/analise [v1|v2] - analise condicional pre-registrada da baseline pareada (H1); "
+    "'amostra insuficiente' com menos de 30 sinais fechados\n"
     "Os botoes 👍 Bom / 👎 Ruim / 📝 Nota do alerta da V1 registram o voto/nota; o 📝 pede a nota em resposta."
 )
 
@@ -232,6 +234,7 @@ class OperatorHandler:
         relatorio_provider: Callable[[list[str]], str] = lambda args: "sem relatorio",
         abertos_provider: Callable[[], str] = lambda: "sem posicoes",
         fechados_provider: Callable[[int], str] = lambda n: "sem fechados",
+        analise_provider: Callable[[list[str]], str] = lambda args: "sem analise",
     ):
         self.client = client
         self.storage = storage
@@ -242,6 +245,7 @@ class OperatorHandler:
         self.relatorio_provider = relatorio_provider
         self.abertos_provider = abertos_provider
         self.fechados_provider = fechados_provider
+        self.analise_provider = analise_provider
         self._warned_chats: set[str] = set()
 
     # -- roteamento ------------------------------------------------------------------------
@@ -311,6 +315,10 @@ class OperatorHandler:
             return self.fechados_provider(n)
         if command == "/exportar":
             return self._exportar_command()
+        if command == "/analise":
+            # PEDIDO (PARTE 1 de 2) FASE 2c: "/analise [v1|v2]" -- mesma convencao de "/relatorio",
+            # padrao v1, nunca mistura estatistica das 2 versoes.
+            return self.analise_provider(args)
         if command in ("/entrei", "/sai"):
             # FASE 3 da V1 (feedback no Telegram): MESMA grafia de comando do V0, formato diferente
             # (<pool|ticker> [preco], nao <contrato> <valor> [chain]) -- tenta resolver contra um sinal da
