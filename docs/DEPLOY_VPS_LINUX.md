@@ -265,3 +265,112 @@ Telegram por **ocorrência** (nunca spam — só repete depois de normalizar e p
 Ambos têm padrão seguro e são ajustáveis por `.env` (`POS_RUNNER_429_TETO_PCT`,
 `POS_RUNNER_429_JANELA_H`, `POS_RUNNER_FILA_ATRASO_MIN` — ver `signals_mvp/.env.example`); não
 precisam de nenhum serviço externo.
+
+## 11. Migração: do `tmux` manual para o `systemd` (PEDIDO ADICIONAL FASE 7)
+
+Roteiro para quem já está operando o bot manualmente no `tmux` (seção 5a) e quer passar para o
+`systemd` (seção 5b — reinício automático em queda, sobrevive a reboot) **sem perder nenhum estado**
+e **sem nunca ter 2 instâncias escrevendo no mesmo banco ao mesmo tempo**. Faça nesta ordem, exatamente:
+
+### Passo 1 — Confirme que o bot do `tmux` está realmente rodando
+
+```bash
+tmux list-sessions                 # confirma o nome da sessao (ex. "signals-mvp")
+tmux attach -t signals-mvp         # entra na sessao pra ver o log ao vivo (Ctrl+B depois D pra sair sem matar)
+```
+
+### Passo 2 — Pare o bot do `tmux` ANTES de ligar o serviço
+
+**Nunca** pule este passo: o bot tem uma trava de instância única (seção 6) que *recusa* uma 2ª
+instância, mas a forma limpa de trocar de "modo de operação" é sempre parar a instância antiga
+primeiro — assim o banco fecha de forma limpa (checkpoint do WAL) e os CSVs são regravados antes do
+`systemd` assumir.
+
+```bash
+# dentro da sessao tmux (ou de qualquer shell, o parar.sh so manda o sinal de parada):
+sudo -iu signalsbot bash -lc '/opt/crypto-copy-trader/signals_mvp/scripts/linux/parar.sh'
+```
+
+Espere a sessão `tmux` mostrar a linha `parando... (gravando CSVs)` e o processo terminar (alguns
+segundos). Só então encerre a sessão `tmux` em si (opcional — ela pode continuar aberta vazia, sem
+o bot dentro, sem problema nenhum):
+
+```bash
+tmux kill-session -t signals-mvp   # opcional: so fecha a sessao, o bot ja parou no passo acima
+```
+
+### Passo 3 — Confirme que NENHUM processo do bot ficou rodando
+
+```bash
+pgrep -af "signals_mvp"            # tem que vir vazio (ou so o grep de si mesmo)
+cat /opt/crypto-copy-trader/signals_mvp/dados/supervisor.pid 2>/dev/null   # se existir, confira se o PID ainda existe (ps -p <pid>)
+```
+
+Se `pgrep` ainda mostrar um processo Python do `signals_mvp`, pare-o (`kill <pid>`, nunca `kill -9`
+de primeira — dê uns segundos para o `SIGTERM` salvar o estado) antes de seguir. O arquivo de lock
+do banco (`estado.sqlite.lock`) e o `supervisor.pid` são liberados automaticamente pelo sistema
+operacional quando o processo termina — não precisam ser apagados manualmente.
+
+### Passo 4 — Instale e ligue o serviço `systemd`
+
+Exatamente os comandos da seção 5b (repetidos aqui para o roteiro ficar completo):
+
+```bash
+# edite User=, WorkingDirectory= e ExecStart= no arquivo se o caminho do clone for diferente
+sudo cp signals_mvp/scripts/linux/signals-mvp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now signals-mvp
+```
+
+O `EnvironmentFile=` do serviço aponta para o MESMO `signals_mvp/.env` que o `tmux` já usava —
+nenhuma variável de ambiente (`TELEGRAM_BOT_TOKEN`, `DEXPAPRIKA_API_KEY`, `HEALTHCHECKS_URL` etc.)
+precisa ser reconfigurada. O `WorkingDirectory=` também é o mesmo clone, então o bot abre o MESMO
+`signals_mvp/dados/estado.sqlite` de antes — ele continua exatamente de onde parou (posições
+abertas, config versionada, heartbeat), nunca começa do zero.
+
+### Passo 5 — Confirme que ligou e que é a ÚNICA instância
+
+```bash
+sudo systemctl status signals-mvp          # "active (running)"
+sudo journalctl -u signals-mvp -n 50       # ultimas linhas: confirma o "Bot de sinais v0 ligado | ..."
+pgrep -af "signals_mvp"                    # agora so DEVE aparecer o processo do systemd (1 so)
+```
+
+Se por engano uma 2ª instância tentar subir com o MESMO `TELEGRAM_BOT_TOKEN` (ex.: alguém reabriu o
+`tmux` antigo sem querer), o log mostra o conflito claro `conflito 409: outra instancia deste bot...`
+(seção 5b) — isso é a trava funcionando, não um bug: pare a instância extra.
+
+### Passo 6 — Acompanhar e confirmar reinício sem perda de estado
+
+```bash
+sudo journalctl -u signals-mvp -f          # ao vivo, equivalente ao "tmux attach" de antes
+```
+
+Para provar que um reinício do serviço não perde nada (o `Restart=always` já cobre queda
+inesperada; isto aqui é um teste deliberado):
+
+```bash
+sudo systemctl restart signals-mvp
+sudo journalctl -u signals-mvp -n 20       # confirma que "retomou" (mesma versao de config/meta,
+                                            # mesmas posicoes abertas se houver) em vez de recomeçar
+```
+
+O estado nunca depende do processo: fica todo no SQLite (`dados/estado.sqlite`, modo WAL) mais os
+CSVs regenerados a partir dele — um restart (`systemctl restart`) ou uma queda seguida de
+`Restart=always` sempre retomam do banco, nunca duplicam sinal nem perdem posição aberta.
+
+### SELinux
+
+Nada de especial a configurar: o `systemd` não precisa de nenhuma porta nem de nenhum contexto
+SELinux customizado — o bot só faz chamadas HTTPS de saída e lê/escreve dentro da própria pasta
+(`dados/`, `logs/`, `backups/`, todas listadas em `ReadWritePaths=` do `.service`, dentro de
+`WorkingDirectory=`). Mantenha o SELinux em `enforcing` (padrão do Oracle Linux 9 — ver seção 9); se
+algo falhar de forma estranha depois da migração, confira `sudo ausearch -m avc -ts recent` antes de
+suspeitar do SELinux.
+
+### Desfazer (voltar para o `tmux`)
+
+```bash
+sudo systemctl disable --now signals-mvp
+# so entao suba de novo no tmux (secao 5a) -- nunca os dois ligados ao mesmo tempo
+```
