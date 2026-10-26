@@ -15,6 +15,7 @@ from typing import Any, Optional
 from .config import PACKAGE_DIR, Config, ConfigError, Paths, load_config
 from .engine import Engine
 from .geckoterminal import GtClient
+from . import healthchecks
 from .goplus import GoPlusClient
 from .http import ApiError, HttpClient, RateLimiter
 from .logging_setup import setup_logging
@@ -340,7 +341,8 @@ class Worker:
         load_env(self.paths.env)
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-        setup_logging(self.paths, secrets=[token], debug=bool(os.environ.get("SIGNALS_MVP_DEBUG")))
+        healthchecks_url = os.environ.get("HEALTHCHECKS_URL", "").strip() or None
+        setup_logging(self.paths, secrets=[token, healthchecks_url], debug=bool(os.environ.get("SIGNALS_MVP_DEBUG")))
         try:
             cfg = load_config(self.paths.config)
         except ConfigError as exc:
@@ -413,6 +415,9 @@ class Worker:
         console.info("Bot de sinais v0 ligado | config %s | meta %s | chains %s | PAPER/somente leitura",
                      cfg.version, meta.version, engine.chains_status_text())
         console.info("CSVs em %s | log em %s | Ctrl+C ou 'parar' para sair", self.paths.dados, self.paths.logs / "signals_mvp.log")
+        if healthchecks_url:
+            console.info("Healthchecks: dead man's switch ligado (ping a cada ciclo bem sucedido)")
+        healthchecks.ping(healthchecks_url, "start")
 
         while not self.stop_requested():
             cycle_started = time.monotonic()
@@ -425,8 +430,10 @@ class Worker:
                 p50 = sorted(engine.latencies)[len(engine.latencies) // 2] if engine.latencies else None
                 console.info("ciclo %d (%.0fs) | %s", engine.cycle_count, stats.duration_s, stats.line(p50))
                 engine.maybe_send_daily_summary()
+                healthchecks.ping(healthchecks_url, "ok")
             except Exception:  # noqa: BLE001 - o worker nao morre por erro de ciclo
                 log.exception("erro no loop principal")
+                healthchecks.ping(healthchecks_url, "fail")
                 self.stop.wait(5)
             heartbeat.cycle = engine.cycle_count
             heartbeat.state = "dormindo"

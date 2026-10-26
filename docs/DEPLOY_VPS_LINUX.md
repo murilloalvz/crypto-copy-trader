@@ -172,3 +172,44 @@ free -h   # confirma 2G de swap
 - **firewalld**: **não abra nenhuma porta**. O bot só faz conexões de SAÍDA (GeckoTerminal,
   GoPlus, RPC Solana, API do Telegram) — nunca escuta nada. `sudo firewall-cmd --list-all` deve
   continuar sem nenhuma porta aberta para este serviço.
+
+## 10. Monitoramento (dead man's switch — PEDIDO CONSOLIDADO FASE 3)
+
+`Restart=always` do `systemd` cobre o processo cair e voltar sozinho — mas não avisa se, por
+exemplo, a VM inteira cair, ficar sem rede, ou o processo ficar "preso" sem crashar. Um dead man's
+switch externo (Healthchecks.io, grátis) cobre esse caso: o bot manda um ping HTTP a cada ciclo
+bem-sucedido; se os pings pararem de chegar por tempo demais, o Healthchecks.io avisa — mesmo que
+o bot/VM tenha sumido por completo e não consiga avisar ele mesmo.
+
+### Criar o check grátis
+
+1. Crie uma conta grátis em <https://healthchecks.io> (o plano grátis cobre esse uso tranquilo).
+2. "Add Check" → dê um nome (ex. "signals-mvp POS-RUNNER") → período esperado (ex. "a cada 5
+   minutos", de acordo com `ciclo.intervalo_s` do `config.yaml`) e um "Grace Time" generoso (ex.
+   10-15 min, para não disparar falso-alarme num ciclo lento).
+3. Copie a "Ping URL" que ele mostra (algo como `https://hc-ping.com/<uuid>`).
+
+### Ligar no bot
+
+```bash
+echo "HEALTHCHECKS_URL=https://hc-ping.com/<uuid-que-voce-copiou>" >> signals_mvp/.env
+sudo systemctl restart signals-mvp   # (ou reinicie o tmux, se nao estiver usando systemd)
+```
+
+Sem essa linha no `.env`, o bot não manda nenhum ping (comportamento padrão, zero chamada extra).
+A URL **nunca aparece em log** (mesma trava do `TELEGRAM_BOT_TOKEN`) — mesmo assim, trate-a como
+segredo: quem a tiver pode mandar pings falsos e mascarar uma queda real.
+
+O bot manda:
+- um ping "start" assim que liga;
+- um ping normal ("ok") depois de cada ciclo que terminar sem erro;
+- um ping "fail" se o loop principal cair num erro grave (o processo continua tentando se
+  recuperar — o ping "fail" é só o aviso).
+
+### Ligar o aviso no Telegram (ou e-mail)
+
+No painel do check, em "Integrations", o Healthchecks.io já tem uma integração nativa de
+**Telegram** (não precisa escrever nada): conecte sua conta/bot do Telegram pela integração deles
+e escolha o chat que deve receber o aviso — pode ser o MESMO bot/chat que já recebe os alertas do
+`signals_mvp`, ou outro separado, à sua escolha. A partir daí, qualquer atraso além do "Grace
+Time" manda uma mensagem automática, sem precisar manter nenhum servidor de webhook seu.
