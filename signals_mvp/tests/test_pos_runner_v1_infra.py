@@ -182,6 +182,7 @@ class Pr1InstrumentacaoMigrationTests(unittest.TestCase):
             row = storage.pr1_signal_by_key("solana", "poolOLD", "1h", "ENTRADA", 500)
             self.assertIsNotNone(row, "o sinal antigo tem que sobreviver a migracao")
             self.assertIsNone(row["ts_fechamento_candle"])   # coluna nova, dado antigo fica None (nunca inventado)
+            self.assertEqual(row["fonte_candle"], "gt")  # coluna nova NOT NULL DEFAULT 'gt' (PEDIDO FASE 1)
             storage.pr1_update_signal(row["id"], ts_fechamento_candle=500, ts_alerta=600.0)
             row2 = storage.pr1_signal(row["id"])
             self.assertEqual(row2["ts_fechamento_candle"], 500)

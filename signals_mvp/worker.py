@@ -206,18 +206,42 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
         return None
     chain = cfg.raw["chains"]["solana"]
     rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=6)
+    dexpaprika = make_dexpaprika_provider()
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
-                         chain_name=chain["nome"])
+                         chain_name=chain["nome"], dexpaprika=dexpaprika)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     _check_fase2_capabilities(http, telegram, paths)
     verifier = LineageVerifier(storage, rpc)
     threading.Thread(target=verifier.run, args=(stop,), daemon=True, name="pos-runner-linhagem").start()
-    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | %s chamadas/ciclo | RPC: %s",
+    dp_status = "desligado"
+    if dexpaprika is not None:
+        dp_status = "com chave" if os.environ.get("DEXPAPRIKA_API_KEY", "").strip() else "sem chave (keyless)"
+    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | %s chamadas/ciclo | RPC: %s | DexPaprika: %s",
                  "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
                  params.version, live.status, " [V0 DESLIGADO: POS_RUNNER_SEM_V0]" if sem_v0 else "",
-                 live.version_v1, settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints))
+                 live.version_v1, settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints), dp_status)
     return live
+
+
+def make_dexpaprika_provider() -> Optional[Any]:
+    """PEDIDO CONSOLIDADO FASE 1: `DEXPAPRIKA=0` desliga por completo (zero chamada); chave SO em
+    `.env` (`DEXPAPRIKA_API_KEY`, opcional), NUNCA logada/impressa. Os outros ajustes (atraso de
+    seguranca, teto de creditos, tolerancia, amostra da conferencia cruzada) tem padrao seguro e so se
+    mudam por env, igual ao resto do POS-RUNNER (`POS_RUNNER_RPC_PER_MIN` etc.)."""
+    if os.environ.get("DEXPAPRIKA", "1").strip() == "0":
+        return None
+    from .pos_runner.dexpaprika_v1 import make_provider
+
+    api_key = os.environ.get("DEXPAPRIKA_API_KEY", "").strip() or None
+    per_min = os.environ.get("DEXPAPRIKA_REQ_POR_MIN")
+    return make_provider(
+        api_key, habilitado=True, per_min=float(per_min) if per_min else None,
+        atraso_min_s=float(os.environ.get("DEXPAPRIKA_ATRASO_MIN_S", "120")),
+        creditos_teto_pct=float(os.environ.get("DEXPAPRIKA_CREDITOS_TETO_PCT", "0.8")),
+        tolerancia_pct=float(os.environ.get("DEXPAPRIKA_TOLERANCIA_PCT", "1.0")),
+        amostra_cada_n=int(os.environ.get("DEXPAPRIKA_AMOSTRA_CADA_N", "5")),
+    )
 
 
 CLOCK_SKEW_WARN_S = 10.0

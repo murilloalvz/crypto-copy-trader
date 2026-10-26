@@ -47,6 +47,7 @@ from .chain_adapter import SolanaAdapter
 from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .detector_v1 import DetectorV1, EventV1
+from .dexpaprika_v1 import DexPaprikaProvider
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
 from .lineage import creation_time
 from .params import Params, is_preregistered
@@ -501,6 +502,7 @@ class PosRunnerLive:
         sem_v0: bool = False,
         terminal: str = "axiom",
         chain_name: str = "Solana",
+        dexpaprika: Optional[DexPaprikaProvider] = None,
     ):
         self.settings = settings
         self.params = params
@@ -557,6 +559,9 @@ class PosRunnerLive:
         self._heartbeat_429 = 0
         self._heartbeat_window_start: Optional[float] = None
         self._heartbeat_sent_at: float = 0.0
+        # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): None = recurso inteiro desligado, zero chamada extra.
+        self.dexpaprika = dexpaprika
+        self._fonte_candle_atual = "gt"   # lido por `_entry_v1` ao montar o sinal (nunca persiste entre chamadas)
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -853,6 +858,16 @@ class PosRunnerLive:
             log.warning("POS-RUNNER: candles de %s %s falharam (%s)", row["symbol"], tf, exc)
             if exc.kind == "not_found" and st["erros"] >= 3:
                 self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="pool nao existe mais no GT (404)")
+            # PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3a: so quando o GT falhou de um jeito
+            # retomavel (timeout/network/5xx -- nunca 404/400); nunca levanta, nunca substitui o GT na
+            # proxima tentativa normal (o `_schedule`/retry acima continua igual, isto e so um extra).
+            if self.dexpaprika is not None and (exc.kind in ("timeout", "network")
+                                                or (exc.kind == "http" and (exc.status or 0) >= 500)):
+                try:
+                    if self._refresh_fallback_dexpaprika(self.storage.pr_pool(row["pool"]), tf, now):
+                        log.info("POS-RUNNER: fallback DexPaprika cobriu %s %s enquanto o GT falhava", row["symbol"], tf)
+                except Exception:  # noqa: BLE001 - o fallback e so um extra, nunca pode piorar o ciclo
+                    log.exception("POS-RUNNER: fallback DexPaprika falhou em %s %s", row["symbol"], tf)
         except Exception:  # noqa: BLE001 - um pool com problema nunca trava os outros
             out["erros"] += 1
             st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
@@ -967,12 +982,36 @@ class PosRunnerLive:
             kb = telegram_v1.with_feedback(kb, signal_id)
         return kb
 
+    def _conferencia_cruzada_dexpaprika(self, row: Any, tf: str, ev: EventV1) -> None:
+        """PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: so log, nunca influencia a decisao. O candle GT
+        comparado e o RAW (token, pre-conversao de MC) da MESMA janela ja usada nesta mesma rodada -- a
+        leitura do cache de disco do `OhlcvStore` nao gasta chamada nova (mesma chave pool/tf/currency/
+        side ja coberta)."""
+        if self.dexpaprika is None or not self.dexpaprika.deve_conferir():
+            return
+        try:
+            info = json.loads(row["info"] or "{}")
+            step = tf_seconds(tf)
+            raw = self.ohlcv.history(row["pool"], tf, ev.ts, ev.ts + step, currency="token", side=info.get("side", "base"))
+            candle_gt = next((b for b in raw if b.ts == ev.ts), None)
+            if candle_gt is None:
+                return
+            divergencias = self.dexpaprika.conferir(self.ctx.gt_network, row["pool"], tf, candle_gt)
+            for d in divergencias:
+                self.storage.pr1_dexpaprika_divergencia_insert(
+                    self.clock(), "solana", row["pool"], row["mint"], row["symbol"], tf, int(candle_gt.ts),
+                    d.campo, d.valor_gt, d.valor_dexpaprika, d.diff_pct, self.version_v1)
+        except Exception:  # noqa: BLE001 - conferencia e so log, nunca pode travar o ciclo
+            log.exception("POS-RUNNER: conferencia cruzada DexPaprika falhou em %s %s", row["symbol"], tf)
+
     def _on_event_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool = row["pool"]
         tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
                    and self.version_v1_start is not None and ev.decision_ts >= self.version_v1_start)
         if not tracked:
             return
+        if ev.kind in ("WATCHLIST", "ENTRADA"):
+            self._conferencia_cruzada_dexpaprika(row, tf, ev)
         if ev.kind == "ENTRADA":
             self._entry_v1(row, tf, det, ev, now)
             return
@@ -1047,6 +1086,7 @@ class PosRunnerLive:
                 "retorno_sol_dia": self._retorno_sol_dia_v1(ts_fechamento),
                 "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
                 "token_signal_seq": self.storage.pr1_token_next_seq(mint),
+                "fonte_candle": self._fonte_candle_atual,
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1152,9 +1192,12 @@ class PosRunnerLive:
             pnl = sum(liq) / len(liq)
         version_ts = self.version_v1_start or now
         uptime_h = self.storage.pr1_uptime_hours(version_ts, now)
+        dp_impacto = self.dexpaprika.resumo_impacto() if self.dexpaprika is not None else None
+        dp_divergencias = self.storage.pr1_dexpaprika_divergencia_count_since(since)
         return telegram_v1.resumo_diario_text(sinais, invalidados, filtrados.get("dado_invalido", 0),
                                               filtrados.get("filtrado_mc_baixo", 0), filtrados.get("filtrado_idade", 0),
-                                              pnl, uptime_h, filtrados.get("filtrado_queda_90_96", 0), base_ge_2d)
+                                              pnl, uptime_h, filtrados.get("filtrado_queda_90_96", 0), base_ge_2d,
+                                              dexpaprika_impacto=dp_impacto, dexpaprika_divergencias_24h=dp_divergencias)
 
     def send_daily_summary_v1(self) -> None:
         self._send(self.daily_summary_v1())
@@ -1195,6 +1238,32 @@ class PosRunnerLive:
         self.sched[(pool, tf)] = {"next": nxt, "erros": 0.0}
 
     def _refresh(self, row: Any, tf: str, now: float) -> None:
+        self._refresh_core(row, tf, now, self._fetch_gt, fonte="gt")
+
+    def _fetch_gt(self, pool: str, tf: str, grad_ts: float, now: float, side: str) -> list[Bar]:
+        return self.ohlcv.history(pool, tf, int(grad_ts), int(now), currency="token", side=side)
+
+    def _refresh_fallback_dexpaprika(self, row: Any, tf: str, now: float) -> bool:
+        """PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3a: so chamado por `_refresh_safe` quando o GT
+        falhou (timeout/network/5xx) -- NUNCA substitui o GT na reconstrucao do setup, so tenta uma
+        atualizacao pontual pra nao deixar o pool parado durante a instabilidade. Devolve True se algum
+        candle novo foi processado (mesmo pipeline de conversao/alimentacao de detector do GT, so a
+        ORIGEM do candle cru muda)."""
+        if self.dexpaprika is None or row is None or row["status"] != "ativo":
+            return False
+
+        def _fetch_dp(pool: str, tf: str, grad_ts: float, now: float, side: str) -> list[Bar]:
+            last_bars = self.storage.pr_bars(pool, tf)
+            since_ts = last_bars[-1][0] if last_bars else grad_ts
+            return self.dexpaprika.candles_fallback(self.ctx.gt_network, pool, tf, since_ts, now)
+
+        before = len(self.storage.pr_bars(row["pool"], tf))
+        self._refresh_core(row, tf, now, _fetch_dp, fonte="dexpaprika")
+        depois = len(self.storage.pr_bars(row["pool"], tf))
+        return depois > before
+
+    def _refresh_core(self, row: Any, tf: str, now: float,
+                      fetch_fn: Callable[[str, str, float, float, str], list[Bar]], fonte: str) -> None:
         if row is None or row["status"] != "ativo":
             return
         step = tf_seconds(tf)
@@ -1209,10 +1278,10 @@ class PosRunnerLive:
         if usd is None:
             if self.quotes.no_reference(row["quote"]):
                 self.storage.pr_upsert_pool(pool, status="encerrado", checked_ts=now, motivo=f"cotacao {row['quote']} sem referencia USD")
-            else:
+            elif fonte == "gt":
                 self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}
             return
-        raw = self.ohlcv.history(pool, tf, int(row["grad_ts"]), int(now), currency="token", side=info.get("side", "base"))
+        raw = fetch_fn(pool, tf, row["grad_ts"], now, info.get("side", "base"))
         first_load = last is None
         fresh = [b for b in raw if b.ts + step <= now - LAG_S and (last is None or b.ts > last.ts)]
         ok = self._usd_prefix(fresh, tf, usd)
@@ -1225,7 +1294,8 @@ class PosRunnerLive:
                 det = None if self.sem_v0 else self._detector(row, tf, now)
                 det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
                 det_v1 = self._detector_v1(row, tf, now, pending=seq)
-            self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq])
+            self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
+            self._fonte_candle_atual = fonte
             if det is not None:
                 for b in seq:
                     for ev in det.update(b):
@@ -1244,6 +1314,9 @@ class PosRunnerLive:
                     for ev in det_v1.update(b):
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)
+            self._fonte_candle_atual = "gt"
+        if fonte != "gt":
+            return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide
         if len(ok) < len(fresh):
             self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
         else:

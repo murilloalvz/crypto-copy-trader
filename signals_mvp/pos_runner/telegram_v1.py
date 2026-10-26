@@ -123,16 +123,30 @@ def dado_invalido_text(chain_name: str, symbol: str, motivo: str) -> str:
 
 def resumo_diario_text(sinais: int, invalidados: int, dado_invalido: int, filtrado_mc_baixo: int, filtrado_idade: int,
                        pnl_pct: Optional[float], uptime_h: float, filtrado_queda_90_96: int = 0,
-                       base_ge_2d: int = 0) -> str:
+                       base_ge_2d: int = 0, dexpaprika_impacto: Optional[dict[str, Any]] = None,
+                       dexpaprika_divergencias_24h: int = 0) -> str:
     pnl = "s/d" if pnl_pct is None else f"{pnl_pct:+.1f}%"
-    return (
-        "📋 RESUMO DIÁRIO — POS-RUNNER-V1\n"
+    linhas = [
+        "📋 RESUMO DIÁRIO — POS-RUNNER-V1",
         f"Sinais: {sinais} | Invalidados: {invalidados} | dado_invalido: {dado_invalido} | "
         f"filtrado_mc_baixo: {filtrado_mc_baixo} | filtrado_idade: {filtrado_idade} | "
-        f"filtrado_queda_90_96: {filtrado_queda_90_96}\n"
-        f"base ≥ 2 dias (base_ge_2d): {base_ge_2d}\n"
-        f"PnL paper (líquido): {pnl} | Uptime: {uptime_h:.1f}h"
-    )
+        f"filtrado_queda_90_96: {filtrado_queda_90_96}",
+        f"base ≥ 2 dias (base_ge_2d): {base_ge_2d}",
+        f"PnL paper (líquido): {pnl} | Uptime: {uptime_h:.1f}h",
+    ]
+    # PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 5: impacto no orcamento de chamadas/creditos -- so
+    # aparece quando o recurso esta ligado (dexpaprika_impacto vem None quando desligado).
+    if dexpaprika_impacto is not None:
+        d = dexpaprika_impacto
+        creditos = ("s/d" if d.get("creditos_restantes") is None or d.get("creditos_limite") is None
+                   else f"{d['creditos_restantes']}/{d['creditos_limite']}")
+        linhas.append(
+            f"DexPaprika: fallback {d.get('chamadas_fallback', 0)} chamada(s) | conferência "
+            f"{d.get('chamadas_conferencia', 0)} chamada(s) | créditos restantes {creditos} | "
+            f"divergências (24h): {dexpaprika_divergencias_24h}"
+            + (" | ⚠ circuit breaker ABERTO" if d.get("breaker_aberto") else "")
+        )
+    return "\n".join(linhas)
 
 
 def heartbeat_text(uptime_h: float, pools_ativos: int, chamadas_por_min: float, rate_limited_429: int,

@@ -58,6 +58,8 @@ POS_RUNNER_V1_COLUMNS = [
     # maxima acima de P_peak = nova onda" -- varias ENTRADA no mesmo mint, com a 1a ainda aberta, sao POR
     # DESENHO, nao erro; ver docs/pos-runner-v1/INTERPRETACOES.md #11).
     "token_signal_seq",
+    # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle que gerou a decisao ("gt"|"dexpaprika").
+    "fonte_candle",
 ]
 POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
 # feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
@@ -70,6 +72,11 @@ POS_RUNNER_V1_FEEDBACK_COLUMNS = [
 # /pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar (registro separado
 # de pr1_feedback -- feedback e sobre um trade que o operador fez; aqui e o oposto, nunca um trade).
 POS_RUNNER_V1_PULADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "versao_config_v1"]
+# PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: 1 linha por (candle, campo) divergente -- so log.
+POS_RUNNER_V1_DEXPAPRIKA_COLUMNS = [
+    "data", "chain", "token", "contrato", "tf", "candle_ts", "campo", "valor_gt", "valor_dexpaprika",
+    "diff_pct", "versao_config_v1",
+]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -135,6 +142,9 @@ CREATE INDEX IF NOT EXISTS pr_pools_status ON pr_pools (status);
 -- candles de MC (USD) que o detector ja consumiu: CONGELADOS (so acrescenta; reiniciar refaz o mesmo estado)
 CREATE TABLE IF NOT EXISTS pr_bars (
   pool TEXT NOT NULL, tf TEXT NOT NULL, ts INTEGER NOT NULL, o REAL, h REAL, l REAL, c REAL, v REAL, filled INTEGER,
+  -- PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle ("gt"|"dexpaprika"). NUNCA lida por
+  -- `pr_bars()`/o detector (que so seleciona ts,o,h,l,c,v,filled) -- auditoria/CSV, nunca entra no hot path.
+  fonte TEXT NOT NULL DEFAULT 'gt',
   PRIMARY KEY (pool, tf, ts)
 );
 """ + PR_SIGNALS_DDL + """
@@ -176,6 +186,9 @@ CREATE TABLE IF NOT EXISTS pr1_signals (
   ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
   -- sequencial do sinal dentro do MESMO token (mint) -- ver POS_RUNNER_V1_COLUMNS acima.
   token_signal_seq INTEGER,
+  -- PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle que gerou a decisao ("gt"|"dexpaprika") --
+  -- "dexpaprika" so no fallback de atualizacao recente (item 3a), nunca na reconstrucao do setup.
+  fonte_candle TEXT NOT NULL DEFAULT 'gt',
   UNIQUE (chain, pool, tf, evento, ts_fechamento)
 );
 CREATE INDEX IF NOT EXISTS pr1_signals_open ON pr1_signals (status);
@@ -219,6 +232,14 @@ CREATE TABLE IF NOT EXISTS pr1_pulados (
   id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER, chain TEXT, pool TEXT, symbol TEXT,
   motivo TEXT NOT NULL, chat_id TEXT, versao_config_v1 TEXT, criado_ts REAL NOT NULL
 );
+-- PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: conferencia cruzada SO LOG, nunca decide. Uma linha por
+-- (candle, campo) divergente alem da tolerancia configurada; `candle_divergente` (tag informativa no
+-- sinal, se houver) nunca bloqueia nada -- so isto grava o detalhe pra auditoria.
+CREATE TABLE IF NOT EXISTS pr1_dexpaprika_divergencias (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  tf TEXT, candle_ts INTEGER, campo TEXT NOT NULL, valor_gt REAL, valor_dexpaprika REAL, diff_pct REAL,
+  versao_config_v1 TEXT
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -260,7 +281,9 @@ class Storage:
             self._ensure_columns("pr1_signals", {
                 "ts_fechamento_candle": "INTEGER", "ts_alerta": "REAL", "ts_envio_telegram": "REAL",
                 "retorno_sol_dia": "REAL", "token_signal_seq": "INTEGER",
+                "fonte_candle": "TEXT NOT NULL DEFAULT 'gt'",
             })
+            self._ensure_columns("pr_bars", {"fonte": "TEXT NOT NULL DEFAULT 'gt'"})
             self._ensure_columns("pr1_feedback", {
                 "preco_real": "REAL", "slippage_entrada_pct": "REAL", "slippage_saida_pct": "REAL",
             })
@@ -272,7 +295,7 @@ class Storage:
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
                        "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True,
-                       "pos_runner_v1_pulados": True}
+                       "pos_runner_v1_pulados": True, "pos_runner_v1_dexpaprika": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -600,6 +623,8 @@ class Storage:
                                        lambda: (POS_RUNNER_V1_FEEDBACK_COLUMNS, self._pos_runner_v1_feedback_rows())),
             "pos_runner_v1_pulados": (self.paths.pos_runner_v1_pulados_csv,
                                       lambda: (POS_RUNNER_V1_PULADOS_COLUMNS, self._pos_runner_v1_pulados_rows())),
+            "pos_runner_v1_dexpaprika": (self.paths.pos_runner_v1_dexpaprika_csv,
+                                        lambda: (POS_RUNNER_V1_DEXPAPRIKA_COLUMNS, self._pos_runner_v1_dexpaprika_rows())),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -660,16 +685,18 @@ class Storage:
         rows = self._all("SELECT ts, o, h, l, c, v, filled FROM pr_bars WHERE pool=? AND tf=? ORDER BY ts", (pool, tf))
         return [tuple(r) for r in rows]
 
-    def pr_append_bars(self, pool: str, tf: str, rows: Sequence[tuple]) -> None:
-        """Acrescenta candles consumidos (ts, o, h, l, c, v, filled). Candle ja gravado nunca e reescrito."""
+    def pr_append_bars(self, pool: str, tf: str, rows: Sequence[tuple], fonte: str = "gt") -> None:
+        """Acrescenta candles consumidos (ts, o, h, l, c, v, filled). Candle ja gravado nunca e reescrito.
+        `fonte` ("gt"|"dexpaprika", PEDIDO CONSOLIDADO FASE 1): so auditoria -- `pr_bars()` continua
+        selecionando so as 7 colunas de sempre, o detector nunca ve este campo."""
         if not rows:
             return
         with self._lock:
             self._db.execute("BEGIN")
             try:
                 self._db.executemany(
-                    "INSERT OR IGNORE INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [(pool, tf, int(r[0]), r[1], r[2], r[3], r[4], r[5], int(bool(r[6]))) for r in rows],
+                    "INSERT OR IGNORE INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled, fonte) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(pool, tf, int(r[0]), r[1], r[2], r[3], r[4], r[5], int(bool(r[6])), fonte) for r in rows],
                 )
                 self._db.execute("COMMIT")
             except Exception:
@@ -984,6 +1011,7 @@ class Storage:
                 r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
                 _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
                 r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
+                r["fonte_candle"] or "gt",
             ])
         return out
 
@@ -1070,6 +1098,36 @@ class Storage:
             [iso_utc(r["criado_ts"]), r["chain"] or "", csv_safe(r["symbol"] or ""), r["pool"] or "",
              csv_safe(r["motivo"]), r["versao_config_v1"] or ""]
             for r in self._all("SELECT * FROM pr1_pulados ORDER BY criado_ts, id")
+        ]
+
+    # -- conferencia cruzada DexPaprika (PEDIDO CONSOLIDADO FASE 1, item 3b) -- so log, nunca decide -------
+    def pr1_dexpaprika_divergencia_insert(self, ts: float, chain: Optional[str], pool: Optional[str],
+                                          mint: Optional[str], symbol: Optional[str], tf: str,
+                                          candle_ts: int, campo: str, valor_gt: float,
+                                          valor_dexpaprika: float, diff_pct: float,
+                                          versao_config_v1: Optional[str]) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_dexpaprika_divergencias (ts,chain,pool,mint,symbol,tf,candle_ts,campo,"
+                "valor_gt,valor_dexpaprika,diff_pct,versao_config_v1) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, tf, candle_ts, campo, valor_gt, valor_dexpaprika, diff_pct,
+                 versao_config_v1),
+            )
+            self._dirty["pos_runner_v1_dexpaprika"] = True
+
+    def pr1_dexpaprika_divergencias(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_dexpaprika_divergencias ORDER BY ts, id")
+
+    def pr1_dexpaprika_divergencia_count_since(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr1_dexpaprika_divergencias WHERE ts>=?", (since_ts,))
+        return int(row["n"]) if row else 0
+
+    def _pos_runner_v1_dexpaprika_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"] or "", csv_safe(r["symbol"] or ""), r["mint"] or "", r["tf"] or "",
+             r["candle_ts"] if r["candle_ts"] is not None else "", r["campo"], _num(r["valor_gt"], 8),
+             _num(r["valor_dexpaprika"], 8), _num(r["diff_pct"], 3), r["versao_config_v1"] or ""]
+            for r in self._all("SELECT * FROM pr1_dexpaprika_divergencias ORDER BY ts, id")
         ]
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
