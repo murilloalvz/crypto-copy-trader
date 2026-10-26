@@ -289,6 +289,36 @@ CREATE TABLE IF NOT EXISTS pr2_bankroll_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL,
   pr2_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr2_signal_id)
 );
+-- PEDIDO (PARTE 1 de 2) FASE 1: trajetoria pos-entrada (MFE/MAE/retornos em R, 1,2,4,8,24,48,72h), medicao
+-- AO LADO de V1/V2 -- nunca altera pr1_signals/pr2_signals nem nenhuma saida oficial (ver evidencia.py).
+-- `entry_id` = id em pr1_signals (versao='v1') ou pr2_signals (versao='v2'); `fechado` = 1 depois de 72h
+-- reais desde a entrada (dado que faltou ficar faltando pra sempre -- nunca interpolado).
+CREATE TABLE IF NOT EXISTS pr_trajetoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, entry_id INTEGER NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL, mint TEXT, symbol TEXT,
+  t_entrada REAL, preco_entrada REAL, risco_pct REAL, r_unidade REAL,
+  mfe_r REAL, mfe_h REAL, mae_r REAL, mae_h REAL,
+  ret_r_1h REAL, ret_r_2h REAL, ret_r_4h REAL, ret_r_8h REAL, ret_r_24h REAL, ret_r_48h REAL, ret_r_72h REAL,
+  tocou_tp1 INTEGER NOT NULL DEFAULT 0, tocou_stop_antes_de_tp1 INTEGER NOT NULL DEFAULT 0,
+  fonte_candle TEXT NOT NULL DEFAULT 'gt', fechado INTEGER NOT NULL DEFAULT 0,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  UNIQUE (versao, entry_id)
+);
+CREATE INDEX IF NOT EXISTS pr_trajetoria_aberta ON pr_trajetoria (fechado);
+-- PEDIDO (PARTE 1 de 2) FASE 2a: baseline pareada (controles sinteticos sorteados, MESMO risco_pct e
+-- MESMA forma de saida em R do sinal real, reusando simulate_v1 -- ver evidencia.py). `controles_json`
+-- guarda a lista de {idx, ts, status, r_controle} (status: 'pendente'|'fechado'|'cancelado' -- um
+-- controle sem desfecho resolvido fica pendente e e recalculado no proximo ciclo, nunca perdido).
+-- `r_controle_medio`/`dif_pareada` so ficam preenchidos quando TODOS os controles amostrados resolveram
+-- (fechado ou cancelado) E o sinal real tambem fechou -- antes disso ficam NULL (nunca parcial/chutado).
+CREATE TABLE IF NOT EXISTS pr_baseline (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, entry_id INTEGER NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL, mint TEXT, symbol TEXT,
+  n_controles INTEGER NOT NULL DEFAULT 0, controles_json TEXT NOT NULL DEFAULT '[]',
+  r_controle_medio REAL, r_sinal REAL, dif_pareada REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  UNIQUE (versao, entry_id)
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -336,6 +366,12 @@ class Storage:
             self._ensure_columns("pr1_feedback", {
                 "preco_real": "REAL", "slippage_entrada_pct": "REAL", "slippage_saida_pct": "REAL",
             })
+            # PEDIDO (PARTE 1 de 2), regra 9 / FASE 2b (H8): coluna nullable, sempre NULL por agora -- a
+            # coleta da lista de carteiras "pro" ainda nao existe (fica para um pedido futuro). Nunca muda
+            # regra/filtro/saida de V1 ou V2 (so instrumentacao, mesmo padrao das colunas de medicao
+            # anteriores -- ver ts_fechamento_candle/retorno_sol_dia/token_signal_seq acima).
+            self._ensure_columns("pr1_signals", {"carteiras_pro_presentes": "INTEGER"})
+            self._ensure_columns("pr2_signals", {"carteiras_pro_presentes": "INTEGER"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -345,7 +381,8 @@ class Storage:
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
                        "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True,
                        "pos_runner_v1_pulados": True, "pos_runner_v1_dexpaprika": True,
-                       "pos_runner_v2": True, "pos_runner_v2_filtrados": True, "pos_runner_v2_banca": True}
+                       "pos_runner_v2": True, "pos_runner_v2_filtrados": True, "pos_runner_v2_banca": True,
+                       "pos_runner_v1_trajetoria": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -692,6 +729,7 @@ class Storage:
             "pos_runner_v2_filtrados": (self.paths.pos_runner_v2_filtrados_csv,
                                        lambda: (POS_RUNNER_V2_FILTRADOS_COLUMNS, self._pos_runner_v2_filtrados_rows())),
             "pos_runner_v2_banca": (self.paths.pos_runner_v2_banca_csv, self._pos_runner_v2_banca_header_rows),
+            "pos_runner_v1_trajetoria": (self.paths.pos_runner_v1_trajetoria_csv, self._pos_runner_v1_trajetoria_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -1380,3 +1418,87 @@ class Storage:
             d = json.loads(r[0])
             rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
         return header, rows
+
+    # -- PEDIDO (PARTE 1 de 2) FASE 1: pr_trajetoria (medicao AO LADO de V1/V2 -- ver evidencia.py) -----------
+    def pr_trajetoria_get(self, versao: str, entry_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_trajetoria WHERE versao=? AND entry_id=?", (versao, entry_id))
+
+    def pr_trajetoria_upsert(self, versao: str, entry_id: int, now: float, **fields: Any) -> None:
+        """Idempotente pela UNIQUE (versao, entry_id): a 1a chamada insere (precisa trazer os campos fixos
+        -- chain/pool/tf/mint/symbol/t_entrada/preco_entrada/risco_pct/r_unidade/fonte_candle -- em
+        `fields`), as seguintes so atualizam (nunca duplica, um restart nunca perde o progresso)."""
+        existing = self.pr_trajetoria_get(versao, entry_id)
+        with self._lock:
+            if existing is None:
+                cols = {"versao": versao, "entry_id": entry_id, "criado_ts": now, "atualizado_ts": now, **fields}
+                self._db.execute(
+                    f"INSERT INTO pr_trajetoria ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    list(cols.values()))
+            elif fields:
+                cols = {**fields, "atualizado_ts": now}
+                self._db.execute(
+                    f"UPDATE pr_trajetoria SET {', '.join(f'{k}=?' for k in cols)} WHERE versao=? AND entry_id=?",
+                    [*cols.values(), versao, entry_id])
+            self._dirty["pos_runner_v1_trajetoria"] = True
+
+    def pr_trajetoria_abertas(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        """So as linhas ainda NAO fechadas (fechado=0) precisam ser recalculadas a cada ciclo."""
+        if versao is None:
+            return self._all("SELECT * FROM pr_trajetoria WHERE fechado=0 ORDER BY t_entrada, id")
+        return self._all("SELECT * FROM pr_trajetoria WHERE fechado=0 AND versao=? ORDER BY t_entrada, id", (versao,))
+
+    def pr_trajetoria_all(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_trajetoria ORDER BY versao, t_entrada, id")
+
+    def _pos_runner_v1_trajetoria_rows(self) -> tuple[list[str], list[list[Any]]]:
+        header = ["entry_id", "versao", "chain", "pool", "tf", "mint", "symbol", "t_entrada", "preco_entrada",
+                  "risco_pct", "r_unidade", "mfe_r", "mfe_h", "mae_r", "mae_h",
+                  "ret_r_1h", "ret_r_2h", "ret_r_4h", "ret_r_8h", "ret_r_24h", "ret_r_48h", "ret_r_72h",
+                  "tocou_tp1", "tocou_stop_antes_de_tp1", "fonte_candle", "fechado"]
+        rows = []
+        for r in self.pr_trajetoria_all():
+            rows.append([
+                r["entry_id"], r["versao"], r["chain"], csv_safe(r["pool"]), r["tf"], r["mint"] or "", csv_safe(r["symbol"]),
+                iso_utc(r["t_entrada"]) if r["t_entrada"] else "", _num(r["preco_entrada"], 6), _num(r["risco_pct"], 2),
+                _num(r["r_unidade"], 6), _num(r["mfe_r"], 3), _num(r["mfe_h"], 1), _num(r["mae_r"], 3), _num(r["mae_h"], 1),
+                _num(r["ret_r_1h"], 3), _num(r["ret_r_2h"], 3), _num(r["ret_r_4h"], 3), _num(r["ret_r_8h"], 3),
+                _num(r["ret_r_24h"], 3), _num(r["ret_r_48h"], 3), _num(r["ret_r_72h"], 3),
+                r["tocou_tp1"], r["tocou_stop_antes_de_tp1"], r["fonte_candle"], r["fechado"],
+            ])
+        return header, rows
+
+    # -- PEDIDO (PARTE 1 de 2) FASE 2a: pr_baseline (controles pareados -- ver evidencia.py) ------------------
+    def pr_baseline_get(self, versao: str, entry_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_baseline WHERE versao=? AND entry_id=?", (versao, entry_id))
+
+    def pr_baseline_upsert(self, versao: str, entry_id: int, now: float, **fields: Any) -> None:
+        """Mesmo padrao idempotente de `pr_trajetoria_upsert`. A 1a chamada precisa trazer os campos fixos
+        (chain/pool/tf/mint/symbol) em `fields`."""
+        existing = self.pr_baseline_get(versao, entry_id)
+        with self._lock:
+            if existing is None:
+                cols = {"versao": versao, "entry_id": entry_id, "criado_ts": now, "atualizado_ts": now, **fields}
+                self._db.execute(
+                    f"INSERT INTO pr_baseline ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    list(cols.values()))
+            elif fields:
+                cols = {**fields, "atualizado_ts": now}
+                self._db.execute(
+                    f"UPDATE pr_baseline SET {', '.join(f'{k}=?' for k in cols)} WHERE versao=? AND entry_id=?",
+                    [*cols.values(), versao, entry_id])
+
+    def pr_baseline_pendentes(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        """Linhas cujo `dif_pareada` ainda nao foi fechado (algum controle pendente ou o sinal real ainda
+        nao fechou) -- so estas precisam ser recalculadas; as prontas nunca sao reabertas."""
+        if versao is None:
+            return self._all("SELECT * FROM pr_baseline WHERE dif_pareada IS NULL ORDER BY id")
+        return self._all("SELECT * FROM pr_baseline WHERE dif_pareada IS NULL AND versao=? ORDER BY id", (versao,))
+
+    def pr_baseline_all(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        if versao is None:
+            return self._all("SELECT * FROM pr_baseline ORDER BY versao, id")
+        return self._all("SELECT * FROM pr_baseline WHERE versao=? ORDER BY id", (versao,))
+
+    def pr_baseline_resolvidas_com_dif(self, versao: str) -> list[sqlite3.Row]:
+        """So as que ja tem `dif_pareada` calculada (ambos os lados resolvidos) -- usadas pela analise H1."""
+        return self._all("SELECT * FROM pr_baseline WHERE versao=? AND dif_pareada IS NOT NULL ORDER BY id", (versao,))

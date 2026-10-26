@@ -49,6 +49,7 @@ from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .detector_v1 import DetectorV1, EventV1
 from .dexpaprika_v1 import DexPaprikaProvider
+from .evidencia import N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis, simular_controle, sortear_controles
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
 from .lineage import creation_time
 from .params import Params, is_preregistered
@@ -506,6 +507,7 @@ class PosRunnerLive:
         chain_name: str = "Solana",
         dexpaprika: Optional[DexPaprikaProvider] = None,
         sem_v2: bool = False,
+        sem_evidencia: bool = False,
     ):
         self.settings = settings
         self.params = params
@@ -583,6 +585,12 @@ class PosRunnerLive:
         self._tick_history: list[tuple[float, bool]] = []
         self._alerta_429_ativo = False
         self._fila_alertada_hora: Optional[int] = None
+        # PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada -- medicao AO LADO de
+        # V1/V2 (ver evidencia.py), nunca altera deteccao/entrada/saida/banca/Telegram/CSV oficiais. So
+        # candles JA em cache (zero chamada nova de GT/DexPaprika -- ver INTERPRETACOES.md para o porque
+        # o fallback "1 fetch/hora" da regra 3 fica fora do escopo desta entrega). SEM_EVIDENCIA=1 desliga
+        # por completo (zero custo extra de CPU tambem).
+        self.sem_evidencia = sem_evidencia
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -1485,6 +1493,118 @@ class PosRunnerLive:
         if self.storage.pr2_bankroll_append(tf, self.version_v2, signal["id"], linha, now):
             self.storage.pr2_bankroll_save(tf, self.version_v2, ledger.state.to_json())
 
+    # -- PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada ---------------------------
+    # Medicao AO LADO de V1/V2 (ver pos_runner/evidencia.py): roda DEPOIS de `_update_paper_v1/v2`, nunca
+    # altera nenhuma linha/alerta/banca oficial -- so grava em pr_trajetoria/pr_baseline. So usa candles JA
+    # em `pr_bars` (zero chamada nova de GT/DexPaprika; ver INTERPRETACOES.md para o porque o fallback "1
+    # fetch/hora" da regra 3 do pedido fica fora do escopo desta entrega -- nunca reagenda nem refaz o
+    # pipeline de conversao MC/USD do caminho oficial, que e frozen).
+    def _bars_de(self, pool: str, tf: str) -> list[Bar]:
+        return [Bar(int(t[0]), t[1], t[2], t[3], t[4], t[5], bool(t[6])) for t in self.storage.pr_bars(pool, tf)]
+
+    def _update_evidencia_v1(self, row: Any, tf: str, now: float) -> None:
+        for signal in self.storage.pr1_signals(pool=row["pool"], tf=tf):
+            if signal["versao_config_v1"] != self.version_v1 or signal["evento"] != "ENTRADA" or signal["status"] == "cancelado":
+                continue
+            self._update_evidencia_signal("v1", signal, row, self.params_v1, now)
+
+    def _update_evidencia_v2(self, row: Any, tf: str, now: float) -> None:
+        for signal in self.storage.pr2_signals(pool=row["pool"], tf=tf):
+            if signal["versao_config_v2"] != self.version_v2 or signal["evento"] != "ENTRADA" or signal["status"] == "cancelado":
+                continue
+            self._update_evidencia_signal("v2", signal, row, self.params_v2, now)
+
+    def _update_evidencia_signal(self, versao: str, signal: Any, row: Any, params: Any, now: float) -> None:
+        bars = self._bars_de(signal["pool"], signal["tf"])
+        if not bars:
+            return
+        traj = self.storage.pr_trajetoria_get(versao, signal["id"])
+        if traj is None or not traj["fechado"]:
+            self._atualizar_trajetoria(versao, signal, row, bars, params, now)
+        baseline = self.storage.pr_baseline_get(versao, signal["id"])
+        if baseline is None or baseline["dif_pareada"] is None:
+            self._atualizar_baseline(versao, signal, row, bars, params, now)
+
+    def _atualizar_trajetoria(self, versao: str, signal: Any, row: Any, bars: list[Bar], params: Any, now: float) -> None:
+        """FASE 1: MFE/MAE + retornos em R nos horizontes fixos, reusando `simulate_v1` (MESMO evento real)
+        so para saber se tocou TP1/stop -- nunca copia a logica de saida."""
+        ev = event_v1_from_json(signal["event_json"])
+        if ev.idx + 1 >= len(bars):
+            return   # ainda sem o candle de entrada em cache
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        res = simulate_v1(bars, ev, params, self.costs, dex, row["l_bc"], self._sol_at())
+        if res.entry_price is None or not res.risk_frac or res.risk_frac <= 0:
+            return
+        calc = calcular_trajetoria(bars, ev.idx + 1, res.entry_ts, res.entry_price, res.risk_frac,
+                                   tf_seconds(signal["tf"]), res.legs, now)
+        r = calc.retornos_r
+        self.storage.pr_trajetoria_upsert(
+            versao, signal["id"], now,
+            chain=signal["chain"], pool=signal["pool"], tf=signal["tf"], mint=signal["mint"], symbol=signal["symbol"],
+            t_entrada=res.entry_ts, preco_entrada=res.entry_price, risco_pct=100.0 * res.risk_frac,
+            r_unidade=res.entry_price * res.risk_frac, fonte_candle=signal["fonte_candle"] or "gt",
+            mfe_r=calc.mfe_r, mfe_h=calc.mfe_h, mae_r=calc.mae_r, mae_h=calc.mae_h,
+            ret_r_1h=r.get(1), ret_r_2h=r.get(2), ret_r_4h=r.get(4), ret_r_8h=r.get(8),
+            ret_r_24h=r.get(24), ret_r_48h=r.get(48), ret_r_72h=r.get(72),
+            tocou_tp1=1 if calc.tocou_tp1 else 0, tocou_stop_antes_de_tp1=1 if calc.tocou_stop_antes_de_tp1 else 0,
+            fechado=1 if calc.fechado else 0,
+        )
+
+    def _atualizar_baseline(self, versao: str, signal: Any, row: Any, bars: list[Bar], params: Any, now: float) -> None:
+        """FASE 2a: sorteia (1a chamada) ou resolve (chamadas seguintes) os controles pareados. `stop` do
+        controle usa o MESMO risco_pct do sinal real; `TOPO`/`S` sao escalados pela MESMA razao preco/entry
+        do sinal real (ver `evidencia.evento_controle` para a justificativa completa)."""
+        baseline = self.storage.pr_baseline_get(versao, signal["id"])
+        ev = event_v1_from_json(signal["event_json"])
+        if baseline is None:
+            created_ts = self._created(row)   # criacao CONFIRMADA on-chain (a MESMA que o detector usa p/ idade)
+            candidatos = candidatos_elegiveis(bars, created_ts, params.age_window_days, tf_seconds(signal["tf"]), ev.idx)
+            if len(candidatos) < N_CONTROLES_MINIMO:
+                return   # poucos candles elegiveis ainda -- tenta de novo no proximo ciclo (mais podem qualificar)
+            escolhidos = sortear_controles(candidatos, signal["id"], versao)
+            controles = [{"idx": i, "ts": bars[i].ts, "status": "pendente", "r_controle": None} for i in escolhidos]
+            self.storage.pr_baseline_upsert(
+                versao, signal["id"], now, chain=signal["chain"], pool=signal["pool"], tf=signal["tf"],
+                mint=signal["mint"], symbol=signal["symbol"], n_controles=len(controles),
+                controles_json=json.dumps(controles),
+            )
+            baseline = self.storage.pr_baseline_get(versao, signal["id"])
+        entry_price_sinal = signal["entry_price"]
+        if not entry_price_sinal or signal["stop"] is None or signal["topo"] is None or signal["s_suporte"] is None:
+            return   # ENTRADA real sem dado suficiente (nao deveria acontecer) -- nunca inventa a razao
+        risco_pct_sinal = 100.0 * (1.0 - signal["stop"] / entry_price_sinal)
+        topo_mult = signal["topo"] / entry_price_sinal
+        s_mult = signal["s_suporte"] / entry_price_sinal
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        controles = json.loads(baseline["controles_json"])
+        mudou = False
+        for c in controles:
+            if c["status"] != "pendente":
+                continue
+            res = simular_controle(bars, c["idx"], risco_pct_sinal, topo_mult, s_mult, params, self.costs,
+                                   dex, row["l_bc"], self._sol_at())
+            if res is None or res.status == "em_aberto":
+                continue   # ainda sem desfecho -- continua pendente, recalculado no proximo ciclo
+            c["status"] = res.status  # 'fechado' | 'cancelado'
+            c["r_controle"] = res.r_mult if res.status == "fechado" else None
+            mudou = True
+        r_controle_medio: Optional[float] = None
+        r_sinal: Optional[float] = None
+        dif_pareada: Optional[float] = None
+        if all(c["status"] != "pendente" for c in controles):
+            valores = [c["r_controle"] for c in controles if c["r_controle"] is not None]
+            if valores:
+                r_controle_medio = sum(valores) / len(valores)
+            if signal["status"] == "fechado" and signal["result_net"] is not None and risco_pct_sinal:
+                r_sinal = 100.0 * signal["result_net"] / risco_pct_sinal
+            if r_controle_medio is not None and r_sinal is not None:
+                dif_pareada = r_sinal - r_controle_medio
+        if mudou or dif_pareada is not None:
+            self.storage.pr_baseline_upsert(
+                versao, signal["id"], now, controles_json=json.dumps(controles),
+                r_controle_medio=r_controle_medio, r_sinal=r_sinal, dif_pareada=dif_pareada,
+            )
+
     @staticmethod
     def _stats_r_de_fechados(sinais: Sequence[Any]) -> dict[str, Any]:
         """PEDIDO ADICIONAL FASE 5, item 3: R-multiplo (lucro_liquido_% / risco_%, MESMA formula da
@@ -1745,6 +1865,8 @@ class PosRunnerLive:
                     for ev in det_v1.update(b):
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)
+                if not self.sem_evidencia:
+                    self._update_evidencia_v1(row, tf, now)
             # PEDIDO CONSOLIDADO FASE 2: V2 roda DEPOIS da V1 sobre os MESMOS `seq`, de proposito --
             # assim, quando a V2 fecha uma ENTRADA no MESMO (pool,tf,ts_fechamento), a linha da V1 (se
             # houver) ja esta gravada e o merge de alerta ("V1+V2" vs "SOMENTE V2") sempre ve o estado
@@ -1754,6 +1876,8 @@ class PosRunnerLive:
                     for ev in det_v2.update(b):
                         self._on_event_v2(row, tf, det_v2, ev, now)
                 self._update_paper_v2(row, tf, det_v2, now)
+                if not self.sem_evidencia:
+                    self._update_evidencia_v2(row, tf, now)
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide

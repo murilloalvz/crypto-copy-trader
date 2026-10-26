@@ -192,6 +192,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     settings = LiveSettings.from_config(raw)
     sem_v0 = bool(os.environ.get("POS_RUNNER_SEM_V0"))   # item 0 (regras inegociaveis): flag --sem-v0
     sem_v2 = bool(os.environ.get("SEM_V2"))   # PEDIDO CONSOLIDADO FASE 2: SEM_V2=1 desliga a V2 por completo
+    sem_evidencia = bool(os.environ.get("SEM_EVIDENCIA"))   # PEDIDO (PARTE 1 de 2): desliga trajetoria+baseline
     settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)
     path = Path(settings.parametros)
     if not path.is_absolute():
@@ -211,7 +212,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     dexpaprika = make_dexpaprika_provider()
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
-                         chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2)
+                         chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2, sem_evidencia=sem_evidencia)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)

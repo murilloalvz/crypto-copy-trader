@@ -226,3 +226,62 @@ o preço voltou a consolidar (um novo range/suporte) SEM fazer uma máxima nova 
 rompeu esse 2º range de novo — 2 setups de reação/rompimento genuinamente distintos dentro da MESMA onda,
 com o mesmo teto (pico) ainda válido. Nenhuma regra, parâmetro ou hash da V1 muda com esta investigação —
 é só a explicação em texto que foi corrigida.
+
+## 12. PEDIDO (PARTE 1 de 2) — trajetória pós-entrada + baseline pareada (`pos_runner/evidencia.py`)
+
+Medição **AO LADO** de V1/V2 (`pr_trajetoria`/`pr_baseline`): roda depois de `_update_paper_v1`/
+`_update_paper_v2`, nunca altera detecção/entrada/saída/banca/Telegram/CSV oficial. Nenhuma regra ou
+hash da V1/V2 muda. Decisões de desenho não totalmente especificadas no pedido:
+
+### 12a. Confirmação do operador (regra 9 do pedido): "2d" = idade do token
+
+Murillo confirmou que "2d" (e, de forma geral, os limites de `age_window_days` da V1/V2) se referem à
+**idade do token desde a criação on-chain** (`DetectorV1.age_days`/`criado_ts`, confirmado via
+linhagem on-chain — ver seção 10a acima), **não** à idade desde a graduação (`grad_age_days`) nem a
+qualquer outra âncora. Interpretação registrada aqui; não altera V1/V2 (a janela já usava
+`age_days`/`criado_ts` desde a 10a). `candidatos_elegiveis` (FASE 2a) usa a MESMA âncora e a MESMA
+janela (`params.age_window_days`) da versão (V1 ou V2) que gerou o sinal real.
+
+### 12b. Baseline pareada — por que `TOPO`/`S` do controle são escalados pela razão do sinal real
+
+`simulate_v1` precisa de um `TOPO`/`S` em preço absoluto para decidir TP1/exit_full — não existe uma
+forma de simular "o mesmo risco_pct, mas sem alvo nenhum". O pedido só fixa explicitamente "mesmo
+risco_pct do sinal" para o `stop`; para `TOPO`/`S` (sem os quais `simulate_v1` não roda) a interpretação
+adotada foi escalar os dois pela MESMA razão preço/entrada do sinal real
+(`topo_mult = topo_sinal/entry_sinal`, `s_mult = s_suporte_sinal/entry_sinal`, aplicados ao
+`entry_controle`) — é a única forma de reusar `simulate_v1` sem inventar uma lógica de saída nova e sem
+copiar a lógica existente, e preserva a MESMA "forma" relativa de saída em R que o sinal real teve.
+Ver `evidencia.evento_controle`.
+
+### 12c. Elegibilidade do controle ("depois de um pico, queda >= 80%, MC >= 100k")
+
+`candidatos_elegiveis` usa, para cada candle `i`, o pico = maior `high` de QUALQUER candle anterior
+(`bars[0:i]`, não só o pico da onda/zona do detector) e a queda = `1 - close[i]/pico`. Interpretação
+deliberadamente mais ampla que o conceito de "onda"/"zona" do detector (que exigiria reconstruir o
+estado interno do `DetectorV1` para cada candidato) — mede exatamente o texto do pedido ("depois de um
+pico, queda >= 80% desde esse pico"), não a semântica de onda da V1/V2 (que, aliás, nunca é alterada
+por esta medição).
+
+### 12d. Escopo cortado nesta entrega (regra 3 do pedido — fila de evidência de baixa prioridade)
+
+A regra 3 do pedido autoriza "1 fetch/hora" de candle novo quando faltar no cache, com teto de
+créditos/DexPaprika configurável e pausa automática em 429 alto. **Esta entrega não implementa esse
+fetch extra.** FASE 1/2 usam EXCLUSIVAMENTE `pr_bars` já em cache (zero chamada nova de
+GeckoTerminal/DexPaprika) — o caminho normal de refresh da V1/V2 já mantém `pr_bars` atualizado para
+TODO pool `ativo` independente de ter sinal aberto ou não (`_due_list` varre `pr_pools("ativo")`
+inteiro), então o caso comum (pool continua `ativo` durante a janela de 72h) já funciona sem nenhum
+fetch extra. O caso que o fetch extra cobriria — um pool já `encerrado`/podado antes dos 72h da
+trajetória terminarem — ficou de fora porque implementá-lo corretamente exigiria reusar o pipeline de
+conversão candle→MC/USD (`_usd_prefix`/`to_mc_bars`/`fill_gaps`) que hoje só existe dentro de
+`_refresh_core` (o hot path **congelado** de V1/V2); duplicar essa lógica junto da medição arrisca
+divergir dela silenciosamente, e refatorar `_refresh_core` para compartilhá-la contraria a regra 2
+("nunca altera" o caminho oficial). Os env vars de teto/orçamento (`POS_RUNNER_429_TETO_PCT` etc., já
+existentes da FASE 6) continuam válidos para esse fetch quando ele for implementado num pedido futuro;
+por ora não há nenhum fetch de evidência para pausar.
+
+### 12e. `carteiras_pro_presentes` (H8)
+
+Coluna nullable adicionada a `pr1_signals`/`pr2_signals` (sempre `NULL` nesta entrega — a coleta da
+lista de carteiras "pro" ainda não existe, fica para um pedido futuro). Mesmo padrão das colunas de
+instrumentação anteriores (`ts_fechamento_candle`, `retorno_sol_dia`, etc.): não entra no hash de
+`ParamsV1`/`ParamsV2`, não filtra nem altera nenhum sinal.
