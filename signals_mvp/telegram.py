@@ -9,11 +9,13 @@ Seguranca:
 from __future__ import annotations
 
 import html
+import io
 import json
 import logging
 import re
 import sqlite3
 import threading
+import zipfile
 from typing import Any, Callable, Optional
 
 import requests
@@ -120,6 +122,26 @@ class TelegramClient:
             raise TelegramError(str((body or {}).get("description", "erro desconhecido"))[:200], status=response.status_code)
         return int(body["result"]["message_id"])
 
+    def send_document(self, data: bytes, filename: str, caption: str = "") -> int:
+        """Arquivo generico (PEDIDO ADICIONAL FASE 5, /exportar): mesmo padrao do `send_photo`, so
+        que generico (zip/csv) e so para o chat ja autorizado (quem chama decide isso antes)."""
+        url = f"{self._base}/bot{self._token}/sendDocument"
+        data_payload: dict[str, Any] = {"chat_id": self.chat_id, "caption": caption[:1024]}
+        try:
+            response = self.session.post(
+                url, data=data_payload, files={"document": (filename, data, "application/octet-stream")},
+                timeout=(5.0, self.timeout_s),
+            )
+        except requests.RequestException as exc:
+            raise TelegramError(f"rede: {type(exc).__name__}") from None  # nunca repassa a mensagem (tem a URL/token)
+        try:
+            body = response.json()
+        except ValueError:
+            raise TelegramError(f"resposta invalida (HTTP {response.status_code})", status=response.status_code) from None
+        if not isinstance(body, dict) or not body.get("ok"):
+            raise TelegramError(str((body or {}).get("description", "erro desconhecido"))[:200], status=response.status_code)
+        return int(body["result"]["message_id"])
+
     def edit_reply_markup(self, message_id: int, reply_markup: dict) -> None:
         self.call("editMessageReplyMarkup", {"chat_id": self.chat_id, "message_id": message_id, "reply_markup": reply_markup})
 
@@ -142,6 +164,10 @@ class TelegramClient:
 _EVM_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _SOL_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
+# PEDIDO ADICIONAL FASE 5, item 4: limite de tamanho do /exportar -- abaixo do teto de 50 MB do
+# sendDocument do Telegram, com margem (nunca manda um arquivo que o Telegram vai recusar).
+EXPORTAR_LIMITE_BYTES = 45 * 1024 * 1024
+
 HELP_TEXT = (
     "Comandos:\n"
     "/entrei <contrato> <valor> [chain]\n"
@@ -158,7 +184,11 @@ HELP_TEXT = (
     "/sai <pool|ticker> [preco] - registra que saiu de um sinal da V1 (preco real -> slippage vs TP1/EXIT/stop)\n"
     "/nota <pool|ticker> <texto> - anota algo sobre o sinal\n"
     "/pulei <pool|ticker> <motivo> - registra que viu o sinal e NAO executou\n"
+    "/scam <pool|ticker> [motivo] - marca manual de scam (nao bloqueia nem remove o sinal)\n"
     "/relatorio [v1|v2] - bons vs ruins da ultima semana (padrao v1)\n"
+    "/abertos - posicoes paper abertas (V1 e V2), com R nao realizado\n"
+    "/fechados [n] - ultimos n trades fechados (padrao 10), com R realizado e motivo da saida\n"
+    "/exportar - manda um .zip com sinais, trades, feedback e divergencias de candle (sem segredos)\n"
     "Os botoes 👍 Bom / 👎 Ruim / 📝 Nota do alerta da V1 registram o voto/nota; o 📝 pede a nota em resposta."
 )
 
@@ -200,6 +230,8 @@ class OperatorHandler:
         status_provider: Callable[[], str] = lambda: "sem status",
         summary_provider: Callable[[], str] = lambda: "sem resumo",
         relatorio_provider: Callable[[list[str]], str] = lambda args: "sem relatorio",
+        abertos_provider: Callable[[], str] = lambda: "sem posicoes",
+        fechados_provider: Callable[[int], str] = lambda n: "sem fechados",
     ):
         self.client = client
         self.storage = storage
@@ -208,6 +240,8 @@ class OperatorHandler:
         self.status_provider = status_provider
         self.summary_provider = summary_provider
         self.relatorio_provider = relatorio_provider
+        self.abertos_provider = abertos_provider
+        self.fechados_provider = fechados_provider
         self._warned_chats: set[str] = set()
 
     # -- roteamento ------------------------------------------------------------------------
@@ -261,6 +295,22 @@ class OperatorHandler:
             return self._v1_nota_command(args)
         if command == "/pulei":
             return self._v1_pulei_command(args)
+        if command == "/scam":
+            return self._v1_scam_command(args)
+        if command == "/abertos":
+            # PEDIDO ADICIONAL FASE 5, item 1: por versao (V1/V2), ultimo preco ja buscado (zero chamada nova).
+            return self.abertos_provider()
+        if command == "/fechados":
+            # PEDIDO ADICIONAL FASE 5, item 2: "/fechados [n]" (padrao 10).
+            n = 10
+            if args:
+                try:
+                    n = max(1, int(args[0]))
+                except ValueError:
+                    return "Use: /fechados [n]"
+            return self.fechados_provider(n)
+        if command == "/exportar":
+            return self._exportar_command()
         if command in ("/entrei", "/sai"):
             # FASE 3 da V1 (feedback no Telegram): MESMA grafia de comando do V0, formato diferente
             # (<pool|ticker> [preco], nao <contrato> <valor> [chain]) -- tenta resolver contra um sinal da
@@ -358,6 +408,57 @@ class OperatorHandler:
         self.storage.export_csvs()
         rotulo = clean_text(symbol or args[0], 20)
         return f"⏭ pulei registrado (V1): ${rotulo} ({clean_text(motivo, 60)})"
+
+    def _v1_scam_command(self, args: list[str]) -> str:
+        """/scam <pool|ticker> [motivo]: marca manual (PEDIDO ADICIONAL FASE 5, item 5) -- guardada em
+        pr1_feedback (acao='scam', mesma tabela do voto/nota) junto do sinal. NUNCA bloqueia nem remove
+        o sinal; so soma numa contagem informativa no /relatorio (`pr1_feedback_scam_count_since`)."""
+        if not args:
+            return "Use: /scam <pool|ticker> [motivo]"
+        signal = self._v1_resolve_signal_token(args[0])
+        if signal is None:
+            return "Sinal da V1 nao encontrado para esse pool/ticker."
+        motivo = " ".join(args[1:]).strip() or None
+        assert self.client is not None
+        self.storage.pr1_feedback_upsert(signal["id"], "scam", self.client.chat_id, self.clock(), texto=motivo)
+        self.storage.export_csvs()
+        rotulo = clean_text(signal["symbol"] or "?", 20)
+        motivo_txt = f" ({clean_text(motivo, 60)})" if motivo else ""
+        return f"🚩 marcado como scam (V1): ${rotulo}{motivo_txt}"
+
+    def _exportar_command(self) -> str:
+        """/exportar (PEDIDO ADICIONAL FASE 5, item 4): zip com sinais/trades/feedback/pulados/divergencias
+        de candle (V1+V2), nunca o .env nem nenhum outro segredo -- so os CSVs ja estaveis do bot. Limite
+        de tamanho (`EXPORTAR_LIMITE_BYTES`) e so manda pro chat ja autorizado (`process_update` ja filtrou)."""
+        assert self.client is not None
+        self.storage.export_csvs(force=True)
+        paths = self.storage.paths
+        arquivos = [
+            paths.sinais_csv, paths.descartados_csv, paths.trades_csv,
+            paths.pos_runner_v1_csv, paths.pos_runner_v1_filtrados_csv, paths.pos_runner_v1_banca_csv,
+            paths.pos_runner_v1_feedback_csv, paths.pos_runner_v1_pulados_csv, paths.pos_runner_v1_dexpaprika_csv,
+            paths.pos_runner_v2_csv, paths.pos_runner_v2_filtrados_csv, paths.pos_runner_v2_banca_csv,
+        ]
+        buf = io.BytesIO()
+        incluidos = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in arquivos:
+                if path.exists():
+                    zf.write(path, arcname=path.name)
+                    incluidos += 1
+        if incluidos == 0:
+            return "Nada para exportar ainda (nenhum CSV gerado)."
+        data = buf.getvalue()
+        if len(data) > EXPORTAR_LIMITE_BYTES:
+            return (f"Exportação cancelada: {len(data) / 1_048_576:.1f} MB excede o limite de "
+                     f"{EXPORTAR_LIMITE_BYTES / 1_048_576:.0f} MB (copie os CSVs direto da VM, ex. scp).")
+        nome = f"signals_mvp_export_{int(self.clock())}.zip"
+        try:
+            self.client.send_document(
+                data, nome, caption="Exportação: sinais, trades, feedback e divergências de candle (V1+V2, sem segredos)")
+        except TelegramError as exc:
+            return f"Falha ao enviar o arquivo: {exc}"
+        return f"✅ exportado: {nome} ({len(data) / 1024:.0f} KB, {incluidos} arquivo(s))"
 
     def _maybe_handle_note_reply(self, reply_to_message: dict, text: str) -> bool:
         """O botao 📝 Nota manda um prompt com "(sinal #<id>)" embutido no proprio texto (sem estado novo no

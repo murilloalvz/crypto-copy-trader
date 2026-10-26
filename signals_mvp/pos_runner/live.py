@@ -23,6 +23,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import random
 import re
 import threading
@@ -1410,6 +1411,45 @@ class PosRunnerLive:
         if self.storage.pr2_bankroll_append(tf, self.version_v2, signal["id"], linha, now):
             self.storage.pr2_bankroll_save(tf, self.version_v2, ledger.state.to_json())
 
+    @staticmethod
+    def _stats_r_de_fechados(sinais: Sequence[Any]) -> dict[str, Any]:
+        """PEDIDO ADICIONAL FASE 5, item 3: R-multiplo (lucro_liquido_% / risco_%, MESMA formula da
+        analise Monte Carlo -- `signals_mvp/analise/simulacao_bloco.py`) sobre todos os sinais
+        FECHADOS recebidos. `n_tokens` conta tokens DISTINTOS (mint), nao sinais."""
+        valores: list[float] = []
+        tokens: set[str] = set()
+        for s in sinais:
+            if s["status"] != "fechado" or s["result_net"] is None:
+                continue
+            entry, stop = s["entry_price"], s["stop"]
+            if not entry or stop is None:
+                continue
+            risco_pct = 100.0 * (1.0 - stop / entry)
+            if not risco_pct:
+                continue
+            valores.append(100.0 * s["result_net"] / risco_pct)
+            if s["mint"]:
+                tokens.add(s["mint"])
+        n = len(valores)
+        if n == 0:
+            return {"n_tokens": 0, "r_acumulado": None, "taxa_r_positivo": None, "r_medio": None, "r_mediana": None}
+        ordenados = sorted(valores)
+        mediana = ordenados[n // 2] if n % 2 else (ordenados[n // 2 - 1] + ordenados[n // 2]) / 2.0
+        return {
+            "n_tokens": len(tokens), "r_acumulado": sum(valores),
+            "taxa_r_positivo": 100.0 * sum(1 for v in valores if v > 0) / n,
+            "r_medio": sum(valores) / n, "r_mediana": mediana,
+        }
+
+    @staticmethod
+    def _alvo_tokens() -> int:
+        return int(os.environ.get("POS_RUNNER_ALVO_TOKENS", "30"))
+
+    def _ultimo_preco_fechado(self, pool: str, tf: str) -> Optional[float]:
+        """Ultimo close JA buscado em `pr_bars` -- zero chamada nova (item 1 do pedido adicional FASE 5)."""
+        bars = self.storage.pr_bars(pool, tf)
+        return bars[-1][4] if bars else None
+
     def daily_summary_v1(self) -> str:
         now = self.clock()
         since = now - 86400.0
@@ -1427,13 +1467,77 @@ class PosRunnerLive:
         uptime_h = self.storage.pr1_uptime_hours(version_ts, now)
         dp_impacto = self.dexpaprika.resumo_impacto() if self.dexpaprika is not None else None
         dp_divergencias = self.storage.pr1_dexpaprika_divergencia_count_since(since)
-        return telegram_v1.resumo_diario_text(sinais, invalidados, filtrados.get("dado_invalido", 0),
-                                              filtrados.get("filtrado_mc_baixo", 0), filtrados.get("filtrado_idade", 0),
-                                              pnl, uptime_h, filtrados.get("filtrado_queda_90_96", 0), base_ge_2d,
-                                              dexpaprika_impacto=dp_impacto, dexpaprika_divergencias_24h=dp_divergencias)
+        texto = telegram_v1.resumo_diario_text(sinais, invalidados, filtrados.get("dado_invalido", 0),
+                                               filtrados.get("filtrado_mc_baixo", 0), filtrados.get("filtrado_idade", 0),
+                                               pnl, uptime_h, filtrados.get("filtrado_queda_90_96", 0), base_ge_2d,
+                                               dexpaprika_impacto=dp_impacto, dexpaprika_divergencias_24h=dp_divergencias)
+        stats = self._stats_r_de_fechados(self.storage.pr1_signals())
+        return texto + "\n" + telegram_v1.stats_r_text("V1", stats["n_tokens"], self._alvo_tokens(),
+                                                       stats["r_acumulado"], stats["taxa_r_positivo"],
+                                                       stats["r_medio"], stats["r_mediana"])
 
     def send_daily_summary_v1(self) -> None:
         self._send(self.daily_summary_v1())
+
+    def daily_summary_v2(self) -> str:
+        """PEDIDO ADICIONAL FASE 5, item 3: MESMO bloco de estatisticas de R, a partir das tabelas
+        pr2_* -- bloco SEPARADO (mensagem propria), nunca misturado com a V1."""
+        stats = self._stats_r_de_fechados(self.storage.pr2_signals())
+        return "📋 RESUMO DIÁRIO — POS-RUNNER-V2\n" + telegram_v1.stats_r_text(
+            "V2", stats["n_tokens"], self._alvo_tokens(), stats["r_acumulado"], stats["taxa_r_positivo"],
+            stats["r_medio"], stats["r_mediana"])
+
+    def send_daily_summary_v2(self) -> None:
+        if self.sem_v2:
+            return
+        self._send(self.daily_summary_v2())
+
+    # -- PEDIDO ADICIONAL FASE 5: /abertos, /fechados [n] ---------------------------------------------------
+    def _bloco_abertos(self, sinais_abertos: Sequence[Any]) -> list[dict[str, Any]]:
+        now = self.clock()
+        out = []
+        for s in sinais_abertos:
+            entry, stop = s["entry_price"], s["stop"]
+            ultimo = self._ultimo_preco_fechado(s["pool"], s["tf"])
+            risco_pct = 100.0 * (1.0 - stop / entry) if entry and stop is not None else None
+            r_na = None
+            if ultimo is not None and entry and risco_pct:
+                r_na = (100.0 * (ultimo / entry - 1.0)) / risco_pct
+            out.append({
+                "symbol": s["symbol"], "entry_price": entry, "stop": stop, "tp1_price": s["tp1_price"],
+                "ultimo_preco": ultimo, "r_nao_realizado": r_na, "tempo_h": (now - s["ts_fechamento"]) / 3600.0,
+            })
+        return out
+
+    def abertos_texto(self) -> str:
+        abertos_v1 = [s for s in self.storage.pr1_signals(status="aberto") if s["versao_config_v1"] == self.version_v1]
+        blocos = [("V1", self._bloco_abertos(abertos_v1))]
+        if not self.sem_v2:
+            abertos_v2 = [s for s in self.storage.pr2_signals(status="aberto") if s["versao_config_v2"] == self.version_v2]
+            blocos.append(("V2", self._bloco_abertos(abertos_v2)))
+        return telegram_v1.abertos_text(blocos)
+
+    def _bloco_fechados(self, sinais_fechados: Sequence[Any], n: int) -> list[dict[str, Any]]:
+        recentes = sorted((s for s in sinais_fechados if s["status"] == "fechado"),
+                          key=lambda s: s["closed_ts"] or 0, reverse=True)[:n]
+        out = []
+        for s in recentes:
+            entry, stop = s["entry_price"], s["stop"]
+            risco_pct = 100.0 * (1.0 - stop / entry) if entry and stop is not None else None
+            r_realizado = (100.0 * s["result_net"] / risco_pct) if (s["result_net"] is not None and risco_pct) else None
+            out.append({
+                "symbol": s["symbol"], "r_realizado": r_realizado, "motivo_saida": s["reason"],
+                "data_fechamento": iso_utc(s["closed_ts"]) if s["closed_ts"] else None,
+            })
+        return out
+
+    def fechados_texto(self, n: int = 10) -> str:
+        fechados_v1 = [s for s in self.storage.pr1_signals() if s["versao_config_v1"] == self.version_v1]
+        blocos = [("V1", self._bloco_fechados(fechados_v1, n))]
+        if not self.sem_v2:
+            fechados_v2 = [s for s in self.storage.pr2_signals() if s["versao_config_v2"] == self.version_v2]
+            blocos.append(("V2", self._bloco_fechados(fechados_v2, n)))
+        return telegram_v1.fechados_text(blocos, n)
 
     def relatorio_semanal_v1(self) -> str:
         """"Bons vs ruins" da ultima semana (FASE 3, item 3): so votos (👍/👎) e so da versao congelada ATUAL
@@ -1448,7 +1552,8 @@ class PosRunnerLive:
         # operador, que e um subconjunto bem menor) -- so leitura, nunca muda o que ja esta em pr1_signals.
         sinais_semana = [s for s in self.storage.pr1_signals()
                          if s["versao_config_v1"] == self.version_v1 and s["ts_fechamento"] >= since]
-        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1, sinais_semana)
+        scam_count = self.storage.pr1_feedback_scam_count_since(since, now, self.version_v1)
+        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1, sinais_semana, scam_count)
 
     def send_relatorio_semanal_v1(self) -> None:
         self._send(self.relatorio_semanal_v1())

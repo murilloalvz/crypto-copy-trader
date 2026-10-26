@@ -228,6 +228,8 @@ class V1FeedbackHandlerTest(unittest.TestCase):
             self.tg, self.env.storage, lambda: self.env.engine.cfg, FakeClock(),
             status_provider=lambda: "STATUS", summary_provider=lambda: "RESUMO",
             relatorio_provider=lambda args: "RELATORIO SEMANAL",
+            abertos_provider=lambda: "ABERTOS",
+            fechados_provider=lambda n: f"FECHADOS:{n}",
         )
         self.signal_id = self.env.storage.pr1_insert_signal({
             "chain": "solana", "pool": "poolA", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
@@ -308,7 +310,7 @@ class V1FeedbackHandlerTest(unittest.TestCase):
 
     def test_help_mentions_the_new_v1_commands(self) -> None:
         help_text = self.handler.handle_command("/ajuda")
-        for token in ("/nota", "/relatorio", "/pulei", "👍 Bom"):
+        for token in ("/nota", "/relatorio", "/pulei", "👍 Bom", "/scam", "/abertos", "/fechados", "/exportar"):
             self.assertIn(token, help_text)
 
     def test_entrei_with_real_price_records_slippage_against_the_alert_entry(self) -> None:
@@ -360,6 +362,68 @@ class V1FeedbackHandlerTest(unittest.TestCase):
 
     def test_pulei_usage_error(self) -> None:
         self.assertEqual(self.handler.handle_command("/pulei poolA"), "Use: /pulei <pool|ticker> <motivo>")
+
+    # -- PEDIDO ADICIONAL FASE 5 ------------------------------------------------------------------------
+    def test_scam_marks_feedback_without_blocking_or_removing_the_signal(self) -> None:
+        reply = self.handler.handle_command("/scam poolA ticker clonado")
+        self.assertIn("marcado como scam (V1)", reply)
+        self.assertIn("CAT", reply)
+        self.assertIn("ticker clonado", reply)
+        rows = self._feedback_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["acao"], "scam")
+        self.assertEqual(rows[0]["texto"], "ticker clonado")
+        # o sinal continua intacto -- /scam nunca bloqueia nem remove.
+        self.assertIsNotNone(self.env.storage.pr1_signal(self.signal_id))
+
+    def test_scam_without_a_motivo_is_still_accepted(self) -> None:
+        reply = self.handler.handle_command("/scam CAT")
+        self.assertIn("marcado como scam (V1)", reply)
+        self.assertIsNone(self._feedback_rows()[0]["texto"])
+
+    def test_scam_unknown_signal(self) -> None:
+        self.assertEqual(self.handler.handle_command("/scam TICKERDESCONHECIDO"),
+                         "Sinal da V1 nao encontrado para esse pool/ticker.")
+
+    def test_scam_usage_error(self) -> None:
+        self.assertEqual(self.handler.handle_command("/scam"), "Use: /scam <pool|ticker> [motivo]")
+
+    def test_abertos_command_calls_the_provider(self) -> None:
+        self.assertEqual(self.handler.handle_command("/abertos"), "ABERTOS")
+
+    def test_fechados_command_calls_the_provider_with_the_parsed_n(self) -> None:
+        self.assertEqual(self.handler.handle_command("/fechados"), "FECHADOS:10")
+        self.assertEqual(self.handler.handle_command("/fechados 5"), "FECHADOS:5")
+        self.assertEqual(self.handler.handle_command("/fechados 0"), "FECHADOS:1", "n<1 nunca pode virar 0 ou negativo")
+        self.assertEqual(self.handler.handle_command("/fechados abc"), "Use: /fechados [n]")
+
+    def test_exportar_sends_a_zip_with_the_stable_csvs_and_never_the_env(self) -> None:
+        import io
+        import zipfile
+
+        reply = self.handler.handle_command("/exportar")
+        self.assertIn("exportado", reply)
+        self.assertEqual(len(self.tg.documents), 1)
+        data, filename, caption = self.tg.documents[0]
+        self.assertTrue(filename.endswith(".zip"))
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+        self.assertIn("pos_runner_v1.csv", names)
+        self.assertIn("pos_runner_v1_feedback.csv", names)
+        for name in names:
+            self.assertNotIn(".env", name)
+
+    def test_exportar_over_the_size_limit_is_refused_without_sending(self) -> None:
+        from .. import telegram as telegram_module
+
+        original = telegram_module.EXPORTAR_LIMITE_BYTES
+        telegram_module.EXPORTAR_LIMITE_BYTES = 1
+        try:
+            reply = self.handler.handle_command("/exportar")
+        finally:
+            telegram_module.EXPORTAR_LIMITE_BYTES = original
+        self.assertIn("excede o limite", reply)
+        self.assertEqual(self.tg.documents, [])
 
 
 class PollerTest(unittest.TestCase):

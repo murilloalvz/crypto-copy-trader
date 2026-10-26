@@ -272,7 +272,7 @@ def _contagem_lines(title: str, counts: dict[str, int]) -> list[str]:
 
 
 def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_config_v1: str,
-                           sinais_semana: Optional[list[Any]] = None) -> str:
+                           sinais_semana: Optional[list[Any]] = None, scam_count: int = 0) -> str:
     """"Bons vs ruins" da semana (complemento FASE 3, item 3): contagem de votos 👍/👎 por gatilho, por
     janela_ouro/fora_da_janela, por tag (`RELATORIO_TAGS`) e por token, mais o PnL paper do periodo --
     `rows` ja vem filtrada por `versao_config_v1` (nunca mistura versoes de config, mesma regra de
@@ -322,4 +322,70 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
         *_contagem_lines("Risco fora da faixa por gatilho", _risco_fora_da_faixa_por_gatilho(sinais_semana)),
         *_contagem_lines("Histograma do % de stop", _histograma_stop_pct(sinais_semana)),
     ]
+    if scam_count:
+        # PEDIDO ADICIONAL FASE 5, item 5: /scam marca manual (nunca bloqueia nem remove o sinal) --
+        # so uma contagem informativa aqui.
+        lines.append(f"Marcados como scam: {scam_count}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# PEDIDO ADICIONAL FASE 5: /abertos, /fechados [n], resumo diario com R acumulado
+# ---------------------------------------------------------------------------
+
+
+def _fmt_r(value: Optional[float]) -> str:
+    return "s/d" if value is None else f"{value:+.2f}R"
+
+
+def abertos_text(blocos: list[tuple[str, list[dict[str, Any]]]]) -> str:
+    """`blocos`: [(titulo_da_versao, [{"symbol","entry_price","stop","tp1_price","ultimo_preco",
+    "r_nao_realizado","tempo_h"}, ...]), ...] -- ja ORDENADO por quem chama. So leitura (o ultimo
+    preco vem do ultimo candle JA buscado, nunca uma chamada nova)."""
+    lines = ["📂 POSIÇÕES ABERTAS"]
+    for titulo, abertos in blocos:
+        if not abertos:
+            lines.append(f"{titulo}: nenhuma posição aberta")
+            continue
+        lines.append(f"{titulo}:")
+        for d in abertos:
+            lines.append(
+                f"  ${html_escape_ticker(str(d.get('symbol') or '?'), 20)} | entrada {fmt_usd(d.get('entry_price'))} | "
+                f"stop {fmt_usd(d.get('stop'))} | TP1 {fmt_usd(d.get('tp1_price'))} | "
+                f"último {fmt_usd(d.get('ultimo_preco'))} | R não realizado: {_fmt_r(d.get('r_nao_realizado'))} | "
+                f"{d.get('tempo_h', 0.0):.1f}h desde a entrada"
+            )
+    return "\n".join(lines)
+
+
+def fechados_text(blocos: list[tuple[str, list[dict[str, Any]]]], n: int) -> str:
+    """`blocos`: [(titulo_da_versao, [{"symbol","r_realizado","motivo_saida","data_fechamento"}, ...]
+    -- ja limitado a `n` e ordenado do mais recente pro mais antigo por quem chama."""
+    lines = [f"📁 ÚLTIMOS {n} FECHADOS"]
+    for titulo, fechados in blocos:
+        if not fechados:
+            lines.append(f"{titulo}: nenhum trade fechado ainda")
+            continue
+        lines.append(f"{titulo}:")
+        for d in fechados:
+            lines.append(
+                f"  ${html_escape_ticker(str(d.get('symbol') or '?'), 20)} | R realizado: "
+                f"{_fmt_r(d.get('r_realizado'))} | motivo: {d.get('motivo_saida') or 's/d'} | "
+                f"{d.get('data_fechamento') or 's/d'}"
+            )
+    return "\n".join(lines)
+
+
+def stats_r_text(titulo: str, n_tokens: int, alvo_tokens: int, r_acumulado: Optional[float],
+                 taxa_r_positivo: Optional[float], r_medio: Optional[float], r_mediana: Optional[float]) -> str:
+    """PEDIDO ADICIONAL FASE 5, item 3: n de tokens DISTINTOS com trade fechado sobre o alvo (padrão
+    30, configurável), R acumulado, taxa de trades com R>0, R médio e mediana -- bloco por versão,
+    nunca misturado com a outra."""
+    if n_tokens == 0:
+        return f"{titulo}: ainda sem trade fechado (0/{alvo_tokens} tokens distintos)"
+    taxa = "s/d" if taxa_r_positivo is None else f"{taxa_r_positivo:.0f}%"
+    return (
+        f"{titulo}: {n_tokens}/{alvo_tokens} tokens distintos com trade fechado | "
+        f"R acumulado: {_fmt_r(r_acumulado)} | taxa R>0: {taxa} | "
+        f"R médio: {_fmt_r(r_medio)} | R mediana: {_fmt_r(r_mediana)}"
+    )

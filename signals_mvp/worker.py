@@ -403,6 +403,11 @@ class Worker:
                 status_provider=engine.status_text, summary_provider=engine.build_daily_summary,
                 relatorio_provider=(lambda args: _relatorio_v1_ou_v2(engine.pos_runner, args)
                                     if engine.pos_runner is not None else "POS-RUNNER desligado"),
+                # PEDIDO ADICIONAL FASE 5: /abertos, /fechados [n] -- so leitura do estado ja gravado pelo POS-RUNNER.
+                abertos_provider=(lambda: engine.pos_runner.abertos_texto()
+                                  if engine.pos_runner is not None else "POS-RUNNER desligado"),
+                fechados_provider=(lambda n: engine.pos_runner.fechados_texto(n)
+                                   if engine.pos_runner is not None else "POS-RUNNER desligado"),
             )
             try:
                 telegram.get_me()

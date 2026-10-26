@@ -117,6 +117,21 @@ class MergedAlertTests(unittest.TestCase):
         self.assertIn(self.h.live.version_v2, content)
         self.assertNotIn(self.h.live.version_v1, content)
 
+    def test_daily_summary_v2_and_abertos_fechados_never_mix_versions(self) -> None:
+        # PEDIDO ADICIONAL FASE 5: resumo diario e /abertos, /fechados [n] tem bloco PROPRIO da V2,
+        # separado da V1 -- mesmo com o sinal mesclado (so_v2=0), cada versao mede o seu.
+        self._run_to_closed_trade()
+        resumo_v2 = self.h.live.daily_summary_v2()
+        self.assertIn("POS-RUNNER-V2", resumo_v2)
+        self.assertIn("V2:", resumo_v2)
+        self.assertIn("1/30 tokens distintos", resumo_v2)
+        abertos = self.h.live.abertos_texto()
+        self.assertIn("V1:", abertos)
+        self.assertIn("V2:", abertos)
+        fechados = self.h.live.fechados_texto()
+        self.assertIn("V1:", fechados)
+        self.assertIn("V2:", fechados)
+
 
 class SemV2FlagTests(unittest.TestCase):
     def test_sem_v2_disables_the_detector_and_produces_no_rows(self) -> None:

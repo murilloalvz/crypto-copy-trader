@@ -453,7 +453,9 @@ class _FakePosRunnerForReport:
     def __init__(self) -> None:
         self.bankroll_calls = 0
         self.summary_v1_calls = 0
+        self.summary_v2_calls = 0
         self.relatorio_calls = 0
+        self.relatorio_v2_calls = 0
 
     def send_daily_bankroll_summary(self) -> None:
         self.bankroll_calls += 1
@@ -461,8 +463,14 @@ class _FakePosRunnerForReport:
     def send_daily_summary_v1(self) -> None:
         self.summary_v1_calls += 1
 
+    def send_daily_summary_v2(self) -> None:
+        self.summary_v2_calls += 1
+
     def send_relatorio_semanal_v1(self) -> None:
         self.relatorio_calls += 1
+
+    def send_relatorio_semanal_v2(self) -> None:
+        self.relatorio_v2_calls += 1
 
 
 class WeeklyReportSchedulingTest(unittest.TestCase):
@@ -483,11 +491,15 @@ class WeeklyReportSchedulingTest(unittest.TestCase):
             not_sunday = next(base + i * 86400 for i in range(1, 8) if datetime.fromtimestamp(base + i * 86400).weekday() != 6)
             self.assertTrue(env.engine.maybe_send_daily_summary(not_sunday))
             self.assertEqual(fake.summary_v1_calls, 1)
+            self.assertEqual(fake.summary_v2_calls, 1, "resumo diario da V2 junto do da V1, todo dia (nao so domingo)")
             self.assertEqual(fake.relatorio_calls, 0, "nao e domingo: so o resumo diario, sem relatorio semanal")
+            self.assertEqual(fake.relatorio_v2_calls, 0)
             env.storage.set_meta("ultimo_resumo", "")   # forca o resumo a poder sair de novo no 2o dia simulado
             self.assertTrue(env.engine.maybe_send_daily_summary(sunday))
             self.assertEqual(fake.summary_v1_calls, 2)
+            self.assertEqual(fake.summary_v2_calls, 2)
             self.assertEqual(fake.relatorio_calls, 1, "domingo: relatorio semanal junto do resumo diario")
+            self.assertEqual(fake.relatorio_v2_calls, 1, "domingo: relatorio semanal da V2 tambem")
         finally:
             env.close()
 

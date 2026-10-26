@@ -59,7 +59,7 @@ class EntradaTests(unittest.TestCase):
         self.assertEqual(len(_entrada_v1(self.h)), 1, "reinicio nao pode repetir o alerta de entrada")
         self.assertEqual(len(self.h.storage.pr1_signals()), 1, "reinicio nao pode duplicar a linha do sinal")
 
-    def test_tp1_then_stop_closes_the_trade_and_updates_bankroll(self) -> None:
+    def _tp1_then_stop(self) -> None:
         # Depois do rompimento, fabrica candles que levam o preco ao TOPO (1M) com exaustao (TP1), depois
         # caem e tocam o stop (fecha o trade). Mesmos valores de P_peak/S/stop do textbook() do V0; sem a
         # cauda longa de candles planos (start_flat=0) para o rompimento ficar logo antes dos meus candles.
@@ -86,6 +86,9 @@ class EntradaTests(unittest.TestCase):
             self.h.live.http.arm(CallBudget(10), 1, 10)
             self.h.live.quotes.series(SOL_MINT, GRAD, self.h.clock())
             self.h.live.http.disarm()
+
+    def test_tp1_then_stop_closes_the_trade_and_updates_bankroll(self) -> None:
+        self._tp1_then_stop()
         self.assertEqual(len(_entrada_v1(self.h)), 1, self.h.texts())
         tp1_msgs = [t for t in self.h.texts() if t.startswith("🟡 [POS_RUNNER] TP1")]
         exit_msgs = [t for t in self.h.texts() if t.startswith("🔴 [POS_RUNNER] EXIT FULL")]
@@ -113,6 +116,36 @@ class EntradaTests(unittest.TestCase):
             self.assertIn("👍 Bom", labels)
             urls = [b["url"] for row_ in markup["inline_keyboard"] for b in row_ if "url" in b]
             self.assertTrue(all(u.startswith("https://") for u in urls), urls)
+
+    # -- PEDIDO ADICIONAL FASE 5: /abertos, /fechados [n], R acumulado no resumo diario -------------------
+    def test_abertos_texto_lists_the_open_position_with_unrealized_r(self) -> None:
+        self._run_to_entrada()
+        texto = self.h.live.abertos_texto()
+        self.assertIn("POSIÇÕES ABERTAS", texto)
+        row = self.h.storage.pr1_signals()[0]
+        self.assertIn(row["symbol"], texto)
+        self.assertIn("R não realizado", texto)
+        self.assertIn("desde a entrada", texto)
+
+    def test_fechados_texto_and_daily_summary_show_realized_r_after_a_closed_trade(self) -> None:
+        self._tp1_then_stop()
+        row = self.h.storage.pr1_signals()[0]
+        self.assertEqual(row["status"], "fechado")
+        fechados = self.h.live.fechados_texto()
+        self.assertIn("ÚLTIMOS 10 FECHADOS", fechados)
+        self.assertIn(row["symbol"], fechados)
+        self.assertIn("R realizado", fechados)
+        self.assertIn("stop", fechados)
+        resumo = self.h.live.daily_summary_v1()
+        self.assertIn("V1:", resumo)
+        self.assertIn("1/30 tokens distintos", resumo)
+        # posicao ja fechada: /abertos nao pode mais listar nada pra essa versao.
+        abertos = self.h.live.abertos_texto()
+        self.assertIn("nenhuma posição aberta", abertos)
+
+    def test_fechados_texto_respects_the_n_argument(self) -> None:
+        self._tp1_then_stop()
+        self.assertIn("ÚLTIMOS 3 FECHADOS", self.h.live.fechados_texto(3))
 
 
 class QualityFilterTests(unittest.TestCase):

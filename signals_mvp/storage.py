@@ -1255,6 +1255,16 @@ class Storage:
             (versao_config_v1, since_ts, until_ts),
         )
 
+    def pr1_feedback_scam_count_since(self, since_ts: float, until_ts: float, versao_config_v1: str) -> int:
+        """PEDIDO ADICIONAL FASE 5, item 5: /scam marca manual (acao='scam' em pr1_feedback, mesma
+        tabela do voto/nota -- nunca bloqueia nem remove o sinal). So contagem para o /relatorio."""
+        row = self._one(
+            "SELECT COUNT(*) AS n FROM pr1_feedback f JOIN pr1_signals s ON s.id = f.pr1_signal_id "
+            "WHERE f.acao='scam' AND f.versao_config_v1=? AND s.ts_fechamento>=? AND s.ts_fechamento<?",
+            (versao_config_v1, since_ts, until_ts),
+        )
+        return int(row["n"]) if row else 0
+
     def _pos_runner_v1_feedback_rows(self) -> list[list[Any]]:
         out = []
         for r in self._all(

@@ -801,8 +801,10 @@ class Engine:
         if self.pos_runner is not None:
             self.pos_runner.send_daily_bankroll_summary()   # _send ja trata falha do Telegram sem propagar
             self.pos_runner.send_daily_summary_v1()
+            self.pos_runner.send_daily_summary_v2()   # PEDIDO ADICIONAL FASE 5: resumo diario tambem para a V2 (no-op se SEM_V2)
             if local.weekday() == 6:   # domingo (FASE 3, item 3): relatorio semanal junto do resumo diario
                 self.pos_runner.send_relatorio_semanal_v1()
+                self.pos_runner.send_relatorio_semanal_v2()
         self.storage.set_meta("ultimo_resumo", today)
         return True
 
