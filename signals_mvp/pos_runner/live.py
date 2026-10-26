@@ -52,6 +52,7 @@ from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
 from .lineage import creation_time
 from .params import Params, is_preregistered
 from .params_v1 import load_params_v1
+from .params_v2 import load_params_v2
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
 from .parte_a.quotebook import QuoteBook
@@ -503,6 +504,7 @@ class PosRunnerLive:
         terminal: str = "axiom",
         chain_name: str = "Solana",
         dexpaprika: Optional[DexPaprikaProvider] = None,
+        sem_v2: bool = False,
     ):
         self.settings = settings
         self.params = params
@@ -562,6 +564,19 @@ class PosRunnerLive:
         # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): None = recurso inteiro desligado, zero chamada extra.
         self.dexpaprika = dexpaprika
         self._fonte_candle_atual = "gt"   # lido por `_entry_v1` ao montar o sinal (nunca persiste entre chamadas)
+        # PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 -- MESMO detector/simulador/banca da V1 (ver
+        # params_v2.py), roda EM PARALELO sobre os MESMOS candles, tabelas/CSV/banca PROPRIAS (nunca
+        # mistura estatistica com a V1). `sem_v2` (flag --sem-v2/env SEM_V2=1) desliga por completo.
+        self.sem_v2 = sem_v2
+        self.params_v2 = load_params_v2()
+        self.version_v2 = self.params_v2.version
+        self.version_v2_start: Optional[float] = None
+        self.dets_v2: dict[tuple[str, str], DetectorV1] = {}
+        self._v2_invalid: set[tuple[str, str]] = set()
+        self._v2_mc_baixo_logged: set[str] = set()
+        self._v2_suspeito: dict[tuple[str, str], bool] = {}
+        self._v2_suspeito_logged: set[tuple[str, str]] = set()
+        self._bankroll_v2: dict[str, BankrollLedgerV1] = {}
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -612,6 +627,13 @@ class PosRunnerLive:
                 self.storage.pr1_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
         if self._uptime_id is None:
             self._uptime_id = self.storage.pr1_uptime_start(now)
+        # PEDIDO CONSOLIDADO FASE 2: mesma regra de inicio de versao, tabelas PROPRIAS da V2.
+        self.version_v2_start = self.storage.pr2_version_start(self.version_v2, now)
+        for signal in self.storage.pr2_signals(status="aberto"):
+            if signal["versao_config_v2"] != self.version_v2:
+                self.storage.pr2_update_signal(signal["id"], status="descontinuado", closed_ts=now)
+            elif self._late(now, signal["ts_fechamento"], max(1800.0, 2.0 * tf_seconds(signal["tf"]))):
+                self.storage.pr2_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
 
     def shutdown(self, now: float, motivo: str = "parado") -> None:
         """Fecha a sessao de uptime da V1 (item "registro completo"). Chamado uma vez no desligamento limpo."""
@@ -947,6 +969,43 @@ class PosRunnerLive:
         self.dets_v1[key] = det
         return det
 
+    def _detector_v2(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
+        """PEDIDO CONSOLIDADO FASE 2: copia EXATA de `_detector_v1`, so troca params/estado/tabelas pela
+        versao V2 (`self.params_v2`/`self.dets_v2`/`self.version_v2`/`pr2_*`) -- MESMO detector
+        (`DetectorV1`), MESMOS candles (`pr_bars`), nenhum codigo novo de deteccao."""
+        key = (row["pool"], tf)
+        if key in self._v2_invalid:
+            return None
+        det = self.dets_v2.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        existing = self.storage.pr_bars(row["pool"], tf)
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing] + list(pending)
+        qual = avaliar_qualidade(bars, self.params_v2)
+        if not qual.valido:
+            self._v2_invalid.add(key)
+            self.storage.pr2_add_filtrado(now, "solana", row["pool"], row["mint"], row["symbol"], "dado_invalido",
+                                          qual.motivo, self.version_v2)
+            return None
+        self._v2_suspeito[key] = qual.suspeito
+        if qual.suspeito and key not in self._v2_suspeito_logged:
+            self._v2_suspeito_logged.add(key)
+            self.storage.pr2_add_filtrado(now, "solana", row["pool"], row["mint"], row["symbol"], "l_bc_suspeito",
+                                          f"{qual.l_bc_robusto:.0f}", self.version_v2)
+        mc_atual = bars[-1].close if bars else None
+        if mc_atual is not None and mc_atual < self.params_v2.min_mc_usd:
+            if row["pool"] not in self._v2_mc_baixo_logged:
+                self._v2_mc_baixo_logged.add(row["pool"])
+                self.storage.pr2_add_filtrado(now, "solana", row["pool"], row["mint"], row["symbol"], "filtrado_mc_baixo",
+                                              f"{mc_atual:.0f}", self.version_v2)
+            return None
+        det = DetectorV1(self.params_v2, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        for ts, o, h, l, c, v, filled in existing:
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event_v2(row, tf, det, ev, now)
+        self.dets_v2[key] = det
+        return det
+
     def _excluded_accounts_v1(self, row: Any) -> frozenset[str]:
         return self.adapter.excluded_accounts(row["pool"], row["mint"], row["launchpad"])
 
@@ -981,6 +1040,13 @@ class PosRunnerLive:
             # WATCHLIST/INVALIDADO nunca tem sinal pr1_signals associado, continuam sem a linha extra.
             kb = telegram_v1.with_feedback(kb, signal_id)
         return kb
+
+    def _key_v2(self, kind: str, *parts: Any) -> str:
+        return ":".join(["v2", kind, self.version_v2, *(str(p) for p in parts)])
+
+    def _keyboard_v2(self, row: Any) -> dict:
+        # PEDIDO CONSOLIDADO FASE 2: sem botoes de feedback (FASE 3 e um recurso so da V1 por ora).
+        return telegram_v1.keyboard(self.adapter, row["mint"], row["pool"], "sol", self.dexscreener_slug)
 
     def _conferencia_cruzada_dexpaprika(self, row: Any, tf: str, ev: EventV1) -> None:
         """PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: so log, nunca influencia a decisao. O candle GT
@@ -1177,6 +1243,173 @@ class PosRunnerLive:
         if self.storage.pr1_bankroll_append(tf, self.version_v1, signal["id"], linha, now):
             self.storage.pr1_bankroll_save(tf, self.version_v1, ledger.state.to_json())
 
+    # -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 ("regras do professor", so 2 parametros diferentes) ---------
+    def _on_event_v2(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
+        pool = row["pool"]
+        tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+                  and self.version_v2_start is not None and ev.decision_ts >= self.version_v2_start)
+        if not tracked:
+            return
+        if ev.kind == "ENTRADA":
+            self._entry_v2(row, tf, det, ev, now)
+            return
+        if ev.kind == "FORA_DA_IDADE":
+            self.storage.pr2_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "filtrado_idade",
+                                          f"{ev.data.get('idade_dias')}", self.version_v2)
+            return
+        late = self._late(now, ev.decision_ts, max(900.0, float(det.step)))
+        if late:
+            return
+        if ev.kind == "WATCHLIST":
+            if self.storage.pr_alert_once(self._key_v2("w", pool, tf, ev.data.get("zona")), now):
+                text = telegram_v1.watchlist_text(self.chain_name, row["symbol"], ev.data["S"], ev.data["R"], ev.data["n_testes"])
+                self._send(text, self._keyboard_v2(row))
+        elif ev.kind == "ONDA_INVALIDA":
+            if self.storage.pr_alert_once(self._key_v2("x", pool, tf, ev.data.get("onda")), now):
+                motivo = str(ev.data.get("motivo", ""))
+                text = telegram_v1.invalidado_text(self.chain_name, row["symbol"], motivo)
+                self._send(text, self._keyboard_v2(row))
+                queda_pct = ev.data.get("queda_pct")
+                valor = motivo if queda_pct is None else f"{motivo} | queda_maxima={queda_pct:.1f}%"
+                self.storage.pr2_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "invalidado",
+                                              valor, self.version_v2)
+
+    def _entry_v2(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
+        """MESMA logica de `_entry_v1`, so troca a tabela/versao -- EXCETO o alerta: se a V1 JA tem uma
+        ENTRADA no MESMO (pool,tf,ts_fechamento) (candle idêntico -- a V1 roda ANTES da V2 no mesmo
+        `seq`, sempre resolvida primeiro), a V2 NUNCA manda um alerta cheio novo (evita duplicar) -- so
+        uma nota curta de confirmacao em resposta ao alerta da V1, tag "V1+V2" (`so_v2=False`). Sem
+        match, alerta cheio proprio, tag "SOMENTE V2 (experimental)" (`so_v2=True`)."""
+        pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
+        ts_fechamento = int(ev.decision_ts)
+        signal = self.storage.pr2_signal_by_key("solana", pool, tf, "ENTRADA", ts_fechamento)
+        sinal_v1 = self.storage.pr1_signal_by_key("solana", pool, tf, "ENTRADA", ts_fechamento)
+        so_v2 = sinal_v1 is None or sinal_v1["versao_config_v1"] != self.version_v1
+        if signal is None:
+            gatilho = list(ev.data.get("gatilho") or [])
+            tags: list[str] = []
+            if ev.data.get("risco_fora_da_faixa"):
+                tags.append("risco_fora_da_faixa")
+            if tf == "1h" and (ev.data.get("box_len") or 0) >= 48:
+                tags.append("base_ge_2d")
+            if self._v2_suspeito.get((pool, tf)):
+                tags.append("l_bc_suspeito")
+            holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
+            if holders.tag:
+                tags.append(holders.tag)
+            authority = self.adapter.authorities(mint)
+            vamp = self.adapter.vamp_risk(symbol, ev.data.get("P_peak"), self._vamp_search)
+            if vamp.tag:
+                tags.append(vamp.tag)
+            janela = "janela_ouro" if na_janela_ouro(ev.decision_ts, *self.params_v2.janela_ouro_brt) else "fora_da_janela"
+            info = json.loads(row["info"] or "{}")
+            row_insert = {
+                "chain": "solana", "pool": pool, "tf": tf, "evento": "ENTRADA", "ts_fechamento": ts_fechamento,
+                "mint": mint, "symbol": symbol, "launchpad": row["launchpad"], "dex": row["dex"],
+                "versao_config_v2": self.version_v2, "gatilho": json.dumps(gatilho), "tags": json.dumps(tags),
+                "janela_ouro": janela, "hora_brt": hora_brt(ev.decision_ts), "origem": info.get("fonte", ""),
+                "teste_vol_ratio": ev.data.get("teste_vol_ratio"), "event_json": event_v1_to_json(ev), "status": "aberto",
+                "entry_price": ev.data.get("close"), "stop": ev.data.get("stop"), "topo": ev.data.get("TOPO"),
+                "s_suporte": ev.data.get("S"), "r_resistencia": ev.data.get("R"), "holders_tag": holders.tag,
+                "liquidez_usd": info.get("liq_usd"), "ts_fechamento_candle": ts_fechamento,
+                "retorno_sol_dia": self._retorno_sol_dia_v1(ts_fechamento),
+                "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
+                "token_signal_seq": self.storage.pr2_token_next_seq(mint),
+                "fonte_candle": self._fonte_candle_atual, "so_v2": 1 if so_v2 else 0,
+            }
+            signal_id = self.storage.pr2_insert_signal(row_insert)
+            if signal_id is None:
+                signal = self.storage.pr2_signal_by_key("solana", pool, tf, "ENTRADA", ts_fechamento)
+                if signal is None:
+                    return
+                signal_id = signal["id"]
+            signal = self.storage.pr2_signal(signal_id)
+        if signal is None or signal["tg_message_id"]:
+            return
+        if self._late(now, ev.decision_ts, max(300.0, det.step / 2.0)):
+            return
+        if not self.storage.pr_alert_once(self._key_v2("e", pool, tf, ts_fechamento), now):
+            return
+        self.storage.pr2_update_signal(signal["id"], ts_alerta=self.clock())
+        tags = json.loads(signal["tags"] or "[]")
+        gatilho = json.loads(signal["gatilho"] or "[]")
+        age_h = None if ev.data.get("idade_dias") is None else ev.data["idade_dias"] * 24.0
+        if so_v2:
+            banca = self._bankroll_v2_ledger(tf).state.banca
+            text = telegram_v1.entrada_text(
+                self.chain_name, symbol, ev.data.get("P_peak"), age_h or 0.0, signal["janela_ouro"] or "fora_da_janela",
+                gatilho, tags, signal["entry_price"], signal["stop"], signal["topo"], tamanho_posicao_usd(banca, self.params_v2),
+                mint, liquidez_usd=signal["liquidez_usd"], mint_authority=signal["mint_authority"],
+                freeze_authority=signal["freeze_authority"],
+            ) + "\n⚠️ SOMENTE V2 (experimental)"
+            mid = self._send(text, self._keyboard_v2(row))
+        else:
+            text = f"🔁 V2 CONFIRMA este sinal (tag: V1+V2) | config V2 {self.version_v2}"
+            mid = self._send(text, reply_to=sinal_v1["tg_message_id"])
+        if mid is not None:
+            agora = self.clock()
+            self.storage.pr2_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora, ts_envio_telegram=agora)
+
+    def _update_paper_v2(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
+        for signal in self.storage.pr2_signals(status="aberto", pool=row["pool"], tf=tf):
+            if signal["versao_config_v2"] != self.version_v2:
+                continue
+            ev = event_v1_from_json(signal["event_json"])
+            dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+            res = simulate_v1(det.bars, ev, self.params_v2, self.costs, dex, row["l_bc"], self._sol_at())
+            if res.entry_price is not None and signal["entry_price"] != res.entry_price:
+                self.storage.pr2_update_signal(signal["id"], entry_price=res.entry_price)
+            if res.status == "cancelado":
+                self.storage.pr2_update_signal(signal["id"], status="cancelado", reason=res.reason, closed_ts=now)
+                continue
+            # PEDIDO CONSOLIDADO FASE 2 ("sem duplicar"): quando a ENTRADA foi mesclada com a V1
+            # (so_v2=False -- mesmo candle, mesmo gatilho, ja confirmado em resposta ao alerta da V1),
+            # TP1/EXIT FULL da V2 NUNCA mandam um alerta Telegram proprio (seria texto repetido do que a
+            # V1 ja mandou) -- estatisticas/banca da V2 continuam sendo gravadas normalmente, so o envio
+            # ao Telegram e que fica silencioso para esse sinal especifico.
+            pode_alertar = bool(signal["so_v2"])
+            tp1_leg = next((leg for leg in res.legs if leg.reason == "tp1"), None)
+            if tp1_leg is not None and signal["tp1_price"] is None:
+                if pode_alertar and signal["tg_message_id"] and self.storage.pr_alert_once(self._key_v2("tp1", signal["id"]), now):
+                    text = telegram_v1.tp1_text(self.chain_name, signal["symbol"], tp1_leg.price, res.entry_price or signal["entry_price"])
+                    self._send(text, self._keyboard_v2(row), reply_to=signal["tg_message_id"])
+                self.storage.pr2_update_signal(signal["id"], tp1_price=tp1_leg.price, tp1_ts=tp1_leg.ts)
+            if res.status != "fechado":
+                continue
+            exit_leg = res.legs[-1] if res.legs else None
+            if (pode_alertar and exit_leg is not None and signal["tg_message_id"]
+                    and self.storage.pr_alert_once(self._key_v2("x", signal["id"]), now)):
+                text = telegram_v1.exit_full_text(self.chain_name, signal["symbol"], exit_leg.price,
+                                                  res.entry_price or signal["entry_price"], exit_leg.reason)
+                self._send(text, self._keyboard_v2(row), reply_to=signal["tg_message_id"])
+            self.storage.pr2_update_signal(
+                signal["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
+                exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
+                tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
+            )
+            self._update_bankroll_v2(row, tf, det, signal, now)
+
+    def _bankroll_v2_ledger(self, tf: str) -> BankrollLedgerV1:
+        ledger = self._bankroll_v2.get(tf)
+        if ledger is None:
+            saved = self.storage.pr2_bankroll_load(tf, self.version_v2)
+            from .bankroll_v1 import BankrollStateV1
+            state = BankrollStateV1.from_json(saved) if saved else None
+            ledger = BankrollLedgerV1(self.params_v2, self.costs, state)
+            self._bankroll_v2[tf] = ledger
+        return ledger
+
+    def _update_bankroll_v2(self, row: Any, tf: str, det: DetectorV1, signal: Any, now: float) -> None:
+        ev = event_v1_from_json(signal["event_json"])
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        meta = {"token": row["symbol"], "contrato": row["mint"], "launchpad": row["launchpad"], "tf": tf}
+        ledger = self._bankroll_v2_ledger(tf)
+        linha = ledger.step(det.bars, ev, dex, row["l_bc"], self._sol_at(), meta)
+        if linha is None:
+            return
+        if self.storage.pr2_bankroll_append(tf, self.version_v2, signal["id"], linha, now):
+            self.storage.pr2_bankroll_save(tf, self.version_v2, ledger.state.to_json())
+
     def daily_summary_v1(self) -> str:
         now = self.clock()
         since = now - 86400.0
@@ -1219,6 +1452,21 @@ class PosRunnerLive:
 
     def send_relatorio_semanal_v1(self) -> None:
         self._send(self.relatorio_semanal_v1())
+
+    def relatorio_semanal_v2(self) -> str:
+        """PEDIDO CONSOLIDADO FASE 2: MESMO relatorio da V1, so que a partir das tabelas pr2_* -- sem
+        feedback (a FASE 3 de botoes/votos e um recurso so da V1 por ora, `rows=[]`); PnL vem direto dos
+        sinais FECHADOS da V2 na semana. `/relatorio v2` chama este metodo; nunca mistura com a V1."""
+        now = self.clock()
+        since = now - 7 * 86400.0
+        sinais_semana = [s for s in self.storage.pr2_signals()
+                         if s["versao_config_v2"] == self.version_v2 and s["ts_fechamento"] >= since]
+        pnl_values = [s["result_net"] for s in sinais_semana if s["status"] == "fechado" and s["result_net"] is not None]
+        pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
+        return telegram_v1.relatorio_semanal_text([], pnl_pct, self.version_v2, sinais_semana)
+
+    def send_relatorio_semanal_v2(self) -> None:
+        self._send(self.relatorio_semanal_v2())
 
     def _usd_prefix(self, bars: list[Bar], tf: str, usd: UsdSeries) -> list[Bar]:
         """Candles ate o 1o sem cotacao/USD no fechamento (esse e os seguintes esperam: nunca convertidos no chute)."""
@@ -1272,7 +1520,10 @@ class PosRunnerLive:
         det = None if self.sem_v0 else self._detector(row, tf, now)
         det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
         det_v1 = self._detector_v1(row, tf, now)
-        last = (det.bars[-1] if det is not None and det.bars else None) or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
+        det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now)
+        last = ((det.bars[-1] if det is not None and det.bars else None)
+               or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
+               or (det_v2.bars[-1] if det_v2 is not None and det_v2.bars else None))
         # cotacao/USD antes dos candles: sem ela nada e consumido (renova no maximo a cada 15 min; estavel nao custa)
         usd = self.quotes.series(row["quote"], last.ts + step if last else int(row["grad_ts"]), now)
         if usd is None:
@@ -1294,6 +1545,7 @@ class PosRunnerLive:
                 det = None if self.sem_v0 else self._detector(row, tf, now)
                 det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
                 det_v1 = self._detector_v1(row, tf, now, pending=seq)
+                det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now, pending=seq)
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
             self._fonte_candle_atual = fonte
             if det is not None:
@@ -1314,6 +1566,15 @@ class PosRunnerLive:
                     for ev in det_v1.update(b):
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)
+            # PEDIDO CONSOLIDADO FASE 2: V2 roda DEPOIS da V1 sobre os MESMOS `seq`, de proposito --
+            # assim, quando a V2 fecha uma ENTRADA no MESMO (pool,tf,ts_fechamento), a linha da V1 (se
+            # houver) ja esta gravada e o merge de alerta ("V1+V2" vs "SOMENTE V2") sempre ve o estado
+            # final da V1 para aquele candle, nunca uma corrida.
+            if det_v2 is not None:
+                for b in seq:
+                    for ev in det_v2.update(b):
+                        self._on_event_v2(row, tf, det_v2, ev, now)
+                self._update_paper_v2(row, tf, det_v2, now)
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide

@@ -227,7 +227,7 @@ class V1FeedbackHandlerTest(unittest.TestCase):
         self.handler = OperatorHandler(
             self.tg, self.env.storage, lambda: self.env.engine.cfg, FakeClock(),
             status_provider=lambda: "STATUS", summary_provider=lambda: "RESUMO",
-            relatorio_provider=lambda: "RELATORIO SEMANAL",
+            relatorio_provider=lambda args: "RELATORIO SEMANAL",
         )
         self.signal_id = self.env.storage.pr1_insert_signal({
             "chain": "solana", "pool": "poolA", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,

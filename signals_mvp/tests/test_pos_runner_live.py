@@ -121,7 +121,8 @@ def created_at(ts: Optional[float] = CREATED, seen: int = 1234):
 
 
 class LiveHarness:
-    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True):
+    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True,
+                **live_kwargs: Any):
         self.tmp = Path(tempfile.mkdtemp(prefix="pr_live_"))
         self.paths = make_paths(self.tmp)
         self.storage = Storage(self.paths)
@@ -131,12 +132,12 @@ class LiveHarness:
         self.settings = settings or LiveSettings(ligado=True, timeframes=("1h",), max_pools=5, chamadas_por_ciclo=3,
                                                  descoberta_min=3, fontes=("pumpswap",), grafico=False)
         self.params = params()
-        self.live = self.new_live()
+        self.live = self.new_live(**live_kwargs)
         self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage(), creation=created_at())
 
-    def new_live(self, telegram: Any = None) -> PosRunnerLive:
+    def new_live(self, telegram: Any = None, **kwargs: Any) -> PosRunnerLive:
         return PosRunnerLive(self.settings, self.params, self.storage, self.world, CTX, telegram or self.tg, LINKS, "solana",
-                             self.paths.dados / "pos_runner", clock=self.clock)
+                             self.paths.dados / "pos_runner", clock=self.clock, **kwargs)
 
     def list_pool(self, pool: str = "POOL1", mint: str = "MINT1", symbol: str = "CAT", mc: float = 1_000_000.0,
                   created: float = GRAD + 60, dex: str = "pumpswap") -> None:

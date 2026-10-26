@@ -109,6 +109,22 @@ class InstrumentacaoNuncaMudaOSinalTests(unittest.TestCase):
         self.assertEqual(row["liquidez_usd"], 100_000.0)
         # token_signal_seq (pedido de ajustes de alerta/medicao, item 2): 1o sinal desse mint na fixture.
         self.assertEqual(row["token_signal_seq"], 1)
+        # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): sem o provider configurado (None, padrao), o candle
+        # so pode vir do GT.
+        self.assertEqual(row["fonte_candle"], "gt")
+
+
+class InstrumentacaoNuncaMudaOSinalComSemV2Tests(InstrumentacaoNuncaMudaOSinalTests):
+    """PEDIDO CONSOLIDADO FASE 2: MESMO cenario, so com `sem_v2=True` -- prova que o golden da V1 fica
+    IDENTICO com o novo recurso explicitamente desligado (alem de ja ficar identico com ele ligado por
+    padrao, que e o que a classe-mae acima prova)."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness(sem_v2=True)
+
+    def test_sem_v2_produces_no_v2_rows_at_all(self) -> None:
+        self._run_scenario()
+        self.assertEqual(self.h.storage.pr2_signals(), [])
 
 
 if __name__ == "__main__":

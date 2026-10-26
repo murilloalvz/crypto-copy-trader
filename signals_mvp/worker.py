@@ -190,6 +190,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
 
     settings = LiveSettings.from_config(raw)
     sem_v0 = bool(os.environ.get("POS_RUNNER_SEM_V0"))   # item 0 (regras inegociaveis): flag --sem-v0
+    sem_v2 = bool(os.environ.get("SEM_V2"))   # PEDIDO CONSOLIDADO FASE 2: SEM_V2=1 desliga a V2 por completo
     settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)
     path = Path(settings.parametros)
     if not path.is_absolute():
@@ -209,7 +210,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     dexpaprika = make_dexpaprika_provider()
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
-                         chain_name=chain["nome"], dexpaprika=dexpaprika)
+                         chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     _check_fase2_capabilities(http, telegram, paths)
     verifier = LineageVerifier(storage, rpc)
@@ -217,11 +218,24 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     dp_status = "desligado"
     if dexpaprika is not None:
         dp_status = "com chave" if os.environ.get("DEXPAPRIKA_API_KEY", "").strip() else "sem chave (keyless)"
-    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | %s chamadas/ciclo | RPC: %s | DexPaprika: %s",
+    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | V2 config %s%s | %s chamadas/ciclo | "
+                 "RPC: %s | DexPaprika: %s",
                  "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
                  params.version, live.status, " [V0 DESLIGADO: POS_RUNNER_SEM_V0]" if sem_v0 else "",
-                 live.version_v1, settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints), dp_status)
+                 live.version_v1, live.version_v2, " [V2 DESLIGADA: SEM_V2]" if sem_v2 else "",
+                 settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints), dp_status)
     return live
+
+
+def _relatorio_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
+    """PEDIDO CONSOLIDADO FASE 2: "/relatorio [v1|v2]" -- padrao v1 (compatibilidade com o comando que
+    ja existia). Nunca mistura as estatisticas das 2 versoes."""
+    versao = args[0].lower() if args else "v1"
+    if versao == "v2":
+        return pos_runner.relatorio_semanal_v2()
+    if versao == "v1":
+        return pos_runner.relatorio_semanal_v1()
+    return "uso: /relatorio [v1|v2]"
 
 
 def make_dexpaprika_provider() -> Optional[Any]:
@@ -385,7 +399,7 @@ class Worker:
             handler = OperatorHandler(
                 telegram, storage, lambda: engine.cfg, utc_now,
                 status_provider=engine.status_text, summary_provider=engine.build_daily_summary,
-                relatorio_provider=(lambda: engine.pos_runner.relatorio_semanal_v1()
+                relatorio_provider=(lambda args: _relatorio_v1_ou_v2(engine.pos_runner, args)
                                     if engine.pos_runner is not None else "POS-RUNNER desligado"),
             )
             try:

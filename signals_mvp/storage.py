@@ -77,6 +77,18 @@ POS_RUNNER_V1_DEXPAPRIKA_COLUMNS = [
     "data", "chain", "token", "contrato", "tf", "candle_ts", "campo", "valor_gt", "valor_dexpaprika",
     "diff_pct", "versao_config_v1",
 ]
+# PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 -- MESMO contrato de colunas da V1 (schema identico, so a
+# tabela/CSV e propria; "so_v2" e novo no FIM: True = "SOMENTE V2 (experimental)", False = "V1+V2").
+POS_RUNNER_V2_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "launchpad", "tf", "idade_h", "janela_ouro",
+    "topo", "L_bc", "queda_pct", "S", "R", "n_wicks", "gatilho", "entrada_mc", "stop_mc", "risco_pct",
+    "tp1_mc", "exit_full_mc", "resultado_liq_pct", "tempo_trade_h", "motivo_saida", "tags",
+    "holders_tag", "mint_authority", "freeze_authority", "liquidez_usd", "teste_vol_ratio", "origem",
+    "versao_config_v2", "perdido_offline",
+    "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia", "token_signal_seq",
+    "fonte_candle", "so_v2",
+]
+POS_RUNNER_V2_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v2"]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -240,6 +252,42 @@ CREATE TABLE IF NOT EXISTS pr1_dexpaprika_divergencias (
   tf TEXT, candle_ts INTEGER, campo TEXT NOT NULL, valor_gt REAL, valor_dexpaprika REAL, diff_pct REAL,
   versao_config_v1 TEXT
 );
+-- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
+-- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
+-- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
+-- MESMO candle de um ENTRADA da V1 colidiria com a linha da V1 (INSERT OR IGNORE devolveria a linha
+-- da V1, com o gatilho/risco/tags ERRADOS para a V2). Por isso V2 tem sua propria familia de tabelas,
+-- schema IDENTICO ao pr1_* (so o nome muda), estatisticas/banca/CSV nunca se misturam com a V1.
+CREATE TABLE IF NOT EXISTS pr2_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v2 TEXT NOT NULL,
+  gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT, teste_vol_ratio REAL,
+  event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto',
+  entry_price REAL, stop REAL, topo REAL, s_suporte REAL, r_resistencia REAL,
+  tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, tempo_h REAL,
+  holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, liquidez_usd REAL,
+  tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
+  token_signal_seq INTEGER, fonte_candle TEXT NOT NULL DEFAULT 'gt',
+  -- so_v2: True quando NAO houve ENTRADA da V1 no MESMO (pool,tf,ts_fechamento) -- "SOMENTE V2
+  -- (experimental)"; False = "V1+V2" (mesmo candle, mesmo gatilho -- 1 alerta so, combinado).
+  so_v2 INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (chain, pool, tf, evento, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr2_signals_open ON pr2_signals (status);
+CREATE TABLE IF NOT EXISTS pr2_filtrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, valor TEXT, versao_config_v2 TEXT
+);
+CREATE TABLE IF NOT EXISTS pr2_bankroll_state (
+  tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (tf, versao_config_v2)
+);
+CREATE TABLE IF NOT EXISTS pr2_bankroll_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL,
+  pr2_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr2_signal_id)
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -295,7 +343,8 @@ class Storage:
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
                        "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
                        "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True,
-                       "pos_runner_v1_pulados": True, "pos_runner_v1_dexpaprika": True}
+                       "pos_runner_v1_pulados": True, "pos_runner_v1_dexpaprika": True,
+                       "pos_runner_v2": True, "pos_runner_v2_filtrados": True, "pos_runner_v2_banca": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -625,6 +674,10 @@ class Storage:
                                       lambda: (POS_RUNNER_V1_PULADOS_COLUMNS, self._pos_runner_v1_pulados_rows())),
             "pos_runner_v1_dexpaprika": (self.paths.pos_runner_v1_dexpaprika_csv,
                                         lambda: (POS_RUNNER_V1_DEXPAPRIKA_COLUMNS, self._pos_runner_v1_dexpaprika_rows())),
+            "pos_runner_v2": (self.paths.pos_runner_v2_csv, lambda: (POS_RUNNER_V2_COLUMNS, self._pos_runner_v2_rows())),
+            "pos_runner_v2_filtrados": (self.paths.pos_runner_v2_filtrados_csv,
+                                       lambda: (POS_RUNNER_V2_FILTRADOS_COLUMNS, self._pos_runner_v2_filtrados_rows())),
+            "pos_runner_v2_banca": (self.paths.pos_runner_v2_banca_csv, self._pos_runner_v2_banca_header_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -920,6 +973,144 @@ class Storage:
     def pr1_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
         return self._one("SELECT * FROM pr1_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
                          (chain, pool, tf, evento, ts_fechamento))
+
+    # -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (tabelas PROPRIAS -- ver comentario da DDL acima) -----------
+    def pr2_insert_signal(self, row: dict) -> Optional[int]:
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr2_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols],
+            )
+            self._dirty["pos_runner_v2"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr2_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr2_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), signal_id])
+            self._dirty["pos_runner_v2"] = True
+
+    def pr2_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr2_signals WHERE id=?", (signal_id,))
+
+    def pr2_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr2_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
+                         (chain, pool, tf, evento, ts_fechamento))
+
+    def pr2_token_next_seq(self, mint: Optional[str]) -> int:
+        if not mint:
+            return 1
+        row = self._one("SELECT COUNT(*) AS n FROM pr2_signals WHERE mint=? AND evento='ENTRADA'", (mint,))
+        return (row["n"] if row else 0) + 1
+
+    def pr2_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr2_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr2_add_filtrado(self, ts: float, chain: str, pool: str, mint: str, symbol: str, motivo: str, valor: str,
+                         versao_config_v2: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr2_filtrados (ts,chain,pool,mint,symbol,motivo,valor,versao_config_v2) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, motivo, valor, versao_config_v2),
+            )
+            self._dirty["pos_runner_v2_filtrados"] = True
+
+    def pr2_version_start(self, version: str, ts: float) -> float:
+        key = f"pr2_versao_inicio:{version}"
+        with self._lock:
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr2_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr2_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return float(row[0])
+
+    def pr2_filtrado_counts(self, since_ts: float) -> dict[str, int]:
+        return {r[0]: r[1] for r in self._all(
+            "SELECT motivo, COUNT(*) FROM pr2_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
+
+    def pr2_bankroll_load(self, tf: str, versao_config_v2: str) -> Optional[str]:
+        row = self._one("SELECT state_json FROM pr2_bankroll_state WHERE tf=? AND versao_config_v2=?", (tf, versao_config_v2))
+        return row[0] if row else None
+
+    def pr2_bankroll_save(self, tf: str, versao_config_v2: str, state_json: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO pr2_bankroll_state (tf, versao_config_v2, state_json) VALUES (?, ?, ?)",
+                (tf, versao_config_v2, state_json))
+
+    def pr2_bankroll_append(self, tf: str, versao_config_v2: str, pr2_signal_id: int, row: dict, ts: float) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr2_bankroll_trades (ts, tf, versao_config_v2, pr2_signal_id, row_json) VALUES (?, ?, ?, ?, ?)",
+                (ts, tf, versao_config_v2, pr2_signal_id, json.dumps(row, default=str)))
+            if cur.rowcount:
+                self._dirty["pos_runner_v2_banca"] = True
+            return bool(cur.rowcount)
+
+    def pr2_bankroll_resumos(self) -> dict[str, dict]:
+        from .pos_runner.bankroll_v1 import BankrollStateV1
+        out = {}
+        for r in self._all("SELECT tf, versao_config_v2, state_json FROM pr2_bankroll_state"):
+            out[f"{r['tf']}@{r['versao_config_v2'][:12]}"] = BankrollStateV1.from_json(r["state_json"]).resumo()
+        return out
+
+    def _pos_runner_v2_banca_header_rows(self) -> tuple[list[str], list[list[Any]]]:
+        from .pos_runner.bankroll_v1 import COLUMNS, HEADER_LABELS
+        header = [HEADER_LABELS.get(c, c) for c in COLUMNS]
+        rows = []
+        for r in self._all("SELECT row_json FROM pr2_bankroll_trades ORDER BY ts, id"):
+            d = json.loads(r[0])
+            rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
+        return header, rows
+
+    def _pos_runner_v2_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all("SELECT * FROM pr2_signals WHERE evento='ENTRADA' ORDER BY ts_fechamento, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            age = d.get("idade_dias")
+            gatilho = self._pr_list(r["gatilho"])
+            tags = self._pr_list(r["tags"])
+            if r["status"] == "aberto":
+                motivo_saida = "em_aberto"
+            elif r["reason"]:
+                motivo_saida = r["reason"]
+            else:
+                motivo_saida = r["status"]
+            out.append([
+                iso_utc(r["ts_fechamento"]), r["hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["launchpad"], r["tf"], _num(None if age is None else age * 24, 1), r["janela_ouro"] or "",
+                _num(r["topo"]), _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(r["s_suporte"]), _num(r["r_resistencia"]),
+                d.get("n_testes", ""), ",".join(gatilho),
+                _num(r["entry_price"]), _num(r["stop"]), _num(d.get("risco_pct"), 1),
+                _num(r["tp1_price"]), _num(r["exit_full_price"]), _num(None if r["result_net"] is None else 100 * r["result_net"], 2),
+                _num(r["tempo_h"], 1), motivo_saida, ",".join(tags),
+                r["holders_tag"] or "", r["mint_authority"] or "", r["freeze_authority"] or "", _num(r["liquidez_usd"]),
+                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v2"],
+                1 if r["status"] == "perdido_offline" else 0,
+                r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
+                _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
+                r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
+                r["fonte_candle"] or "gt", 1 if r["so_v2"] else 0,
+            ])
+        return out
+
+    def _pos_runner_v2_filtrados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v2"]]
+            for r in self._all("SELECT * FROM pr2_filtrados ORDER BY ts, id")
+        ]
 
     def pr1_token_next_seq(self, mint: Optional[str]) -> int:
         """Sequencial do sinal dentro do MESMO token (mint): 1 para o 1o ENTRADA desse mint, 2 para o 2o,

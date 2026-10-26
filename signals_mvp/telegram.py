@@ -158,7 +158,7 @@ HELP_TEXT = (
     "/sai <pool|ticker> [preco] - registra que saiu de um sinal da V1 (preco real -> slippage vs TP1/EXIT/stop)\n"
     "/nota <pool|ticker> <texto> - anota algo sobre o sinal\n"
     "/pulei <pool|ticker> <motivo> - registra que viu o sinal e NAO executou\n"
-    "/relatorio - bons vs ruins da ultima semana\n"
+    "/relatorio [v1|v2] - bons vs ruins da ultima semana (padrao v1)\n"
     "Os botoes 👍 Bom / 👎 Ruim / 📝 Nota do alerta da V1 registram o voto/nota; o 📝 pede a nota em resposta."
 )
 
@@ -199,7 +199,7 @@ class OperatorHandler:
         clock: Callable[[], float],
         status_provider: Callable[[], str] = lambda: "sem status",
         summary_provider: Callable[[], str] = lambda: "sem resumo",
-        relatorio_provider: Callable[[], str] = lambda: "sem relatorio",
+        relatorio_provider: Callable[[list[str]], str] = lambda args: "sem relatorio",
     ):
         self.client = client
         self.storage = storage
@@ -254,7 +254,9 @@ class OperatorHandler:
         if command == "/resumo":
             return self.summary_provider()
         if command == "/relatorio":
-            return self.relatorio_provider()
+            # PEDIDO CONSOLIDADO FASE 2: "/relatorio" aceita "v1" ou "v2" (padrao v1, compatibilidade
+            # com o comando que ja existia antes da V2) -- nunca mistura as estatisticas das 2 versoes.
+            return self.relatorio_provider(args)
         if command == "/nota":
             return self._v1_nota_command(args)
         if command == "/pulei":
