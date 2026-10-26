@@ -196,3 +196,33 @@ avaliado e simulado de forma independente, exatamente como o prompt pede para qu
 `(pool, tf, zona)`. `token_signal_seq` (novo campo de instrumentação, mesmo pedido) só numera essa ordem
 (1º sinal do token = 1, 2º = 2, ...) para facilitar agrupar por token no `/relatorio` e na análise Monte
 Carlo — nunca muda a decisão de entrada/saída/tamanho.
+
+### 11a. Correção (pedido de ajustes de alerta/medição, fase 4): o ヤギ e o McRib NÃO são o caso "nova onda"
+
+**Achado do operador:** as 2 ENTRADA do ヤギ (`EU1MHvQv...`) e as 2 do McRib (`8idEA8Qo...`) têm o MESMO
+`P_peak` (e por isso o mesmo TP1, já que `TOPO=self.peak`) — então a explicação acima ("nova máxima acima
+do pico anterior = nova onda") **não se aplica** a esses dois casos. A explicação da seção 11 estava
+incompleta: ela descreve só UM dos dois jeitos de ter 2 ENTRADA no mesmo mint; o ヤギ/McRib são o OUTRO
+jeito, mais comum.
+
+**O que exatamente reinicia a zona:** a própria emissão da 1ª ENTRADA. Em `detector_v1.py::_check_zone`
+(linha ~207), **toda** ENTRADA é seguida, no MESMO candle de fechamento, por `self._new_zone(i + 1)` —
+incondicional, não exige nova máxima nem checa o estado da onda. `_new_zone` só cria uma `Zone` nova
+(zona_no+1, S/R/testes zerados) a partir do candle seguinte; ela **não chama `_new_wave`**, então
+`self.peak`/`self.peak_idx` (e portanto `P_peak`/`TOPO`/TP1) continuam exatamente os mesmos da onda em
+curso. Enquanto o preço não fizer nova máxima (o que trocaria de onda via `_update_wave` linha 215-218) E
+não passar dos limiares de invalidação da onda (queda > `drop_max` ou mínima abaixo de `L_bc`, que
+emitiriam ONDA_INVALIDA e chamariam `_new_wave` — linha 237-241), a MESMA onda continua em
+`PHASE_PULLBACK`. Candle a candle, essa onda ainda viva constrói uma zona NOVA do zero (fundo → dentro →
+testando, igual à 1ª vez) usando o mesmo `self.peak` como referência; se essa zona nova maturar (`armed`,
+`zone_min_candles` candles com 1 a 3 wicks) e um gatilho disparar de novo (`reacao_suporte`,
+`power_candle_rompimento` ou `rompimento_volume` — os mesmos 3 de sempre), dispara uma 2ª ENTRADA com o
+MESMO `P_peak`/`TOPO`/TP1 da 1ª, porque o pico nunca mudou — só a zona (consolidação/suporte) é nova.
+
+**Confirmação: é o comportamento esperado, não um bug.** A regra "uma decisão por zona; depois dela a
+zona recomeça" (linha 27 do mesmo arquivo) sempre previu isso — ela só não deixava claro que o reinício
+da zona NÃO depende de uma onda nova. Em termos de mercado: depois do rompimento que gerou a 1ª ENTRADA,
+o preço voltou a consolidar (um novo range/suporte) SEM fazer uma máxima nova acima do pico anterior, e
+rompeu esse 2º range de novo — 2 setups de reação/rompimento genuinamente distintos dentro da MESMA onda,
+com o mesmo teto (pico) ainda válido. Nenhuma regra, parâmetro ou hash da V1 muda com esta investigação —
+é só a explicação em texto que foi corrigida.
