@@ -97,7 +97,7 @@ class Excluido:
     entry_id: int
     mint: str
     symbol: str
-    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente' | 'risco_irrealista'
+    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente' | 'risco_irrealista' | 'contaminado_candle'
 
 
 def _preco_entrada_divergente(sinal: Any) -> bool:
@@ -131,6 +131,15 @@ def _risco_irrealista(sinal: Any) -> bool:
     return "risco_irrealista" in json.loads(sinal["tags"] or "[]")
 
 
+def _contaminado_candle(sinal: Any) -> bool:
+    """PATCH 2026-10-27 (item 2 do pedido pos-auditoria): marcacao RETROATIVA e EXPLICITA do operador
+    (`scripts/marcar_contaminados.py`, tag `contaminado_candle`) para um trade confirmado contaminado
+    por um candle corrompido em QUALQUER ponto do seu ciclo de vida -- nao so o candle do gatilho (ja
+    coberto por `_candle_divergente_confirmado`) ou o preco de entrada (`_preco_entrada_divergente`).
+    Nunca auto-detectada aqui: so o operador decide, depois de ler a auditoria."""
+    return "contaminado_candle" in json.loads(sinal["tags"] or "[]")
+
+
 def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalResolvido], list[Excluido]]:
     """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
     `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
@@ -156,6 +165,10 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalRe
         if _risco_irrealista(sinal):
             excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
                                        "risco_irrealista"))
+            continue
+        if _contaminado_candle(sinal):
+            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+                                       "contaminado_candle"))
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
         risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None

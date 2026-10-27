@@ -247,6 +247,23 @@ class CarregarSinaisResolvidosTests(unittest.TestCase):
         self.assertEqual(len(excluidos), 1)
         self.assertEqual(excluidos[0].motivo, "risco_irrealista")
 
+    def test_a_signal_tagged_contaminado_candle_is_excluded_with_reason(self) -> None:
+        # PATCH 2026-10-27 (item 2, pos-auditoria): marcacao retroativa explicita
+        # (scripts/marcar_contaminados.py), independente de onde no ciclo de vida o candle corrompido
+        # apareceu (nao so gatilho/entrada -- os outros 3 criterios).
+        signal_id = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": '["contaminado_candle"]',
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "fechado",
+            "entry_price": 100.0, "stop": 80.0,
+        })
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(sinais, [])
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "contaminado_candle")
+
     def test_v2_is_never_excluded_by_the_dexpaprika_criterion_since_it_has_no_cross_check_of_its_own(self) -> None:
         signal_id = self.storage.pr2_insert_signal({
             "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,

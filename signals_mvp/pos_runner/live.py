@@ -632,14 +632,24 @@ class PosRunnerLive:
             if "criado_ts" not in LineageVerifier._info(row):
                 self.storage.pr_upsert_pool(row["pool"], status="verificado", motivo="falta a data de criacao do token")
         # POS-RUNNER-V1: mesma regra de inicio de versao (item 3.7); decisao anterior ao 1o ciclo desta
-        # versao_config_v1 nunca vira sinal dela. Evento ocorrido com o processo desligado (lacuna > folga do
-        # tf) fica `perdido_offline`, nunca tenta alertar com atraso.
+        # versao_config_v1 nunca vira sinal dela.
+        # PATCH 2026-10-27 (item 3, retomada): um sinal "atrasado" (lacuna > folga do tf desde o ultimo
+        # candle conhecido) NAO fecha mais de cara como `perdido_offline` -- o pool `ativo` continua
+        # sendo atualizado pelo ciclo normal (`_refresh`/`_refresh_safe`, GT primeiro, DexPaprika como
+        # fallback quando o GT falha -- MESMO pipeline que ja busca candles antigos, ja que `_fetch_gt`
+        # sempre pede de `grad_ts` at'e `now`), que fecha a lacuna sozinho e retoma o acompanhamento com
+        # os precos REAIS (nunca perdidos). So fica `perdido_offline` quando o pool NAO ESTA MAIS ativo
+        # (encerrado/removido -- nenhum candle novo sera buscado para ele nunca mais, os dados realmente
+        # nao existem/nao virao). Ver INTERPRETACOES.md para a limitacao conhecida (pool que fica `ativo`
+        # para sempre sem nunca fechar a lacuna nao e coberto por este patch).
         self.version_v1_start = self.storage.pr1_version_start(self.version_v1, now)
         for signal in self.storage.pr1_signals(status="aberto"):
             if signal["versao_config_v1"] != self.version_v1:
                 self.storage.pr1_update_signal(signal["id"], status="descontinuado", closed_ts=now)
             elif self._late(now, signal["ts_fechamento"], max(1800.0, 2.0 * tf_seconds(signal["tf"]))):
-                self.storage.pr1_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
+                pool_row = self.storage.pr_pool(signal["pool"])
+                if pool_row is None or pool_row["status"] != "ativo":
+                    self.storage.pr1_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
         if self._uptime_id is None:
             self._uptime_id = self.storage.pr1_uptime_start(now)
         # PEDIDO CONSOLIDADO FASE 2: mesma regra de inicio de versao, tabelas PROPRIAS da V2.
@@ -648,7 +658,9 @@ class PosRunnerLive:
             if signal["versao_config_v2"] != self.version_v2:
                 self.storage.pr2_update_signal(signal["id"], status="descontinuado", closed_ts=now)
             elif self._late(now, signal["ts_fechamento"], max(1800.0, 2.0 * tf_seconds(signal["tf"]))):
-                self.storage.pr2_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
+                pool_row = self.storage.pr_pool(signal["pool"])
+                if pool_row is None or pool_row["status"] != "ativo":
+                    self.storage.pr2_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
 
     def shutdown(self, now: float, motivo: str = "parado") -> None:
         """Fecha a sessao de uptime da V1 (item "registro completo"). Chamado uma vez no desligamento limpo."""
@@ -1342,6 +1354,7 @@ class PosRunnerLive:
                 signal["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
+                r_exit_open_seguinte=res.r_exit_open_seguinte,
             )
             self._update_bankroll_v1(row, tf, det, signal, now)
 
@@ -1514,6 +1527,7 @@ class PosRunnerLive:
                 signal["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
+                r_exit_open_seguinte=res.r_exit_open_seguinte,
             )
             self._update_bankroll_v2(row, tf, det, signal, now)
 

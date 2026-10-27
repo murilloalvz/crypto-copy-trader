@@ -56,6 +56,7 @@ class TradeResultV1:
     pending_idx: Optional[int] = None
     pending_frac: float = 0.0
     max_high: Optional[float] = None
+    r_exit_open_seguinte: Optional[float] = None
 
 
 def _atr(bars: list[Bar], j: int, n: int) -> Optional[float]:
@@ -145,7 +146,22 @@ def simulate_v1(
             continue
         hit_stop = bar.low <= stop
         if hit_stop:
+            # PATCH 2026-10-27 (item 4, pos-auditoria): o R OFICIAL continua preenchendo no nivel do
+            # stop (min(open, stop) -- sem gap/slippage, convencao ja em vigor, nunca muda aqui). So
+            # pra analise de sensibilidade, calcula em PARALELO qual seria o R se o preenchimento
+            # fosse no OPEN do candle seguinte ao candle que violou o stop (mais realista p/ ordens que
+            # so executam depois do candle fechar) -- nunca escrito em `res.legs`/`net_ret`/`r_mult`.
+            frac_stop = remaining
             exit_leg(j, min(bar.open, stop), remaining, "stop")
+            if j + 1 < len(bars):
+                preco_seguinte = bars[j + 1].open
+                custo_seguinte = leg_cost(preco_seguinte, bars[j + 1].ts)
+                c_in = (res.entry_cost_pct or 0.0) / 100.0
+                pernas_antes = res.legs[:-1]
+                liquido = (sum(leg.frac * (leg.price / entry) * (1.0 - c_in) * (1.0 - leg.cost_pct / 100.0)
+                              for leg in pernas_antes)
+                          + frac_stop * (preco_seguinte / entry) * (1.0 - c_in) * (1.0 - custo_seguinte / 100.0))
+                res.r_exit_open_seguinte = (liquido - 1.0) / res.risk_frac if res.risk_frac else None
             break
         if bar.close < s_support:
             frac = remaining

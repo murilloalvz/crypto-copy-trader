@@ -253,6 +253,40 @@ class SimulateV1Tests(unittest.TestCase):
         self.assertEqual(res.legs[1].price, 88)
         self.assertLess(res.net_ret, res.gross_ret)   # custos sempre reduzem o retorno
 
+    def test_stop_hit_also_fills_a_sensitivity_r_at_the_next_candles_open(self):
+        # PATCH 2026-10-27 (item 4, pos-auditoria): o R OFICIAL continua preenchendo no nivel do stop
+        # (sem gap/slippage) -- so a sensibilidade usa o OPEN do candle seguinte ao que violou.
+        bars = [
+            Bar(T0, 100, 100, 100, 100, 1),
+            Bar(T0 + H, 110, 120, 108, 115, 1),          # entrada no open (110)
+            Bar(T0 + 2 * H, 109, 112, 80, 90, 1),         # toca o stop (90): preenche em min(109,90)=90
+            Bar(T0 + 3 * H, 95, 100, 92, 98, 1),          # candle seguinte: open 95
+        ]
+        res = self._run(bars, _ev(stop=90, topo=300, s_support=100))
+        self.assertEqual(res.status, "fechado")
+        self.assertEqual(res.legs[-1].price, 90)          # R oficial INTACTO (sem gap/slippage)
+        self.assertAlmostEqual(res.r_mult, -1.08955)       # stop (90) + custo de 1% (slippage s/ l_bc)
+        self.assertIsNotNone(res.r_exit_open_seguinte)
+        self.assertAlmostEqual(res.r_exit_open_seguinte, -0.844525)   # mesmo custo, no OPEN seguinte (95)
+        self.assertGreater(res.r_exit_open_seguinte, res.r_mult, "95 > 90 -- sensibilidade menos ruim")
+
+    def test_sensitivity_r_is_none_when_there_is_no_next_candle_after_the_stop(self):
+        bars = [
+            Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 108, 115, 1),
+            Bar(T0 + 2 * H, 109, 112, 80, 90, 1),   # ultimo candle disponivel -- stop sem candle seguinte
+        ]
+        res = self._run(bars, _ev(stop=90, topo=300, s_support=100))
+        self.assertEqual(res.status, "fechado")
+        self.assertIsNone(res.r_exit_open_seguinte)
+
+    def test_sensitivity_r_is_none_for_trades_that_never_hit_the_stop(self):
+        res = self._run(
+            [Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 108, 115, 1)],
+            _ev(stop=50, topo=300, s_support=30),
+        )
+        self.assertEqual(res.status, "em_aberto")
+        self.assertIsNone(res.r_exit_open_seguinte)
+
     def test_candle_confiavel_omitted_is_identical_to_every_candle_being_confiavel(self):
         bars = [
             Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 105, 115, 1),

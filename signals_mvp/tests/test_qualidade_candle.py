@@ -58,6 +58,22 @@ class MotivoSuspeitoTests(unittest.TestCase):
                                  vizinho_seguinte_open=2_640_000.0)
         self.assertIsNone(motivo)
 
+    def test_a_glitch_under_the_peak_ceiling_is_still_caught_by_the_neighbor_ratio(self) -> None:
+        # PEDIDO 2026-10-27 (item 1, pos-auditoria): token com pico ALTO (10M) -- um glitch de 100x
+        # sobre o vizinho (200k -> 20M) fica ABAIXO do teto de 3x o pico (30M), mas ainda e um salto
+        # isolado enorme vs. o candle anterior -- o veto causal (so vizinho anterior) ainda pega, SEM
+        # depender do teste de pico.
+        bar = _bar(19_800_000.0, 20_100_000.0, 19_500_000.0, 20_000_000.0)
+        peak = 10_000_000.0
+        vizinho = 200_000.0
+        self.assertLessEqual(bar.close, 3.0 * peak, "premissa do teste: close NAO passa de 3x o pico")
+        # sem candle seguinte ainda: nao descarta, mas tambem nao confirma --
+        self.assertEqual(motivo_suspeito(bar, vizinho, peak), "sem_confirmacao_candle_seguinte")
+        # candle seguinte reverte pro nivel anterior: confirma que foi um glitch isolado (vol=0 na
+        # pratica, mesmo padrao observado na auditoria real -- McRib [113]/yagi [129]).
+        self.assertEqual(motivo_suspeito(bar, vizinho, peak, vizinho_seguinte_open=205_000.0),
+                         "candle_isolado_vs_vizinhos")
+
     def test_custom_limiares_are_honored(self) -> None:
         # pico_candle=105, vizinho=30 -> razao 3.5x: dentro do limiar PADRAO (10x), fora do customizado (2x).
         limiares = LimiaresQualidadeCandle(razao_vizinho_max=2.0, razao_pico_max=1.5)

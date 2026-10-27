@@ -18,6 +18,14 @@ usado em `ANALISE_MONTE_CARLO.md`/`PROTOCOLO_VALIDACAO.md` (`lucro_líquido_% / 
   resolvidos — `pr_baseline_resolvidas_com_dif`). Linhas com algum controle pendente nunca entram.
 - `n` conta **tokens distintos** (mint), não sinais — mesma convenção de `_stats_r_de_fechados`.
 - V1 e V2 **nunca se misturam** na mesma análise (coluna `versao`); rodar as duas separadamente.
+- **Sensibilidade de saída por stop (2026-10-27, item 4 pós-auditoria)**: `R_sinal`/`dif_pareada`
+  (H1–H8, R oficial) sempre usam o preenchimento OFICIAL do stop (`min(open, stop)` — sem gap/
+  slippage, convenção de `simulate_v1.py` inalterada). `pr1_signals.r_exit_open_seguinte`/
+  `pr2_signals.r_exit_open_seguinte` (nullable; só preenchida quando o trade fechou por "stop" e
+  havia candle seguinte) guarda o R alternativo usando o OPEN do candle seguinte ao candle que
+  violou o stop — mais realista para ordens que só executam depois do candle fechar. É uma análise
+  de SENSIBILIDADE à parte (comparar a magnitude de H1 com R oficial vs. R com esta convenção
+  alternativa), nunca substitui `dif_pareada`/R oficial em H1–H8.
 
 ## Exclusão pré-declarada por candle/preço absurdo (DIAGNÓSTICO 2026-10-27)
 
@@ -35,7 +43,14 @@ terceiro critério, pelo mesmo motivo (seção abaixo) — `risco_irrealista` (i
 patch). Mesma regra: adição a este documento, nunca reescrita do texto já em vigor; nenhuma coleta
 real rodou sobre este checkout antes desta adição.
 
-Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** dos três é confirmado:
+**Atualização 2026-10-27 (pós-auditoria na VM)**: a auditoria (`scripts/auditar_trades.py`) confirmou
+candle com volume 0 e salto ~100x vs. os vizinhos em McRib V1#6/V2#2 e ヤギ V2#1 — fora do candle do
+gatilho/preço de entrada (não cobertos pelos critérios 1–2) e sem relação com risco baixo (critério
+3). Adicionado o 4º critério — `contaminado_candle`, marcação RETROATIVA e EXPLÍCITA do operador
+(`scripts/marcar_contaminados.py`, nunca auto-detectada), para cobrir contaminação em qualquer ponto
+do ciclo de vida do trade.
+
+Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** dos quatro é confirmado:
 
 1. **`preco_entrada_divergente`** — o preço PROVISÓRIO mostrado no alerta ENTRADA
    (`pr1_signals.entry_price_alerta`/`pr2_signals.entry_price_alerta`, gravado 1x e nunca
@@ -53,6 +68,10 @@ Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** do
    `RISCO_IRREALISTA_MIN_PCT`). A tag nunca bloqueia/cancela o sinal no paper — ele continua
    negociando normalmente; só fica fora da amostra confiável de H1–H8, já que um risco real colado
    no stop distorce o R-múltiplo sem representar o setup pretendido pela regra.
+4. **`contaminado_candle`** (2026-10-27) — o sinal está tagueado `contaminado_candle` em `tags`
+   (gravado por `scripts/marcar_contaminados.py`, SÓ depois do operador confirmar na auditoria —
+   nunca auto-detectado em tempo real). Mesmo tratamento do critério 3: nunca bloqueia/cancela o
+   sinal, só fica fora da amostra confiável.
 
 A lista de excluídos (entry_id, mint, símbolo, motivo) é reportada em
 `signals_mvp/analise/condicional.py` (`RelatorioCondicional.excluidos`, impressa em

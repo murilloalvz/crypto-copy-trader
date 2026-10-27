@@ -384,6 +384,14 @@ class Storage:
             # NULL em sinais anteriores ao patch (nunca inventa a versao retroativamente).
             self._ensure_columns("pr1_signals", {"qualidade_versao": "TEXT"})
             self._ensure_columns("pr2_signals", {"qualidade_versao": "TEXT"})
+            # PATCH 2026-10-27 (item 4, pos-auditoria): R de SENSIBILIDADE p/ saidas por stop -- saida no
+            # OPEN do candle seguinte ao candle que violou o stop, em vez do preenchimento no nivel do
+            # stop (sem gap/slippage, convencao oficial intacta -- ver simulate_v1.py). So preenchida
+            # quando o trade fechou por "stop" E havia um candle seguinte; NULL nos demais casos (TP1/
+            # exit_full ja usam o OPEN do candle seguinte na saida oficial, nada a comparar) e em sinais
+            # anteriores a este patch. Nunca lida por regra/filtro/alerta/banca de V1 ou V2.
+            self._ensure_columns("pr1_signals", {"r_exit_open_seguinte": "REAL"})
+            self._ensure_columns("pr2_signals", {"r_exit_open_seguinte": "REAL"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

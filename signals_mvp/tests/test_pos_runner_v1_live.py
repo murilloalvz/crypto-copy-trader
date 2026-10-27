@@ -131,6 +131,66 @@ class EntradaTests(unittest.TestCase):
         row = self.h.storage.pr1_signals()[0]
         self.assertNotIn("risco_irrealista", json.loads(row["tags"] or "[]"))
 
+    def test_retomada_after_a_long_offline_gap_resumes_tracking_instead_of_perdido_offline(self) -> None:
+        # PEDIDO 2026-10-27 (item 3, pos-auditoria): o pool continua `ativo` -- o restart (instancia
+        # NOVA, _startup roda 1x) nao pode fechar o sinal como perdido_offline so por estar atrasado;
+        # o ciclo normal de refresh (GT, com fallback DexPaprika -- ja busca de grad_ts at'e `now`
+        # sempre) fecha a lacuna sozinho e retoma o acompanhamento com os precos REAIS.
+        s = textbook(start_flat=0)
+        t = s.bars[-1].ts + H
+        extra = [
+            Bar(t, 400_000, 420_000, 395_000, 410_000, 1_000.0),
+            Bar(t + H, 405_000, 1_050_000, 400_000, 620_000, 1_000.0),
+            Bar(t + 2 * H, 700_000, 710_000, 690_000, 705_000, 1_000.0),
+            Bar(t + 3 * H, 705_000, 710_000, 151_000, 152_000, 1_000.0),
+        ]
+        self.h.world.add_series("POOL1", "1h", s.bars + extra)
+        self.h.list_pool()
+        self.h.tick()
+        self.h.verifier.step()
+        self.h.tick()
+        ref_pool, _side = REFERENCE_POOLS[SOL_MINT]
+        self.h.world.series[(ref_pool, "1h")] = [Bar(GRAD - 30 * H + k * H, 150.0, 150.0, 150.0, 150.0, 1e6) for k in range(400)]
+
+        def _passo(live: PosRunnerLive) -> None:
+            self.h.clock.advance(H)
+            self.h.tick(live=live)
+            live.http.arm(CallBudget(10), 1, 10)
+            live.quotes.series(SOL_MINT, GRAD, self.h.clock())
+            live.http.disarm()
+
+        # avanca so o suficiente p/ a ENTRADA existir (mesmo ritmo do cenario de referencia da V1
+        # ja testado em test_tp1_then_stop_closes_the_trade_and_updates_bankroll), sem resolver
+        # TP1/stop ainda -- a partir daqui simula o desligamento.
+        for _ in range(27):
+            _passo(self.h.live)
+            if self.h.storage.pr1_signals():
+                break
+        sinal = self.h.storage.pr1_signals()[0]
+        self.assertEqual(sinal["status"], "aberto")
+        # DESLIGADO: nenhum tick roda durante o salto do relogio (todo o resto do caminho -- TP1 e
+        # stop -- fica represado, nunca processado pelo `self.h.live` original).
+        self.h.clock.advance(10 * H)
+        fresh = self.h.new_live()   # reinicio: instancia NOVA, mesmo storage -- _startup roda 1x aqui
+        _passo(fresh)
+        pos_restart = self.h.storage.pr1_signals()[0]
+        self.assertNotEqual(pos_restart["status"], "perdido_offline",
+                            "pool ainda ativo -- precisa retomar, nunca desistir so por estar atrasado")
+        self.assertEqual(pos_restart["status"], "fechado", "a lacuna fecha no mesmo ciclo (GT busca ate `now`)")
+        self.assertEqual(pos_restart["reason"], "stop")
+        self.assertIsNotNone(pos_restart["tp1_price"])
+
+    def test_perdido_offline_only_when_the_pool_itself_will_never_be_refreshed_again(self) -> None:
+        # contraste direto com o teste anterior: pool `encerrado` (nunca mais recebe candle novo) --
+        # SO AQUI os dados realmente nao existem/nao virao, perdido_offline e o fallback correto.
+        self._run_to_entrada()
+        sinal = self.h.storage.pr1_signals()[0]
+        self.h.storage.pr_upsert_pool(sinal["pool"], status="encerrado", motivo="teste: pool encerrado")
+        self.h.clock.advance(10 * H)
+        fresh = self.h.new_live()
+        self.h.tick(live=fresh)
+        self.assertEqual(self.h.storage.pr1_signals(status="perdido_offline")[0]["id"], sinal["id"])
+
     def test_risco_irrealista_is_tagged_and_disclosed_never_blocks_the_signal(self) -> None:
         # PATCH 2026-10-27: risco real (fill vs stop) < 3% -- McRib: fill ~441k colado no stop 440k
         # (~0,2%). Tag/registro, NUNCA bloqueio/cancelamento silencioso do sinal.
