@@ -57,6 +57,11 @@ class HolderCheck:
     tag: Optional[str] = None            # "HOLDER_CONCENTRADO" | "holders_indisponivel" | None
     top_holder_pct: Optional[float] = None
     detail: dict[str, Any] = field(default_factory=dict)
+    # PEDIDO 2026-10-27 (H9, snapshot de carteiras "pro"): os owners resolvidos (ja excluindo queima/
+    # programas base/vaults do pool -- MESMA exclusao de `top_holder_pct`), ordenados por % desc, ate
+    # o limite que `getTokenLargestAccounts` devolve (20 contas, sem paginacao -- ja e "top 20").
+    # Reaproveita a MESMA chamada RPC de `holders()` -- nunca uma chamada extra so por isto.
+    top_holders: list[tuple[str, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -206,6 +211,7 @@ class SolanaAdapter(ChainAdapter):
             return HolderCheck(tag="holders_indisponivel", detail={"motivo": "supply indisponivel"})
         resolved = 0
         top_pct = 0.0
+        owners: list[tuple[str, float]] = []
         for row in accounts:
             address = row.get("address")
             amount = row.get("uiAmount") or row.get("uiAmountString")
@@ -221,11 +227,14 @@ class SolanaAdapter(ChainAdapter):
                 continue
             pct = 100.0 * float(amount) / float(supply)
             top_pct = max(top_pct, pct)
+            if owner is not None:
+                owners.append((owner, pct))
         if resolved == 0 and accounts:
             return HolderCheck(tag="holders_indisponivel", detail={"motivo": "nenhuma conta resolveu o owner"})
+        owners.sort(key=lambda t: t[1], reverse=True)
         if top_pct >= HOLDER_CONCENTRADO_PCT:
-            return HolderCheck(tag="HOLDER_CONCENTRADO", top_holder_pct=top_pct)
-        return HolderCheck(top_holder_pct=top_pct)
+            return HolderCheck(tag="HOLDER_CONCENTRADO", top_holder_pct=top_pct, top_holders=owners)
+        return HolderCheck(top_holder_pct=top_pct, top_holders=owners)
 
     # -- mint/freeze authority (item 2 da FASE 2 de medicao/UX) ---------------------------------------
     def authorities(self, mint: str) -> AuthorityCheck:

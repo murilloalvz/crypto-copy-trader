@@ -39,12 +39,12 @@ from ..http import ApiError, CallBudget, RateLimited
 from ..models import ChainCtx, PoolSnap
 from ..telegram import TelegramError
 from ..util import clean_text, fmt_usd, iso_utc, to_float, utc_now
-from . import charts, telegram_v1
+from . import carteiras_pro, charts, telegram_v1
 from .bankroll import BankrollLedger, BankrollParams, BankrollState
 from .bankroll_v1 import BankrollLedgerV1, tamanho_posicao_usd
 from .brt import hora_brt, na_janela_ouro
 from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
-from .chain_adapter import SolanaAdapter
+from .chain_adapter import HolderCheck, SolanaAdapter
 from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .detector_v1 import DetectorV1, EventV1
@@ -509,6 +509,8 @@ class PosRunnerLive:
         dexpaprika: Optional[DexPaprikaProvider] = None,
         sem_v2: bool = False,
         sem_evidencia: bool = False,
+        sem_carteiras: bool = False,
+        carteiras_max_chamadas_dia: int = 200,
     ):
         self.settings = settings
         self.params = params
@@ -592,6 +594,15 @@ class PosRunnerLive:
         # o fallback "1 fetch/hora" da regra 3 fica fora do escopo desta entrega). SEM_EVIDENCIA=1 desliga
         # por completo (zero custo extra de CPU tambem).
         self.sem_evidencia = sem_evidencia
+        # PEDIDO 2026-10-27 (H9): snapshot de top holders cruzados com a lista de carteiras "pro"
+        # (carteiras_pro.py) -- ENTRADA reusa a MESMA chamada RPC de `adapter.holders()` (zero custo
+        # extra); a horaria (`_atualizar_carteiras_horaria`) e uma chamada NOVA, orcada por
+        # `carteiras_max_chamadas_dia` (env CARTEIRAS_MAX_CHAMADAS_DIA). SEM_CARTEIRAS=1 desliga por
+        # completo (inclusive o cruzamento na ENTRADA, que so preenche dado, nunca filtra).
+        self.sem_carteiras = sem_carteiras
+        self.carteiras_max_chamadas_dia = carteiras_max_chamadas_dia
+        self._mapa_carteiras_pro = carteiras_pro.carregar_mapa_grupos()   # {} se o arquivo nao existir
+        self._carteiras_horaria_ultima: dict[str, int] = {}   # pool -> ultimo bucket de hora UTC coletado
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -1227,6 +1238,13 @@ class PosRunnerLive:
             holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
             if holders.tag:
                 tags.append(holders.tag)
+            # PEDIDO 2026-10-27 (H9): cruza os MESMOS holders resolvidos acima (sem chamada RPC
+            # extra) contra a lista de carteiras "pro" -- so medicao, nunca filtra/altera o sinal.
+            # SEM_CARTEIRAS=1 desliga ate este cruzamento (nunca so a tabela de snapshot).
+            n_carteiras_pro = n_pessoas_pro = None
+            if not self.sem_carteiras:
+                owners_v1 = [o for o, _pct in holders.top_holders]
+                n_carteiras_pro, n_pessoas_pro, _grupos_v1 = carteiras_pro.pessoas_presentes(owners_v1, self._mapa_carteiras_pro)
             # item 2 da FASE 2 de medicao/UX: 1 chamada RPC por mint (cacheada no adapter) -- nunca
             # filtra/descarta o sinal, so preenche dado.
             authority = self.adapter.authorities(mint)
@@ -1255,6 +1273,11 @@ class PosRunnerLive:
                 # PATCH 2026-10-27: qual versao do gate de qualidade de candle estava ativa quando
                 # este sinal foi decidido (qualidade_candle.py -- fora do hash de ParamsV1).
                 "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
+                # PEDIDO 2026-10-27 (H9): carteiras_pro_presentes agora guarda n_carteiras_pro (a
+                # CONTAGEM de enderecos, nao um booleano -- H8 le ">= 1"); NULL se holders indisponivel
+                # (nunca inventa um 0 quando o dado nao existe).
+                "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
+                "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1262,6 +1285,7 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
+            self._registrar_snapshot_carteiras("entrada", pool, mint, holders, now, versao="v1", entry_id=signal_id)
             signal = self.storage.pr1_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
             return
@@ -1433,6 +1457,10 @@ class PosRunnerLive:
             holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
             if holders.tag:
                 tags.append(holders.tag)
+            n_carteiras_pro = n_pessoas_pro = None
+            if not self.sem_carteiras:
+                owners_v2 = [o for o, _pct in holders.top_holders]
+                n_carteiras_pro, n_pessoas_pro, _grupos_v2 = carteiras_pro.pessoas_presentes(owners_v2, self._mapa_carteiras_pro)
             authority = self.adapter.authorities(mint)
             vamp = self.adapter.vamp_risk(symbol, ev.data.get("P_peak"), self._vamp_search)
             if vamp.tag:
@@ -1454,6 +1482,8 @@ class PosRunnerLive:
                 "fonte_candle": self._fonte_candle_atual, "so_v2": 1 if so_v2 else 0,
                 "entry_price_alerta": ev.data.get("close"),
                 "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
+                "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
+                "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)
             if signal_id is None:
@@ -1461,6 +1491,7 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
+            self._registrar_snapshot_carteiras("entrada", pool, mint, holders, now, versao="v2", entry_id=signal_id)
             signal = self.storage.pr2_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
             return
@@ -1551,6 +1582,51 @@ class PosRunnerLive:
             return
         if self.storage.pr2_bankroll_append(tf, self.version_v2, signal["id"], linha, now):
             self.storage.pr2_bankroll_save(tf, self.version_v2, ledger.state.to_json())
+
+    # -- PEDIDO 2026-10-27 (H9): snapshot de carteiras "pro" ------------------------------------------------
+    def _registrar_snapshot_carteiras(self, momento: str, pool: str, mint: str, holders: HolderCheck,
+                                      now: float, versao: Optional[str] = None,
+                                      entry_id: Optional[int] = None) -> None:
+        """Grava 1 linha em `pr_carteiras_snapshot` cruzando os owners resolvidos
+        (`holders.top_holders`, ja excluindo queima/programas base/vaults -- MESMA lista usada para
+        `top_holder_pct`) contra a lista de carteiras "pro". Nunca grava quando os holders estao
+        indisponiveis (RPC falhou/sem RPC) -- dado ausente nunca vira um `n_carteiras_pro=0` fabricado.
+        Idempotente por `chave` (`pr_carteiras_snapshot_insert` usa INSERT OR IGNORE)."""
+        if self.sem_carteiras or holders.tag == "holders_indisponivel":
+            return
+        owners = [o for o, _pct in holders.top_holders]
+        n_carteiras, n_pessoas, grupos = carteiras_pro.pessoas_presentes(owners, self._mapa_carteiras_pro)
+        if momento == "entrada":
+            chave = f"entrada:{versao}:{entry_id}"
+        else:
+            chave = f"horaria:{pool}:{int(now // 3600)}"
+        self.storage.pr_carteiras_snapshot_insert(
+            chave, now, "solana", pool, mint, momento, holders.top_holders, n_carteiras, n_pessoas,
+            grupos, versao=versao, entry_id=entry_id,
+        )
+
+    def _atualizar_carteiras_horaria(self, row: Any, now: float) -> None:
+        """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora), SO para
+        pools com pelo menos 1 posicao ABERTA (V1 ou V2) -- nunca gasta orcamento de RPC em pools sem
+        posicao. Chamada NOVA de RPC (ao contrario da snapshot de ENTRADA, que reusa `adapter.holders`
+        ja chamado por outro motivo) -- orcada por `carteiras_max_chamadas_dia`
+        (`CARTEIRAS_MAX_CHAMADAS_DIA`), contada por dia UTC corrido."""
+        if self.sem_carteiras:
+            return
+        pool = row["pool"]
+        bucket = int(now // 3600)
+        if self._carteiras_horaria_ultima.get(pool) == bucket:
+            return
+        tem_posicao = bool(self.storage.pr1_signals(status="aberto", pool=pool)
+                          or self.storage.pr2_signals(status="aberto", pool=pool))
+        if not tem_posicao:
+            return
+        inicio_do_dia = now - (now % 86400.0)
+        if self.storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
+            return
+        self._carteiras_horaria_ultima[pool] = bucket
+        holders = self.adapter.holders(row["mint"], self._excluded_accounts_v1(row))
+        self._registrar_snapshot_carteiras("horaria", pool, row["mint"], holders, now)
 
     # -- PATCH 2026-10-27 (diagnostico McRib/yagi, qualidade_candle.py) -----------------------------------------
     def _candle_confiavel_cb(self, bars: list[Bar], pool: str, peak: Optional[float]) -> Callable[[int], Optional[str]]:
@@ -1967,6 +2043,8 @@ class PosRunnerLive:
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide
+        if not self.sem_carteiras:
+            self._atualizar_carteiras_horaria(row, now)
         if len(ok) < len(fresh):
             self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
         else:

@@ -486,3 +486,45 @@ baseada nesta lista reporta **`n_pessoas_pro`** (grupos distintos) **além de** 
 (endereços distintos), nunca só o 2º — 121 carteiras são só 79 pessoas, e tratar as duas contagens
 como equivalentes infla artificialmente "quantas pessoas distintas" um token teve entre os maiores
 holders.
+
+## 15. PEDIDO 2026-10-27 (item 2 pós-auditoria) — coleta de snapshots de carteiras "pro" (H9)
+
+A lista (§14) é só o pré-requisito; este item implementa a COLETA em si —
+`pr_carteiras_snapshot`, `PosRunnerLive._registrar_snapshot_carteiras`/`_atualizar_carteiras_horaria`.
+
+**Fonte dos holders — reaproveitada, zero mudança de hash**: `ChainAdapter.holders()` (já existia,
+`chain_adapter.py`, usado para `holders_tag`/`HOLDER_CONCENTRADO`) ganhou o campo `top_holders:
+list[tuple[owner, pct]]` (antes só guardava o `top_holder_pct` máximo, descartando a lista
+resolvida) — MESMA chamada RPC (`getTokenLargestAccounts` + `getAccountInfo` por conta, já exclui
+queima/programas base/vaults do pool), nenhuma chamada nova. `getTokenLargestAccounts` já devolve
+no máximo 20 contas (sem paginação) — é literalmente o "top 20" pedido, sem precisar de limite extra.
+
+**Dois momentos de snapshot:**
+- **ENTRADA** (`_entry_v1`/`_entry_v2`): reusa a MESMA chamada de `adapter.holders()` que essas
+  funções já fazem para `holders_tag` — zero custo extra. Preenche `pr1_signals.
+  carteiras_pro_presentes` (agora guarda `n_carteiras_pro`, a CONTAGEM, não um booleano — H8 lê
+  `>= 1`) e `n_pessoas_pro`; ambos `NULL` quando `holders.tag == "holders_indisponivel"` (nunca um
+  0 fabricado quando o RPC falhou/não existe).
+- **HORÁRIA** (`_atualizar_carteiras_horaria`, chamada dentro de `_refresh_core` depois do ciclo
+  normal de GT): chamada NOVA de RPC, só para pools com **pelo menos 1 posição aberta** (V1 ou V2 —
+  nunca gasta orçamento em pools sem posição), 1x por pool por hora UTC
+  (`int(now // 3600)`, nunca reabre a mesma hora), orçada por `carteiras_max_chamadas_dia`
+  (env `CARTEIRAS_MAX_CHAMADAS_DIA`, padrão 200/dia, contado por dia UTC corrido em
+  `pr_carteiras_snapshot_count_since`). Orçamento esgotado = simplesmente não coleta nessa hora
+  (nunca um erro, nunca atrasa o ciclo do GT).
+
+**`pr_carteiras_snapshot`** (`storage.py`): `chave` (`"entrada:{versao}:{entry_id}"` ou
+`"horaria:{pool}:{hora_utc}"`) é a idempotência — `INSERT OR IGNORE`, nunca duplica nem sobrescreve.
+Guarda `top_holders_json` (lista completa, auditoria), `n_carteiras_pro`/`n_pessoas_pro`/`grupos_json`
+(já cruzados contra `carteiras_pro.carregar_mapa_grupos()`, carregado 1x na construção do
+`PosRunnerLive` — arquivo ausente = dict vazio, nunca derruba o bot). Nunca lida por regra/filtro/
+alerta/banca de V1 ou V2, fora do hash de `ParamsV1`/`ParamsV2` (confirmado: `279b79ffa3f0`/
+`d57b4331d51d` inalterados).
+
+**`SEM_CARTEIRAS=1`**: desliga a coleta HORÁRIA e também o cruzamento na ENTRADA (nunca só a
+tabela de snapshot — `carteiras_pro_presentes`/`n_pessoas_pro` ficam `NULL` nos sinais novos
+também, mesmo reusando uma chamada "grátis").
+
+**H9**: proposta em `PLANO_ANALISE_PREREGISTRADO.md` (`n_pessoas_pro >= 2`) — marcada PENDENTE DE
+CONFIRMAÇÃO do operador antes da 1ª coleta real contar para o Holm (mesma disciplina do registro de
+hipóteses: pré-registro antes da coleta que julga, nunca depois de ver o dado).

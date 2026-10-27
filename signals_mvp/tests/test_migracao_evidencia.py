@@ -84,9 +84,11 @@ class MigracaoSobreBancoAntigoTests(unittest.TestCase):
             self.assertIsNone(row["entry_price_alerta"])
             self.assertIsNone(row["qualidade_versao"])
             self.assertIsNone(row["r_exit_open_seguinte"])
+            self.assertIsNone(row["n_pessoas_pro"])
             # as tabelas novas existem e estao vazias (nunca populadas por conta propria)
             self.assertEqual(storage.pr_trajetoria_all(), [])
             self.assertEqual(storage.pr_baseline_all(), [])
+            self.assertEqual(storage.pr_carteiras_snapshot_all(), [])
         finally:
             storage.close()
 

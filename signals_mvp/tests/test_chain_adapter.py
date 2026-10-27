@@ -141,6 +141,21 @@ class SolanaAdapterTests(unittest.TestCase):
         self.assertEqual(result.tag, "HOLDER_CONCENTRADO")
         self.assertAlmostEqual(result.top_holder_pct, 2.0)   # a conta do Token Program nunca conta
 
+    def test_holders_top_holders_excludes_programs_and_sorts_by_pct_desc(self):
+        # PEDIDO 2026-10-27 (H9): `top_holders` reusa a MESMA resolucao de owner que `top_holder_pct`
+        # ja usa -- so devolve a lista inteira (ordenada desc), em vez de so o maximo.
+        largest = {"value": [
+            {"address": "wallet_small", "uiAmount": 1.0},      # 1%
+            {"address": "wallet_big", "uiAmount": 2.0},        # 2%
+            {"address": "token_program_vault", "uiAmount": 50.0},   # excluido (owner = Token Program)
+        ]}
+        owners = {"wallet_small": "OwnerPequeno", "wallet_big": "OwnerGrande",
+                 "token_program_vault": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"}
+        rpc = _FakeRpc(largest, supply=100.0, owners=owners)
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.holders("mintA")
+        self.assertEqual([o for o, _pct in result.top_holders], ["OwnerGrande", "OwnerPequeno"])
+
     def test_holders_below_threshold_has_no_tag(self):
         largest = {"value": [{"address": "wallet_small", "uiAmount": 1.0}]}
         rpc = _FakeRpc(largest, supply=100.0, owners={"wallet_small": "SomeOwner"})

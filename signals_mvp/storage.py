@@ -253,6 +253,20 @@ CREATE TABLE IF NOT EXISTS pr1_dexpaprika_divergencias (
   tf TEXT, candle_ts INTEGER, campo TEXT NOT NULL, valor_gt REAL, valor_dexpaprika REAL, diff_pct REAL,
   versao_config_v1 TEXT
 );
+-- PEDIDO 2026-10-27 (H9): snapshot dos top holders de um token (RPC getTokenLargestAccounts, ja
+-- resolvido pra owner -- `ChainAdapter.holders`) cruzados contra a lista de carteiras "pro"
+-- (carteiras_pro.py). `chave` e a idempotencia: "entrada:{versao}:{entry_id}" (1x por sinal, reusa a
+-- MESMA chamada RPC que o alerta ENTRADA ja faz) ou "horaria:{pool}:{hora_utc}" (1x por pool por hora,
+-- chamada EXTRA, orcada por CARTEIRAS_MAX_CHAMADAS_DIA). Nunca entra em regra/filtro/alerta/banca de
+-- V1/V2 -- so medicao/H9, fora do hash de ParamsV1/V2.
+CREATE TABLE IF NOT EXISTS pr_carteiras_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chave TEXT NOT NULL UNIQUE, ts REAL NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, mint TEXT NOT NULL, momento TEXT NOT NULL,
+  versao TEXT, entry_id INTEGER,
+  top_holders_json TEXT NOT NULL, n_carteiras_pro INTEGER NOT NULL, n_pessoas_pro INTEGER NOT NULL,
+  grupos_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_carteiras_snapshot_pool ON pr_carteiras_snapshot (pool, momento);
 -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
 -- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
 -- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
@@ -392,6 +406,11 @@ class Storage:
             # anteriores a este patch. Nunca lida por regra/filtro/alerta/banca de V1 ou V2.
             self._ensure_columns("pr1_signals", {"r_exit_open_seguinte": "REAL"})
             self._ensure_columns("pr2_signals", {"r_exit_open_seguinte": "REAL"})
+            # PEDIDO 2026-10-27 (H9): n_pessoas_pro (grupos distintos) ao lado de carteiras_pro_presentes
+            # (que ja existia, nullable desde a FASE 2b -- agora passa a guardar n_carteiras_pro, a
+            # CONTAGEM de enderecos, nao so um booleano) -- nunca confundir pessoas com carteiras.
+            self._ensure_columns("pr1_signals", {"n_pessoas_pro": "INTEGER"})
+            self._ensure_columns("pr2_signals", {"n_pessoas_pro": "INTEGER"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1402,6 +1421,42 @@ class Storage:
              _num(r["valor_dexpaprika"], 8), _num(r["diff_pct"], 3), r["versao_config_v1"] or ""]
             for r in self._all("SELECT * FROM pr1_dexpaprika_divergencias ORDER BY ts, id")
         ]
+
+    # -- snapshot de carteiras "pro" (PEDIDO 2026-10-27, H9) -- so medicao, nunca decide -------------------
+    def pr_carteiras_snapshot_insert(self, chave: str, ts: float, chain: str, pool: str, mint: str,
+                                     momento: str, top_holders: list[tuple[str, float]],
+                                     n_carteiras_pro: int, n_pessoas_pro: int, grupos: list[str],
+                                     versao: Optional[str] = None, entry_id: Optional[int] = None) -> bool:
+        """Idempotente por `chave` -- True se inseriu (1a vez), False se ja existia (nunca duplica)."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr_carteiras_snapshot (chave,ts,chain,pool,mint,momento,versao,"
+                "entry_id,top_holders_json,n_carteiras_pro,n_pessoas_pro,grupos_json) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (chave, ts, chain, pool, mint, momento, versao, entry_id, json.dumps(top_holders),
+                 n_carteiras_pro, n_pessoas_pro, json.dumps(grupos)),
+            )
+            return bool(cur.rowcount)
+
+    def pr_carteiras_snapshot_count_since(self, since_ts: float, momento: Optional[str] = None) -> int:
+        if momento is None:
+            row = self._one("SELECT COUNT(*) AS n FROM pr_carteiras_snapshot WHERE ts>=?", (since_ts,))
+        else:
+            row = self._one("SELECT COUNT(*) AS n FROM pr_carteiras_snapshot WHERE ts>=? AND momento=?",
+                            (since_ts, momento))
+        return int(row["n"]) if row else 0
+
+    def pr_carteiras_snapshot_existe(self, chave: str) -> bool:
+        return self._one("SELECT 1 FROM pr_carteiras_snapshot WHERE chave=?", (chave,)) is not None
+
+    def pr_carteiras_snapshot_para_sinal(self, versao: str, entry_id: int) -> list[sqlite3.Row]:
+        return self._all(
+            "SELECT * FROM pr_carteiras_snapshot WHERE versao=? AND entry_id=? ORDER BY ts",
+            (versao, entry_id),
+        )
+
+    def pr_carteiras_snapshot_all(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_carteiras_snapshot ORDER BY ts, id")
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:

@@ -168,6 +168,27 @@ def grupos_com_mais_de_uma_carteira(linhas: list[tuple[str, str, str]]) -> list[
     return sorted(((g, n) for g, n in contagem.items() if n > 1), key=lambda t: (-t[1], t[0]))
 
 
+def carregar_mapa_grupos(path: Path = LISTA_PATH) -> dict[str, str]:
+    """PEDIDO 2026-10-27 (H9, snapshot de carteiras "pro"): {endereco: grupo} -- usado ao vivo
+    (`PosRunnerLive`) para cruzar os holders resolvidos de um token contra a lista, sem reabrir o
+    arquivo/recalcular o agrupamento a cada snapshot. Arquivo ausente (deploy sem a lista ainda
+    copiada) -> dict vazio, nunca derruba o bot (melhor esforco, mesma convencao de `holders()`)."""
+    try:
+        linhas = gerar_grupos(path)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {endereco: grupo for endereco, _nome, grupo in linhas}
+
+
+def pessoas_presentes(enderecos: list[str], mapa: dict[str, str]) -> tuple[int, int, list[str]]:
+    """(n_carteiras_pro, n_pessoas_pro, grupos_presentes) para uma lista de owners (ex.: os top
+    holders resolvidos de 1 token) -- `n_carteiras_pro` conta ENDERECOS presentes na lista,
+    `n_pessoas_pro` conta GRUPOS distintos entre eles (nunca confundir os dois)."""
+    presentes = [mapa[e] for e in enderecos if e in mapa]
+    grupos = sorted(set(presentes))
+    return len(presentes), len(grupos), grupos
+
+
 def garantir_lista_registrada(storage: Any, path: Path = LISTA_PATH,
                               grupos_csv: Path = GRUPOS_CSV_PATH) -> ValidacaoLista:
     """1a chamada valida, gera `carteiras_grupos.csv` e registra sha256/versao/contagens em `meta`;

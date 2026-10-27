@@ -136,17 +136,30 @@ família completa — nunca por "H" isolado. Um grupo que passa o Holm é **cand
 (discovery, não confirmatório — nunca é promovido sem um novo pré-registro específico, replicação
 fresca e Gate 2, igual a qualquer hipótese derivada).
 
-- **H8** — `carteiras_pro_presentes` (>= 1 vs 0): a coluna existe (nullable, sempre `NULL` nesta
-  entrega — a coleta em si, cruzar os maiores holders de cada token com a lista, ainda não existe,
-  fica para um pedido futuro). **H8 fica "não testada" e fora do Holm** até ter n >= 10 por grupo
-  com dado não-nulo.
-  **Atualização 2026-10-27**: a lista em si já está carregada, validada e travada —
-  `signals_mvp/dados/carteiras_pro_papodefi.json` (121 endereços únicos, válidos, `lista_versao=1`,
-  sha256 e heurística de agrupamento por pessoa em `docs/pos-runner-v1/INTERPRETACOES.md` §14) —
-  mas isso é só o pré-requisito (lista fixa e versionada); a COLETA (RPC/holders por token) ainda
-  não existe. Quando existir, H8 e qualquer H9 derivada reportam **`n_pessoas_pro`** (grupos
-  distintos, `carteiras_pro.contar_pessoas`) **além de** `n_carteiras_pro` (endereços distintos) —
-  121 carteiras são só 79 pessoas; nunca reportar só a contagem de endereços.
+- **H8** — `carteiras_pro_presentes >= 1` (>= 1 carteira "pro" entre os top-20 holders no momento da
+  ENTRADA) **vs `== 0`**. **Atualização 2026-10-27 (item 2 pós-auditoria)**: a COLETA já existe —
+  `PosRunnerLive._registrar_snapshot_carteiras`/`pr_carteiras_snapshot` (RPC `getTokenLargestAccounts`
+  + `getAccountInfo`, reusando a MESMA chamada que `holders_tag`/`HOLDER_CONCENTRADO` já fazem na
+  ENTRADA — zero custo extra; a coleta HORÁRIA, só para pools com posição aberta, é uma chamada NOVA,
+  orçada por `CARTEIRAS_MAX_CHAMADAS_DIA`). `pr1_signals.carteiras_pro_presentes`/`n_pessoas_pro`
+  (nullable — `NULL` quando `holders_indisponivel`, nunca um 0 fabricado) ficam preenchidos a partir
+  de agora; sinais anteriores a este patch continuam `NULL`. **H8 segue fora do Holm até n >= 10 por
+  grupo com dado não-nulo** (ainda não atingido — nenhuma coleta real rodou até este commit).
+
+- **H9 (PROPOSTA, pendente de confirmação do operador antes da 1ª coleta real)** —
+  `n_pessoas_pro >= 2` (múltiplas pessoas "pro" distintas presentes, não só uma) **vs `<= 1`**. Mesmo
+  método de H8 (bootstrap por dia, p-valor unilateral, Holm sobre a família H2–H9). Justificativa:
+  H8 testa presença (>=1 carteira), H9 testa CONCENTRAÇÃO de interesse "pro" (múltiplas pessoas, não
+  só uma carteira isolada de uma mesma pessoa) — pergunta distinta, mesma lista/coleta. **Fica
+  marcada "não testada" e fora do Holm até (a) o operador confirmar o corte `>=2` (ou pedir outro) e
+  (b) n >= 10 por grupo** — exatamente a mesma trava do H8 original antes da lista existir
+  (`docs/research-hypothesis-registry-v1-2026-10-04.md`: toda hipótese econômica precisa de
+  pré-registro explícito antes da coleta que a julga; esta seção serve de pré-registro PROVISÓRIO,
+  mas o corte `>=2` ainda não foi confirmado pelo operador).
+
+H8 e H9 reportam **`n_pessoas_pro`** (grupos distintos, `carteiras_pro.pessoas_presentes`) **e**
+`n_carteiras_pro` (endereços distintos) nos dois — 121 carteiras são só 79 pessoas; nunca reportar só
+a contagem de endereços.
 
 ## O que NÃO pode acontecer depois deste documento estar committado
 

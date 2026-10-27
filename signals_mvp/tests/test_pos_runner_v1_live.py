@@ -191,6 +191,69 @@ class EntradaTests(unittest.TestCase):
         self.h.tick(live=fresh)
         self.assertEqual(self.h.storage.pr1_signals(status="perdido_offline")[0]["id"], sinal["id"])
 
+    def test_entrada_snapshot_crosses_top_holders_against_the_pro_list(self) -> None:
+        # PEDIDO 2026-10-27 (H9, item 2): a snapshot da ENTRADA reusa a MESMA chamada de
+        # adapter.holders() (nunca uma chamada RPC extra) e cruza contra o mapa de carteiras pro.
+        from ..pos_runner.chain_adapter import HolderCheck
+        self.h.live.adapter.holders = lambda mint, excl: HolderCheck(
+            top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
+        self._run_to_entrada()
+        sinal = self.h.storage.pr1_signals()[0]
+        self.assertEqual(sinal["carteiras_pro_presentes"], 1)
+        self.assertEqual(sinal["n_pessoas_pro"], 1)
+        snaps = self.h.storage.pr_carteiras_snapshot_para_sinal("v1", sinal["id"])
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(snaps[0]["momento"], "entrada")
+        self.assertEqual(snaps[0]["n_pessoas_pro"], 1)
+
+    def test_entrada_never_fabricates_a_zero_when_holders_are_unavailable(self) -> None:
+        # adapter.rpc e None por padrao no harness -- holders_indisponivel, nunca um 0 adivinhado.
+        self._run_to_entrada()
+        sinal = self.h.storage.pr1_signals()[0]
+        self.assertIsNone(sinal["carteiras_pro_presentes"])
+        self.assertIsNone(sinal["n_pessoas_pro"])
+        self.assertEqual(self.h.storage.pr_carteiras_snapshot_all(), [])
+
+    def test_sem_carteiras_disables_the_entrada_crossing_and_the_snapshot(self) -> None:
+        from ..pos_runner.chain_adapter import HolderCheck
+        h = LiveHarness(sem_carteiras=True)
+        try:
+            h.live.adapter.holders = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0)])
+            h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
+            start_tracking(h)
+            h.run_hours(17)
+            sinal = h.storage.pr1_signals()[0]
+            self.assertIsNone(sinal["carteiras_pro_presentes"])
+            self.assertIsNone(sinal["n_pessoas_pro"])
+            self.assertEqual(h.storage.pr_carteiras_snapshot_all(), [])
+        finally:
+            h.close()
+
+    def test_hourly_snapshot_only_runs_for_pools_with_an_open_position_and_respects_the_daily_budget(self) -> None:
+        from ..pos_runner.chain_adapter import HolderCheck
+        contagem = {"n": 0}
+
+        def holders_fn(mint, excl):
+            contagem["n"] += 1
+            return HolderCheck(top_holders=[("ProWalletA", 5.0)])
+
+        self.h.live.adapter.holders = holders_fn
+        self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
+        self.h.live.carteiras_max_chamadas_dia = 1
+        self._run_to_entrada()   # a janela de 17h ja inclui horas suficientes p/ 1 snapshot horaria
+        self.assertGreaterEqual(len(self.h.storage.pr_carteiras_snapshot_all()), 1)
+        horarias_apos_entrada = [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
+        self.assertEqual(len(horarias_apos_entrada), 1, "orcamento diario = 1 -- nunca mais que 1 horaria")
+        chamadas_antes = contagem["n"]
+        # avanca mais horas: orcamento diario (1) ja foi gasto -- nenhuma chamada/linha horaria nova
+        for _ in range(3):
+            self.h.clock.advance(H)
+            self.h.tick()
+        horarias_depois = [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
+        self.assertEqual(len(horarias_depois), 1, "orcamento diario de 1 chamada horaria ja foi gasto")
+        self.assertEqual(contagem["n"], chamadas_antes, "orcamento esgotado -- nenhuma chamada RPC nova")
+
     def test_risco_irrealista_is_tagged_and_disclosed_never_blocks_the_signal(self) -> None:
         # PATCH 2026-10-27: risco real (fill vs stop) < 3% -- McRib: fill ~441k colado no stop 440k
         # (~0,2%). Tag/registro, NUNCA bloqueio/cancelamento silencioso do sinal.

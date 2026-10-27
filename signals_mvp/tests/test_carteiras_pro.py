@@ -141,6 +141,28 @@ class ValidarListaSinteticaTests(unittest.TestCase):
         self.assertEqual(val.n_unicas, 1)
 
 
+class MapaGruposEPessoasPresentesTests(unittest.TestCase):
+    """PEDIDO 2026-10-27 (H9, snapshot de carteiras): carregar_mapa_grupos/pessoas_presentes."""
+
+    def test_the_real_file_maps_every_unique_address_to_its_group(self) -> None:
+        mapa = cp.carregar_mapa_grupos()
+        self.assertEqual(len(mapa), 121)
+        self.assertEqual(mapa[ENDERECO_VALIDO], "ogantd")
+
+    def test_a_missing_file_returns_an_empty_map_never_raises(self) -> None:
+        self.assertEqual(cp.carregar_mapa_grupos(Path("/nao/existe/lista.json")), {})
+
+    def test_pessoas_presentes_counts_wallets_and_distinct_groups_separately(self) -> None:
+        mapa = {"A1": "dani", "A2": "dani", "A3": "aloh"}
+        n_carteiras, n_pessoas, grupos = cp.pessoas_presentes(["A1", "A2", "A3", "XXXX"], mapa)
+        self.assertEqual(n_carteiras, 3)   # XXXX nao esta no mapa -- nunca conta
+        self.assertEqual(n_pessoas, 2)     # dani (2x) + aloh (1x) = 2 pessoas distintas
+        self.assertEqual(grupos, ["aloh", "dani"])
+
+    def test_pessoas_presentes_with_no_match_is_all_zeros(self) -> None:
+        self.assertEqual(cp.pessoas_presentes(["ZZZ"], {"A1": "dani"}), (0, 0, []))
+
+
 class GarantirListaRegistradaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="carteiras_meta_"))
