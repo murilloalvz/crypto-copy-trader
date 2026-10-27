@@ -433,3 +433,56 @@ DexPaprika quando houver, e um veredito LIMPO/SUSPEITO(motivo) por candle e por 
 `qualidade_candle.motivo_suspeito`, com o candle seguinte sempre disponível (leitura offline, com
 hindsight completo). Uso: `python -m signals_mvp.scripts.auditar_trades --db dados/estado.sqlite
 [--versao v1|v2] [--simbolo McRib]`.
+
+## 14. PEDIDO 2026-10-27 — lista de carteiras "pro" (H8) carregada, validada e agrupada por pessoa
+
+Lista fornecida pelo operador (NUNCA baixada da internet; só endereço público/`trackedWalletAddress`,
+nunca chave privada) salva em `signals_mvp/dados/carteiras_pro_papodefi.json`.
+`signals_mvp/pos_runner/carteiras_pro.py` valida (JSON válido, cada endereço decodifica de base58
+para exatamente 32 bytes, deduplica) e `signals_mvp/scripts/carregar_carteiras_pro.py` registra o
+resultado em `meta`.
+
+**Validação (lista como entregue, 121 entradas):**
+
+- 121 entradas → 121 válidas (todas decodificam para 32 bytes) → 121 únicas (nenhuma duplicata) —
+  bate exatamente com o esperado "~121", sem diferença a reportar.
+- `sha256` do arquivo: `71d6ee62a458290496f364496f33c20382ebc3db53530869478e121139b87aba`.
+- `lista_versao = 1` (`carteiras_pro.LISTA_VERSAO_ATUAL`), travado em `meta` (`carteiras_pro_sha256`/
+  `carteiras_pro_versao`) na 1ª execução do script na VM — mudar o arquivo depois disso é uma lista
+  NOVA (`ListaAlteradaError`, `lista_versao` incrementada), nunca uma edição silenciosa.
+- `alertsOn`/`emoji` nunca lidos (ignorados pelo pedido) — só `trackedWalletAddress`/`name`.
+
+**Agrupamento por pessoa** (`carteiras_grupos.csv`, 121 linhas, colunas `endereco,nome,grupo`) —
+heurística DETERMINÍSTICA (sem IA/fuzzy matching, sempre a mesma ordem de passos):
+
+1. nome em minúsculas;
+2. remove as palavras `side`, `main`, `fomo`, `new`, `multi`, `wallet` — substring, em QUALQUER
+   posição (não exige separador: cobre tanto `"gake side"` quanto `"CupMain"` concatenado);
+3. remove sufixo numérico final (`_N` ou dígito simples, com ou sem separador — `"dani1"`→`"dani"`,
+   `"cup 3"`→`"cup"`);
+4. remove qualquer caractere que não seja letra/dígito (espaço, underscore, pontuação
+   remanescente) — assim `"jack duval"` e `"jackduval_2"` caem no MESMO grupo (`"jackduval"`).
+
+Resultado: **79 pessoas distintas**, **21 grupos com mais de 1 carteira**:
+
+```
+aloh:7  dani:6  marcell:5  cup:4  doc:4  orange:4  gake:3  lunarfang:3  nyhrox:3
+beanz:2  eq:2  ily:2  itai:2  jackduval:2  jijo:2  kadenox:2  loopier:2  nosa:2  ogantd:2  pxblo:2  schoen:2
+```
+
+Limitação conhecida e deliberada (literal ao pedido, sem inventar regra nova): a heurística só
+remove sufixo NUMÉRICO + as 6 palavras listadas — nunca faz *stemming*/prefixo comum. Por isso
+`"orangie"` (sem sufixo numérico, não é uma das 6 palavras) fica um grupo PRÓPRIO, separado de
+`"orange"`/`"orange2"`/`"orange3"`/`"orange4"`, mesmo sendo provavelmente a mesma pessoa — e
+`"nhyrox"` (erro de digitação real da lista) nunca agrupa com `"nyhrox"`, pelo mesmo motivo
+(a heurística é literal, não corrige ortografia). `sha256` de `carteiras_grupos.csv`:
+`78d88711f61d2a30538b1fe57cde15fabde8c976517c4f069d53382a3df1eace` — travado junto do `sha256` da
+lista em `meta` (`carteiras_grupos_sha256`); editar o CSV à mão depois do registro também levanta
+`ListaAlteradaError` (o agrupamento é imutável junto da lista).
+
+**Contrato para H8 e qualquer H9 derivada** (a coleta de holders em si — cruzar os maiores holders
+de cada token com esta lista — ainda não existe, fica para um pedido futuro): toda coluna/estatística
+baseada nesta lista reporta **`n_pessoas_pro`** (grupos distintos) **além de** `n_carteiras_pro`
+(endereços distintos), nunca só o 2º — 121 carteiras são só 79 pessoas, e tratar as duas contagens
+como equivalentes infla artificialmente "quantas pessoas distintas" um token teve entre os maiores
+holders.

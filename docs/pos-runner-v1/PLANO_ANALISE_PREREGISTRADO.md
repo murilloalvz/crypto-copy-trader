@@ -137,9 +137,16 @@ família completa — nunca por "H" isolado. Um grupo que passa o Holm é **cand
 fresca e Gate 2, igual a qualquer hipótese derivada).
 
 - **H8** — `carteiras_pro_presentes` (>= 1 vs 0): a coluna existe (nullable, sempre `NULL` nesta
-  entrega — a coleta da lista de carteiras "pro" ainda não existe). **H8 fica "não testada" e fora do
-  Holm** até ter n >= 10 por grupo com dado não-nulo; a lista de carteiras será fixa e versionada
-  (hash do arquivo) antes de qualquer coleta, num pedido futuro.
+  entrega — a coleta em si, cruzar os maiores holders de cada token com a lista, ainda não existe,
+  fica para um pedido futuro). **H8 fica "não testada" e fora do Holm** até ter n >= 10 por grupo
+  com dado não-nulo.
+  **Atualização 2026-10-27**: a lista em si já está carregada, validada e travada —
+  `signals_mvp/dados/carteiras_pro_papodefi.json` (121 endereços únicos, válidos, `lista_versao=1`,
+  sha256 e heurística de agrupamento por pessoa em `docs/pos-runner-v1/INTERPRETACOES.md` §14) —
+  mas isso é só o pré-requisito (lista fixa e versionada); a COLETA (RPC/holders por token) ainda
+  não existe. Quando existir, H8 e qualquer H9 derivada reportam **`n_pessoas_pro`** (grupos
+  distintos, `carteiras_pro.contar_pessoas`) **além de** `n_carteiras_pro` (endereços distintos) —
+  121 carteiras são só 79 pessoas; nunca reportar só a contagem de endereços.
 
 ## O que NÃO pode acontecer depois deste documento estar committado
 
