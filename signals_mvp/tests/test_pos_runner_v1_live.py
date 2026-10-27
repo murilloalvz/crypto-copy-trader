@@ -117,6 +117,37 @@ class EntradaTests(unittest.TestCase):
             urls = [b["url"] for row_ in markup["inline_keyboard"] for b in row_ if "url" in b]
             self.assertTrue(all(u.startswith("https://") for u in urls), urls)
 
+    def test_entrada_confirmada_message_is_sent_once_with_the_real_fill_and_risk(self) -> None:
+        # PATCH 2026-10-27 (diagnostico McRib): retifica o alerta ENTRADA (preco PROVISORIO) com o
+        # fill/stop/risco REAIS, 1x, assim que o fill e conhecido.
+        self._tp1_then_stop()
+        # a LiveHarness roda V1+V2 em paralelo por padrao (ver test_pos_runner_evidencia_live.py) --
+        # cada versao manda sua propria confirmacao (nunca 0).
+        confirmadas = [t for t in self.h.texts() if t.startswith("✅ [POS_RUNNER] ENTRADA CONFIRMADA")]
+        self.assertGreaterEqual(len(confirmadas), 1, self.h.texts())
+        self.assertIn("Fill:", confirmadas[0])
+        self.assertIn("Risco real:", confirmadas[0])
+        self.assertNotIn("risco_irrealista", confirmadas[0])
+        row = self.h.storage.pr1_signals()[0]
+        self.assertNotIn("risco_irrealista", json.loads(row["tags"] or "[]"))
+
+    def test_risco_irrealista_is_tagged_and_disclosed_never_blocks_the_signal(self) -> None:
+        # PATCH 2026-10-27: risco real (fill vs stop) < 3% -- McRib: fill ~441k colado no stop 440k
+        # (~0,2%). Tag/registro, NUNCA bloqueio/cancelamento silencioso do sinal.
+        from ..pos_runner.simulate_v1 import TradeResultV1
+        self._run_to_entrada()
+        sinal = self.h.storage.pr1_signals()[0]
+        row = self.h.storage.pr_pool("POOL1")
+        res = TradeResultV1(status="fechado", entry_idx=0, entry_price=441_000.0, stop=440_000.0,
+                            risk_frac=(441_000.0 - 440_000.0) / 441_000.0)
+        self.h.live._confirmar_entrada_v1(sinal, res, row, self.h.clock())  # noqa: SLF001
+        atualizado = self.h.storage.pr1_signal(sinal["id"])
+        self.assertIn("risco_irrealista", json.loads(atualizado["tags"] or "[]"))
+        self.assertEqual(atualizado["status"], "aberto", "nunca cancela/bloqueia por risco baixo")
+        confirmadas = [t for t in self.h.texts() if t.startswith("✅ [POS_RUNNER] ENTRADA CONFIRMADA")]
+        self.assertEqual(len(confirmadas), 1)
+        self.assertIn("risco_irrealista", confirmadas[0])
+
     # -- PEDIDO ADICIONAL FASE 5: /abertos, /fechados [n], R acumulado no resumo diario -------------------
     def test_abertos_texto_lists_the_open_position_with_unrealized_r(self) -> None:
         self._run_to_entrada()

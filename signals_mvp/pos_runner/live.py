@@ -58,10 +58,11 @@ from .params_v2 import load_params_v2
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
 from .parte_a.quotebook import QuoteBook
+from . import qualidade_candle
 from .qualidade_v1 import avaliar_qualidade
 from .quotes import SOL_MINT, STABLES, UsdSeries, stable_series, to_mc_bars
 from .simulate import TradeResult, simulate
-from .simulate_v1 import simulate_v1
+from .simulate_v1 import TradeResultV1, simulate_v1
 from .solana_rpc import SIGNATURES_PAGE_SIZE, RpcError, anchor_at_or_after
 
 log = logging.getLogger("signals_mvp.pos_runner.live")
@@ -1239,6 +1240,9 @@ class PosRunnerLive:
                 # DIAGNOSTICO 2026-10-27: snapshot do preco PROVISORIO do alerta -- nunca sobrescrito
                 # (ver comentario da coluna em storage.py). So diagnostico/exclusao, nunca lido por V1.
                 "entry_price_alerta": ev.data.get("close"),
+                # PATCH 2026-10-27: qual versao do gate de qualidade de candle estava ativa quando
+                # este sinal foi decidido (qualidade_candle.py -- fora do hash de ParamsV1).
+                "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1273,15 +1277,48 @@ class PosRunnerLive:
             # alert_ts fica como estava, nenhum consumidor existente precisa mudar.
             self.storage.pr1_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora, ts_envio_telegram=agora)
 
+    # PATCH 2026-10-27 (diagnostico McRib): risco real (fill real vs stop) < 3% = `risco_irrealista`
+    # -- tag/registro, NUNCA bloqueio silencioso (pedido explicito do operador).
+    RISCO_IRREALISTA_MIN_PCT = 3.0
+
+    def _confirmar_entrada(self, signal: Any, res: TradeResultV1, now: float, update_signal: Callable[..., None],
+                           key_kind: Callable[..., str], keyboard: dict) -> None:
+        """PATCH 2026-10-27: manda 'ENTRADA CONFIRMADA' 1x, quando o fill real e conhecido
+        (`res.entry_price`), retificando o preco PROVISORIO do alerta ENTRADA original (nunca o
+        reescreve, so responde com o fill/stop/risco real). Nunca cancela/bloqueia por risco baixo."""
+        if res.entry_price is None or res.status == "cancelado" or not res.risk_frac or res.risk_frac <= 0:
+            return
+        risco_real_pct = 100.0 * res.risk_frac
+        tags = json.loads(signal["tags"] or "[]")
+        if risco_real_pct < self.RISCO_IRREALISTA_MIN_PCT and "risco_irrealista" not in tags:
+            tags.append("risco_irrealista")
+            update_signal(signal["id"], tags=json.dumps(tags))
+        if not signal["tg_message_id"] or not self.storage.pr_alert_once(key_kind("confirma", signal["id"]), now):
+            return
+        text = telegram_v1.entrada_confirmada_text(self.chain_name, signal["symbol"], res.entry_price, res.stop,
+                                                   risco_real_pct, risco_irrealista="risco_irrealista" in tags)
+        self._send(text, keyboard, reply_to=signal["tg_message_id"])
+
+    def _confirmar_entrada_v1(self, signal: Any, res: TradeResultV1, row: Any, now: float) -> None:
+        self._confirmar_entrada(signal, res, now, self.storage.pr1_update_signal, self._key_v1,
+                                self._keyboard_v1(row, signal["id"]))
+
+    def _confirmar_entrada_v2(self, signal: Any, res: TradeResultV1, row: Any, now: float) -> None:
+        self._confirmar_entrada(signal, res, now, self.storage.pr2_update_signal, self._key_v2,
+                                self._keyboard_v2(row))
+
     def _update_paper_v1(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
         for signal in self.storage.pr1_signals(status="aberto", pool=row["pool"], tf=tf):
             if signal["versao_config_v1"] != self.version_v1:
                 continue
             ev = event_v1_from_json(signal["event_json"])
             dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
-            res = simulate_v1(det.bars, ev, self.params_v1, self.costs, dex, row["l_bc"], self._sol_at())
+            confiavel = self._candle_confiavel_cb(det.bars, row["pool"], ev.data.get("TOPO"))
+            res = simulate_v1(det.bars, ev, self.params_v1, self.costs, dex, row["l_bc"], self._sol_at(),
+                              candle_confiavel=confiavel)
             if res.entry_price is not None and signal["entry_price"] != res.entry_price:
                 self.storage.pr1_update_signal(signal["id"], entry_price=res.entry_price)
+            self._confirmar_entrada_v1(signal, res, row, now)
             if res.status == "cancelado":
                 self.storage.pr1_update_signal(signal["id"], status="cancelado", reason=res.reason, closed_ts=now)
                 continue
@@ -1403,6 +1440,7 @@ class PosRunnerLive:
                 "token_signal_seq": self.storage.pr2_token_next_seq(mint),
                 "fonte_candle": self._fonte_candle_atual, "so_v2": 1 if so_v2 else 0,
                 "entry_price_alerta": ev.data.get("close"),
+                "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)
             if signal_id is None:
@@ -1443,9 +1481,12 @@ class PosRunnerLive:
                 continue
             ev = event_v1_from_json(signal["event_json"])
             dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
-            res = simulate_v1(det.bars, ev, self.params_v2, self.costs, dex, row["l_bc"], self._sol_at())
+            confiavel = self._candle_confiavel_cb(det.bars, row["pool"], ev.data.get("TOPO"))
+            res = simulate_v1(det.bars, ev, self.params_v2, self.costs, dex, row["l_bc"], self._sol_at(),
+                              candle_confiavel=confiavel)
             if res.entry_price is not None and signal["entry_price"] != res.entry_price:
                 self.storage.pr2_update_signal(signal["id"], entry_price=res.entry_price)
+            self._confirmar_entrada_v2(signal, res, row, now)
             if res.status == "cancelado":
                 self.storage.pr2_update_signal(signal["id"], status="cancelado", reason=res.reason, closed_ts=now)
                 continue
@@ -1497,6 +1538,22 @@ class PosRunnerLive:
         if self.storage.pr2_bankroll_append(tf, self.version_v2, signal["id"], linha, now):
             self.storage.pr2_bankroll_save(tf, self.version_v2, ledger.state.to_json())
 
+    # -- PATCH 2026-10-27 (diagnostico McRib/yagi, qualidade_candle.py) -----------------------------------------
+    def _candle_confiavel_cb(self, bars: list[Bar], pool: str, peak: Optional[float]) -> Callable[[int], Optional[str]]:
+        """Closure p/ `simulate_v1(candle_confiavel=...)`: usa a conferencia DexPaprika JA registrada
+        (`pr1_dexpaprika_divergencias` -- compartilhada por V1/V2, mesmos candles do mesmo pool) e o
+        candle seguinte quando ja existir nesta chamada (simulate_v1 e re-simulado a cada ciclo sobre
+        os candles mais recentes -- quem decide 'confirmar pelo candle seguinte' e aqui, nao dentro do
+        simulador, que so recebe a resposta ja resolvida)."""
+        divergentes = {int(r["candle_ts"]) for r in self.storage.pr1_dexpaprika_divergencias() if r["pool"] == pool}
+
+        def cb(j: int) -> Optional[str]:
+            bar = bars[j]
+            anterior = bars[j - 1].close if j > 0 else None
+            seguinte = bars[j + 1].open if j + 1 < len(bars) else None
+            return qualidade_candle.motivo_suspeito(bar, anterior, peak, seguinte, bar.ts in divergentes)
+        return cb
+
     # -- PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada ---------------------------
     # Medicao AO LADO de V1/V2 (ver pos_runner/evidencia.py): roda DEPOIS de `_update_paper_v1/v2`, nunca
     # altera nenhuma linha/alerta/banca oficial -- so grava em pr_trajetoria/pr_baseline. So usa candles JA
@@ -1536,7 +1593,8 @@ class PosRunnerLive:
         if ev.idx + 1 >= len(bars):
             return   # ainda sem o candle de entrada em cache
         dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
-        res = simulate_v1(bars, ev, params, self.costs, dex, row["l_bc"], self._sol_at())
+        confiavel = self._candle_confiavel_cb(bars, row["pool"], ev.data.get("TOPO"))
+        res = simulate_v1(bars, ev, params, self.costs, dex, row["l_bc"], self._sol_at(), candle_confiavel=confiavel)
         if res.entry_price is None or not res.risk_frac or res.risk_frac <= 0:
             return
         calc = calcular_trajetoria(bars, ev.idx + 1, res.entry_ts, res.entry_price, res.risk_frac,

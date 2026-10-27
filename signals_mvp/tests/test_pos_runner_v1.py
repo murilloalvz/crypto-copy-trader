@@ -162,6 +162,23 @@ class DetectorV1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             det.update(Bar(T0, 1, 1, 1, 1, 1))
 
+    def test_a_candle_whose_close_is_far_above_the_peak_never_fires_a_gatilho(self):
+        # PATCH 2026-10-27 (diagnostico McRib): com breakout_close=400_000 este MESMO fixture dispara
+        # ENTRADA normalmente (test_power_candle_breakout_gives_one_entry); com close >> pico
+        # (1.000.000), o candle NUNCA pode ser gatilho, mesmo que amplitude/volume bateriam os
+        # limiares normalmente.
+        s = textbook_v1(breakout_high=5_100_000.0, breakout_close=5_000_000.0)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("ENTRADA", kinds(det))
+
+    def test_a_candle_isolated_vs_the_previous_one_never_fires_a_gatilho_even_under_the_peak_ceiling(self):
+        # close (2.900.000) fica ABAIXO do teto de 3x o pico (3.000.000) -- so o peak check nao pega --
+        # mas e um salto isolado enorme vs o candle anterior (lateral em ~174k): o veto causal
+        # (vizinho ANTERIOR, nunca o seguinte) ainda pega.
+        s = textbook_v1(breakout_high=2_950_000.0, breakout_close=2_900_000.0)
+        det = run(s.bars, params(), "1h", L_BC, GRAD, CREATED)
+        self.assertNotIn("ENTRADA", kinds(det))
+
 
 class ParamsV1Tests(unittest.TestCase):
     def test_shipped_yaml_matches_the_defaults(self):
@@ -235,6 +252,53 @@ class SimulateV1Tests(unittest.TestCase):
         self.assertEqual(res.legs[0].price, 200)
         self.assertEqual(res.legs[1].price, 88)
         self.assertLess(res.net_ret, res.gross_ret)   # custos sempre reduzem o retorno
+
+    def test_candle_confiavel_omitted_is_identical_to_every_candle_being_confiavel(self):
+        bars = [
+            Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 105, 115, 1),
+            Bar(T0 + 2 * H, 150, 320, 148, 155, 1), Bar(T0 + 3 * H, 200, 210, 195, 205, 1),
+            Bar(T0 + 4 * H, 105, 108, 92, 90, 1), Bar(T0 + 5 * H, 88, 90, 85, 87, 1),
+        ]
+        ev = _ev(stop=50, topo=300, s_support=100)
+        omitido = self._run(bars, ev)
+        explicito = simulate_v1(bars, ev, params(), self.costs, "pumpswap", None, lambda ts: 150.0,
+                                pool_fee_pct=0.0, candle_confiavel=lambda _j: None)
+        self.assertEqual(dataclasses.asdict(omitido), dataclasses.asdict(explicito))
+
+    def test_a_suspicious_tp1_candle_is_skipped_the_trade_only_exits_full_later(self):
+        # PATCH 2026-10-27 (diagnostico yagi): MESMO cenario de test_tp1_then_exit_full_on_close_below_
+        # support, mas o candle[2] (toca o TOPO com exaustao) e suspeito -- TP1 nao decide nesse
+        # candle (nem nenhum outro ate confirmar); a posicao so sai no exit_full (100%, nunca os 30%
+        # do TP1 que nao deveria ter disparado).
+        bars = [
+            Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 105, 115, 1),
+            Bar(T0 + 2 * H, 150, 320, 148, 155, 1), Bar(T0 + 3 * H, 200, 210, 195, 205, 1),
+            Bar(T0 + 4 * H, 105, 108, 92, 90, 1), Bar(T0 + 5 * H, 88, 90, 85, 87, 1),
+        ]
+        ev = _ev(stop=50, topo=300, s_support=100)
+        confiavel = lambda j: "sem_confirmacao_candle_seguinte" if j == 2 else None
+        res = simulate_v1(bars, ev, params(), self.costs, "pumpswap", None, lambda ts: 150.0,
+                          pool_fee_pct=0.0, candle_confiavel=confiavel)
+        self.assertEqual(res.status, "fechado")
+        self.assertEqual([leg.reason for leg in res.legs], ["exit_full"])
+        self.assertAlmostEqual(res.legs[0].frac, 1.0)
+
+    def test_once_a_previously_suspicious_candle_is_confirmed_confiavel_tp1_resolves_normally(self):
+        # a mesma chamada, so com o candle[2] ja confirmado confiavel (DexPaprika ou candle seguinte,
+        # decidido por quem monta o callback -- nunca por simulate_v1) -- TP1 volta a disparar
+        # normalmente, prova que a suspeita nao perde a oportunidade pra sempre, so atrasa a decisao.
+        bars = [
+            Bar(T0, 100, 100, 100, 100, 1), Bar(T0 + H, 110, 120, 105, 115, 1),
+            Bar(T0 + 2 * H, 150, 320, 148, 155, 1), Bar(T0 + 3 * H, 200, 210, 195, 205, 1),
+            Bar(T0 + 4 * H, 105, 108, 92, 90, 1), Bar(T0 + 5 * H, 88, 90, 85, 87, 1),
+        ]
+        ev = _ev(stop=50, topo=300, s_support=100)
+        pendente = simulate_v1(bars, ev, params(), self.costs, "pumpswap", None, lambda ts: 150.0,
+                               pool_fee_pct=0.0, candle_confiavel=lambda j: "pendente" if j == 2 else None)
+        self.assertEqual([leg.reason for leg in pendente.legs], ["exit_full"])
+        confirmado = simulate_v1(bars, ev, params(), self.costs, "pumpswap", None, lambda ts: 150.0,
+                                 pool_fee_pct=0.0, candle_confiavel=lambda _j: None)
+        self.assertEqual([leg.reason for leg in confirmado.legs], ["tp1", "exit_full"])
 
 
 if __name__ == "__main__":

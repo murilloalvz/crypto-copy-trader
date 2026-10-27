@@ -367,3 +367,69 @@ pré-declarada por candle/preço absurdo") e implementada em `signals_mvp/analis
 nova `entry_price_alerta` (`pr1_signals`/`pr2_signals`, nullable, nunca sobrescrita, nunca lida por
 regra/filtro/alerta/banca de V1 ou V2 — só por esta regra de exclusão) para permitir o critério 1
 sem reconstruir o alerta original a partir de outra fonte.
+
+### 13b. PATCH 2026-10-27 — qualidade de candle aplicada (operador confirmou FAÇA)
+
+Depois do diagnóstico acima, o operador discordou de "(c) comportamento correto" para o McRib
+(close de gatilho 44,1M com pico 1,4M = candle absurdo; fill ~441k colado no stop 440k = risco
+~0,2% que distorce R) e confirmou que o power candle provavelmente só disparou pelo close
+inflado, e que o TP1 do ヤギ (mesmo campo `high`) tem a mesma cara. Pedido explícito: aplicar o
+patch de qualidade a V1 **e** V2, hashes de `ParamsV1`/`ParamsV2` intactos — confirmado:
+V1 `279b79ffa3f0`, V2 `d57b4331d51d` (inalterados antes/depois; o patch é lógica pura em módulos
+novos/`detector_v1.py`/`simulate_v1.py`, nenhum campo novo em `ParamsV1`/`ParamsV2`).
+
+**`signals_mvp/pos_runner/qualidade_candle.py`** (módulo novo, config própria —
+`LimiaresQualidadeCandle`, fora do hash): `motivo_suspeito(bar, vizinho_anterior_close, peak,
+vizinho_seguinte_open=None, dex_divergente=False)` — `None` = confiável; motivos: `ohlc_incoerente`
+(low/high inconsistentes com open/close — decisivo, nunca depende de vizinho),
+`dexpaprika_divergente` (linha já confirmada em `pr1_dexpaprika_divergencias` para o candle),
+`close_vs_pico` (close > 3× o pico/TOPO — pega o caso McRib isolado), `candle_isolado_vs_vizinhos`
+(salto > 10× vs. o candle anterior que NÃO persiste no candle seguinte — confirma que foi um
+glitch, não um movimento real), `sem_confirmacao_candle_seguinte` (salto suspeito vs. o anterior,
+mas ainda sem como confirmar/descartar — não decide nada, nem a favor nem contra).
+
+**Duas aplicações, por desenho (pedido explícito: gatilho é veto absoluto; TP1/EXIT pode
+confirmar depois):**
+- **Gatilho** (`detector_v1.py: DetectorV1._check_zone`): antes de consumir a zona e emitir
+  ENTRADA, checa `motivo_suspeito(bar, candle_anterior.close, self.peak)` — **sem** o candle
+  seguinte (regra "sem lookahead" do `CLAUDE.md`: a decisão é causal, só pode usar o que já
+  fechou). Candle suspeito → `return` sem consumir a zona; a zona continua armada e um candle
+  LIMPO mais tarde ainda pode disparar normalmente. **Limitação conhecida e deliberada**: o
+  rastreamento de onda/pico (`_update_wave`, fora do escopo pedido — só gatilho/entrada/TP1/saída)
+  continua rodando sobre o MESMO candle suspeito mesmo quando o gatilho é vetado; um candle com
+  `high` corrompido ainda pode resetar a onda (nova "P_peak" falsa). Corrigir isso tocaria a
+  mecânica de onda/zona do detector congelado além do que foi pedido — não feito aqui.
+- **TP1/EXIT** (`simulate_v1.py: simulate_v1`, novo parâmetro opcional `candle_confiavel`, default
+  `None` = todo candle confiável = saída IDENTICA a antes do patch): quem monta o callback
+  (`PosRunnerLive._candle_confiavel_cb`, `live.py`) passa o candle seguinte quando ele JÁ existe
+  nesta chamada (o simulador é re-simulado do zero a cada ciclo sobre os candles mais recentes —
+  não é um estado novo, é a mesma janela de 1 candle de atraso que a execução no OPEN seguinte já
+  usa) e consulta `pr1_dexpaprika_divergencias` (compartilhada por V1/V2 — mesmos candles do mesmo
+  pool). Candle não confiável: o loop pula esse candle (nenhuma decisão de stop/TP1/exit_full, nem
+  atualização de `max_high`) e tenta de novo no candle seguinte — nunca perde a posição, só atrasa.
+  `_atualizar_trajetoria` (medição FASE 1, `pos_runner/evidencia.py`) usa o MESMO callback, pelos
+  mesmos motivos (reflete a mesma realidade que o paper oficial). As simulações de CONTROLE da
+  baseline pareada (FASE 2a) continuam sem o gate — fora do escopo pedido (gatilho/entrada/TP1/
+  saída do trade REAL, não dos controles sintéticos).
+
+**`entry_price_alerta`/"ENTRADA CONFIRMADA"** (`live.py: _confirmar_entrada`): quando o fill real é
+conhecido (`res.entry_price`), manda 1x (idempotente, `pr_alert_once`) uma mensagem curta
+respondendo ao alerta ENTRADA original com fill/stop/risco REAIS — nunca reescreve/edita a
+mensagem original (API do Telegram não permite editar texto de forma simples aqui, e preservar o
+alerta original intacto é mais auditável). `RISCO_IRREALISTA_MIN_PCT = 3.0`: risco real < 3% grava
+a tag `risco_irrealista` em `tags` (idempotente) e aparece na própria mensagem de confirmação —
+**nunca cancela/bloqueia o sinal**, que continua no paper normalmente (pedido explícito do
+operador: "não bloqueio silencioso: registrar"). A tag alimenta a 3ª regra de exclusão em
+`PLANO_ANALISE_PREREGISTRADO.md`.
+
+**`qualidade_versao`** (`pr1_signals`/`pr2_signals`, nullable): grava `qualidade_candle.
+QUALIDADE_VERSAO = "candle_v1_2026-10-27"` em todo sinal novo — permite filtrar/auditar quais
+sinais já nasceram sob este gate (sinais antigos ficam `NULL`, nunca retroativo).
+
+**`signals_mvp/scripts/auditar_trades.py`** (SOMENTE LEITURA — abre o SQLite com
+`file:...?mode=ro`, nunca passa por `Storage`/migração): para cada ENTRADA de `pr1_signals`/
+`pr2_signals`, imprime os candles brutos (3 antes do gatilho até 1 depois da saída), a conferência
+DexPaprika quando houver, e um veredito LIMPO/SUSPEITO(motivo) por candle e por trade — usa a MESMA
+`qualidade_candle.motivo_suspeito`, com o candle seguinte sempre disponível (leitura offline, com
+hindsight completo). Uso: `python -m signals_mvp.scripts.auditar_trades --db dados/estado.sqlite
+[--versao v1|v2] [--simbolo McRib]`.

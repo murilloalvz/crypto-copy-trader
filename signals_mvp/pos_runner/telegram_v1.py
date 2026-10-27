@@ -93,6 +93,17 @@ def entrada_text(chain_name: str, symbol: str, mc_usd: Optional[float], idade_h:
     return "\n".join(lines)
 
 
+def entrada_confirmada_text(chain_name: str, symbol: str, fill_price: float, stop: float, risco_real_pct: float,
+                            risco_irrealista: bool = False) -> str:
+    """PATCH 2026-10-27 (diagnostico McRib: fill real ~441k colado no stop 440k, risco ~0,2% distorce
+    R -- o alerta ENTRADA so tinha o preco PROVISORIO). Retifica o alerta original uma vez, quando o
+    fill real (`entry_price_alerta` vs `entry_price`) e conhecido."""
+    linha = f"Fill: {fmt_usd(fill_price)} | Stop: {fmt_usd(stop)} | Risco real: {risco_real_pct:.1f}%"
+    if risco_irrealista:
+        linha += " ⚠️ risco_irrealista (<3% -- ver /relatorio)"
+    return f"{_head('✅', 'ENTRADA CONFIRMADA (fill real)', chain_name, symbol)}\n{linha}"
+
+
 def tp1_text(chain_name: str, symbol: str, price: float, entry_price: float) -> str:
     pct = 100.0 * (price / entry_price - 1.0) if entry_price else None
     return (f"{_head('🟡', 'TP1 — REALIZAÇÃO PARCIAL (30%)', chain_name, symbol)}\n"

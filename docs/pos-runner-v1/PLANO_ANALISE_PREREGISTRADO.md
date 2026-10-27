@@ -30,7 +30,12 @@ completo. Esta regra impede que um candle/preço absurdo **confirmado** contamin
 corrige a V1/V2 (hash intacto) e NÃO interpola nada — um trade excluído simplesmente não entra em
 nenhuma contagem/bootstrap.
 
-Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** dos dois é confirmado:
+**Atualização 2026-10-27 (patch `qualidade_candle.py` + `_confirmar_entrada`)**: adicionado um
+terceiro critério, pelo mesmo motivo (seção abaixo) — `risco_irrealista` (item 3 do pedido de
+patch). Mesma regra: adição a este documento, nunca reescrita do texto já em vigor; nenhuma coleta
+real rodou sobre este checkout antes desta adição.
+
+Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** dos três é confirmado:
 
 1. **`preco_entrada_divergente`** — o preço PROVISÓRIO mostrado no alerta ENTRADA
    (`pr1_signals.entry_price_alerta`/`pr2_signals.entry_price_alerta`, gravado 1x e nunca
@@ -43,6 +48,11 @@ Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** do
    mesmo `pool` e o mesmo candle do GATILHO (`ts_fechamento`) do sinal (só V1 tem conferência
    cruzada própria; V2 nunca é excluído por este critério). Qualquer linha ali logada já passou da
    tolerância configurada — não há limiar novo a aplicar.
+3. **`risco_irrealista`** (2026-10-27) — o sinal está tagueado `risco_irrealista` em `tags`
+   (gravado por `PosRunnerLive._confirmar_entrada`, `risco real = (fill − stop) / fill < 3%`,
+   `RISCO_IRREALISTA_MIN_PCT`). A tag nunca bloqueia/cancela o sinal no paper — ele continua
+   negociando normalmente; só fica fora da amostra confiável de H1–H8, já que um risco real colado
+   no stop distorce o R-múltiplo sem representar o setup pretendido pela regra.
 
 A lista de excluídos (entry_id, mint, símbolo, motivo) é reportada em
 `signals_mvp/analise/condicional.py` (`RelatorioCondicional.excluidos`, impressa em

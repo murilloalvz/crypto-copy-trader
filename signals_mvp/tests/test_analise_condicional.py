@@ -231,6 +231,22 @@ class CarregarSinaisResolvidosTests(unittest.TestCase):
         self.assertEqual(len(excluidos), 1)
         self.assertEqual(excluidos[0].motivo, "candle_divergente")
 
+    def test_a_signal_tagged_risco_irrealista_is_excluded_with_reason(self) -> None:
+        # PATCH 2026-10-27 (item 3 do pedido): risco real < 3% (live.py: _confirmar_entrada) e tagueado
+        # `risco_irrealista` -- nunca bloqueia o paper, so fica fora de H1-H8.
+        signal_id = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": '["risco_irrealista"]',
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "aberto",
+            "entry_price": 441_000.0, "stop": 440_000.0,
+        })
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(sinais, [])
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "risco_irrealista")
+
     def test_v2_is_never_excluded_by_the_dexpaprika_criterion_since_it_has_no_cross_check_of_its_own(self) -> None:
         signal_id = self.storage.pr2_insert_signal({
             "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,

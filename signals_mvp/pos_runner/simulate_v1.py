@@ -92,7 +92,13 @@ def simulate_v1(
     l_bc: Optional[float],
     sol_usd_at: Callable[[float], Optional[float]],
     pool_fee_pct: Optional[float] = None,
+    candle_confiavel: Optional[Callable[[int], Optional[str]]] = None,
 ) -> TradeResultV1:
+    """`candle_confiavel(j)` -- PATCH 2026-10-27 (diagnostico McRib/yagi): `None` (motivo) para o
+    candle no indice `j` do array `bars` = confiavel, decide normalmente; qualquer string = suspeito,
+    NAO decide neste candle (nem stop, nem TP1, nem exit_full -- nem atualiza `max_high` com ele) ate
+    confirmar por DexPaprika ou pelo candle seguinte (quem monta o callback, nao este modulo). Omitido
+    (`None`) = todo candle confiavel, saida IDENTICA a antes do patch (equivalencia byte a byte)."""
     i = event.idx
     stop = float(event.data["stop"])
     topo = float(event.data["TOPO"])
@@ -130,9 +136,13 @@ def simulate_v1(
         exit_leg(j + 1, bars[j + 1].open, frac, reason)
         return True
 
+    confiavel = candle_confiavel or (lambda _j: None)
     j = j0
     while j < len(bars) and remaining > 1e-12:
         bar = bars[j]
+        if confiavel(j) is not None:
+            j += 1
+            continue
         hit_stop = bar.low <= stop
         if hit_stop:
             exit_leg(j, min(bar.open, stop), remaining, "stop")

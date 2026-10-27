@@ -35,6 +35,7 @@ from typing import Any, Optional
 from .candles import Bar, tf_seconds
 from .detector import Zone
 from .params_v1 import ParamsV1
+from . import qualidade_candle
 
 PHASE_NONE, PHASE_RUNNER, PHASE_PULLBACK = 0, 1, 2
 GATILHOS = ("reacao_suporte", "power_candle_rompimento", "rompimento_volume")
@@ -180,6 +181,12 @@ class DetectorV1:
             return
         hits = self._gatilhos(i, z)
         if not hits:
+            return
+        # PATCH 2026-10-27 (diagnostico McRib/yagi, INTERPRETACOES.md #13): candle suspeito NUNCA pode
+        # disparar um gatilho -- veto causal (so compara com o candle ANTERIOR, nunca o seguinte: regra
+        # "sem lookahead"). A zona continua armada; um candle LIMPO mais tarde ainda pode disparar.
+        anterior = self.bars[i - 1].close if i > 0 else None
+        if qualidade_candle.motivo_suspeito(bar, anterior, self.peak) is not None:
             return
         assert z.anchor is not None
         last = z.last_test

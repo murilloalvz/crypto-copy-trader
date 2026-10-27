@@ -379,6 +379,11 @@ class Storage:
             # de V1 ou V2. NULL para sinais antigos (nunca inventa um valor retroativo).
             self._ensure_columns("pr1_signals", {"entry_price_alerta": "REAL"})
             self._ensure_columns("pr2_signals", {"entry_price_alerta": "REAL"})
+            # PATCH 2026-10-27 (qualidade_candle.py): qual versao do gate de qualidade de candle estava
+            # ativa quando o sinal foi decidido -- diagnostico/auditoria, fora do hash de ParamsV1/V2.
+            # NULL em sinais anteriores ao patch (nunca inventa a versao retroativamente).
+            self._ensure_columns("pr1_signals", {"qualidade_versao": "TEXT"})
+            self._ensure_columns("pr2_signals", {"qualidade_versao": "TEXT"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

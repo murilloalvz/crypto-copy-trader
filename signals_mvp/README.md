@@ -240,6 +240,18 @@ nova de API — usa só candles já em cache):
   arquivo (`meta.plano_analise_hash`) e recusa rodar de novo se o texto mudar; uma interpretação nova
   precisa de uma seção/versão nova, nunca reescrever a que já foi julgada.
 
+**PATCH 2026-10-27 (diagnóstico McRib/ヤギ, hashes V1/V2 intactos — ver `INTERPRETACOES.md` #13/#13b):**
+
+- candle suspeito (OHLC incoerente, divergência DexPaprika confirmada, ou salto isolado vs. o pico/os
+  candles vizinhos) nunca dispara um gatilho de entrada, e nunca decide TP1/EXIT até confirmar (pelo
+  DexPaprika ou pelo candle seguinte) — `pos_runner/qualidade_candle.py`;
+- ao fill real da entrada, o bot responde ao alerta original com "✅ ENTRADA CONFIRMADA" (fill/stop/risco
+  reais); risco real < 3% grava a tag `risco_irrealista` (nunca cancela o sinal, só registra e exclui da
+  análise condicional);
+- `python -m signals_mvp.scripts.auditar_trades --db dados/estado.sqlite [--versao v1|v2] [--simbolo X]`
+  — auditoria SOMENTE LEITURA (não escreve no banco) dos candles de cada trade, com veredito
+  LIMPO/SUSPEITO por candle.
+
 ---
 
 ## Meta do dia (`meta.txt`)

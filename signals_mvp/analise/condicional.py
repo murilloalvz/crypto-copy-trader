@@ -97,7 +97,7 @@ class Excluido:
     entry_id: int
     mint: str
     symbol: str
-    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente'
+    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente' | 'risco_irrealista'
 
 
 def _preco_entrada_divergente(sinal: Any) -> bool:
@@ -124,6 +124,13 @@ def _candle_divergente_confirmado(storage: Any, versao: str, sinal: Any) -> bool
     return any(r["pool"] == pool and r["candle_ts"] == ts for r in storage.pr1_dexpaprika_divergencias())
 
 
+def _risco_irrealista(sinal: Any) -> bool:
+    """PATCH 2026-10-27 (item 3 do pedido): risco real (fill vs stop, `PosRunnerLive.
+    RISCO_IRREALISTA_MIN_PCT` = 3%) tagueado em `live.py: _confirmar_entrada` -- nunca bloqueia o
+    sinal (continua negociando no paper normalmente), so fica fora de H1-H8 (amostra confiavel)."""
+    return "risco_irrealista" in json.loads(sinal["tags"] or "[]")
+
+
 def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalResolvido], list[Excluido]]:
     """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
     `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
@@ -145,6 +152,10 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalRe
         if _candle_divergente_confirmado(storage, versao, sinal):
             excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
                                        "candle_divergente"))
+            continue
+        if _risco_irrealista(sinal):
+            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+                                       "risco_irrealista"))
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
         risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
