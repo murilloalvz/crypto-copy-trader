@@ -285,3 +285,85 @@ Coluna nullable adicionada a `pr1_signals`/`pr2_signals` (sempre `NULL` nesta en
 lista de carteiras "pro" ainda não existe, fica para um pedido futuro). Mesmo padrão das colunas de
 instrumentação anteriores (`ts_fechamento_candle`, `retorno_sol_dia`, etc.): não entra no hash de
 `ParamsV1`/`ParamsV2`, não filtra nem altera nenhum sinal.
+
+## 13. DIAGNÓSTICO 2026-10-27 — McRib (ENTRADA ~10:05) e ヤギ (TP1 12:07)
+
+Investigação **somente leitura do código** pedida pelo operador (log do Telegram de 27/10). Este
+container não tem acesso ao `estado.sqlite` real da VM (só existe aqui o banco de pesquisa da Parte
+A, `signals_mvp/dados/pos_runner_parte_a/parte_a.sqlite` — outro banco, sem relação com os trades ao
+vivo). As `SELECT`s reais pedidas pelo operador (candles brutos, `fonte_candle`, `candle_divergente`,
+R nas tabelas/CSVs) **não puderam ser executadas aqui** — seguem como pendência do operador, com as
+queries abaixo. O que segue é hipótese fundada em leitura de código, não confirmação de dado real.
+
+**McRib — "entrada 44,1M" no alerta vs "STOP 440k (−0,0%)" no EXIT FULL.** O alerta ENTRADA mostra
+`signal["entry_price"]` no momento em que é ENVIADO (`live.py: _entry_v1`, `entry_price:
+ev.data.get("close")`) — um valor PROVISÓRIO, porque o fill real (`bars[j0].open`, o candle seguinte
+ao gatilho — "Entrada no OPEN do candle seguinte ao sinal") ainda não é conhecido nesse instante
+(`simulate_v1.py`, `res.entry_price = bars[j0].open`). Quando o fill real é conhecido,
+`_update_paper_v1` corrige silenciosamente `pr1_signals.entry_price` (`if res.entry_price is not
+None and signal["entry_price"] != res.entry_price: ...pr1_update_signal(entry_price=res.entry_price)`)
+— SEM nunca corrigir/seguir o alerta ENTRADA já enviado. Isso por si só já explica a aparência de
+inconsistência entre os dois alertas, **independente** de qualquer defeito de candle: são dois
+preços de entrada diferentes (provisório no alerta, corrigido no EXIT FULL) do mesmo trade. Classificação:
+**(b) bug de código/UX** — o cálculo e a saída estão corretos dado o valor que cada mensagem usa; o
+problema é a falta de correção/retificação do alerta original.
+
+Separadamente, um salto de ~100x entre "pico 1,4M" e "entrada 44,1M" é compatível com o defeito de
+candle GeckoTerminal **já documentado** neste repositório (`qualidade_v1.py`, docstring: "GeckoTerminal
+tem candle histórico defeituoso em pools Meteora DBC — picos de 1 candle, `high`/`close` até ~4e9") e
+com o `CLAUDE.md` raiz ("Post-Transition Fresh Economic Discovery V0": impactos de preço Jupiter
+observados de ~2,5pp e ~87,6pp). `dado_invalido` ficou 0 porque `avaliar_qualidade` (`qualidade_v1.py`)
+**só examina `bars[0]`** (o primeiro candle cacheado do pool), uma única vez, na construção do
+detector (`live.py: _detector_v1`) — nunca em nenhum candle seguinte. Um candle corrompido em QUALQUER
+posição depois do primeiro passa batido por este gate. Classificação: **(a)+(b)** — dado real
+corrompido (se confirmado) + lacuna de código no escopo do gate (que deveria, mas não consegue,
+pegar exatamente esse caso).
+
+**ヤギ — "TP1 parcial em 227k (−5,5%)" quando a regra é 30% no TOPO (2,6M) com exaustão.** Lógica
+exata do gatilho (arquivo/linha): `signals_mvp/pos_runner/simulate_v1.py` linhas 147–150
+(`if not tp1_done: atr = _atr(bars, j, params.atr_period); if bar.high >= topo and
+_exhaustion(bar, atr, params): ...`); `_exhaustion` nas linhas 72–83; `_atr` nas linhas 61–69. Se o
+candle `j` tiver `high` corrompido/inflado independentemente de `open`/`low`/`close` (mesmo defeito
+Meteora DBC citado acima), **tanto** `bar.high >= topo` **quanto** `upper_wick = bar.high -
+max(open,close)` ficam artificialmente grandes a partir do MESMO campo espúrio — disparando uma
+"exaustão" e um TP1 falsos. O FILL do TP1 usa o preço real do candle seguinte (`exit_next_open`),
+que pode estar em prejuízo — exatamente o "parcial com prejuízo rotulada TP1" relatado. Sem o candle
+bruto real não há como confirmar que foi isso (vs. outra causa); a lógica em si está implementada
+como especificado. Classificação condicionada: **se o candle `high` estiver mesmo corrompido, (a)+(b)**
+(mesma lacuna do item anterior: nenhum gate reavalia candles depois do primeiro); **se o candle for
+genuíno, (c)** — sinalização de exaustão correta dado um pico real que depois recuou.
+
+**Consultas que o operador pode rodar no banco real (ou numa cópia), só SELECT:**
+
+```sql
+-- candles brutos em torno do candle_ts do sinal (substituir POOL/TS)
+SELECT ts, o, h, l, c, v, fonte FROM pr_bars WHERE pool='<POOL>' AND tf='1h'
+  ORDER BY ts;  -- filtrar visualmente pelos ts em torno do gatilho
+
+-- preco de entrada GRAVADO vs o do alerta (coluna nova desta entrega, NULL em sinais anteriores a ela)
+SELECT id, pool, symbol, status, entry_price, entry_price_alerta, stop, topo, tp1_price, exit_full_price,
+  fonte_candle, ts_fechamento FROM pr1_signals WHERE symbol IN ('McRib','ヤギ') ORDER BY id;
+
+-- conferencia cruzada DexPaprika (so grava quando ja confirmou divergencia alem da tolerancia)
+SELECT * FROM pr1_dexpaprika_divergencias WHERE pool IN (
+  SELECT pool FROM pr1_signals WHERE symbol IN ('McRib','ヤギ')
+);
+```
+
+**Conserto proposto (NÃO aplicado — decisão do operador):** estender `avaliar_qualidade`
+(`qualidade_v1.py`) para validar CADA candle novo que chega (não só `bars[0]`) — por exemplo,
+consistência OHLC (`low <= open,close <= high`) e/ou o mesmo teste de `wick_ratio` já existente,
+repetido a cada candle, chamado a partir do ponto em `live.py` onde cada candle novo é consumido
+(mesmo `_refresh_core`/`_on_event_v1`, hoje só chama `avaliar_qualidade` 1x na construção do
+detector). **Impacto no hash:** se implementado como lógica pura dentro de `qualidade_v1.py` SEM
+adicionar campo novo a `ParamsV1`, o hash da V1 (`279b79ffa3f0`) **NÃO muda** (o hash é
+`short_hash(ParamsV1.as_dict())`, e `as_dict()` não inclui código). Se o conserto precisar de um
+limiar novo configurável (ex.: tolerância OHLC), isso É um campo novo de `ParamsV1` e o hash MUDA —
+nesse caso é uma nova versão, decisão do operador, nunca automática.
+
+**Regra de exclusão pré-declarada** adicionada a `PLANO_ANALISE_PREREGISTRADO.md` (seção "Exclusão
+pré-declarada por candle/preço absurdo") e implementada em `signals_mvp/analise/condicional.py`
+(`carregar_sinais_e_excluidos`/`Excluido`) — ver aquele documento para os critérios exatos. Coluna
+nova `entry_price_alerta` (`pr1_signals`/`pr2_signals`, nullable, nunca sobrescrita, nunca lida por
+regra/filtro/alerta/banca de V1 ou V2 — só por esta regra de exclusão) para permitir o critério 1
+sem reconstruir o alerta original a partir de outra fonte.

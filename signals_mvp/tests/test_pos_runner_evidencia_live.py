@@ -155,6 +155,41 @@ class BaselineIntegrationTests(unittest.TestCase):
         self.assertEqual([c["idx"] for c in baseline1], [c["idx"] for c in baseline2])
 
 
+class EntryPriceAlertaTests(unittest.TestCase):
+    """DIAGNOSTICO 2026-10-27 (McRib): `entry_price_alerta` e o preco PROVISORIO do alerta ENTRADA
+    (ev.data["close"]), gravado 1x e nunca sobrescrito -- ao contrario de `entry_price`, que
+    _update_paper_v1/v2 corrige silenciosamente quando o fill real e conhecido. So diagnostico/
+    exclusao (analise.condicional); nunca lido por regra/filtro/alerta/banca de V1 ou V2."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_entry_price_alerta_matches_what_the_entrada_alert_showed_even_when_the_real_fill_differs(self) -> None:
+        # no fixture padrao o fill real (bars[j0].open) DIFERE do provisorio do gatilho (ev.data["close"])
+        # -- exatamente o mecanismo do McRib: entry_price_alerta fica com o valor do alerta ja enviado,
+        # entry_price e corrigido para o fill real (_update_paper_v1).
+        _run_entrada(self.h)
+        sinal = self.h.storage.pr1_signals()[0]
+        ev = event_v1_from_json(sinal["event_json"])
+        self.assertIsNotNone(sinal["entry_price_alerta"])
+        self.assertAlmostEqual(sinal["entry_price_alerta"], ev.data.get("close"))
+        self.assertNotAlmostEqual(sinal["entry_price_alerta"], sinal["entry_price"])
+
+    def test_entry_price_alerta_never_changes_after_entry_price_is_later_corrected(self) -> None:
+        _run_entrada(self.h)
+        sinal = self.h.storage.pr1_signals()[0]
+        original_alerta = sinal["entry_price_alerta"]
+        # simula a correcao silenciosa que _update_paper_v1 faz quando o fill real difere do
+        # provisorio do alerta (ver live.py, "if res.entry_price is not None and signal[...")
+        self.h.storage.pr1_update_signal(sinal["id"], entry_price=original_alerta * 2.0)
+        corrigido = self.h.storage.pr1_signal(sinal["id"])
+        self.assertAlmostEqual(corrigido["entry_price"], original_alerta * 2.0)
+        self.assertAlmostEqual(corrigido["entry_price_alerta"], original_alerta, msg="nunca sobrescrito")
+
+
 class AnaliseTextoTests(unittest.TestCase):
     """PEDIDO (PARTE 1 de 2) FASE 2c: PosRunnerLive.analise_texto (reusado pelo /analise do Telegram)."""
 

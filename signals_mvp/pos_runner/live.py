@@ -1236,6 +1236,9 @@ class PosRunnerLive:
                 "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
                 "token_signal_seq": self.storage.pr1_token_next_seq(mint),
                 "fonte_candle": self._fonte_candle_atual,
+                # DIAGNOSTICO 2026-10-27: snapshot do preco PROVISORIO do alerta -- nunca sobrescrito
+                # (ver comentario da coluna em storage.py). So diagnostico/exclusao, nunca lido por V1.
+                "entry_price_alerta": ev.data.get("close"),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1399,6 +1402,7 @@ class PosRunnerLive:
                 "mint_authority": authority.mint_authority, "freeze_authority": authority.freeze_authority,
                 "token_signal_seq": self.storage.pr2_token_next_seq(mint),
                 "fonte_candle": self._fonte_candle_atual, "so_v2": 1 if so_v2 else 0,
+                "entry_price_alerta": ev.data.get("close"),
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)
             if signal_id is None:

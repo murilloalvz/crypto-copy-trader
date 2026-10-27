@@ -170,6 +170,87 @@ class CarregarSinaisResolvidosTests(unittest.TestCase):
         self.assertIn("reacao_suporte", s.gatilho)
         self.assertIn("base_ge_2d", s.tags)
 
+    def _resolver(self, signal_id: int, dif: float = 0.7) -> None:
+        self.storage.pr_trajetoria_upsert("v1", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=5_000.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        self.storage.pr_baseline_upsert("v1", signal_id, dif, chain="solana", pool="POOL1", tf="1h",
+                                        mint="MINT1", symbol="CAT", n_controles=5, controles_json="[]",
+                                        dif_pareada=dif, r_controle_medio=0.3, r_sinal=dif + 0.3)
+
+    def test_a_signal_whose_alert_price_diverges_from_the_recorded_one_is_excluded_with_reason(self) -> None:
+        # DIAGNOSTICO 2026-10-27 (McRib): entry_price_alerta (preco do alerta) != entry_price (gravado
+        # depois do fill real) em mais de 1% -- regra de exclusao pre-declarada
+        # (PLANO_ANALISE_PREREGISTRADO.md "Exclusao pre-declarada").
+        signal_id = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": 440_000.0, "stop": 440_000.0,
+            "entry_price_alerta": 44_100_000.0,  # McRib: alerta mostrou 44,1M, gravado 440k
+        })
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(sinais, [])
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "preco_entrada_divergente")
+        self.assertEqual(excluidos[0].mint, "MINT1")
+        # compat: carregar_sinais_resolvidos tambem reflete a exclusao
+        self.assertEqual(cond.carregar_sinais_resolvidos(self.storage, "v1"), [])
+
+    def test_a_signal_whose_alert_price_matches_the_recorded_one_within_tolerance_is_not_excluded(self) -> None:
+        signal_id = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": 100.5, "stop": 80.0,
+            "entry_price_alerta": 100.0,  # 0,5% de diferenca -- dentro da tolerancia de 1%
+        })
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(len(sinais), 1)
+        self.assertEqual(excluidos, [])
+
+    def test_a_signal_with_no_entry_price_alerta_recorded_is_never_excluded_for_missing_data(self) -> None:
+        signal_id = self._inserir_sinal_v1()  # sem entry_price_alerta (sinal "antigo", coluna NULL)
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(len(sinais), 1)
+        self.assertEqual(excluidos, [])
+
+    def test_a_signal_with_a_confirmed_dexpaprika_divergence_on_the_trigger_candle_is_excluded(self) -> None:
+        # DIAGNOSTICO 2026-10-27 (yagi): qualquer linha confirmada em pr1_dexpaprika_divergencias no
+        # candle do gatilho (ts_fechamento) exclui o sinal, mesmo sem divergencia de preco de entrada.
+        signal_id = self._inserir_sinal_v1()
+        self.storage.pr1_dexpaprika_divergencia_insert(
+            0.0, "solana", "POOL1", "MINT1", "CAT", "1h", 1_000, "high", 2_600_000.0, 227_000.0, 91.3,
+            "abc123")
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(sinais, [])
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "candle_divergente")
+
+    def test_v2_is_never_excluded_by_the_dexpaprika_criterion_since_it_has_no_cross_check_of_its_own(self) -> None:
+        signal_id = self.storage.pr2_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v2": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": 100.0, "stop": 80.0, "so_v2": 0,
+        })
+        self.storage.pr1_dexpaprika_divergencia_insert(
+            0.0, "solana", "POOL1", "MINT1", "CAT", "1h", 1_000, "high", 2_600_000.0, 227_000.0, 91.3,
+            "abc123")
+        self.storage.pr_trajetoria_upsert("v2", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=5_000.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        self.storage.pr_baseline_upsert("v2", signal_id, 0.7, chain="solana", pool="POOL1", tf="1h",
+                                        mint="MINT1", symbol="CAT", n_controles=5, controles_json="[]",
+                                        dif_pareada=0.7, r_controle_medio=0.3, r_sinal=1.0)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v2")
+        self.assertEqual(len(sinais), 1)
+        self.assertEqual(excluidos, [])
+
 
 class GarantirPlanoRegistradoTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -211,6 +292,19 @@ class FormatarTelegramTests(unittest.TestCase):
         self.assertIn("PASS", texto)
         self.assertIn("1.20", texto)
         self.assertIn("H2 tipo de gatilho/power_candle_rompimento", texto)
+
+    def test_telegram_mentions_the_exclusion_count_when_there_is_at_least_one(self) -> None:
+        h1 = cond.ResultadoH1("PASS", 30, media_dif_pareada=1.2, limite_inferior_dia=0.5, limite_inferior_token=0.4)
+        excluido = cond.Excluido(entry_id=9, mint="MINTX", symbol="X", motivo="preco_entrada_divergente")
+        rel = cond.RelatorioCondicional(versao="v1", h1=h1, excluidos=[excluido])
+        self.assertIn("1 excluído", cond.formatar_telegram(rel))
+
+    def test_markdown_lists_each_excluded_signal_with_its_reason(self) -> None:
+        h1 = cond.ResultadoH1("AMOSTRA_INSUFICIENTE", 7)
+        excluido = cond.Excluido(entry_id=9, mint="MINTX", symbol="X", motivo="candle_divergente")
+        rel = cond.RelatorioCondicional(versao="v1", h1=h1, excluidos=[excluido])
+        texto = cond.formatar_markdown(rel)
+        self.assertIn("entry_id=9 X (MINTX): candle_divergente", texto)
 
 
 if __name__ == "__main__":

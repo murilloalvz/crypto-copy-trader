@@ -34,6 +34,11 @@ SEED_PADRAO = 20_261_026
 N_BOOTSTRAP_PADRAO = 10_000
 CONFIANCA_H1 = 0.90
 ALPHA_HOLM = 0.05
+# DIAGNOSTICO 2026-10-27 (McRib/yagi, ver docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md "Exclusao
+# pre-declarada"): mesma ordem de grandeza da tolerancia padrao da conferencia cruzada DexPaprika
+# (dexpaprika_v1.DexPaprikaProvider.tolerancia_pct = 1.0) -- nao e um limiar novo inventado pra esta
+# regra, e o mesmo criterio ja usado pelo sistema pra marcar um campo de candle como divergente.
+TOLERANCIA_PRECO_ALERTA_PCT = 1.0
 
 
 class PlanoAlteradoError(RuntimeError):
@@ -85,16 +90,61 @@ class SinalResolvido:
         return _dia_utc(self.t_entrada)
 
 
-def carregar_sinais_resolvidos(storage: Any, versao: str) -> list[SinalResolvido]:
+@dataclass(frozen=True)
+class Excluido:
+    """DIAGNOSTICO 2026-10-27, regra de exclusao pre-declarada (PLANO_ANALISE_PREREGISTRADO.md "Exclusao
+    pre-declarada"): candle/preco absurdo CONFIRMADO -- fora de H1-H8, listado aqui com o motivo."""
+    entry_id: int
+    mint: str
+    symbol: str
+    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente'
+
+
+def _preco_entrada_divergente(sinal: Any) -> bool:
+    """`entry_price_alerta` (preco PROVISORIO mostrado no alerta ENTRADA, nunca sobrescrito) vs
+    `entry_price` (preco gravado/corrigido depois que o fill real -- bars[j0].open -- e conhecido,
+    `simulate_v1.py`). Sinais antigos (coluna adicionada nesta revisao) tem `entry_price_alerta` NULL
+    -- nunca contam como divergente por falta de dado."""
+    alerta, gravado = sinal["entry_price_alerta"], sinal["entry_price"]
+    if alerta is None or gravado is None or alerta == 0:
+        return False
+    return 100.0 * abs(gravado - alerta) / abs(alerta) > TOLERANCIA_PRECO_ALERTA_PCT
+
+
+def _candle_divergente_confirmado(storage: Any, versao: str, sinal: Any) -> bool:
+    """So a V1 tem conferencia cruzada DexPaprika (`pr1_dexpaprika_divergencias`, PEDIDO CONSOLIDADO
+    FASE 1 item 3b) -- a V2 nao tem a sua propria (ver `live.py: _entry_v2`/`_on_event_v2`). Qualquer
+    linha logada para o candle do GATILHO (`ts_fechamento`) do sinal JA passou da tolerancia
+    configurada (`dexpaprika_v1.comparar_candle` so grava divergencia CONFIRMADA, nunca um valor
+    dentro da tolerancia) -- por isso basta checar presenca, sem limiar novo aqui."""
+    if versao != "v1":
+        return False
+    ts = sinal["ts_fechamento"]
+    pool = sinal["pool"]
+    return any(r["pool"] == pool and r["candle_ts"] == ts for r in storage.pr1_dexpaprika_divergencias())
+
+
+def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalResolvido], list[Excluido]]:
     """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
     `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
-    `t_entrada` (pr_baseline nao guarda isso) e com pr1_signals/pr2_signals para os campos de grupo."""
+    `t_entrada` (pr_baseline nao guarda isso) e com pr1_signals/pr2_signals para os campos de grupo.
+    Aplica a regra de exclusao pre-declarada (candle/preco absurdo confirmado) ANTES de devolver a
+    lista usavel -- os excluidos saem numa lista separada, com motivo, nunca silenciosamente."""
     out: list[SinalResolvido] = []
+    excluidos: list[Excluido] = []
     sinal_lookup = storage.pr1_signal if versao == "v1" else storage.pr2_signal
     for b in storage.pr_baseline_resolvidas_com_dif(versao):
         traj = storage.pr_trajetoria_get(versao, b["entry_id"])
         sinal = sinal_lookup(b["entry_id"])
         if traj is None or sinal is None or traj["t_entrada"] is None or not sinal["mint"]:
+            continue
+        if _preco_entrada_divergente(sinal):
+            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+                                       "preco_entrada_divergente"))
+            continue
+        if _candle_divergente_confirmado(storage, versao, sinal):
+            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+                                       "candle_divergente"))
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
         risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
@@ -105,7 +155,14 @@ def carregar_sinais_resolvidos(storage: Any, versao: str) -> list[SinalResolvido
             liquidez_usd=sinal["liquidez_usd"], holders_tag=sinal["holders_tag"],
             tags=tuple(json.loads(sinal["tags"] or "[]")), janela_ouro=sinal["janela_ouro"],
         ))
-    return out
+    return out, excluidos
+
+
+def carregar_sinais_resolvidos(storage: Any, versao: str) -> list[SinalResolvido]:
+    """Compat: so a lista ja filtrada pela regra de exclusao -- ver `carregar_sinais_e_excluidos` para
+    a lista de excluidos com motivo."""
+    sinais, _ = carregar_sinais_e_excluidos(storage, versao)
+    return sinais
 
 
 def n_tokens_distintos(sinais: Sequence[SinalResolvido]) -> int:
@@ -274,14 +331,15 @@ class RelatorioCondicional:
     h1: ResultadoH1
     exploratorias: list[GrupoExploratorio] = field(default_factory=list)
     h8_status: str = "nao_testada"
+    excluidos: list[Excluido] = field(default_factory=list)
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
     garantir_plano_registrado(storage, plano_path)
-    sinais = carregar_sinais_resolvidos(storage, versao)
+    sinais, excluidos = carregar_sinais_e_excluidos(storage, versao)
     h1 = rodar_h1(sinais)
     exploratorias = rodar_exploratorias(sinais) if h1.status in ("PASS", "FAIL") else []
-    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias)
+    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -303,6 +361,10 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
         linhas.append(f"- {g.hipotese} / {g.grupo}: n={g.n_tokens}, média={g.media_dif_pareada:+.3f} R, "
                       f"p={g.p_valor:.4f} -> {marca}")
     linhas.append(f"- H8 (carteiras_pro_presentes): {rel.h8_status} (coluna NULL nesta entrega)")
+    linhas.append("")
+    linhas.append(f"## Excluídos (regra pré-declarada, candle/preço divergente confirmado): {len(rel.excluidos)}")
+    for e in rel.excluidos:
+        linhas.append(f"- entry_id={e.entry_id} {e.symbol} ({e.mint}): {e.motivo}")
     return "\n".join(linhas)
 
 
@@ -317,6 +379,8 @@ def formatar_telegram(rel: RelatorioCondicional) -> str:
         linhas.append("Candidatos (Holm): " + ", ".join(f"{g.hipotese}/{g.grupo}" for g in candidatos))
     else:
         linhas.append("Sem candidato exploratório significativo (Holm) ainda.")
+    if rel.excluidos:
+        linhas.append(f"{len(rel.excluidos)} excluído(s) por candle/preço divergente confirmado.")
     return "\n".join(linhas)
 
 

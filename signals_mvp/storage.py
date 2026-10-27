@@ -372,6 +372,13 @@ class Storage:
             # anteriores -- ver ts_fechamento_candle/retorno_sol_dia/token_signal_seq acima).
             self._ensure_columns("pr1_signals", {"carteiras_pro_presentes": "INTEGER"})
             self._ensure_columns("pr2_signals", {"carteiras_pro_presentes": "INTEGER"})
+            # DIAGNOSTICO 2026-10-27: preco PROVISORIO exibido no alerta ENTRADA (ev.data["close"], antes do
+            # fill real -- bars[j0].open -- ser conhecido). Gravado 1x, nunca sobrescrito (ao contrario de
+            # `entry_price`, que _update_paper_v1/v2 corrige silenciosamente quando o fill real e conhecido).
+            # Puramente diagnostico/exclusao (analise.condicional) -- nunca lido por regra/filtro/alerta/banca
+            # de V1 ou V2. NULL para sinais antigos (nunca inventa um valor retroativo).
+            self._ensure_columns("pr1_signals", {"entry_price_alerta": "REAL"})
+            self._ensure_columns("pr2_signals", {"entry_price_alerta": "REAL"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

@@ -19,6 +19,43 @@ usado em `ANALISE_MONTE_CARLO.md`/`PROTOCOLO_VALIDACAO.md` (`lucro_líquido_% / 
 - `n` conta **tokens distintos** (mint), não sinais — mesma convenção de `_stats_r_de_fechados`.
 - V1 e V2 **nunca se misturam** na mesma análise (coluna `versao`); rodar as duas separadamente.
 
+## Exclusão pré-declarada por candle/preço absurdo (DIAGNÓSTICO 2026-10-27)
+
+Adicionada **antes de qualquer coleta/análise ter rodado sobre dados reais** (nenhuma linha de
+`meta.plano_analise_hash` ainda registrada neste checkout) — por isso é uma adição a este mesmo
+documento pré-registrado, não uma nova seção/versão. Motivo: dois alertas reais (McRib ENTRADA
+27/10 ~10:05, ヤギ TP1 27/10 12:07) mostraram inconsistência entre o preço mostrado no alerta e o
+preço gravado/o desfecho — ver `docs/pos-runner-v1/INTERPRETACOES.md` §13 para o diagnóstico
+completo. Esta regra impede que um candle/preço absurdo **confirmado** contamine H1–H8; ela NÃO
+corrige a V1/V2 (hash intacto) e NÃO interpola nada — um trade excluído simplesmente não entra em
+nenhuma contagem/bootstrap.
+
+Um trade (`entry_id`/`versao`) é excluído de H1–H8 quando **qualquer um** dos dois é confirmado:
+
+1. **`preco_entrada_divergente`** — o preço PROVISÓRIO mostrado no alerta ENTRADA
+   (`pr1_signals.entry_price_alerta`/`pr2_signals.entry_price_alerta`, gravado 1x e nunca
+   sobrescrito) diverge do preço gravado/corrigido (`entry_price`, atualizado quando o fill real é
+   conhecido) em mais de 1% relativo — mesma ordem de grandeza da tolerância padrão da conferência
+   cruzada DexPaprika (`dexpaprika_v1.DexPaprikaProvider.tolerancia_pct = 1.0`). Sinal sem
+   `entry_price_alerta` (coluna nova, sinais antigos ficam `NULL`) nunca é excluído por falta de
+   dado — dado ausente nunca conta como divergência.
+2. **`candle_divergente`** — existe pelo menos uma linha em `pr1_dexpaprika_divergencias` para o
+   mesmo `pool` e o mesmo candle do GATILHO (`ts_fechamento`) do sinal (só V1 tem conferência
+   cruzada própria; V2 nunca é excluído por este critério). Qualquer linha ali logada já passou da
+   tolerância configurada — não há limiar novo a aplicar.
+
+A lista de excluídos (entry_id, mint, símbolo, motivo) é reportada em
+`signals_mvp/analise/condicional.py` (`RelatorioCondicional.excluidos`, impressa em
+`formatar_markdown`; `formatar_telegram` reporta só a contagem). Implementação:
+`carregar_sinais_e_excluidos` (mesmo módulo).
+
+Limitação conhecida: a conferência cruzada DexPaprika só roda quando `dexpaprika.deve_conferir()`
+permite (orçamento/limiter compartilhado — PEDIDO CONSOLIDADO FASE 1 item 3b) e só a partir de
+quando o provedor foi ligado; um candle defeituoso SEM uma linha correspondente em
+`pr1_dexpaprika_divergencias` (fora da janela orçada, ou anterior à ativação do provedor) não é
+pego por este critério — fica só o critério 1 (preço de entrada) como rede de segurança para esses
+casos. Isto é uma lacuna conhecida, não uma correção da V1/V2.
+
 ## H1 — primária, única confirmatória
 
 **Hipótese:** a média de `dif_pareada` é > 0 (o sinal real supera, em média, a linha de base pareada

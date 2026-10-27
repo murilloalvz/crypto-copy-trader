@@ -81,6 +81,7 @@ class MigracaoSobreBancoAntigoTests(unittest.TestCase):
             self.assertEqual(row["result_net"], 0.25)
             # a coluna nova existe e comeca NULL (nunca inventa um valor pro dado antigo)
             self.assertIsNone(row["carteiras_pro_presentes"])
+            self.assertIsNone(row["entry_price_alerta"])
             # as tabelas novas existem e estao vazias (nunca populadas por conta propria)
             self.assertEqual(storage.pr_trajetoria_all(), [])
             self.assertEqual(storage.pr_baseline_all(), [])
