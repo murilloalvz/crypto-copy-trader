@@ -138,6 +138,45 @@ def sombra_queda96_text(symbol: str, queda_pct: Optional[float], risco_pct: Opti
            f"risco {risco} | liquidez {liq}")
 
 
+# ---------------------------------------------------------------------------
+# PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- alerta de ESTUDO, NUNCA um sinal (nunca
+# convida a agir, nunca entra na banca/CSV/relatorio v1|v2). Botoes 👀 acompanhando / ❌ ignorar
+# idempotentes (gravam so o HORARIO da decisao, resolvido por `telegram.OperatorHandler.
+# _handle_radar_callback`).
+# ---------------------------------------------------------------------------
+
+
+def radar_text(symbol: str, queda_pct: Optional[float], mc_usd: Optional[float], liquidez_usd: Optional[float],
+               n_candles_base: Optional[int], idade_dias: Optional[float], tags: list[str]) -> str:
+    queda = f"{queda_pct:.1f}%" if queda_pct is not None else "s/d"
+    mc = fmt_usd(mc_usd) if mc_usd is not None else "s/d"
+    liq = fmt_usd(liquidez_usd) if liquidez_usd is not None else "s/d"
+    candles = str(n_candles_base) if n_candles_base is not None else "s/d"
+    idade = f"{idade_dias:.1f}d" if idade_dias is not None else "s/d"
+    linhas = [
+        f"👀 [RADAR · NÃO É SINAL] Caixa em formação\nCoin: ${_esc(symbol, 20)}",
+        f"queda {queda} desde o pico | MC {mc} | liquidez {liq} | base: {candles} candle(s) | idade {idade}",
+    ]
+    linhas.extend(_tag_lines(tags))
+    linhas.append("Só estudo — nunca entra na banca, nunca aparece em /relatorio v1|v2.")
+    return "\n".join(linhas)
+
+
+def radar_row(radar_id: int) -> list[dict[str, str]]:
+    return [
+        {"text": "👀 acompanhando", "callback_data": f"radar:acomp:{radar_id}"},
+        {"text": "❌ ignorar", "callback_data": f"radar:ignorar:{radar_id}"},
+    ]
+
+
+def with_radar_buttons(base_keyboard: dict, radar_id: int) -> dict:
+    """Acrescenta a linha de decisão do Radar a um teclado JÁ existente (terminal/DexScreener de
+    `keyboard()`) -- nunca substitui as linhas que já estavam lá (mesmo padrão de `with_feedback`)."""
+    rows = list(base_keyboard.get("inline_keyboard") or [])
+    rows.append(radar_row(radar_id))
+    return {"inline_keyboard": rows}
+
+
 def dado_invalido_text(chain_name: str, symbol: str, motivo: str) -> str:
     rotulo = {"wick": "candle do 1º fechamento com pavio absurdo", "l_bc_floor": "L_bc abaixo do piso de precisão",
              "l_bc_ceiling": "L_bc acima do teto de sanidade (defeito de candle do GT)"}.get(motivo, motivo)

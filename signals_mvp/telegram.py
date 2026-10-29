@@ -549,6 +549,9 @@ class OperatorHandler:
         if data.startswith("v1fb:"):
             self._handle_v1_feedback_callback(cb, data, cb_id)
             return
+        if data.startswith("radar:"):
+            self._handle_radar_callback(cb, data, cb_id)
+            return
         if data == "noop" or "|" not in data:
             self.client.answer_callback(cb_id)
             return
@@ -630,6 +633,43 @@ class OperatorHandler:
                 log.debug("nao consegui mandar o prompt de nota: %s", exc)
         else:
             self.client.answer_callback(cb_id, "botao invalido")
+
+    # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- botoes idempotentes ------------------
+    def _handle_radar_callback(self, cb: dict, data: str, cb_id: str) -> None:
+        assert self.client is not None
+        parts = data.split(":")
+        if len(parts) != 3:
+            self.client.answer_callback(cb_id, "botao invalido")
+            return
+        _, action, raw_id = parts
+        try:
+            radar_id = int(raw_id)
+        except ValueError:
+            self.client.answer_callback(cb_id, "botao invalido")
+            return
+        row = self.storage.pr_radar_by_id(radar_id)
+        if row is None:
+            self.client.answer_callback(cb_id, "nao encontrado")
+            return
+        if action not in ("acomp", "ignorar"):
+            self.client.answer_callback(cb_id, "botao invalido")
+            return
+        decisao = "acompanhando" if action == "acomp" else "ignorar"
+        if row["decisao"] == decisao:
+            self.client.answer_callback(cb_id, f"ja registrado: {decisao}")
+            return
+        chat_id = str((((cb.get("message") or {}).get("chat")) or {}).get("id", ""))
+        self.storage.pr_radar_update(radar_id, decisao=decisao, decisao_ts=self.clock(), decisao_chat_id=chat_id)
+        label = "👀 acompanhando" if decisao == "acompanhando" else "❌ ignorado"
+        self.client.answer_callback(cb_id, f"registrado: {label}")
+        message = cb.get("message") or {}
+        rows = ((message.get("reply_markup") or {}).get("inline_keyboard")) or []
+        message_id = message.get("message_id")
+        if message_id:
+            try:
+                self.client.edit_reply_markup(int(message_id), keyboard_after_choice(rows, label))
+            except TelegramError as exc:
+                log.debug("nao consegui atualizar o teclado do radar: %s", exc)
 
 
 class TelegramPoller(threading.Thread):

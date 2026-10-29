@@ -793,6 +793,38 @@ def rodar_h13(storage: Any) -> Optional[ResultadoH13]:
     return ResultadoH13(n, rho, p, _faixas_h13(pares))
 
 
+# ---------------------------------------------------------------------------
+# PEDIDO 2026-10-29 (item 4, Radar "caixa em formacao"): H14 -- marcados "acompanhando" vs "ignorar"
+# no horario do alerta (decisao do operador, botoes do Radar), comparando o MFE/R mecanico de 72h
+# (`pr_radar.mfe_r`, `risco_frac=1.0` -- sem stop real, Radar nunca e um sinal). Geracao de hipoteses,
+# nao confirmatoria, fora da familia de Holm (fonte de dados propria do Radar, nunca mistura com
+# V1/V2/dif_pareada). Reportada 1x, independente de --versao.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResultadoH14:
+    n_acompanhando: int
+    n_ignorar: int
+    u: float
+    p_valor: float
+
+
+def rodar_h14(storage: Any) -> Optional[ResultadoH14]:
+    """`None` (nao reportada) com < 10 tokens distintos em algum dos 2 lados."""
+    rows = storage.pr_radar_signals(status="fechado")
+    acomp = [(r["mfe_r"], r["mint"]) for r in rows
+            if r["decisao"] == "acompanhando" and r["mfe_r"] is not None and r["mint"]]
+    ignorar = [(r["mfe_r"], r["mint"]) for r in rows
+              if r["decisao"] == "ignorar" and r["mfe_r"] is not None and r["mint"]]
+    n_acomp = len({m for _, m in acomp})
+    n_ignorar = len({m for _, m in ignorar})
+    if n_acomp < MIN_TOKENS_GRUPO or n_ignorar < MIN_TOKENS_GRUPO:
+        return None
+    u, p = mann_whitney_u([x for x, _ in acomp], [x for x, _ in ignorar])
+    return ResultadoH14(n_acomp, n_ignorar, u, p)
+
+
 def rodar_exploratorias(sinais: Sequence[SinalResolvido]) -> list[GrupoExploratorio]:
     """H2-H7 + H10-H12 (EMENDA 1): so grupos/testes com n >= 10 tokens distintos (por lado) entram;
     Holm aplicado sobre a familia completa. H8 fica de fora (carteiras_pro_presentes sempre NULL
@@ -833,6 +865,7 @@ class RelatorioCondicional:
     excluidos: list[Excluido] = field(default_factory=list)
     sombra: list[ComparacaoSombra] = field(default_factory=list)
     h13: Optional[ResultadoH13] = None
+    h14: Optional[ResultadoH14] = None
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
@@ -842,8 +875,9 @@ def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> Relato
     exploratorias = rodar_exploratorias(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
     sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
     h13 = rodar_h13(storage)
+    h14 = rodar_h14(storage)
     return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos,
-                                sombra=sombra, h13=h13)
+                                sombra=sombra, h13=h13, h14=h14)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -906,6 +940,13 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
                 linhas.append(f"  faixa {nome}: n/d (< 10 tokens distintos)")
             else:
                 linhas.append(f"  faixa {nome}: n={dado[0]}, R médio={dado[1]:+.2f}")
+    linhas.append("")
+    linhas.append("## H14 (Radar: acompanhando vs ignorar, MFE/R mecânico 72h, geração de hipóteses)")
+    if rel.h14 is None:
+        linhas.append("(não reportada: < 10 tokens distintos em algum dos 2 lados)")
+    else:
+        linhas.append(f"acompanhando: n={rel.h14.n_acompanhando} | ignorar: n={rel.h14.n_ignorar} | "
+                      f"U={rel.h14.u:.1f} | p={rel.h14.p_valor:.4f}")
     return "\n".join(linhas)
 
 

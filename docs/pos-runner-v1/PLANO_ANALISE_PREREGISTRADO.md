@@ -276,6 +276,51 @@ sintéticos/pool: 2 sombras (mc_baixo + queda_96_mais) → 0,066s CPU / 63KB pic
 dentro do orçamento trivial de um processo Python de longa duração; nenhuma chamada de rede nova em
 nenhum dos dois cenários).
 
+## EMENDA 3 (2026-10-29) — Radar "caixa em formação" + H14
+
+Pré-registrada antes de qualquer análise sobre dados do Radar. Pedido "auditoria + sensibilidade +
+sombra + Radar", item 4.
+
+### Radar — alerta de ESTUDO, nunca um sinal
+
+Novo detector PARALELO (`live.py: _detector_radar`/`self._params_radar`), reusando literalmente a
+definição de caixa da V1 (mesmo `DetectorV1`, mesmo evento `WATCHLIST` — **nenhum número novo de
+"lateralização"**), só com 3 limiares relaxados: `zone_min_candles=4`, sem teto de wicks (`wicks_max`
+muito alto — `ParamsV1` exige `wicks_min>=1` por validação, então "sem limite" é interpretado como
+sem TETO superior, não sem mínimo), `drop_max=0,995` (queda 80–99,5% desde o pico) e idade sem teto
+(igual à V2, mínimo de 2 dias). Gate de MC atual ≥ 100k explícito (mesmo piso anti-lixo de V1/V2).
+Dispara 1x por zona/episódio (mesma semântica do `WATCHLIST` real — nunca um número novo).
+
+Mensagem (`telegram_v1.radar_text`): token, queda %, MC, liquidez, nº de candles da base, idade, tags
+de risco (`l_bc_suspeito`, zero chamada nova), botões de link (Axiom/GMGN + DexScreener, reusa
+`telegram_v1.keyboard`) e botões idempotentes 👀 acompanhando / ❌ ignorar (gravam só o horário da
+decisão, `pr_radar.decisao`/`decisao_ts`). Os botões 👍/👎/📝 existentes continuam intocados (rota
+`radar:` nova no dispatcher de callbacks, `v1fb:` intocada).
+
+Teto diário `RADAR_MAX_DIA` (padrão 8, só sobre ENVIADOS); acima do teto, o candidato ainda é
+**persistido** (`pr_radar.enviado=0`), nunca descartado silenciosamente. Trajetória mecânica de 72h
+(`live.py: _update_radar_trajetoria`, reusa `calcular_trajetoria` — mesmo módulo de `pr_trajetoria`)
+com `risco_frac=1,0` (Radar não tem stop real — `mfe_r`/`mae_r` aqui são retorno fracionário puro,
+nunca um R-múltiplo comparável ao de um trade de V1/V2). Mesmo gate de `tracked`/`_late` do
+`WATCHLIST` real da V1 — nunca alerta sobre histórico/backfill anterior ao pool entrar em
+acompanhamento.
+
+### H14 (geração de hipóteses, não confirmatória, fora da família de Holm)
+
+Marcados "acompanhando" vs "ignorar" (decisão do operador nos botões do Radar) comparando o MFE/R
+mecânico de 72h (`pr_radar.mfe_r`) — **Mann-Whitney U**, mesmo método de H11. `n < 10` tokens
+distintos em algum dos 2 lados: não reportada. Reportada 1x, independente de `--versao` (pergunta
+sobre o Radar, nunca sobre `dif_pareada`/a baseline pareada de H1–H9).
+
+### Estimativa de alertas/dia (replay do item 2)
+
+Reusando o replay offline do item 2 (candles já em cache, zero chamada nova): ver
+`docs/pos-runner-v1/AUDITORIA_PARAMETROS.md`/relatório da sessão para o número medido contra o banco
+real da VM — no cenário sintético de teste (textbook único), o Radar produziu **2 candidatos** numa
+janela de ~25 candles de 1h (~1 por pool a cada ~12,5h de atividade de caixa) — ordem de grandeza
+muito abaixo do teto de 8/dia mesmo com múltiplos pools simultâneos; número real depende de quantos
+pools estão em fase runner/pullback no banco de produção.
+
 ## O que NÃO pode acontecer depois deste documento estar committado
 
 - editar os limiares/grupos acima (nova interpretação = nova seção/versão, nunca reescrever o texto

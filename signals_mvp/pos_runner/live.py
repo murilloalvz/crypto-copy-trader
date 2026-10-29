@@ -517,6 +517,8 @@ class PosRunnerLive:
         carteiras_max_chamadas_dia: int = 600,
         sem_sombra: bool = False,
         sombra_max_pools: int = 10,
+        sem_radar: bool = False,
+        radar_max_dia: int = 8,
     ):
         self.settings = settings
         self.params = params
@@ -648,6 +650,20 @@ class PosRunnerLive:
         # `_params_sombra_queda96`), nunca gravado como `versao_config_v1` de nenhum sinal real.
         self.dets_sombra_base4: dict[tuple[str, str], DetectorV1] = {}
         self._params_sombra_base4 = dataclasses.replace(self.params_v1, zone_min_candles=4)
+        # PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- alerta de ESTUDO (NUNCA um sinal,
+        # nunca convida a agir, nunca entra na banca/CSV/relatorio v1|v2). Reusa a definicao de caixa
+        # da V1 (detector/regras IDENTICOS), so com os 3 limiares relaxados que o pedido especifica:
+        # zone_min_candles=4 (mesma ideia de base_min4), SEM teto de wicks (`wicks_max` bem alto --
+        # `ParamsV1` exige wicks_min>=1 por validacao, entao "sem limite" e interpretado como sem TETO
+        # superior, mantendo o minimo de 1), drop_max=0,995 (queda 80-99,5%, mesmo teto da sombra
+        # queda_96_mais) e idade sem teto (igual a V2). O gatilho em si (WATCHLIST, zona armada) e o
+        # evento que a V1/V0 ja emitem -- "caixa em formacao" NUNCA e um numero novo de lateralizacao.
+        self.sem_radar = sem_radar
+        self.radar_max_dia = radar_max_dia
+        self.dets_radar: dict[tuple[str, str], DetectorV1] = {}
+        self._radar_suspeito: dict[tuple[str, str], bool] = {}
+        self._params_radar = dataclasses.replace(
+            self.params_v1, zone_min_candles=4, wicks_max=9_999, drop_max=0.995, age_window_days=(2.0, 36_500.0))
         # PEDIDO 2026-10-29 (item 2/3, saude.py: CARTEIRAS com 0 snapshots): diagnostico da coleta, por
         # ciclo (zerado em `tick()`) + o ultimo erro/tentativa (persistem entre ciclos, ate o proximo).
         # `_carteiras_rpc_configurado` so e gravado em `meta` (saude.py le de la, processo separado)
@@ -981,6 +997,7 @@ class PosRunnerLive:
             self.last_baselines = now
             self._refresh_baselines(now)
             self._update_sombra(now)
+            self._update_radar_trajetoria(now)
         if now - self.last_prune >= 3600.0:
             self.last_prune = now
             removed = self.storage.pr_prune(now)
@@ -1578,6 +1595,113 @@ class PosRunnerLive:
                           row, tf, now, "base_min4")
         self.dets_sombra_base4[key] = det
         return det
+
+    def _detector_radar(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
+        """RADAR (item 4, pedido 2026-10-29): detector PARALELO com `self._params_radar` -- MESMO gate
+        de `dado_invalido`/`min_mc_usd` da V1/V2 oficiais (`_detector_v1`), nunca so o gate mais leve
+        da sombra (aqui "MC atual >= 100k" e um requisito EXPLICITO do pedido, nao so um efeito
+        colateral). NAO conta para o teto SOMBRA_MAX_POOLS (teto proprio, RADAR_MAX_DIA, e sobre
+        ENVIOS por dia, nao sobre quantos pools tem detector paralelo ao mesmo tempo -- o Radar e mais
+        raro de armar que a sombra, nunca precisou de um teto de pools simultaneos ate agora)."""
+        key = (row["pool"], tf)
+        det = self.dets_radar.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        existing = self.storage.pr_bars(row["pool"], tf)
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing] + list(pending)
+        qual = avaliar_qualidade(bars, self._params_radar)
+        if not qual.valido:
+            return None
+        mc_atual = bars[-1].close if bars else None
+        if mc_atual is not None and mc_atual < self._params_radar.min_mc_usd:
+            return None
+        self._radar_suspeito[key] = qual.suspeito
+        det = DetectorV1(self._params_radar, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        for ts, o, h, l, c, v, filled in existing:
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event_radar(row, tf, ev, now)
+        self.dets_radar[key] = det
+        return det
+
+    def _radar_feed(self, det: Optional[DetectorV1], seq: Sequence[Bar], row: Any, tf: str, now: float) -> None:
+        """Mesmo padrao idempotente de `_sombra_feed` (janelas sobrepostas do GT nunca repetem aqui)."""
+        if det is None:
+            return
+        for b in seq:
+            if det.bars and b.ts <= det.bars[-1].ts:
+                continue
+            for ev in det.update(b):
+                self._on_event_radar(row, tf, ev, now)
+
+    def _radar_orcamento_hoje(self, now: float) -> int:
+        inicio_do_dia = now - (now % 86_400.0)
+        return self.storage.pr_radar_enviados_count(inicio_do_dia)
+
+    def _on_event_radar(self, row: Any, tf: str, ev: EventV1, now: float) -> None:
+        """Grava 1 linha em `pr_radar` por evento WATCHLIST (1x por zona/episodio -- mesma semantica
+        ja usada pela sombra) -- SEMPRE (enviado=0/1), nunca so quando o Telegram manda de verdade.
+        RADAR_MAX_DIA (padrao 8) conta so os ENVIADOS; acima do teto, a linha ainda e gravada
+        (`enviado=0`), nunca descartada."""
+        if self.sem_radar or ev.kind != "WATCHLIST":
+            return
+        pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
+        # MESMO gate de "tracked" do WATCHLIST real da V1 (`_on_event_v1`): nunca alerta sobre
+        # historico/backfill anterior ao pool entrar em acompanhamento, nem sobre evento atrasado
+        # demais (`_late`) -- Radar e um alerta AO VIVO, nunca retroativo.
+        tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
+                  and self.version_v1_start is not None and ev.decision_ts >= self.version_v1_start)
+        if not tracked or self._late(now, ev.decision_ts, max(900.0, float(tf_seconds(tf)))):
+            return
+        ts_fechamento = int(ev.decision_ts)
+        if self.storage.pr_radar_get("solana", pool, tf, ts_fechamento) is not None:
+            return
+        info = json.loads(row["info"] or "{}")
+        tags: list[str] = []
+        if self._radar_suspeito.get((pool, tf)):
+            tags.append("l_bc_suspeito")
+        enviar = self._radar_orcamento_hoje(now) < self.radar_max_dia
+        row_insert = {
+            "chain": "solana", "pool": pool, "tf": tf, "mint": mint, "symbol": symbol,
+            "ts_fechamento": ts_fechamento, "event_json": event_v1_to_json(ev),
+            "close_ref": ev.data.get("close") if ev.data.get("close") is not None else ev.data.get("P_peak"),
+            "s_suporte": ev.data.get("S"), "r_resistencia": ev.data.get("R"), "queda_pct": ev.data.get("queda_pct"),
+            "liquidez_usd": info.get("liq_usd"), "tags": json.dumps(tags), "enviado": int(enviar),
+            "status": "aberto", "criado_ts": now, "atualizado_ts": now,
+            **self._contexto_execucao(row, ev),
+        }
+        radar_id = self.storage.pr_radar_insert(row_insert)
+        if radar_id is None or not enviar:
+            return
+        text = telegram_v1.radar_text(
+            symbol, ev.data.get("queda_pct"), ev.data.get("P_peak"), info.get("liq_usd"),
+            ev.data.get("box_len"), ev.data.get("idade_dias"), tags)
+        kb = telegram_v1.with_radar_buttons(
+            telegram_v1.keyboard(self.adapter, mint, pool, "sol", self.dexscreener_slug), radar_id)
+        self._send(text, keyboard=kb)
+
+    def _update_radar_trajetoria(self, now: float) -> None:
+        """Progride `pr_radar` 'aberto' -> 'fechado' com os candles JA em `pr_bars` (zero chamada
+        nova) -- reusa `calcular_trajetoria` (mesmo modulo de pr_trajetoria) com `risco_frac=1.0`
+        (Radar NAO tem stop real -- `mfe_r`/`mae_r` aqui sao retorno fracionario puro em relacao a
+        `close_ref`, nunca um R-multiplo comparavel ao de um trade de V1/V2). SEM_RADAR=1 pula."""
+        if self.sem_radar:
+            return
+        for r in self.storage.pr_radar_signals(status="aberto"):
+            bars = self.storage.pr_bars(r["pool"], r["tf"])
+            if not bars:
+                continue
+            bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in bars]
+            idx = next((i for i, b in enumerate(bars) if b.ts == r["ts_fechamento"]), None)
+            if idx is None or idx + 1 >= len(bars) or r["close_ref"] is None:
+                continue   # ainda sem candle seguinte ao WATCHLIST -- espera, nunca inventa
+            calc = calcular_trajetoria(bars, idx + 1, r["ts_fechamento"], r["close_ref"], 1.0,
+                                       tf_seconds(r["tf"]), [], now)
+            fields: dict[str, Any] = {"atualizado_ts": now, "mfe_r": calc.mfe_r, "mfe_h": calc.mfe_h,
+                                      "mae_r": calc.mae_r, "mae_h": calc.mae_h}
+            if calc.fechado:
+                fields["status"] = "fechado"
+                fields["fechado_ts"] = now
+            self.storage.pr_radar_update(r["id"], **fields)
 
     def _on_event_sombra(self, row: Any, tf: str, ev: EventV1, now: float, motivo: str) -> None:
         """Grava 1 linha em `pr_sombra` (versao=`sombra:<motivo>`) por candidato que TERIA gatilhado --
@@ -2672,6 +2796,8 @@ class PosRunnerLive:
             self._detector_sombra_queda96, row, tf, now, contexto="queda_96_mais")
         det_sombra_base4 = None if self.sem_sombra else self._sombra_safe(
             self._detector_sombra_base4, row, tf, now, contexto="base_min4")
+        det_radar = None if self.sem_radar else self._sombra_safe(
+            self._detector_radar, row, tf, now, contexto="radar")
         last = ((det.bars[-1] if det is not None and det.bars else None)
                or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
                or (det_v2.bars[-1] if det_v2 is not None and det_v2.bars else None))
@@ -2703,6 +2829,8 @@ class PosRunnerLive:
                     self._detector_sombra_queda96, row, tf, now, seq, contexto="queda_96_mais")
                 det_sombra_base4 = None if self.sem_sombra else self._sombra_safe(
                     self._detector_sombra_base4, row, tf, now, seq, contexto="base_min4")
+                det_radar = None if self.sem_radar else self._sombra_safe(
+                    self._detector_radar, row, tf, now, seq, contexto="radar")
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
             self._fonte_candle_atual = fonte
             if det is not None:
@@ -2763,6 +2891,7 @@ class PosRunnerLive:
                               contexto="queda_96_mais")
             self._sombra_safe(self._sombra_feed, det_sombra_base4, seq, row, tf, now, "base_min4",
                               contexto="base_min4")
+            self._sombra_safe(self._radar_feed, det_radar, seq, row, tf, now, contexto="radar")
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide

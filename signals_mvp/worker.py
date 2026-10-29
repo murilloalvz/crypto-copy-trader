@@ -197,6 +197,8 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     carteiras_max_chamadas_dia = int(os.environ.get("CARTEIRAS_MAX_CHAMADAS_DIA", "600"))
     sem_sombra = bool(os.environ.get("SEM_SOMBRA"))   # PEDIDO (PARTE 2A) FASE 3: desliga a sombra dos filtros
     sombra_max_pools = int(os.environ.get("SOMBRA_MAX_POOLS", "10"))
+    sem_radar = bool(os.environ.get("SEM_RADAR"))   # PEDIDO 2026-10-29 (item 4): desliga o Radar "caixa em formacao"
+    radar_max_dia = int(os.environ.get("RADAR_MAX_DIA", "8"))
     settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)
     path = Path(settings.parametros)
     if not path.is_absolute():
@@ -218,7 +220,8 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
                          chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2, sem_evidencia=sem_evidencia,
                          sem_carteiras=sem_carteiras, carteiras_max_chamadas_dia=carteiras_max_chamadas_dia,
-                         sem_sombra=sem_sombra, sombra_max_pools=sombra_max_pools)
+                         sem_sombra=sem_sombra, sombra_max_pools=sombra_max_pools,
+                         sem_radar=sem_radar, radar_max_dia=radar_max_dia)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)

@@ -601,5 +601,62 @@ class RodarH13Tests(unittest.TestCase):
         self.assertEqual(r.n_tokens, 10, "SEMBOX nunca entra -- caixa_candles ausente")
 
 
+class RodarH14Tests(unittest.TestCase):
+    """PEDIDO 2026-10-29 (item 4, Radar): H14 -- acompanhando vs ignorar, MFE/R mecanico 72h."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="h14_storage_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _radar_fechado(self, mint: str, decisao: str, mfe_r: float) -> None:
+        now = 0.0
+        rid = self.storage.pr_radar_insert({
+            "chain": "solana", "pool": f"POOL-{mint}", "tf": "1h", "mint": mint, "symbol": mint,
+            "ts_fechamento": 1_000, "status": "fechado", "criado_ts": now, "atualizado_ts": now,
+            "mfe_r": mfe_r,
+        })
+        self.assertIsNotNone(rid)
+        self.storage.pr_radar_update(rid, decisao=decisao, decisao_ts=now)
+
+    def test_rodar_h14_is_none_below_10_tokens_per_side(self) -> None:
+        for i in range(10):
+            self._radar_fechado(f"a{i}", "acompanhando", 1.0)
+        for i in range(5):
+            self._radar_fechado(f"b{i}", "ignorar", 0.5)
+        self.assertIsNone(cond.rodar_h14(self.storage))
+
+    def test_rodar_h14_detects_a_clear_shift_between_groups(self) -> None:
+        for i in range(12):
+            self._radar_fechado(f"a{i}", "acompanhando", 5.0)
+        for i in range(12):
+            self._radar_fechado(f"b{i}", "ignorar", 0.1)
+        r = cond.rodar_h14(self.storage)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.n_acompanhando, 12)
+        self.assertEqual(r.n_ignorar, 12)
+        self.assertLess(r.p_valor, 0.01)
+
+    def test_rodar_h14_ignores_rows_without_decisao_or_mfe_r(self) -> None:
+        for i in range(10):
+            self._radar_fechado(f"a{i}", "acompanhando", 1.0)
+        for i in range(10):
+            self._radar_fechado(f"b{i}", "ignorar", 0.5)
+        # linha sem decisao (operador nunca clicou) -- nunca entra em nenhum dos 2 lados
+        rid = self.storage.pr_radar_insert({
+            "chain": "solana", "pool": "POOL-SEMDECISAO", "tf": "1h", "mint": "SEMDECISAO",
+            "symbol": "SEMDECISAO", "ts_fechamento": 1_000, "status": "fechado",
+            "criado_ts": 0.0, "atualizado_ts": 0.0, "mfe_r": 9.0,
+        })
+        self.assertIsNotNone(rid)
+        r = cond.rodar_h14(self.storage)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.n_acompanhando, 10)
+        self.assertEqual(r.n_ignorar, 10)
+
+
 if __name__ == "__main__":
     unittest.main()

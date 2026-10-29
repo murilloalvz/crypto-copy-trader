@@ -369,6 +369,30 @@ CREATE INDEX IF NOT EXISTS pr_sombra_aberta ON pr_sombra (status);
 CREATE TABLE IF NOT EXISTS pr_sombra_descartes (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, motivo TEXT NOT NULL, pool TEXT, tf TEXT
 );
+-- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- alerta de ESTUDO, NUNCA um sinal (nunca
+-- entra na banca/CSV/relatorio v1|v2, nunca convida a agir). Reusa a definicao de caixa da V1
+-- (zone_min_candles=4, sem teto de wicks, drop_max=0,995, idade sem teto -- `live.py:
+-- _params_radar`), detector PARALELO, MEDICAO AO LADO -- 1 linha por evento WATCHLIST (1x por
+-- zona/episodio, mesma semantica ja usada pela sombra). `close_ref`/`s_suporte`/`r_resistencia`:
+-- referencia MECANICA (nunca um fill real) pra `_update_radar_trajetoria` reusar `calcular_
+-- trajetoria` (mesmo modulo de pr_trajetoria) com risco_frac=1.0 (sem stop real -- R aqui e
+-- equivalente a retorno fracionario puro). `enviado`=0 quando RADAR_MAX_DIA estourou (persistido
+-- do mesmo jeito, nunca descartado so por falta de orcamento do Telegram).
+CREATE TABLE IF NOT EXISTS pr_radar (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  mint TEXT, symbol TEXT, ts_fechamento INTEGER NOT NULL,
+  event_json TEXT, close_ref REAL, s_suporte REAL, r_resistencia REAL, queda_pct REAL, liquidez_usd REAL,
+  tags TEXT, enviado INTEGER NOT NULL DEFAULT 0,
+  decisao TEXT, decisao_ts REAL, decisao_chat_id TEXT,
+  status TEXT NOT NULL DEFAULT 'aberto', fechado_ts REAL, mfe_r REAL, mfe_h REAL, mae_r REAL, mae_h REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- PEDIDO (PARTE 2A) FASE 4: MESMAS colunas de contexto/execucao de pr1_signals/pr2_signals/pr_sombra.
+  dia_semana TEXT, idade_dias REAL, mc_na_entrada REAL, volume_24h REAL, caixa_candles INTEGER,
+  holder_top1_pct REAL, slippage_estimado_pct REAL, r_liquido_estimado REAL, n_txs_24h INTEGER,
+  ticket_medio_usd REAL, holders_count INTEGER,
+  UNIQUE (chain, pool, tf, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr_radar_aberta ON pr_radar (status);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -1688,4 +1712,39 @@ class Storage:
 
     def pr_sombra_descarte_count(self, since_ts: float = 0.0) -> int:
         row = self._one("SELECT COUNT(*) AS n FROM pr_sombra_descartes WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
+    def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one(
+            "SELECT * FROM pr_radar WHERE chain=? AND pool=? AND tf=? AND ts_fechamento=?",
+            (chain, pool, tf, ts_fechamento))
+
+    def pr_radar_insert(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (chain,pool,tf,ts_fechamento) -- mesmo padrao de `pr_sombra_insert`.
+        Gravado SEMPRE (enviado=0/1), nunca so quando o Telegram realmente manda a mensagem."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr_radar ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols])
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr_radar_by_id(self, radar_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_radar WHERE id=?", (radar_id,))
+
+    def pr_radar_update(self, radar_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_radar SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), radar_id])
+
+    def pr_radar_signals(self, status: Optional[str] = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM pr_radar" + (" WHERE status=?" if status is not None else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, (status,) if status is not None else ())
+
+    def pr_radar_enviados_count(self, since_ts: float) -> int:
+        """Orcamento diario RADAR_MAX_DIA: so os efetivamente ENVIADOS (enviado=1) contam contra o teto."""
+        row = self._one("SELECT COUNT(*) AS n FROM pr_radar WHERE enviado=1 AND criado_ts>=?", (since_ts,))
         return row["n"] if row else 0
