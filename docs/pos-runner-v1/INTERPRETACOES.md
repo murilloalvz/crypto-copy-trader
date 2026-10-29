@@ -762,3 +762,42 @@ heartbeat V1, nunca duplicados. Desligado junto com `--sem-v2`. Testes:
 DexPaprika restantes no plano, contadores do heartbeat em memória e o último ping bem-sucedido do
 Healthchecks.io só existem no processo ao vivo ou no painel de um serviço externo — nunca persistidos
 no SQLite. Essas linhas aparecem como "s/d" explícito, nunca um número inventado.
+
+## PEDIDO 2026-10-29 (ajustes pós-relatório de saúde)
+
+Nenhum destes 4 itens tocou `detector.py`/`simulate_v1.py`/`params_v1.py`/`params_v2.py` nem
+qualquer regra V1/V2 — hashes seguem `279b79ffa3f0` (V1) / `d57b4331d51d` (V2).
+
+1. **`saude.py` — log e fila**: `_agrupar_mensagens` agrupa por TEXTO EXATO da mensagem (nunca só o
+   módulo), devolvendo as 5 mais frequentes de ERRO e de AVISO com contagem + 1ª/última ocorrência.
+   `_secao_fila` agora nomeia (símbolo + prefixo do pool) os pools sem candle 1h novo há >2h, em vez
+   de só contar.
+2. **Uptime de sessão vs acumulado**: `PosRunnerLive._uptime_sessao_inicio` (em memória, zera a cada
+   restart) somado ao `pr1_uptime` já persistido (nunca apagado por restart). Heartbeat V1
+   (`telegram_v1.heartbeat_text`) e `saude.py` mostram os dois valores lado a lado, nunca só o
+   acumulado.
+3. **`scripts/backfill_evidencia.py`** (novo): preenche `pr_trajetoria`/`pr_baseline` das ENTRADAs
+   V1/V2 anteriores à instrumentação (FASES 1-2), reusando as MESMAS funções puras do bot ao vivo
+   (`evidencia.calcular_trajetoria`/`candidatos_elegiveis`/`sortear_controles`/`simular_controle`,
+   `simulate_v1.simulate_v1`) sobre candles JÁ em `pr_bars` — zero chamada nova de rede. Só processa
+   sinal cuja `versao_config_v1`/`versao_config_v2` bate com o hash ATUAL (mesma regra de
+   `live.py:_update_evidencia_v1/v2`, nunca mistura versão congelada). Sem cotação SOL/USD em cache
+   de processo, usa o MESMO fallback conservador de custo de 1% que o bot ao vivo já usa nessa
+   situação (nenhum valor novo inventado). Quando o pool/tf não tem candle em `pr_bars`, marca a nova
+   coluna `pre_instrumentacao=1` (`storage.py`, `_ensure_columns` em `pr_trajetoria`/`pr_baseline`) em
+   vez de deixar a linha simplesmente ausente, distinguindo "nunca vai ter esse dado" de "ainda não
+   teve tempo". Faz backup (`Storage.backup_to`) antes de qualquer escrita; idempotente. Uso:
+   `python -m signals_mvp.scripts.backfill_evidencia --db dados/estado.sqlite`.
+   Teste (`test_backfill_evidencia.py`) comprova: reproduz os mesmos valores de trajetória/baseline
+   de uma entrada com a linha apagada (exceto `fechado`, que depende de quanto tempo real passou até
+   o momento do cálculo — o bot ao vivo e o backfill rodando em momentos diferentes podem
+   legitimamente diferir aqui) e de controles (a seleção de controles só roda 1x, na criação da
+   linha, com os bars em cache naquele momento — reproduzir os MESMOS índices depois que mais candles
+   chegaram não é garantido por desenho; o backfill garante uma baseline válida, não os mesmos
+   índices); marca `pre_instrumentacao` quando não há candle em cache; nunca toca
+   `pr1_signals`/`pr2_signals`; é idempotente.
+4. **`saude.py` — DexPaprika**: lista as últimas 15 divergências em 24h (token, hora, campo, diff%)
+   e explicita a regra que decide a tag `candle_divergente` — todo registro em
+   `pr1_dexpaprika_divergencias` já excedeu a tolerância (padrão 1.0%) por construção
+   (`dexpaprika_v1.comparar_candle`); a tag confirma por presença (candle_ts do sinal bate com algum
+   registro já logado), sem limiar novo.

@@ -7,6 +7,7 @@ silencio sobre os MESMOS candles")."""
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from typing import Any
 
@@ -410,11 +411,40 @@ class HeartbeatTests(unittest.TestCase):
             self.assertIn("filtrado_mc_baixo:", beats[0])
             self.assertIn("filtrado_idade:", beats[0])
             self.assertIn(h.live.version_v1, beats[0])
+            self.assertIn("uptime sessão", beats[0])
+            self.assertIn("acumulado", beats[0])
             h.run_hours(3)
             self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 2,
                              "o heartbeat tem que repetir a cada janela, nao so uma vez")
             h.run_hours(3)
             self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 3)
+        finally:
+            h.close()
+
+    def test_session_uptime_resets_on_restart_while_accumulated_keeps_growing(self) -> None:
+        """PEDIDO 2026-10-29, item 2: uptime da SESSAO (desde o ultimo restart) e diferente do
+        acumulado (soma de todas as sessoes desta versao congelada) -- um restart zera a 1a, nunca
+        a 2a."""
+        h = LiveHarness()
+        try:
+            h.live.heartbeat_interval_s = 3 * H
+            start_tracking(h)
+            h.run_hours(6)
+            beats = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]
+            texto_antes = beats[-1]
+            sessao_antes = float(re.search(r"sessão (\d+\.\d+)h", texto_antes).group(1))
+            acumulado_antes = float(re.search(r"acumulado (\d+\.\d+)h", texto_antes).group(1))
+            self.assertGreater(sessao_antes, 0.0)
+            self.assertAlmostEqual(sessao_antes, acumulado_antes, delta=0.2)
+
+            fresh = h.new_live()   # mesma versao_config_v1, "restart" do processo
+            h.tick(live=fresh)
+            beats_fresh = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]
+            texto_depois = beats_fresh[-1]
+            sessao_depois = float(re.search(r"sessão (\d+\.\d+)h", texto_depois).group(1))
+            acumulado_depois = float(re.search(r"acumulado (\d+\.\d+)h", texto_depois).group(1))
+            self.assertLess(sessao_depois, 0.1, "sessao nova: tem que comecar perto de 0")
+            self.assertGreaterEqual(acumulado_depois, acumulado_antes, "acumulado nunca pode diminuir com um restart")
         finally:
             h.close()
 

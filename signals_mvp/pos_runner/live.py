@@ -564,6 +564,10 @@ class PosRunnerLive:
         self._v1_suspeito_logged: set[tuple[str, str]] = set()     # conta 1x por pool/tf (nao reabre a cada ciclo)
         self._bankroll_v1: dict[str, BankrollLedgerV1] = {}  # tf desta versao_config_v1 -> ledger
         self._uptime_id: Optional[int] = None
+        # PEDIDO 2026-10-29, item 2: ts de inicio da SESSAO atual (este processo, desde o ultimo
+        # restart) -- separado do acumulado (`pr1_uptime_hours`, soma TODAS as sessoes da versao
+        # congelada atual, que pode abranger varios restarts sem troca de config).
+        self._uptime_sessao_inicio: Optional[float] = None
         # heartbeat periodico (revisao da FASE 1, 2026-10-22: nao existia -- telegram_v1.heartbeat_text
         # ficava morto; revisao da FASE 1.1: sai ja no startup -- nao espera a 1a janela -- e a cada 6h, nao
         # 4h). Janela rolante: zera a cada envio, nunca acumula indefinidamente.
@@ -672,6 +676,7 @@ class PosRunnerLive:
                     self.storage.pr1_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
         if self._uptime_id is None:
             self._uptime_id = self.storage.pr1_uptime_start(now)
+            self._uptime_sessao_inicio = now
         # PEDIDO CONSOLIDADO FASE 2: mesma regra de inicio de versao, tabelas PROPRIAS da V2.
         self.version_v2_start = self.storage.pr2_version_start(self.version_v2, now)
         for signal in self.storage.pr2_signals(status="aberto"):
@@ -1101,11 +1106,12 @@ class PosRunnerLive:
         chamadas_por_min = self._heartbeat_calls / elapsed_min
         pools_ativos = len(self.storage.pr_pools("ativo"))
         counts = self.storage.pr1_filtrado_counts(self._heartbeat_window_start)
+        uptime_sessao_h = None if self._uptime_sessao_inicio is None else (now - self._uptime_sessao_inicio) / 3600.0
         text = telegram_v1.heartbeat_text(
             self.storage.pr1_uptime_hours(self.version_v1_start or now, now), pools_ativos, chamadas_por_min,
             self._heartbeat_429, self._phase_counts_v1(), len(self._due_list(now)), counts.get("dado_invalido", 0),
             counts.get("l_bc_suspeito", 0), counts.get("filtrado_mc_baixo", 0), counts.get("filtrado_idade", 0),
-            self.version_v1,
+            self.version_v1, uptime_sessao_h=uptime_sessao_h,
         )
         self._send(text)
         if not self.sem_v2:

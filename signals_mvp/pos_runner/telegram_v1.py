@@ -162,14 +162,18 @@ def resumo_diario_text(sinais: int, invalidados: int, dado_invalido: int, filtra
 
 def heartbeat_text(uptime_h: float, pools_ativos: int, chamadas_por_min: float, rate_limited_429: int,
                    fases: dict[str, int], fila_atualizacao: int, dado_invalido: int, l_bc_suspeito: int,
-                   filtrado_mc_baixo: int, filtrado_idade: int, versao_config_v1: str) -> str:
+                   filtrado_mc_baixo: int, filtrado_idade: int, versao_config_v1: str,
+                   uptime_sessao_h: Optional[float] = None) -> str:
     """FASE 1.1 (revisao 2026-10-22): sai ja no startup (nao espera a 1a janela) e a cada 6h; alem de
     chamadas/min, agora traz 429 na janela, pools por FASE do detector (runner/pullback/sem_fase), a fila de
     atualizacao pendente, os 4 contadores de filtro e `versao_config_v1` (para saber qual congelamento gerou
-    os numeros)."""
+    os numeros). `uptime_h` e o ACUMULADO (todas as sessoes desta versao congelada, pode abranger varios
+    restarts); `uptime_sessao_h` (PEDIDO 2026-10-29, item 2) e so desde o ultimo restart -- os 2 juntos
+    deixam claro quando o processo reiniciou sem o operador ter trocado a config."""
     fases_txt = f"runner {fases.get('runner', 0)} | pullback {fases.get('pullback', 0)} | sem_fase {fases.get('sem_fase', 0)}"
+    sessao = "s/d" if uptime_sessao_h is None else f"{uptime_sessao_h:.1f}h"
     return (
-        f"💓 POS-RUNNER-V1 ativo | uptime {uptime_h:.1f}h | versao {versao_config_v1}\n"
+        f"💓 POS-RUNNER-V1 ativo | uptime sessão {sessao} (acumulado {uptime_h:.1f}h) | versao {versao_config_v1}\n"
         f"pools acompanhados: {pools_ativos} ({fases_txt}) | fila de atualização: {fila_atualizacao}\n"
         f"GT: {chamadas_por_min:.1f} chamadas/min | 429 na janela: {rate_limited_429}\n"
         f"dado_invalido: {dado_invalido} | l_bc_suspeito: {l_bc_suspeito} | "

@@ -75,46 +75,54 @@ def _linhas_log(logs_dir: Path, janela_s: float, now: float) -> list[str]:
     return out
 
 
+def _agrupar_mensagens(linhas: list[str], niveis: tuple[str, ...]) -> list[tuple[str, int, str, str]]:
+    """PEDIDO 2026-10-29 (item 1): agrupa pela mensagem EXATA (nunca so o nome do modulo) -- devolve
+    (mensagem, contagem, primeira_ocorrencia, ultima_ocorrencia), ordenado por contagem desc."""
+    grupos: dict[str, dict[str, Any]] = {}
+    for linha in linhas:
+        m = LOG_LINE_RE.match(linha)
+        if not m or m["level"] not in niveis:
+            continue
+        msg = m["msg"]
+        g = grupos.setdefault(msg, {"n": 0, "primeira": m["ts"], "ultima": m["ts"]})
+        g["n"] += 1
+        g["ultima"] = m["ts"]   # linhas vem em ordem cronologica (arquivo atual + rotacionados, mais antigo primeiro)
+    ordenado = sorted(grupos.items(), key=lambda kv: kv[1]["n"], reverse=True)
+    return [(msg, g["n"], g["primeira"], g["ultima"]) for msg, g in ordenado]
+
+
 def _secao_log(logs_dir: Path, janela_h: float, now: float) -> list[str]:
     linhas = _linhas_log(logs_dir, janela_h * 3600.0, now)
     if not linhas:
         return [f"LOG ({janela_h:.0f}h): arquivo nao encontrado em {logs_dir} -- nada pra ler"]
-    erros = Counter()
-    avisos = Counter()
-    n_429 = 0
-    for linha in linhas:
-        m = LOG_LINE_RE.match(linha)
-        if not m:
-            continue
-        nivel, msg = m["level"], m["msg"]
-        if nivel in ("ERROR", "CRITICAL"):
-            chave = msg.split(":")[0][:60]
-            erros[chave] += 1
-        elif nivel == "WARNING":
-            chave = msg.split(":")[0][:60]
-            avisos[chave] += 1
-        if "429" in msg or "rate_limited" in msg.lower():
-            n_429 += 1
-    out = [f"LOG ({janela_h:.0f}h, {len(linhas)} linhas): {sum(erros.values())} erro(s), "
-          f"{sum(avisos.values())} aviso(s), {n_429} mencao(oes) a 429"]
-    for chave, n in erros.most_common(5):
-        out.append(f"  ERRO x{n}: {chave}")
-    for chave, n in avisos.most_common(3):
-        out.append(f"  AVISO x{n}: {chave}")
+    n_erros = sum(1 for l in linhas if (m := LOG_LINE_RE.match(l)) and m["level"] in ("ERROR", "CRITICAL"))
+    n_avisos = sum(1 for l in linhas if (m := LOG_LINE_RE.match(l)) and m["level"] == "WARNING")
+    n_429 = sum(1 for l in linhas if "429" in l or "rate_limited" in l.lower())
+    out = [f"LOG ({janela_h:.0f}h, {len(linhas)} linhas): {n_erros} erro(s), {n_avisos} aviso(s), "
+          f"{n_429} mencao(oes) a 429"]
+    out.append("  top 5 ERRO (texto | contagem | 1a..ultima ocorrencia):")
+    for msg, n, primeira, ultima in _agrupar_mensagens(linhas, ("ERROR", "CRITICAL"))[:5]:
+        out.append(f"    x{n} [{primeira}..{ultima}] {msg[:90]}")
+    out.append("  top 5 AVISO (texto | contagem | 1a..ultima ocorrencia):")
+    for msg, n, primeira, ultima in _agrupar_mensagens(linhas, ("WARNING",))[:5]:
+        out.append(f"    x{n} [{primeira}..{ultima}] {msg[:90]}")
     return out
 
 
 def _secao_uptime_versoes(storage: Storage, now: float) -> list[str]:
+    # PEDIDO 2026-10-29, item 2: sessao ATUAL (desde o ultimo restart) separada do ACUMULADO (soma de
+    # TODAS as sessoes ja registradas, `since_ts=0`) -- antes so a sessao atual aparecia.
     out = []
     sessoes = storage._all("SELECT inicio_ts, fim_ts FROM pr1_uptime ORDER BY inicio_ts DESC LIMIT 5")  # noqa: SLF001
+    acumulado_h = storage.pr1_uptime_hours(0.0, now)
     if sessoes:
         ultima = sessoes[0]
         aberta = ultima["fim_ts"] is None
         desde = _fmt_h(now - ultima["inicio_ts"])
         out.append(f"UPTIME: sessao atual {'ABERTA' if aberta else 'FECHADA (bug? deveria estar aberta)'} "
-                  f"ha {desde} | {len(sessoes)} sessao(oes) recentes no banco")
+                  f"ha {desde} | acumulado total {acumulado_h:.1f}h | {len(sessoes)} sessao(oes) recentes no banco")
     else:
-        out.append("UPTIME: sem nenhuma sessao pr1_uptime no banco")
+        out.append(f"UPTIME: sem nenhuma sessao pr1_uptime no banco | acumulado total {acumulado_h:.1f}h")
     try:
         from ..pos_runner.params_v1 import ParamsV1
         from ..pos_runner.params_v2 import load_params_v2
@@ -133,18 +141,21 @@ def _secao_uptime_versoes(storage: Storage, now: float) -> list[str]:
 def _secao_fila(storage: Storage, now: float) -> list[str]:
     pools = storage.pr_pools("ativo")
     sem_tentativa = 0
-    atrasados_2h = 0
+    atrasados: list[tuple[str, str]] = []
     for row in pools:
         bars_1h = storage.pr_bars(row["pool"], "1h")
         if not bars_1h:
             sem_tentativa += 1
             continue
         if now - bars_1h[-1][0] > 2 * 3600.0:
-            atrasados_2h += 1
+            atrasados.append((row["symbol"] or row["pool"], row["pool"]))
     abertos_v1 = storage.pr1_signals(status="aberto")
     abertos_v2 = storage.pr2_signals(status="aberto")
     out = [f"FILA: {len(pools)} pool(s) ativo(s) | sem nenhum candle 1h ainda: {sem_tentativa} | "
-          f"sem candle 1h novo ha >2h: {atrasados_2h}"]
+          f"sem candle 1h novo ha >2h: {len(atrasados)}"]
+    if atrasados:
+        # PEDIDO 2026-10-29, item 1: nome dos pools, nunca so a contagem.
+        out.append("  pools atrasados (>2h): " + ", ".join(f"{sym} ({pool[:8]}...)" for sym, pool in atrasados))
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])
@@ -189,8 +200,25 @@ def _secao_dexpaprika(storage: Storage, now: float) -> list[str]:
     div_24h = storage.pr1_dexpaprika_divergencia_count_since(now - 86400.0)
     candle_divergente = sum(1 for s in storage.pr1_signals()
                             if "candle_divergente" in json.loads(s["tags"] or "[]"))
-    return [f"DEXPAPRIKA: divergencias (24h)={div_24h} | sinais ja marcados candle_divergente={candle_divergente} | "
-           "creditos usados/restantes: s/d (so no processo ao vivo -- ver resumo diario/heartbeat)"]
+    out = [f"DEXPAPRIKA: divergencias (24h)={div_24h} | sinais ja marcados candle_divergente={candle_divergente} | "
+          "creditos usados/restantes: s/d (so no processo ao vivo -- ver resumo diario/heartbeat)"]
+    # PEDIDO 2026-10-29, item 4: cada linha ja registrada JA passou da tolerancia (so loga quando
+    # diverge) -- a regra que decide `candle_divergente` (condicional.py: _candle_divergente_confirmado)
+    # e: qualquer linha aqui cujo `candle_ts` seja EXATAMENTE o candle do GATILHO (`ts_fechamento`) do
+    # sinal confirma a tag -- nunca um limiar novo, so presenca.
+    out.append("  regra candle_divergente: campo (open/high/low/close/volume) com diff% > tolerancia "
+              "(padrao 1.0%) ENTRE GT e DexPaprika no MESMO candle -- só uma linha aqui já passou desse "
+              "teto; confirma a tag quando o candle_ts bate com o candle do GATILHO do sinal (presença, "
+              "sem limiar novo).")
+    recentes = [r for r in storage.pr1_dexpaprika_divergencias() if now - r["ts"] <= 86400.0]
+    recentes.sort(key=lambda r: r["ts"], reverse=True)
+    if recentes:
+        out.append(f"  ultimas {min(15, len(recentes))} de {len(recentes)} divergencia(s) (24h) "
+                  "[token hora campo diff%]:")
+        for r in recentes[:15]:
+            hora = time.strftime("%H:%M", time.gmtime(r["candle_ts"])) if r["candle_ts"] is not None else "s/d"
+            out.append(f"    {r['symbol'] or 's/d'} {hora} {r['campo']} {r['diff_pct']:.2f}%")
+    return out
 
 
 def _secao_429(storage: Storage, now: float, logs_dir: Path) -> list[str]:

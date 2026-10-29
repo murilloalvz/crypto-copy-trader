@@ -411,6 +411,11 @@ class Storage:
             # CONTAGEM de enderecos, nao so um booleano) -- nunca confundir pessoas com carteiras.
             self._ensure_columns("pr1_signals", {"n_pessoas_pro": "INTEGER"})
             self._ensure_columns("pr2_signals", {"n_pessoas_pro": "INTEGER"})
+            # PEDIDO 2026-10-29, item 3: ENTRADA anterior a instrumentacao de trajetoria/baseline (FASES
+            # 1-2) cujo candle NAO esta mais em cache (`pr_bars`) -- scripts/backfill_evidencia.py marca
+            # 1 aqui em vez de inventar/interpolar a metrica. 0/NULL em todas as linhas normais.
+            self._ensure_columns("pr_trajetoria", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
+            self._ensure_columns("pr_baseline", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
