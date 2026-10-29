@@ -161,6 +161,80 @@ H8 e H9 reportam **`n_pessoas_pro`** (grupos distintos, `carteiras_pro.pessoas_p
 `n_carteiras_pro` (endereços distintos) nos dois — 121 carteiras são só 79 pessoas; nunca reportar só
 a contagem de endereços.
 
+## EMENDA 1 (2026-10-29) — robustez de H1, H10–H12, limitações
+
+Pré-registrada **antes de qualquer análise sobre dados novos** (nenhuma coleta real rodou ainda sobre
+o hash anterior deste checkout) — nova seção, nunca reescreve o texto das seções acima. A data e o novo
+`sha256` deste arquivo são registrados em `meta` via `python -m signals_mvp.analise.condicional
+--registrar-emenda` (histórico append-only em `meta['plano_analise_emendas']`), **antes** da próxima
+`/analise`/coleta rodar — `garantir_plano_registrado` recusa com `PlanoAlteradoError` até isso ser feito.
+
+### 1) Robustez de H1 (cauda pesada) — 3 desfechos, nunca mais PASS/FAIL
+
+H1 (n>=30, sem ter parado por futilidade) agora tem **3 desfechos possíveis**: `EDGE_PROVISORIO`
+(critérios (a)–(d) abaixo **todos** verdadeiros), `FUTIL` (regra já existente, inalterada) ou
+`INCONCLUSIVO` (qualquer outro caso — falhar (b) ou (c) é **sempre** `INCONCLUSIVO`, nunca "refutado").
+
+- **(a)** limite inferior de 90% do bootstrap em blocos > 0, **nos dois eixos** (dia E token) — regra
+  já existente, inalterada.
+- **(b)** estimativa **pontual** (sem exigir limite inferior aqui) da média de `dif_pareada` > 0 após
+  remover o **único maior ganho individual** (leave-one-out do melhor trade) — um outlier isolado
+  nunca pode sustentar "edge" sozinho.
+- **(c)** teste de permutação por **inversão de sinais** (exato nas diferenças pareadas até n=20;
+  Monte Carlo determinístico, seed fixa, acima disso) sobre a **média** das diferenças pareadas, com
+  **p < 0,10**. A mediana das diferenças **não** entra como critério.
+- **(d)** sobrevive ao cenário de custo conservador pré-declarado: `dif_pareada` recomputada com **3%
+  de custo adicional por perna** (entrada+saída), **além** do que já está em `result_net`
+  (`CostModel` oficial, intocado) — estimativa pontual > 0.
+
+Também reportados (nunca decidem o status): **média aparada (10%)**; **nº de diferenças positivas /
+total**.
+
+**Escalar a mão** (aumentar o tamanho da posição) só é liberado com **n >= 100 tokens distintos
+fechados OU p < 0,01 no teste de permutação** — mais uma vez, nunca decide `EDGE_PROVISORIO` por si
+só, é uma trava adicional antes de qualquer ação operacional.
+
+### 2) H10–H12 (família de Holm, geração de hipóteses, **não confirmatórias**)
+
+- **H10** — velocidade da queda: correlação de **Spearman** (contínua, sem Pearson) entre o tempo
+  (segundos) do PICO acumulado conhecido até o INÍCIO da caixa/zona e o **R REALIZADO** do sinal
+  (não `dif_pareada` — pergunta distinta de H1–H9: aqui é sobre o resultado absoluto do trade, não o
+  quanto ele bate a baseline).
+- **H11** — ticket médio no gatilho: **Mann-Whitney U** comparando `dif_pareada` de abaixo vs acima
+  da **mediana exata** de `ticket_medio_usd` (recalculada a cada execução).
+- **H12** — ordem do sinal no token (`token_signal_seq`): 1º sinal vs 2º ou posterior, bootstrap em
+  blocos **por token** (não por dia) — um token hiperativo que gera vários sinais seq>=2 correlacionados
+  não pode inflar a significância desse lado.
+
+Cada um entra na MESMA família de Holm que H2–H9 (um p-valor por teste/lado); `n < 10` tokens
+distintos (por lado) não é reportado, mesma convenção de H2–H9.
+
+**Colunas novas:** nenhuma foi necessária. `peak_ts`/`box_start_ts` (H10) já são gravados em
+`event_json.data` pelo detector (`detector_v1.py: EventV1`, único ponto de construção, mesma classe
+usada por V1 e V2) desde antes desta emenda; `ticket_medio_usd` e `token_signal_seq` (H11/H12) já são
+colunas existentes em `pr1_signals`/`pr2_signals`.
+
+### 3) Limitações registradas
+
+- a baseline pareada mede o **timing do gatilho dentro de tokens já selecionados** pela V1/V2 (nunca
+  contra uma amostra aleatória de tokens não selecionados) — H1–H12 respondem "o sinal bate a baseline
+  do MESMO token", não "a V1/V2 escolhe tokens melhores que o acaso";
+- MEV/sandwich **não está modelado** em nenhum lugar desta análise (nem no custo conservador do item
+  (d), que é só um modelo de taxa/slippage adicional).
+
+### 4) Implementação
+
+`signals_mvp/analise/condicional.py`: critérios (a)–(d) (`rodar_h1`, `media_sem_maior_ganho`,
+`teste_permutacao_sinais`, `media_custo_conservador`, `media_aparada`), H10–H12
+(`h10_velocidade_queda`/`h11_ticket_medio`/`h12_ordem_sinal_token`, Spearman/Mann-Whitney implementados
+sem scipy — não é dependência do projeto). `/analise` (`formatar_markdown`/`formatar_telegram`)
+mostra os 4 critérios, a média aparada, as diferenças positivas/total e `escalar_liberado`. Testes
+sintéticos em `tests/test_analise_condicional.py` (outlier de +50R não gera edge; edge plantado
+distribuído é detectado) e verificação/teste anti-lookahead do mecanismo de controles
+(`candidatos_elegiveis`, `evidencia.py`) em `tests/test_evidencia.py` — o `peak` usado para decidir
+elegibilidade de um candle só acumula o máximo dos candles ANTERIORES a ele, nunca um valor que só é
+conhecido depois.
+
 ## O que NÃO pode acontecer depois deste documento estar committado
 
 - editar os limiares/grupos acima (nova interpretação = nova seção/versão, nunca reescrever o texto

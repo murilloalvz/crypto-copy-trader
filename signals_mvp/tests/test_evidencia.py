@@ -133,6 +133,19 @@ class CandidatosElegiveisTests(unittest.TestCase):
         out = candidatos_elegiveis(bars, created_ts=None, age_window_days=(0.0, 100.0), step_s=H, excluir_idx=-1)
         self.assertEqual(out, [])
 
+    def test_a_future_even_bigger_peak_never_makes_an_earlier_candle_eligible_anti_lookahead(self) -> None:
+        """EMENDA 1 (2026-10-29) item 5: confirma a verificacao anti-lookahead pedida -- `peak` aqui so
+        acumula o maximo dos candles ANTERIORES (`peak = bar.high` roda DEPOIS do check, nunca antes),
+        entao um pico muito maior que so aparece DEPOIS nunca pode, retroativamente, fazer um candle
+        anterior parecer ter caido mais do que realmente tinha caido at= aquele momento."""
+        bars = _flat_bars(5, price=1_000_000.0)
+        bars[0] = Bar(bars[0].ts, 1_000_000.0, 1_000_000.0, 1_000_000.0, 1_000_000.0, 1.0)  # pico CONHECIDO em t=0
+        bars[1] = Bar(bars[1].ts, 300_000.0, 300_000.0, 300_000.0, 300_000.0, 1.0)  # queda 70% do pico conhecido (< 80%)
+        bars[2] = Bar(bars[2].ts, 100_000_000.0, 100_000_000.0, 100_000_000.0, 100_000_000.0, 1.0)  # pico GIGANTE, so DEPOIS
+        out = candidatos_elegiveis(bars, created_ts=bars[0].ts, age_window_days=(0.0, 100.0), step_s=H, excluir_idx=-1)
+        self.assertNotIn(1, out, "o pico de t=2 e futuro em relacao a t=1 -- um lookahead bug usaria "
+                                  "o maximo GLOBAL (100M) e inflaria a queda de t=1 p/ 99.7%, >= 80%")
+
 
 class SortearControlesTests(unittest.TestCase):
     def test_same_entry_id_and_versao_always_sorts_the_same(self) -> None:

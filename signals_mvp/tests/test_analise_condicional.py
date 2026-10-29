@@ -15,11 +15,17 @@ from ..storage import Storage
 
 
 def _sinal(mint: str, dif: float, dia_ts: float, gatilho=(), risco_pct=20.0, liquidez_usd=100_000.0,
-          holders_tag=None, tags=(), janela_ouro="janela_ouro", entry_id: int = 0) -> cond.SinalResolvido:
+          holders_tag=None, tags=(), janela_ouro="janela_ouro", entry_id: int = 0,
+          result_net: float = 1.0, ticket_medio_usd=None, token_signal_seq=None,
+          tempo_pico_caixa_s=None) -> cond.SinalResolvido:
+    # EMENDA 1 (2026-10-29): `result_net` default != None (so o GATE de presenca de dado em
+    # `media_custo_conservador` importa nos testes que nao mencionam custo -- o VALOR de result_net
+    # nunca entra na formula, so o risco_pct, ver `media_custo_conservador`).
     return cond.SinalResolvido(
         entry_id=entry_id, mint=mint, symbol=mint, t_entrada=dia_ts, dif_pareada=dif, gatilho=tuple(gatilho),
         risco_pct=risco_pct, liquidez_usd=liquidez_usd, holders_tag=holders_tag, tags=tuple(tags),
-        janela_ouro=janela_ouro,
+        janela_ouro=janela_ouro, result_net=result_net, ticket_medio_usd=ticket_medio_usd,
+        token_signal_seq=token_signal_seq, tempo_pico_caixa_s=tempo_pico_caixa_s,
     )
 
 
@@ -78,26 +84,160 @@ class RodarH1Tests(unittest.TestCase):
         sinais = [_sinal(f"m{i}", 0.1, i * DIA) for i in range(20)]  # media positiva, mas n < 30
         self.assertEqual(cond.rodar_h1(sinais).status, "AMOSTRA_INSUFICIENTE")
 
-    def test_30_tokens_with_a_strong_planted_edge_passes_both_bootstraps(self) -> None:
+    def test_30_tokens_with_a_strong_distributed_planted_edge_is_edge_provisorio(self) -> None:
+        # EMENDA 1 (2026-10-29, com AJUSTE): edge PLANTADO e DISTRIBUIDO (todo mundo em +2.0, nenhum
+        # outlier isolado) -- os 4 criterios (a)-(d) devem passar e o desfecho e EDGE_PROVISORIO.
         sinais = [_sinal(f"m{i}", 2.0, i * DIA) for i in range(30)]
         r = cond.rodar_h1(sinais)
-        self.assertEqual(r.status, "PASS")
+        self.assertEqual(r.status, "EDGE_PROVISORIO")
         self.assertIsNotNone(r.limite_inferior_dia)
         self.assertIsNotNone(r.limite_inferior_token)
         self.assertGreater(r.limite_inferior_dia, 0.0)
         self.assertGreater(r.limite_inferior_token, 0.0)
+        self.assertTrue(r.criterio_a_bootstrap)
+        self.assertTrue(r.criterio_b_sem_maior_ganho)
+        self.assertTrue(r.criterio_c_permutacao)
+        self.assertTrue(r.criterio_d_custo_conservador)
+        self.assertEqual(r.n_diferencas_positivas, 30)
+        self.assertEqual(r.n_diferencas_total, 30)
 
-    def test_30_tokens_with_pure_noise_around_zero_fails(self) -> None:
+    def test_a_single_huge_outlier_never_creates_edge_criterio_b(self) -> None:
+        # EMENDA 1 item 4: "um outlier de +50R nao pode gerar 'edge'" -- 29 sinais SEM edge nenhum
+        # (dif=0.0) + 1 outlier de +50R. A media bruta fica positiva so por causa do outlier, mas o
+        # criterio (b) (leave-one-out do MAIOR ganho) deve reprovar (resta media=0.0, nao >0),
+        # levando a INCONCLUSIVO (nunca "refutado").
+        sinais = [_sinal(f"m{i}", 0.0, i * DIA) for i in range(29)] + [_sinal("outlier", 50.0, 29 * DIA)]
+        r = cond.rodar_h1(sinais)
+        self.assertEqual(r.status, "INCONCLUSIVO")
+        self.assertFalse(r.criterio_b_sem_maior_ganho)
+        self.assertAlmostEqual(r.media_sem_maior_ganho, 0.0, places=6)
+
+    def test_30_tokens_with_pure_noise_around_zero_is_inconclusivo_never_refutado(self) -> None:
         valores = [1.0, -1.0] * 15
         sinais = [_sinal(f"m{i}", v, i * DIA) for i, v in enumerate(valores)]
         r = cond.rodar_h1(sinais)
-        self.assertEqual(r.status, "FAIL")
+        self.assertEqual(r.status, "INCONCLUSIVO")
 
     def test_futility_checked_before_the_full_bootstrap_even_at_n_30(self) -> None:
         sinais = [_sinal(f"m{i}", -1.0, i * DIA) for i in range(30)]
         r = cond.rodar_h1(sinais)
         self.assertEqual(r.status, "FUTIL")
         self.assertIsNone(r.limite_inferior_dia, "futilidade nunca chega a rodar o bootstrap completo")
+
+    def test_scaling_up_requires_100_tokens_or_p_below_0_01(self) -> None:
+        # EMENDA 1 item 2 (texto do AJUSTE): "escalar mao so com >=100 tokens distintos fechados OU
+        # p < 0.01 no teste de permutacao" -- com n=30 e edge forte (p de permutacao bem pequeno),
+        # escalar_liberado fica True so pela clausula do p-valor.
+        sinais = [_sinal(f"m{i}", 2.0, i * DIA) for i in range(30)]
+        r = cond.rodar_h1(sinais)
+        self.assertLess(r.p_valor_permutacao, 0.01)
+        self.assertTrue(r.escalar_liberado)
+
+    def test_custo_conservador_can_flip_an_edge_that_is_too_thin_to_survive_it(self) -> None:
+        # criterio (d): +3%/perna x 2 pernas = 6% extra, equivalente a 100*0.06/risco_pct em R. Com
+        # risco_pct=20 isso e 0.30R -- um edge de +0.2R (menor que 0.30R) nao sobrevive.
+        sinais = [_sinal(f"m{i}", 0.2, i * DIA, risco_pct=20.0) for i in range(30)]
+        r = cond.rodar_h1(sinais)
+        self.assertFalse(r.criterio_d_custo_conservador)
+        self.assertAlmostEqual(r.media_custo_conservador, 0.2 - 0.30, places=6)
+
+
+class RobustezH1FuncoesTests(unittest.TestCase):
+    """EMENDA 1 (2026-10-29, com AJUSTE do mesmo dia): funcoes puras dos criterios (b)-(d) + relatorio."""
+
+    def test_media_sem_maior_ganho_removes_only_the_single_largest_value(self) -> None:
+        sinais = [_sinal("a", 1.0, 0.0), _sinal("b", 1.0, 0.0), _sinal("c", 10.0, 0.0)]
+        self.assertAlmostEqual(cond.media_sem_maior_ganho(sinais), 1.0)
+
+    def test_media_aparada_matches_plain_mean_without_outliers(self) -> None:
+        self.assertAlmostEqual(cond.media_aparada([1.0, 2.0, 3.0, 4.0, 5.0]), 3.0)
+
+    def test_media_aparada_is_robust_to_a_single_extreme_outlier(self) -> None:
+        valores = [1.0] * 19 + [1000.0]  # n=20 -> k=1 de cada ponta, o outlier sai no corte superior
+        aparada = cond.media_aparada(valores)
+        self.assertLess(aparada, 2.0)
+
+    def test_permutation_test_p_is_tiny_for_a_strong_consistent_effect(self) -> None:
+        sinais = [_sinal(f"m{i}", 3.0, i * DIA) for i in range(25)]  # n=25 > 20 -> Monte Carlo
+        p = cond.teste_permutacao_sinais(sinais)
+        self.assertLess(p, 0.01)
+
+    def test_permutation_test_p_is_large_for_pure_noise(self) -> None:
+        valores = [1.0, -1.0] * 10  # n=20 -> exato (enumera 2^20)
+        sinais = [_sinal(f"m{i}", v, i * DIA) for i, v in enumerate(valores)]
+        p = cond.teste_permutacao_sinais(sinais)
+        self.assertGreater(p, 0.3)
+
+    def test_custo_conservador_ignores_signals_without_result_net_missingness_explicit(self) -> None:
+        com_dado = _sinal("a", 1.0, 0.0, risco_pct=20.0, result_net=1.0)
+        sem_dado = _sinal("b", 1.0, 0.0, risco_pct=20.0, result_net=None)
+        so_com_dado = cond.media_custo_conservador([com_dado])
+        self.assertAlmostEqual(cond.media_custo_conservador([com_dado, sem_dado]), so_com_dado)
+
+    def test_spearman_is_strongly_positive_for_a_monotonic_relationship(self) -> None:
+        xs = list(range(20))
+        ys = [float(x) * 2.0 for x in xs]
+        rho, p = cond.spearman(xs, ys)
+        self.assertGreater(rho, 0.99)
+        self.assertLess(p, 0.01)
+
+    def test_spearman_is_near_zero_for_unrelated_data(self) -> None:
+        xs = [0, 1, 2, 3, 4, 5, 6, 7]
+        ys = [3, 1, 4, 1, 5, 9, 2, 6]
+        rho, _p = cond.spearman(xs, ys)
+        self.assertLess(abs(rho), 0.6)
+
+    def test_mann_whitney_detects_a_clear_shift_between_two_groups(self) -> None:
+        a = [1.0] * 10
+        b = [10.0] * 10
+        _u, p = cond.mann_whitney_u(a, b)
+        self.assertLess(p, 0.01)
+
+    def test_mann_whitney_sees_no_difference_for_identical_distributions(self) -> None:
+        a = [1.0, 2.0, 3.0, 4.0, 5.0]
+        b = [1.0, 2.0, 3.0, 4.0, 5.0]
+        _u, p = cond.mann_whitney_u(a, b)
+        self.assertGreater(p, 0.5)
+
+
+class H10H11H12Tests(unittest.TestCase):
+    """EMENDA 1 (2026-10-29, com AJUSTE): H10 (Spearman, continuo, R realizado) / H11 (Mann-Whitney,
+    mediana exata de ticket) / H12 (1o sinal do token vs 2o+, bootstrap por token) -- geracao de
+    hipoteses, nunca confirmatorias."""
+
+    def test_h10_is_none_below_10_tokens_with_both_fields_present(self) -> None:
+        sinais = [_sinal(f"m{i}", 1.0, i * DIA, tempo_pico_caixa_s=float(i)) for i in range(5)]
+        self.assertIsNone(cond.h10_velocidade_queda(sinais))
+
+    def test_h10_detects_a_planted_monotonic_relationship(self) -> None:
+        sinais = [_sinal(f"m{i}", 0.6, i * DIA, risco_pct=20.0, result_net=0.2 * (i + 1),
+                         tempo_pico_caixa_s=float(i) * 3600.0) for i in range(15)]
+        g = cond.h10_velocidade_queda(sinais)
+        self.assertIsNotNone(g)
+        self.assertIn("rho=", g.estatistica)
+        self.assertTrue(g.p_valor < 0.05)
+
+    def test_h11_is_none_below_10_tokens_per_side(self) -> None:
+        sinais = [_sinal(f"m{i}", 1.0, i * DIA, ticket_medio_usd=float(i)) for i in range(10)]
+        self.assertIsNone(cond.h11_ticket_medio(sinais))
+
+    def test_h11_detects_a_clear_shift_between_below_and_above_median_tickets(self) -> None:
+        abaixo = [_sinal(f"low{i}", 0.1, i * DIA, ticket_medio_usd=100.0) for i in range(12)]
+        acima = [_sinal(f"high{i}", 5.0, i * DIA, ticket_medio_usd=10_000.0) for i in range(12)]
+        g = cond.h11_ticket_medio(abaixo + acima)
+        self.assertIsNotNone(g)
+        self.assertLess(g.p_valor, 0.01)
+
+    def test_h12_splits_by_token_signal_seq_and_blocks_the_bootstrap_by_token(self) -> None:
+        primeiros = [_sinal(f"m{i}", 2.0, i * DIA, token_signal_seq=1) for i in range(12)]
+        # mesmo TOKEN repetido 3x no grupo "2o ou posterior" -- bloco por token evita que isso infle
+        # artificialmente a significancia (pseudo-replicacao de um unico token hiperativo).
+        posteriores = [_sinal("hiperativo", 2.0, i * DIA, token_signal_seq=2, entry_id=i) for i in range(30)]
+        resultado = cond.h12_ordem_sinal_token(primeiros + posteriores)
+        nomes = {g.grupo for g in resultado}
+        self.assertIn("1o sinal do token", nomes)
+        # "2o ou posterior" tem n_tokens=1 (um unico mint hiperativo) -- nunca atinge o minimo de 10.
+        self.assertNotIn("2o ou posterior", nomes)
 
 
 class RodarExploratoriasTests(unittest.TestCase):
@@ -311,23 +451,42 @@ class GarantirPlanoRegistradoTests(unittest.TestCase):
         with self.assertRaises(cond.PlanoAlteradoError):
             cond.garantir_plano_registrado(self.storage, self.plano)
 
+    def test_registrar_emenda_updates_the_hash_and_keeps_an_append_only_history(self) -> None:
+        # EMENDA 1 (2026-10-29): re-registro EXPLICITO -- nunca automatico dentro de `executar`/
+        # `garantir_plano_registrado` (que so recusaria o mismatch). So `--registrar-emenda` chama isto.
+        h_original = cond.garantir_plano_registrado(self.storage, self.plano)
+        self.plano.write_text("# plano v1\nEMENDA 1 (2026-10-29)\n", encoding="utf-8")
+        with self.assertRaises(cond.PlanoAlteradoError):
+            cond.garantir_plano_registrado(self.storage, self.plano)
+        anterior, novo = cond.registrar_emenda(self.storage, self.plano)
+        self.assertEqual(anterior, h_original)
+        self.assertNotEqual(novo, h_original)
+        cond.garantir_plano_registrado(self.storage, self.plano)  # nao levanta mais
+        import json as _json
+        historico = _json.loads(self.storage.get_meta("plano_analise_emendas"))
+        self.assertEqual(len(historico), 1)
+        self.assertEqual(historico[0]["hash_anterior"], h_original)
+        self.assertEqual(historico[0]["hash_novo"], novo)
+
 
 class FormatarTelegramTests(unittest.TestCase):
     def test_insufficient_sample_message_is_exactly_n_over_30(self) -> None:
         rel = cond.RelatorioCondicional(versao="v1", h1=cond.ResultadoH1("AMOSTRA_INSUFICIENTE", 7))
         self.assertEqual(cond.formatar_telegram(rel), "amostra insuficiente (7/30)")
 
-    def test_pass_message_mentions_the_mean_and_candidates(self) -> None:
-        h1 = cond.ResultadoH1("PASS", 30, media_dif_pareada=1.2, limite_inferior_dia=0.5, limite_inferior_token=0.4)
+    def test_edge_provisorio_message_mentions_the_mean_and_candidates(self) -> None:
+        h1 = cond.ResultadoH1("EDGE_PROVISORIO", 30, media_dif_pareada=1.2, limite_inferior_dia=0.5,
+                              limite_inferior_token=0.4)
         grupo = cond.GrupoExploratorio("H2 tipo de gatilho", "power_candle_rompimento", 12, 2.0, 0.001, True)
         rel = cond.RelatorioCondicional(versao="v1", h1=h1, exploratorias=[grupo])
         texto = cond.formatar_telegram(rel)
-        self.assertIn("PASS", texto)
+        self.assertIn("EDGE_PROVISORIO", texto)
         self.assertIn("1.20", texto)
         self.assertIn("H2 tipo de gatilho/power_candle_rompimento", texto)
 
     def test_telegram_mentions_the_exclusion_count_when_there_is_at_least_one(self) -> None:
-        h1 = cond.ResultadoH1("PASS", 30, media_dif_pareada=1.2, limite_inferior_dia=0.5, limite_inferior_token=0.4)
+        h1 = cond.ResultadoH1("EDGE_PROVISORIO", 30, media_dif_pareada=1.2, limite_inferior_dia=0.5,
+                              limite_inferior_token=0.4)
         excluido = cond.Excluido(entry_id=9, mint="MINTX", symbol="X", motivo="preco_entrada_divergente")
         rel = cond.RelatorioCondicional(versao="v1", h1=h1, excluidos=[excluido])
         self.assertIn("1 excluído", cond.formatar_telegram(rel))
