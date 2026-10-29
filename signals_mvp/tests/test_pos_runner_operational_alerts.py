@@ -113,21 +113,51 @@ class FilaAtrasadaTests(unittest.TestCase):
         self.h.live._checar_fila_atrasada(now, _due(n_1h=2))  # noqa: SLF001
         self.assertEqual(len(self.h.tg.notified), 1, "nunca pode mandar 2 avisos na mesma hora")
 
-    def test_clearing_the_queue_sends_one_resolved_message_then_allows_a_new_alert_later(self) -> None:
-        """PEDIDO 2026-10-28, item 2: quando a fila esvazia de verdade depois de ter alertado, manda
+    def test_clearing_the_queue_sends_one_resolved_message_after_hysteresis_then_allows_a_new_alert_later(self) -> None:
+        """PEDIDO 2026-10-28/29, item 2: quando a fila esvazia de verdade e fica assim por >=
+        `POS_RUNNER_FILA_RESOLVIDO_MIN` (padrao 10min -- histerese, nunca uma lacuna de 1 tick), manda
         exatamente 1 mensagem "resolvido" (nunca 0, nunca mais de 1) -- e uma nova hora atrasada
         depois disso alerta de novo normalmente."""
         hora = self._hora_boundary(self.h.clock())
         self.h.live._checar_fila_atrasada(hora + 45 * 60.0, _due(n_1h=1))  # noqa: SLF001
         self.assertEqual(len(self.h.tg.notified), 1)
-        self.h.live._checar_fila_atrasada(hora + 50 * 60.0, _due(n_1h=0))  # noqa: SLF001 -- esvaziou
+        self.h.live._checar_fila_atrasada(hora + 50 * 60.0, _due(n_1h=0))  # noqa: SLF001 -- esvaziou, so 5min
+        self.assertEqual(len(self.h.tg.notified), 1, "so 5min sem pendencia -- histerese ainda nao fechou")
+        self.h.live._checar_fila_atrasada(hora + 56 * 60.0, _due(n_1h=0))  # noqa: SLF001 -- 11min sem pendencia
         self.assertEqual(len(self.h.tg.notified), 2)
         self.assertIn("normalizada", self.h.tg.notified[1])
-        self.h.live._checar_fila_atrasada(hora + 55 * 60.0, _due(n_1h=0))  # noqa: SLF001 -- continua vazia
+        self.assertIn("POOL0", self.h.tg.notified[1])
+        self.h.live._checar_fila_atrasada(hora + 58 * 60.0, _due(n_1h=0))  # noqa: SLF001 -- continua vazia
         self.assertEqual(len(self.h.tg.notified), 2, "nunca manda 'resolvido' 2x pra mesma ocorrencia")
         proxima_hora = hora + H
         self.h.live._checar_fila_atrasada(proxima_hora + 45 * 60.0, _due(n_1h=1))  # noqa: SLF001 -- atrasa de novo
         self.assertEqual(len(self.h.tg.notified), 3)
+
+    def test_a_successful_update_resolves_immediately_without_waiting_the_hysteresis(self) -> None:
+        """PEDIDO 2026-10-29: a 2a condicao de "resolvido" (`self.sched` registrando uma atualizacao
+        bem-sucedida do pool DEPOIS da ultima vez visto pendente) nao precisa esperar os 10min."""
+        hora = self._hora_boundary(self.h.clock())
+        now = hora + 45 * 60.0
+        self.h.live._checar_fila_atrasada(now, _due(n_1h=1))  # noqa: SLF001
+        self.assertEqual(len(self.h.tg.notified), 1)
+        self.h.live.sched[("POOL0", "1h")] = {
+            "next": 0.0, "erros": 0.0, "ultimo_erro": None, "ultima_tentativa": now + 30.0, "fonte": "gt",
+        }
+        self.h.live._checar_fila_atrasada(now + 60.0, _due(n_1h=0))  # noqa: SLF001 -- so 1min depois, mas atualizou
+        self.assertEqual(len(self.h.tg.notified), 2, "atualizacao bem-sucedida resolve na hora, sem esperar histerese")
+
+    def test_flapping_between_pending_and_empty_every_tick_never_spams_and_never_resolves_early(self) -> None:
+        """PEDIDO 2026-10-29 (sintoma real do ELON): a fila oscilava pendente<->vazia a cada ~1min e
+        o limite de 3/hora nao valia porque uma lacuna de 1 tick zerava o estado inteiro. Reproduz a
+        oscilacao por ~30min (1 tick/min alternando devido/vazio) e confirma no MAXIMO 1 aviso (tier
+        do teto) e NENHUM 'resolvido' prematuro (10min de histerese nunca se acumulam com a fila
+        voltando a ficar pendente a cada 2 ticks)."""
+        hora = self._hora_boundary(self.h.clock())
+        for minuto in range(31, 60):
+            due = _due(n_1h=1) if minuto % 2 == 0 else _due(n_1h=0)
+            self.h.live._checar_fila_atrasada(hora + minuto * 60.0, due)  # noqa: SLF001
+        self.assertEqual(len(self.h.tg.notified), 1, self.h.tg.notified)
+        self.assertIn("fila", self.h.tg.notified[0])
 
     def test_never_sends_resolved_when_the_queue_empties_before_ever_alerting(self) -> None:
         hora = self._hora_boundary(self.h.clock())

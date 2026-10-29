@@ -418,6 +418,43 @@ class HeartbeatTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_v2_heartbeat_fires_alongside_v1_with_its_own_counters(self) -> None:
+        """PEDIDO 2026-10-29: antes o heartbeat so mandava a V1 (V2 ficava invisivel no "vivo"
+        periodico, so aparecia 1x/dia no resumo diario). Agora a V2 manda a SUA PROPRIA mensagem
+        junto, com fase/filtros PROPRIOS -- nunca mistura com a V1."""
+        h = LiveHarness()
+        try:
+            h.live.heartbeat_interval_s = 3 * H
+            start_tracking(h)
+            beats_v1 = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]
+            beats_v2 = [t for t in h.texts() if t.startswith("💓 POS-RUNNER-V2")]
+            self.assertEqual(len(beats_v1), 1, h.texts())
+            self.assertEqual(len(beats_v2), 1, h.texts())
+            self.assertIn("fase do detector V2:", beats_v2[0])
+            self.assertIn("dado_invalido:", beats_v2[0])
+            self.assertIn("l_bc_suspeito:", beats_v2[0])
+            self.assertIn("filtrado_mc_baixo:", beats_v2[0])
+            self.assertIn("filtrado_idade:", beats_v2[0])
+            self.assertIn(h.live.version_v2, beats_v2[0])
+            self.assertNotIn("chamadas/min", beats_v2[0], "contadores compartilhados ja saem no heartbeat V1")
+            h.run_hours(3)
+            self.assertEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V2")]), 2,
+                             "o heartbeat da V2 tem que repetir junto com o da V1")
+        finally:
+            h.close()
+
+    def test_v2_heartbeat_is_skipped_when_sem_v2_is_set(self) -> None:
+        h = LiveHarness()
+        try:
+            h.live = PosRunnerLive(h.settings, h.params, h.storage, h.world, CTX, h.tg, LINKS, "solana",
+                                   h.paths.dados / "pos_runner", clock=h.clock, sem_v2=True)
+            h.live.heartbeat_interval_s = 3 * H
+            start_tracking(h)
+            self.assertEqual([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V2")], [])
+            self.assertGreaterEqual(len([t for t in h.texts() if t.startswith("💓 POS-RUNNER-V1")]), 1)
+        finally:
+            h.close()
+
 
 class SemV0Tests(unittest.TestCase):
     def test_sem_v0_disables_v0_alerts_but_keeps_v1(self) -> None:

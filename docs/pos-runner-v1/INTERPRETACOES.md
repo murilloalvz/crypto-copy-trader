@@ -659,3 +659,106 @@ candle do caminho GT (`_usd_prefix`/`to_mc_bars`/`fill_gaps`) — nenhuma regra 
 Continua "nunca reagenda/encerra por conta própria" (o `_schedule`/alerta de fila seguem dependendo
 só do GT se recuperar) — este item é sobre continuidade de dado para detecção/paper, não sobre
 silenciar o alerta do item 2.
+
+## 18. PEDIDO 2026-10-29 — ELON (fase runner) nunca tentado, flapping real, prioridade, saúde geral
+
+### Item 1 — flapping real (alerta disparando a cada ~1min, limite de 3/h não valia)
+
+**Causa raiz**: o estado do §17/item 2 era UM ÚNICO dict global (`self._fila_estado["avisos"]`),
+zerado por completo a cada tick em que a lista de pendentes ficava vazia. Um pool que oscila
+pendente/vazio a cada ciclo (ELON) apagava o histórico de avisos nessa lacuna momentânea e podia
+re-alertar imediatamente — o limite de 3/hora nunca chegava a valer de verdade.
+
+**Conserto**: estado agora é por `(pool, hora_de_fechamento)` (`self._fila_pools`) — ver §17/item 2
+reescrito. "Resolvido" só com **histerese real** (`POS_RUNNER_FILA_RESOLVIDO_MIN`, padrão 10min
+contínuos sem pendência, OU imediato se `self.sched` registrar uma atualização bem-sucedida desse
+pool específico depois da última vez visto pendente) — nunca mais uma lacuna de 1 tick. Reincidência
+genuína (resolvido e depois pendente de novo na MESMA hora) reabre um novo ciclo de até 3 avisos.
+Teste que reproduz a oscilação relatada (devido/vazio a cada ~1min por ~30min):
+`test_pos_runner_operational_alerts.py::FilaAtrasadaTests::
+test_flapping_between_pending_and_empty_every_tick_never_spams_and_never_resolves_early`.
+
+### Item 2 — por que ELON nunca foi tentado ("última tentativa: nunca desde que o bot subiu")
+
+**Não foi possível ler o banco real da VM neste container** (sem acesso) — o diagnóstico abaixo
+vem de leitura de código (`live.py`), não de uma query real contra `estado.sqlite`.
+
+**Explicação consistente com o sintoma**: `self.sched` é um dict **só em memória**, nunca
+persistido — zera por completo a cada reinício do processo. `self.dets_v1` (fase do detector) É
+reconstruído a partir de `pr_bars` (candles já persistidos), então um pool pode legitimamente
+mostrar `fase: runner` (candles antigos, de ANTES de um restart) e, ao mesmo tempo,
+`ultima_tentativa: None` (nenhuma tentativa **desde o último restart**) — não é uma contradição.
+
+Logo após um restart, **todo pool ativo fica "devido" ao mesmo tempo** (`self.sched.get(key) is
+None` nunca é filtrado por `_due_list`). Com o orçamento padrão de só `chamadas_por_ciclo=3`
+chamadas por ciclo e a ordem antiga (rank 0 primeiro, DEPOIS descoberta, DEPOIS rank>0, numa única
+passada e um único `try` que aborta tudo que vem depois na exceção `ApiError("budget")`), bastava
+haver posições abertas suficientes consumindo o orçamento inteiro, ciclo após ciclo, para que um
+pool rank>0 (watchlist/runner, caso do ELON) nunca recebesse NENHUMA chamada — não é "hora sem
+negociação" (esse caso já é tratado corretamente, ver abaixo), é orçamento que nunca sobrava.
+
+**Conserto** (ver item 3 abaixo, mesma mudança resolve os 2): reserva mínima de orçamento pro
+rank>0 + desempate "nunca tentado vem primeiro" dentro do mesmo rank — depois disso, nenhum pool
+ativo pode ficar com ZERO chamadas para sempre.
+
+**"Hora sem negociação" (sem inventar candle)**: já tratado corretamente por `fill_gaps()`
+(`pos_runner/candles.py`) — quando o provedor não devolve candle pra um intervalo, o código
+preenche com um candle **parado** (OHLC = close anterior, volume 0, `filled=True`), nunca um
+movimento de preço inventado. Matematicamente esse candle não pode, por si só, disparar um
+gatilho/saída novo (não cruza nenhum nível que o candle anterior já não tivesse tocado). Regra
+documentada aqui por pedido explícito — nenhuma mudança de código foi necessária, o comportamento
+já era o correto.
+
+**Fallback DexPaprika de 20min registra a tentativa**: corrigido — antes, `_tentar_fallback_por_
+pendencia` não gravava nada em `self.sched` independente do desfecho, então o diagnóstico do
+alerta mostrava `fonte: s/d` mesmo depois do fallback ter rodado. Agora sempre grava
+`ultima_tentativa`/`fonte="dexpaprika_fallback"`/`ultimo_erro` (`None` se trouxe candle,
+`"dexpaprika_sem_candle_novo"` ou `"dexpaprika_falhou"` se não). Teste:
+`test_dexpaprika_live_integration.py::PendenciaFallbackTests::
+test_the_attempt_itself_is_always_registered_in_sched_regardless_of_outcome`.
+
+### Item 3 — prioridade absoluta de posições abertas + fim da fome de rank>0
+
+Posição aberta (rank 0, `_due_list`) **já tinha** e **continua tendo** prioridade absoluta — sempre
+processada numa passada separada, ANTES de qualquer pool watchlist/runner. O que faltava era uma
+**garantia de progresso** pro resto: `tick()` agora arma o `BudgetedHttp` em 2 fases —
+1ª fase (rank==0): orçamento limitado a `chamadas_por_ciclo - reserva` (`POS_RUNNER_
+RESERVA_RANK_MAIOR`, padrão 1) — rank 0 continua recebendo tudo que precisar até esse teto;
+2ª fase (descoberta + rank>0): usa o que sobrou do orçamento real do ciclo (nunca mais que
+`chamadas_por_ciclo` no total). Só excede o teto um caso raro (mais posições abertas no MESMO ciclo
+do que `chamadas_por_ciclo - reserva` permite) atrasa 1 delas por 1 tick — nunca perdida, nunca
+troca a ordem de prioridade.
+
+Reforço complementar em `_due_list`: dentro do MESMO rank de calor, um `(pool,tf)` que nunca
+recebeu nenhuma tentativa nesta sessão vai pra frente dos que já foram tentados ao menos 1x (mesmo
+que há muito tempo) — nunca muda a ordem ENTRE ranks, só evita que o mesmo pool perca a disputa por
+orçamento indefinidamente dentro do seu próprio rank.
+
+Testes (`test_pos_runner_live.py::PriorityAndStarvationTests`):
+`test_open_positions_are_always_serviced_before_watchlist_runner_pools`,
+`test_watchlist_pools_still_get_a_chance_even_when_open_positions_alone_would_spend_the_whole_budget`,
+`test_the_reserve_is_configurable_via_env`,
+`test_a_never_attempted_pool_is_sorted_before_a_same_rank_pool_already_tried_before`.
+
+### Item 4 — `scripts/saude.py`
+
+Script somente leitura, ver seu próprio docstring para o que cobre e o comando de uso na VM. Uso:
+
+```bash
+python -m signals_mvp.scripts.saude --db dados/estado.sqlite
+```
+
+**Correção feita durante a auditoria**: o heartbeat ("💓 ... ativo", a cada `heartbeat_interval_s`,
+padrão 6h) só mandava o bloco da V1 — a V2 ficava invisível no "vivo" periódico, só aparecia 1x/dia
+no resumo diário. `heartbeat_text_v2` (`telegram_v1.py`) + `_phase_counts_v2`/chamada em
+`_heartbeat_v1` (`live.py`) — mesma janela/gatilho do heartbeat V1, mensagem própria (nunca mistura
+com a V1), só com o que é genuinamente específico da V2 (fase do detector próprio, filtros próprios)
+— uptime/chamadas-por-min/429/fila já são do processo inteiro (1 só GT compartilhado) e já saem no
+heartbeat V1, nunca duplicados. Desligado junto com `--sem-v2`. Testes:
+`test_pos_runner_v1_live.py::HeartbeatTests::test_v2_heartbeat_fires_alongside_v1_with_its_own_counters`,
+`test_v2_heartbeat_is_skipped_when_sem_v2_is_set`.
+
+**Limitações conhecidas do `saude.py`** (documentado no próprio script, nunca escondido): créditos
+DexPaprika restantes no plano, contadores do heartbeat em memória e o último ping bem-sucedido do
+Healthchecks.io só existem no processo ao vivo ou no painel de um serviço externo — nunca persistidos
+no SQLite. Essas linhas aparecem como "s/d" explícito, nunca um número inventado.

@@ -177,6 +177,24 @@ def heartbeat_text(uptime_h: float, pools_ativos: int, chamadas_por_min: float, 
     )
 
 
+def heartbeat_text_v2(fases: dict[str, int], dado_invalido: int, l_bc_suspeito: int,
+                      filtrado_mc_baixo: int, filtrado_idade: int, versao_config_v2: str) -> str:
+    """PEDIDO 2026-10-29: o heartbeat so mandava o bloco da V1 -- V2 ficava invisivel no "vivo" periodico
+    (so aparecia no resumo diario). Mesmo gatilho/janela do heartbeat V1 (chamado logo depois, MESMA
+    mensagem "viva" a cada `heartbeat_interval_s`), mensagem PROPRIA -- nunca mistura com a V1. Uptime/
+    chamadas-por-min/429/fila de atualizacao/pools ativos sao do PROCESSO inteiro (1 so GT compartilhado,
+    1 so lista de pools pra V0/V1/V2) e ja saem no heartbeat V1 -- aqui so o que e GENUINAMENTE
+    especifico da V2 (fase do detector PROPRIO da V2, filtros PROPRIOS da V2), que pode divergir do V1
+    pro MESMO pool (parametros diferentes)."""
+    fases_txt = f"runner {fases.get('runner', 0)} | pullback {fases.get('pullback', 0)} | sem_fase {fases.get('sem_fase', 0)}"
+    return (
+        f"💓 POS-RUNNER-V2 ativo | versao {versao_config_v2}\n"
+        f"fase do detector V2: {fases_txt}\n"
+        f"dado_invalido: {dado_invalido} | l_bc_suspeito: {l_bc_suspeito} | "
+        f"filtrado_mc_baixo: {filtrado_mc_baixo} | filtrado_idade: {filtrado_idade}"
+    )
+
+
 def keyboard(adapter: ChainAdapter, mint: str, pool: str, gmgn_slug: str, dexscreener_slug: str) -> dict:
     """Botões inline por rede (item 4): interface da rede (Axiom/GMGN) + DexScreener. `link_for` ja garante
     (assert) que a URL e https://."""

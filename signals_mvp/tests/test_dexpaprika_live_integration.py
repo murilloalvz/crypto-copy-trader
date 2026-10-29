@@ -139,6 +139,40 @@ class PendenciaFallbackTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_the_attempt_itself_is_always_registered_in_sched_regardless_of_outcome(self) -> None:
+        """PEDIDO 2026-10-29, item 2: antes, uma tentativa de fallback que nao trazia candle novo (ou
+        que falhava) nao deixava rastro em `self.sched` -- o diagnostico do alerta mostrava "fonte:
+        s/d" mesmo depois do fallback ter rodado. Agora `ultima_tentativa`/`fonte`/`ultimo_erro`
+        sempre sao gravados, nos 2 desfechos (sem candle novo vs. erro)."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(5)
+            row = h.storage.pr_pool("POOL1")
+            hora = (h.clock() // 3600) * 3600
+
+            h.live.dexpaprika = _StubDexPaprikaProvider(fallback_bars=[])   # sem candle novo
+            h.live._tentar_fallback_por_pendencia(row, "1h", hora + 25 * 60.0)  # noqa: SLF001
+            st = h.live.sched[("POOL1", "1h")]
+            self.assertEqual(st["fonte"], "dexpaprika_fallback")
+            self.assertEqual(st["ultimo_erro"], "dexpaprika_sem_candle_novo")
+            self.assertAlmostEqual(st["ultima_tentativa"], hora + 25 * 60.0)
+
+            proxima_hora = hora + H
+
+            class _ProviderQuebrado:
+                def candles_fallback(self, *a, **kw):
+                    raise RuntimeError("DexPaprika fora do ar (simulado)")
+
+            h.live.dexpaprika = _ProviderQuebrado()
+            h.live._tentar_fallback_por_pendencia(row, "1h", proxima_hora + 25 * 60.0)  # noqa: SLF001
+            st = h.live.sched[("POOL1", "1h")]
+            self.assertEqual(st["fonte"], "dexpaprika_fallback")
+            self.assertEqual(st["ultimo_erro"], "dexpaprika_falhou")
+            self.assertAlmostEqual(st["ultima_tentativa"], proxima_hora + 25 * 60.0)
+        finally:
+            h.close()
+
     def test_never_fires_for_timeframes_other_than_1h(self) -> None:
         h = LiveHarness()
         try:

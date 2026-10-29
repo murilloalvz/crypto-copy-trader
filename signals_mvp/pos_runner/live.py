@@ -592,11 +592,11 @@ class PosRunnerLive:
         # OCORRENCIA, sem spam. `_tick_history` e uma janela rolante (ts, rate_limited) por ciclo.
         self._tick_history: list[tuple[float, bool]] = []
         self._alerta_429_ativo = False
-        # PEDIDO 2026-10-28: substitui o marcador simples por hora por um estado completo -- no maximo 3
-        # avisos por hora de fechamento (teto/+60/+120 min) em vez de 1 por transicao 0->=1 (o que
-        # produzia 1 aviso a cada 1-2 min quando a fila oscilava), mais 1 mensagem "resolvido" (nunca
-        # mais de 1) quando a fila esvazia de verdade. Ver `_checar_fila_atrasada`.
-        self._fila_estado: Optional[dict[str, Any]] = None
+        # PEDIDO 2026-10-28/29: estado POR (pool, hora_de_fechamento) -- `self._fila_pools[(pool,hora)]
+        # = {"tf","avisos","resolvido","ultima_vez_pendente"}` -- no maximo 3 avisos por `(pool,hora)`
+        # (teto/+60/+120 min), "resolvido" so com histerese real (nunca uma lacuna de 1 tick zera o
+        # historico de avisos -- esse era o bug do flapping real do ELON). Ver `_checar_fila_atrasada`.
+        self._fila_pools: dict[tuple[str, int], dict[str, Any]] = {}
         # PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada -- medicao AO LADO de
         # V1/V2 (ver evidencia.py), nunca altera deteccao/entrada/saida/banca/Telegram/CSV oficiais. So
         # candles JA em cache (zero chamada nova de GT/DexPaprika -- ver INTERPRETACOES.md para o porque
@@ -815,7 +815,17 @@ class PosRunnerLive:
                 rank = 0 if heat == 0 else (1 if heat < 0 else 2 + heat)
                 out.append((rank, st["next"] if st else 0.0, row, tf))
         order = {"1h": 0, "4h": 1, "5m": 2}
-        out.sort(key=lambda x: (x[0], x[1], order.get(x[3], 9)))
+        # PEDIDO 2026-10-29 (ELON, fase runner, nunca tentado -- item 2/3): dentro do MESMO rank de
+        # calor, um (pool,tf) que NUNCA recebeu nenhuma tentativa nesta sessao (sem entrada em
+        # `self.sched` ou sem `ultima_tentativa` -- ex.: logo depois de um restart, quando TODO pool
+        # ativo zera junto) vai pra FRENTE dos que ja foram tentados ao menos uma vez (mesmo que ha
+        # muito tempo) -- sem isso, o mesmo pool podia perder a competicao por orcamento pra outros do
+        # MESMO rank indefinidamente. Nunca muda a ordem relativa ENTRE ranks -- posicao aberta
+        # (rank 0) continua sempre primeiro, prioridade absoluta preservada.
+        def _nunca_tentado(row: Any, tf: str) -> int:
+            st = self.sched.get((row["pool"], tf))
+            return 0 if (st is None or st.get("ultima_tentativa") is None) else 1
+        out.sort(key=lambda x: (x[0], _nunca_tentado(x[2], x[3]), x[1], order.get(x[3], 9)))
         return out
 
     def wanted(self, now: float) -> int:
@@ -825,6 +835,10 @@ class PosRunnerLive:
         n = len(self._due_list(now)) + (1 if now >= self.next_discovery and self.settings.fontes else 0)
         return min(n, self.settings.chamadas_por_ciclo)
 
+    @staticmethod
+    def _reserva_rank_maior() -> int:
+        return int(os.environ.get("POS_RUNNER_RESERVA_RANK_MAIOR", "1"))
+
     # -- ciclo -------------------------------------------------------------------------------------
     def tick(self, now: float, budget: CallBudget, keep: int) -> dict[str, Any]:
         out: dict[str, Any] = {"chamadas": 0, "erros": 0, "rate_limited": False}
@@ -833,9 +847,22 @@ class PosRunnerLive:
         t0 = time.monotonic()
         if self.version_start is None:
             self._startup(now)
-        self.http.arm(budget, keep, self.settings.chamadas_por_ciclo)
         fila_tamanho = 0
         due: list[tuple[int, float, Any, str]] = []
+        cap_total = self.settings.chamadas_por_ciclo
+        reserva = min(self._reserva_rank_maior(), max(0, cap_total - 1))
+        # PEDIDO 2026-10-29 (ELON, fase runner, "nunca tentado desde que o bot subiu" -- itens 2/3):
+        # posicao ABERTA (rank 0) tem prioridade ABSOLUTA, mas sem reserva, rank==0 suficiente para
+        # gastar TODO `chamadas_por_ciclo` (padrao so 3) deixava descoberta e TODO pool de
+        # watchlist/runner (rank>0) sem NENHUMA chance, ciclo apos ciclo -- pior logo depois de um
+        # restart, quando `self.sched` zera e TODO pool ativo fica "devido" ao mesmo tempo (ver
+        # INTERPRETACOES.md). Agora a 1a passada (rank==0) so pode gastar `cap_total - reserva`
+        # (padrao reserva=1, env `POS_RUNNER_RESERVA_RANK_MAIOR`) -- continua sendo atendida primeiro
+        # e por completo sempre que precisar de ATE esse teto; a 2a passada (descoberta + rank>0)
+        # usa o que SOBROU do orcamento real do ciclo (nunca mais que `cap_total` no total). So excede
+        # o teto um caso raro (varias posicoes abertas no MESMO ciclo) atrasa 1 delas por 1 tick,
+        # nunca mais que isso -- nunca reduz a prioridade de rank==0 sobre rank>0.
+        self.http.arm(budget, keep, max(0, cap_total - reserva))
         try:
             self._promote(now)
             due = self._due_list(now)
@@ -843,6 +870,17 @@ class PosRunnerLive:
             for rank, _next, row, tf in due:
                 if rank == 0:
                     self._refresh_safe(row, tf, now, out)
+        except RateLimited:
+            out["rate_limited"] = True
+            budget.exhaust()
+        except ApiError as exc:
+            if exc.kind != "budget":
+                out["erros"] += 1
+                log.warning("POS-RUNNER: GeckoTerminal falhou: %s", exc)
+        finally:
+            out["chamadas"] += self.http.disarm()
+        self.http.arm(budget, keep, max(0, cap_total - out["chamadas"]))
+        try:
             self._discover(now, out)
             for rank, _next, row, tf in due:
                 if rank > 0:
@@ -855,7 +893,7 @@ class PosRunnerLive:
                 out["erros"] += 1
                 log.warning("POS-RUNNER: GeckoTerminal falhou: %s", exc)
         finally:
-            out["chamadas"] = self.http.disarm()
+            out["chamadas"] += self.http.disarm()
         self._retire(now)
         if now - self.last_baselines >= 3600.0:
             self.last_baselines = now
@@ -940,51 +978,104 @@ class PosRunnerLive:
         return (f"  {row['symbol']} ({pool[:8]}…) | fase: {self._fase_label_v1(pool, tf)} | "
                 f"última tentativa: {desde} | último erro: {erro} | fonte: {fonte}")
 
+    @staticmethod
+    def _fila_resolvido_min_histerese() -> float:
+        return float(os.environ.get("POS_RUNNER_FILA_RESOLVIDO_MIN", "10"))
+
     def _checar_fila_atrasada(self, now: float, due: list[tuple[int, float, Any, str]]) -> None:
         """Fila de atualizacao (candles 1h) que nao esvazia ate N min (padrao 30) depois do fechamento
         da hora.
 
-        PEDIDO 2026-10-28: a versao anterior re-alertava a cada transicao 0->=1 dentro da MESMA hora --
-        quando a fila oscilava (flapping), isso produzia 1 Telegram a cada 1-2 min por quase 30 min
-        seguidos (sintoma real relatado). Agora e idempotente de verdade: no MAXIMO 3 avisos por hora
-        de fechamento (no teto, teto+60min e teto+120min -- nunca mais, mesmo com flapping continuo) e
-        exatamente 1 mensagem "resolvido" quando a fila esvazia de verdade (so se algum aviso foi
-        mandado nesta hora; nunca manda "resolvido" sem ter alertado antes). Cada aviso traz, por
-        (pool,tf) pendente: token, fase do detector V1, ha quanto tempo foi a ultima tentativa, qual
-        foi o ultimo erro (429/timeout/network/http/sem_cotacao_*/sem_candle_novo/erro_inesperado) e a
-        fonte (gt/dexpaprika_fallback) -- `_diagnostico_pool_fila`."""
+        PEDIDO 2026-10-28: a 1a versao re-alertava a cada transicao 0->=1 dentro da MESMA hora.
+        PEDIDO 2026-10-29 (ELON, fase runner -- flapping real a cada ~1min, limite de 3/h nao
+        aplicava): o bug era um estado UNICO/global (`self._fila_estado["avisos"]`) zerado inteiro a
+        cada tick em que a lista de pendentes ficava vazia -- um pool que flapeia pendente/vazio a
+        cada ciclo apagava o historico de avisos e podia re-alertar na hora seguinte. Agora o estado e
+        por `(pool, hora_de_fechamento)` (`self._fila_pools`), nunca por um contador agregado:
+        - no maximo 3 avisos por `(pool,hora)` (teto/+60min/+120min), que SO sao zerados quando esse
+          mesmo `(pool,hora)` for marcado resolvido (nunca por uma lacuna momentanea de 1 tick);
+        - "resolvido" (por pool) só depois de `POS_RUNNER_FILA_RESOLVIDO_MIN` (padrao 10) minutos
+          CONTINUOS sem aparecer pendente, OU imediatamente se `self.sched` registrar uma atualizacao
+          bem-sucedida desse pool (`ultimo_erro is None` e `ultima_tentativa` mais recente que a
+          ultima vez visto pendente) -- histerese real, nunca uma lacuna de 1 tick;
+        - se o MESMO `(pool,hora)` for resolvido e depois voltar a ficar pendente (reincidencia
+          genuina, nao flapping), comeca um novo ciclo de ate 3 avisos.
+        Cada aviso traz, por pool pendente: token, fase do detector V1, ha quanto tempo foi a ultima
+        tentativa, qual foi o ultimo erro e a fonte -- `_diagnostico_pool_fila` (so leitura de
+        `self.sched`/`self.dets_v1`, nunca uma chamada nova)."""
         hora_boundary = (now // 3600) * 3600
         minutos_desde_fechamento = (now - hora_boundary) / 60.0
         hora_marcador = int(hora_boundary)
-        if self._fila_estado is None or self._fila_estado["hora"] != hora_marcador:
-            self._fila_estado = {"hora": hora_marcador, "avisos": set()}
-        estado = self._fila_estado
-        pendentes = [(row, tf) for _rank, _next, row, tf in due if tf == "1h"]
-        if not pendentes:
-            if estado["avisos"]:
-                self._send_alerta_operacional(
-                    "✅ POS-RUNNER: fila de atualização (1h) normalizada (0 pool(s)/tf pendente(s)).")
-                estado["avisos"] = set()
-            return
         teto = self._teto_fila_atraso_min()
-        if minutos_desde_fechamento < teto:
-            return
-        for tier in (teto, teto + 60.0, teto + 120.0):
-            if minutos_desde_fechamento >= tier and tier not in estado["avisos"]:
-                estado["avisos"].add(tier)
-                linhas = [
-                    f"⚠ POS-RUNNER: fila de atualizacao (1h) ainda com {len(pendentes)} pool(s)/tf "
-                    f"pendente(s) {minutos_desde_fechamento:.0f} min depois do fechamento da hora "
-                    f"(teto {teto:.0f} min)."
-                ]
-                linhas.extend(self._diagnostico_pool_fila(row, tf, now) for row, tf in pendentes)
-                self._send_alerta_operacional("\n".join(linhas))
-                break
+        pendentes = {(row["pool"], tf): row for _rank, _next, row, tf in due if tf == "1h"}
+
+        avisar: list[tuple[Any, str]] = []
+        for (pool, tf), row in pendentes.items():
+            key = (pool, hora_marcador)
+            st = self._fila_pools.get(key)
+            if st is None:
+                st = {"tf": tf, "avisos": set(), "resolvido": False, "ultima_vez_pendente": now}
+                self._fila_pools[key] = st
+            elif st["resolvido"]:
+                st["avisos"] = set()
+                st["resolvido"] = False
+            st["ultima_vez_pendente"] = now
+            if minutos_desde_fechamento < teto:
+                continue
+            for tier in (teto, teto + 60.0, teto + 120.0):
+                if minutos_desde_fechamento >= tier and tier not in st["avisos"]:
+                    st["avisos"].add(tier)
+                    avisar.append((row, tf))
+                    break
+        if avisar:
+            linhas = [
+                f"⚠ POS-RUNNER: fila de atualizacao (1h) ainda com {len(avisar)} pool(s)/tf "
+                f"pendente(s) {minutos_desde_fechamento:.0f} min depois do fechamento da hora "
+                f"(teto {teto:.0f} min)."
+            ]
+            linhas.extend(self._diagnostico_pool_fila(row, tf, now) for row, tf in avisar)
+            self._send_alerta_operacional("\n".join(linhas))
+
+        resolvidos: list[str] = []
+        for (pool, hm), st in self._fila_pools.items():
+            if st["resolvido"] or not st["avisos"] or (pool, st["tf"]) in pendentes:
+                continue
+            sched_st = self.sched.get((pool, st["tf"]), {})
+            atualizou_com_sucesso = (sched_st.get("ultimo_erro") is None
+                                     and (sched_st.get("ultima_tentativa") or 0.0) > st["ultima_vez_pendente"])
+            sem_pendencia_min = (now - st["ultima_vez_pendente"]) / 60.0
+            if atualizou_com_sucesso or sem_pendencia_min >= self._fila_resolvido_min_histerese():
+                st["resolvido"] = True
+                resolvidos.append(pool)
+        if resolvidos:
+            self._send_alerta_operacional(
+                "✅ POS-RUNNER: fila de atualizacao (1h) normalizada para: "
+                + ", ".join(sorted(set(resolvidos))) + ".")
+
+        # limpeza: descarta (pool,hora) de horas antigas ja resolvidas (ou que nunca alertaram) --
+        # nunca cresce sem limite num processo que roda dias/semanas.
+        corte = hora_marcador - 3 * 3600
+        for key in [k for k, st in self._fila_pools.items()
+                   if k[1] < corte and (st["resolvido"] or not st["avisos"])]:
+            del self._fila_pools[key]
 
     def _phase_counts_v1(self) -> dict[str, int]:
         """Pools acompanhados AGORA por fase do detector da V1 (item do heartbeat da revisao FASE 1.1)."""
         fases = {"sem_fase": 0, "runner": 0, "pullback": 0}
         for det in self.dets_v1.values():
+            if det.phase == PHASE_PULLBACK:
+                fases["pullback"] += 1
+            elif det.phase == PHASE_RUNNER:
+                fases["runner"] += 1
+            else:
+                fases["sem_fase"] += 1
+        return fases
+
+    def _phase_counts_v2(self) -> dict[str, int]:
+        """PEDIDO 2026-10-29: mesmo papel de `_phase_counts_v1`, so que do detector PROPRIO da V2
+        (`self.dets_v2`) -- pode divergir do V1 pro MESMO pool (parametros diferentes)."""
+        fases = {"sem_fase": 0, "runner": 0, "pullback": 0}
+        for det in self.dets_v2.values():
             if det.phase == PHASE_PULLBACK:
                 fases["pullback"] += 1
             elif det.phase == PHASE_RUNNER:
@@ -1017,6 +1108,17 @@ class PosRunnerLive:
             self.version_v1,
         )
         self._send(text)
+        if not self.sem_v2:
+            # PEDIDO 2026-10-29: o heartbeat so mandava a V1 -- V2 ficava invisivel no "vivo"
+            # periodico (so no resumo diario, que e so 1x/dia). MESMO gatilho/janela, mensagem
+            # PROPRIA (nunca mistura com a V1); contadores PROPRIOS da V2 (fase/filtros), nunca os
+            # compartilhados (uptime/chamadas/429/fila), ja cobertos pelo heartbeat V1 acima.
+            counts_v2 = self.storage.pr2_filtrado_counts(self._heartbeat_window_start)
+            text_v2 = telegram_v1.heartbeat_text_v2(
+                self._phase_counts_v2(), counts_v2.get("dado_invalido", 0), counts_v2.get("l_bc_suspeito", 0),
+                counts_v2.get("filtrado_mc_baixo", 0), counts_v2.get("filtrado_idade", 0), self.version_v2,
+            )
+            self._send(text_v2)
         self._heartbeat_sent_at = now
         self._heartbeat_window_start = now
         self._heartbeat_calls = 0
@@ -1100,11 +1202,22 @@ class PosRunnerLive:
         if st.get("fallback_pendencia_hora") == hora_marcador:
             return
         st["fallback_pendencia_hora"] = hora_marcador
+        # PEDIDO 2026-10-29, item 2: registra a TENTATIVA em si (fonte + resultado) independente do
+        # desfecho -- antes, uma chamada que nao trazia candle novo (ou que falhava) nao deixava
+        # nenhum rastro em `self.sched`, entao o diagnostico do alerta mostrava "fonte: s/d" mesmo
+        # depois do fallback ter sido tentado.
         try:
-            if self._refresh_fallback_dexpaprika(self.storage.pr_pool(row["pool"]), tf, now):
+            cobriu = self._refresh_fallback_dexpaprika(self.storage.pr_pool(row["pool"]), tf, now)
+            st["ultima_tentativa"] = now
+            st["fonte"] = "dexpaprika_fallback"
+            st["ultimo_erro"] = None if cobriu else "dexpaprika_sem_candle_novo"
+            if cobriu:
                 log.info("POS-RUNNER: fallback DexPaprika (>=%.0fmin pendente) cobriu %s %s",
                          self._fallback_dexpaprika_min_pendente(), row["symbol"], tf)
         except Exception:  # noqa: BLE001 - o fallback e so um extra, nunca pode piorar o ciclo
+            st["ultima_tentativa"] = now
+            st["fonte"] = "dexpaprika_fallback"
+            st["ultimo_erro"] = "dexpaprika_falhou"
             log.exception("POS-RUNNER: fallback DexPaprika (pendencia) falhou em %s %s", row["symbol"], tf)
 
     # -- candles e detector ------------------------------------------------------------------------
