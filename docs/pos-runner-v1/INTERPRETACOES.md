@@ -528,3 +528,47 @@ também, mesmo reusando uma chamada "grátis").
 **H9**: proposta em `PLANO_ANALISE_PREREGISTRADO.md` (`n_pessoas_pro >= 2`) — marcada PENDENTE DE
 CONFIRMAÇÃO do operador antes da 1ª coleta real contar para o Holm (mesma disciplina do registro de
 hipóteses: pré-registro antes da coleta que julga, nunca depois de ver o dado).
+
+## 16. INCIDENTE 2026-10-27/28 — fila de atualização (1h) presa 30-59min (pós H9)
+
+**Sintoma real na VM** (Telegram, conta Placidussax, 20:59-22:55 UTC-3, duas janelas de hora
+distintas): dezenas de `⚠ POS-RUNNER: fila de atualizacao (1h) ainda com 1 pool(s)/tf pendente(s)
+N min depois do fechamento da hora`, N subindo de ~31 a ~59 dentro da mesma hora, repetindo-se a
+cada hora — sempre exatamente 1 pool/tf, nunca 0 nem >1. Timing bate com o deploy do item H9
+(commit `8fd15dd`).
+
+**Causa raiz**: `_atualizar_carteiras_horaria` (coleta horária de top-holders "pro", item H9) é uma
+chamada RPC NOVA (`adapter.holders()`, até 1 + 20 chamadas sequenciais à `SolanaRpc`, cada uma
+podendo levar até `max_total_wait_s` — ver docstring de `SolanaRpc.__init__`, BUG PRIORITARIO
+2026-10-22 — antes de desistir) que foi colocada, dentro de `_refresh_core`, **ANTES** de
+`self._schedule(pool, tf, now)`. Isso significa que qualquer lentidão/rate-limit nessa chamada
+atrasava o PRÓPRIO reagendamento do `(pool, tf)` que tem posição aberta (`_due_list` só deixa de
+marcar o par como "pendente" depois que `_schedule` roda) — exatamente o sinal que
+`_checar_fila_atrasada` audita, e exatamente o único pool elegível (a coleta horária só roda para
+pools com >= 1 posição aberta). Viola o princípio de "medição ao lado nunca afeta a operação
+oficial" (`CLAUDE.md` raiz) mesmo sem alterar nenhum sinal/trade — o efeito colateral é na
+cadência/alerta operacional, não na detecção.
+
+**Conserto (mínimo, sem mudar nenhum hash/regra V1/V2)**: em `_refresh_core`
+(`pos_runner/live.py`), inverteu-se a ordem — `self._schedule(...)` (ou o early-reschedule de
+"faltou cotação no fim") agora roda SEMPRE antes de `_atualizar_carteiras_horaria`. A coleta de
+carteiras "pro" nunca mais pode atrasar o reagendamento oficial do candle, por mais lenta que a RPC
+fique. Nenhuma mudança em `SolanaRpc`/`adapter.holders()` foi necessária — o circuit-breaker
+(`max_total_wait_s`) já existia e já evitava travar o bot para sempre; o bug era de ORDEM, não de
+teto de espera.
+
+**Teste de regressão**: `test_pos_runner_v1_live.py::EntradaTests::
+test_hourly_carteiras_collection_runs_after_the_schedule_is_already_advanced` — substitui
+`adapter.holders` por uma função que lê `self.live.sched[(pool, "1h")]["next"]` no momento exato
+da chamada e confirma que já está no futuro (ou seja, `_schedule` já rodou) ANTES da RPC de
+carteiras ser feita.
+
+**Limitação conhecida (fora do escopo deste conserto)**: o `tick()` do bot ainda é síncrono/single-
+thread — uma chamada de `adapter.holders()` muito lenta (pior caso teórico: ~21 × `max_total_wait_s`)
+ainda bloqueia o resto do ciclo (outros pools, heartbeat, `_checar_alerta_429`) enquanto dura,
+mesmo não mais atrasando o PRÓPRIO reagendamento do pool que a originou. Isso já era verdade para a
+chamada de ENTRADA (pré-existente, não nova nesta entrega); mover a coleta horária para uma thread
+separada ou dar-lhe um teto de espera próprio e mais curto é uma mudança maior, não feita aqui por
+não ser necessária para resolver o incidente relatado (o alerta media reagendamento, não tempo de
+ciclo) — fica anotado para o operador decidir se quer endurecer isso depois de observar o
+comportamento real.

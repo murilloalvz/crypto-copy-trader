@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from typing import Any
 
 from ..http import CallBudget
 from ..pos_runner.candles import Bar
@@ -253,6 +254,31 @@ class EntradaTests(unittest.TestCase):
         horarias_depois = [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
         self.assertEqual(len(horarias_depois), 1, "orcamento diario de 1 chamada horaria ja foi gasto")
         self.assertEqual(contagem["n"], chamadas_antes, "orcamento esgotado -- nenhuma chamada RPC nova")
+
+    def test_hourly_carteiras_collection_runs_after_the_schedule_is_already_advanced(self) -> None:
+        """INCIDENTE 2026-10-27 (fila de atualizacao 1h presa 30-59min depois do fechamento da hora): a
+        coleta horaria de carteiras e uma chamada RPC NOVA (`adapter.holders()`) que pode ser lenta --
+        rodar ela ANTES de reagendar atrasava o PROPRIO `_schedule` do (pool,tf), disparando o alerta
+        operacional de fila atrasada mesmo sem nenhum pool realmente travado. Prova que o reagendamento
+        normal do (pool,tf) ja aconteceu ANTES da chamada RPC de carteiras (medicao ao lado nunca atrasa
+        a cadencia oficial de candles/alerta, mesmo que a RPC em si demore)."""
+        from ..pos_runner.chain_adapter import HolderCheck
+        self._run_to_entrada()
+        pool = self.h.storage.pr1_signals()[0]["pool"]
+        vistos: dict[str, Any] = {}
+
+        def holders_fn(mint: str, excl: Any) -> HolderCheck:
+            vistos["next_na_hora_da_chamada"] = self.h.live.sched.get((pool, "1h"), {}).get("next")
+            return HolderCheck(top_holders=[])
+
+        self.h.live.adapter.holders = holders_fn
+        self.h.live.carteiras_max_chamadas_dia = 10
+        self.h.clock.advance(H)
+        self.h.tick()
+        self.assertIn("next_na_hora_da_chamada", vistos, "a coleta horaria precisa ter rodado neste teste")
+        self.assertIsNotNone(vistos["next_na_hora_da_chamada"])
+        self.assertGreater(vistos["next_na_hora_da_chamada"], self.h.clock(),
+                           "_schedule ja tinha avancado o (pool,tf) ANTES da chamada RPC de carteiras")
 
     def test_risco_irrealista_is_tagged_and_disclosed_never_blocks_the_signal(self) -> None:
         # PATCH 2026-10-27: risco real (fill vs stop) < 3% -- McRib: fill ~441k colado no stop 440k

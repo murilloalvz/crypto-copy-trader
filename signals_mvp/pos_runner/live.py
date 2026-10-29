@@ -2043,12 +2043,18 @@ class PosRunnerLive:
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide
-        if not self.sem_carteiras:
-            self._atualizar_carteiras_horaria(row, now)
+        # INCIDENTE 2026-10-27 (fila de atualizacao 1h presa ~30-59min): a coleta horaria de carteiras
+        # "pro" faz uma chamada RPC NOVA (`adapter.holders()`, ate ~21 chamadas sequenciais, cada uma
+        # podendo levar ate `max_total_wait_s` da SolanaRpc) direto no ciclo principal sincrono. Rodar
+        # isso ANTES de reagendar fazia a lentidao/rate-limit dessa chamada atrasar o PROPRIO reagendamento
+        # do (pool,tf) -- exatamente o que `_checar_fila_atrasada` mede -- alem de travar o resto do tick.
+        # Reagendar primeiro garante que a coleta "ao lado" nunca atrasa a cadencia oficial de candles/alerta.
         if len(ok) < len(fresh):
             self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
         else:
             self._schedule(pool, tf, now)
+        if not self.sem_carteiras:
+            self._atualizar_carteiras_horaria(row, now)
 
     # -- alertas -------------------------------------------------------------------------------------
     def _keyboard(self, row: Any) -> dict:
