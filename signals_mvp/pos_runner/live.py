@@ -1433,6 +1433,36 @@ class PosRunnerLive:
             return False
         return True
 
+    def _sombra_safe(self, fn: Callable[..., Any], *args: Any, contexto: str, default: Any = None) -> Any:
+        """INCIDENTE DE PRODUCAO 2026-10-29 (KIMCHIBULL/SHAVCOIN e outros): o GT pode devolver janelas
+        de candles SOBREPOSTAS -- sem isto, um candle ja visto chegando de novo no detector sombra
+        levantava `ValueError` (`detector_v1.py: "candles fora de ordem ou repetidos"`) direto dentro
+        de `_refresh_core`, interrompendo o resto do ciclo daquele (pool,tf) ANTES do agendamento
+        normal (`_schedule`) e da coleta de carteiras rodarem -- a V1/V2 em si nunca perderam candle
+        (seu proprio processamento ja tinha terminado antes da sombra rodar), mas o pool caia no
+        backoff generico de erro em vez do agendamento por calor. Agora QUALQUER excecao da sombra
+        (construcao do detector OU alimentacao de candle, esperada ou nao) e so um AVISO no log --
+        nunca interrompe o resto de `_refresh_core`."""
+        try:
+            return fn(*args)
+        except Exception:
+            log.warning("POS-RUNNER sombra (%s): erro inesperado, ignorado neste ciclo (nunca derruba o ciclo)",
+                       contexto, exc_info=True)
+            return default
+
+    def _sombra_feed(self, det: Optional[DetectorV1], seq: Sequence[Bar], row: Any, tf: str, now: float,
+                     motivo: str) -> None:
+        """Alimenta `seq` (candles NOVOS desta chamada) no detector sombra, pulando qualquer candle com
+        ts <= o ultimo ja processado por ESTE detector (idempotente -- janelas sobrepostas do GT nunca
+        batem de novo aqui). Chamado so atraves de `_sombra_safe` (ver docstring la)."""
+        if det is None:
+            return
+        for b in seq:
+            if det.bars and b.ts <= det.bars[-1].ts:
+                continue
+            for ev in det.update(b):
+                self._on_event_sombra(row, tf, ev, now, motivo)
+
     def _detector_sombra_mc(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
         """Sombra de `filtrado_mc_baixo`: `DetectorV1` NUNCA le `min_mc_usd` (esse piso e aplicado so FORA,
         em `_detector_v1`) -- entao o MESMO detector/params da V1, alimentado em paralelo enquanto o
@@ -1457,9 +1487,8 @@ class PosRunnerLive:
         if not qual.valido:
             return None
         det = DetectorV1(self.params_v1, tf, row["l_bc"], row["grad_ts"], self._created(row))
-        for ts, o, h, l, c, v, filled in existing:
-            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
-                self._on_event_sombra(row, tf, ev, now, "filtrado_mc_baixo")
+        self._sombra_feed(det, [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing],
+                          row, tf, now, "filtrado_mc_baixo")
         self.dets_sombra_mc[key] = det
         return det
 
@@ -1482,9 +1511,8 @@ class PosRunnerLive:
         if not qual.valido:
             return None
         det = DetectorV1(self._params_sombra_queda96, tf, row["l_bc"], row["grad_ts"], self._created(row))
-        for ts, o, h, l, c, v, filled in existing:
-            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
-                self._on_event_sombra(row, tf, ev, now, "queda_96_mais")
+        self._sombra_feed(det, [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing],
+                          row, tf, now, "queda_96_mais")
         self.dets_sombra_queda96[key] = det
         return det
 
@@ -2556,8 +2584,10 @@ class PosRunnerLive:
         det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
         det_v1 = self._detector_v1(row, tf, now)
         det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now)
-        det_sombra_mc = None if self.sem_sombra else self._detector_sombra_mc(row, tf, now)
-        det_sombra_q96 = None if self.sem_sombra else self._detector_sombra_queda96(row, tf, now)
+        det_sombra_mc = None if self.sem_sombra else self._sombra_safe(
+            self._detector_sombra_mc, row, tf, now, contexto="filtrado_mc_baixo")
+        det_sombra_q96 = None if self.sem_sombra else self._sombra_safe(
+            self._detector_sombra_queda96, row, tf, now, contexto="queda_96_mais")
         last = ((det.bars[-1] if det is not None and det.bars else None)
                or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
                or (det_v2.bars[-1] if det_v2 is not None and det_v2.bars else None))
@@ -2583,8 +2613,10 @@ class PosRunnerLive:
                 det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
                 det_v1 = self._detector_v1(row, tf, now, pending=seq)
                 det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now, pending=seq)
-                det_sombra_mc = None if self.sem_sombra else self._detector_sombra_mc(row, tf, now, pending=seq)
-                det_sombra_q96 = None if self.sem_sombra else self._detector_sombra_queda96(row, tf, now, pending=seq)
+                det_sombra_mc = None if self.sem_sombra else self._sombra_safe(
+                    self._detector_sombra_mc, row, tf, now, seq, contexto="filtrado_mc_baixo")
+                det_sombra_q96 = None if self.sem_sombra else self._sombra_safe(
+                    self._detector_sombra_queda96, row, tf, now, seq, contexto="queda_96_mais")
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
             self._fonte_candle_atual = fonte
             if det is not None:
@@ -2606,7 +2638,14 @@ class PosRunnerLive:
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)
                 if not self.sem_evidencia:
-                    self._update_evidencia_v1(row, tf, now)
+                    # AUDITORIA 2026-10-29 (mesmo incidente da sombra): evidencia (trajetoria/baseline)
+                    # tambem e medicao AO LADO -- uma excecao aqui nunca pode derrubar o resto do ciclo
+                    # (agendamento/carteiras abaixo).
+                    try:
+                        self._update_evidencia_v1(row, tf, now)
+                    except Exception:  # noqa: BLE001
+                        log.warning("POS-RUNNER evidencia v1: erro inesperado em %s %s, ignorado neste ciclo",
+                                   row["symbol"], tf, exc_info=True)
             # PEDIDO CONSOLIDADO FASE 2: V2 roda DEPOIS da V1 sobre os MESMOS `seq`, de proposito --
             # assim, quando a V2 fecha uma ENTRADA no MESMO (pool,tf,ts_fechamento), a linha da V1 (se
             # houver) ja esta gravada e o merge de alerta ("V1+V2" vs "SOMENTE V2") sempre ve o estado
@@ -2617,16 +2656,18 @@ class PosRunnerLive:
                         self._on_event_v2(row, tf, det_v2, ev, now)
                 self._update_paper_v2(row, tf, det_v2, now)
                 if not self.sem_evidencia:
-                    self._update_evidencia_v2(row, tf, now)
+                    try:
+                        self._update_evidencia_v2(row, tf, now)
+                    except Exception:  # noqa: BLE001 - ver evidencia v1 acima (mesma auditoria)
+                        log.warning("POS-RUNNER evidencia v2: erro inesperado em %s %s, ignorado neste ciclo",
+                                   row["symbol"], tf, exc_info=True)
             # PARTE 2A FASE 3: sombra -- MESMOS `seq` ja buscados acima pra V1/V2, zero chamada nova.
-            if det_sombra_mc is not None:
-                for b in seq:
-                    for ev in det_sombra_mc.update(b):
-                        self._on_event_sombra(row, tf, ev, now, "filtrado_mc_baixo")
-            if det_sombra_q96 is not None:
-                for b in seq:
-                    for ev in det_sombra_q96.update(b):
-                        self._on_event_sombra(row, tf, ev, now, "queda_96_mais")
+            # `_sombra_safe` garante que NENHUMA excecao daqui alcance o resto do ciclo (agendamento/
+            # carteiras abaixo) -- ver docstring (incidente de producao 2026-10-29).
+            self._sombra_safe(self._sombra_feed, det_sombra_mc, seq, row, tf, now, "filtrado_mc_baixo",
+                              contexto="filtrado_mc_baixo")
+            self._sombra_safe(self._sombra_feed, det_sombra_q96, seq, row, tf, now, "queda_96_mais",
+                              contexto="queda_96_mais")
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide
@@ -2641,7 +2682,14 @@ class PosRunnerLive:
         else:
             self._schedule(pool, tf, now)
         if not self.sem_carteiras:
-            self._atualizar_carteiras_horaria(row, now)
+            # AUDITORIA 2026-10-29: ja roda DEPOIS do agendamento acima (nunca atrasa `_schedule`),
+            # mas uma excecao aqui ainda subiria pro catch-all de `_refresh_safe` (incrementando
+            # `erros` sem motivo) -- isolada tambem, mesmo principio da sombra/evidencia.
+            try:
+                self._atualizar_carteiras_horaria(row, now)
+            except Exception:  # noqa: BLE001
+                log.warning("POS-RUNNER carteiras horaria: erro inesperado em %s %s, ignorado neste ciclo",
+                           row["symbol"], tf, exc_info=True)
 
     # -- alertas -------------------------------------------------------------------------------------
     def _keyboard(self, row: Any) -> dict:

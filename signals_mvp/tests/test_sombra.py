@@ -291,5 +291,123 @@ class EquivalenciaSombraTests(unittest.TestCase):
             h.close()
 
 
+class SombraOverlappingWindowsRegressionTests(unittest.TestCase):
+    """INCIDENTE DE PRODUCAO 2026-10-29 (VM, KIMCHIBULL/SHAVCOIN e outros, ~21h): o GT devolve janelas
+    de candles SOBREPOSTAS -- sem `last` ancorado em NENHUM detector real (V0 desligado, V1/V2
+    bloqueados por mc_baixo), `_refresh_core` recomputava `seq` do zero a cada ciclo, entregando pro
+    detector sombra candles que ele JA tinha processado -> `ValueError: candles fora de ordem ou
+    repetidos` direto em `det_sombra_mc.update(b)`, propagando pra fora de `_refresh_core` e pulando o
+    agendamento normal (`_schedule`)/carteiras daquele ciclo. Corrigido com (a) `_sombra_feed` pulando
+    qualquer candle com ts <= o ultimo ja processado por ESTE detector (idempotente) e (b) `_sombra_
+    safe` isolando qualquer excecao da sombra (nunca derruba o resto do ciclo)."""
+
+    def test_the_exact_production_scenario_never_raises_and_still_records_the_shadow_signal_once(self) -> None:
+        """MESMO cenario que disparava o bug: --sem-v0 (so sobra a sombra pra ancorar `last`) + MC que
+        nunca cruza o piso de `filtrado_mc_baixo` (V1 e V2 ficam bloqueados, `last` nunca avanca,
+        `seq` se repete/sobrepoe a cada ciclo) -- antes da correcao, isto levantava a cada ciclo."""
+        h = LiveHarness(sem_v0=True)
+        try:
+            h.world.add_series("POOL1", "1h", _mc_baixo_bars())
+            h.list_pool()
+            h.tick()
+            h.verifier.step()
+            h.tick()
+            h.run_hours(30)   # antes da correcao: ValueError em TODO ciclo a partir daqui
+            self.assertEqual(h.storage.pr1_signals(), [])
+            self.assertEqual(h.storage.pr2_signals(), [])
+            sombra = h.storage.pr_sombra_signals(versao="sombra:filtrado_mc_baixo")
+            self.assertEqual(len(sombra), 1, "idempotente -- candles sobrepostos nunca duplicam a linha")
+        finally:
+            h.close()
+
+    def test_scheduling_keeps_advancing_even_while_the_shadow_keeps_failing(self) -> None:
+        """Mesmo que a sombra continue falhando (excecao forcada, nunca o caso real apos a correcao),
+        `_schedule` (o agendamento OFICIAL por calor) precisa continuar rodando -- nunca mais preso no
+        backoff generico de erro so por causa da sombra."""
+        h = LiveHarness(sem_v0=True)
+        try:
+            h.world.add_series("POOL1", "1h", _mc_baixo_bars())
+            h.list_pool()
+            h.tick()
+            h.verifier.step()
+            h.tick()
+
+            def _sempre_falha(*_a: object, **_k: object) -> None:
+                raise RuntimeError("falha forcada (nunca deveria derrubar o ciclo)")
+
+            h.live._sombra_feed = _sempre_falha  # type: ignore[method-assign]
+            h.run_hours(5)
+            key = ("POOL1", "1h")
+            st = h.live.sched.get(key)
+            self.assertIsNotNone(st)
+            self.assertNotEqual(st.get("ultimo_erro"), "erro_inesperado",
+                               "a excecao forcada da sombra nunca pode aparecer como erro do ciclo")
+        finally:
+            h.close()
+
+    def test_sombra_feed_skips_a_candle_already_seen_idempotent_against_overlap(self) -> None:
+        """Teste direto (sem rede) do mecanismo: o MESMO candle entregue 2x (janela sobreposta) nunca
+        levanta e nunca processa 2x."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            pool_row = h.storage.pr_pool("POOL1")
+            det = h.live._detector_sombra_queda96(pool_row, "1h", h.clock())
+            bars_cache = [Bar(int(ts), o, hi, lo, c, v, bool(f)) for ts, o, hi, lo, c, v, f in
+                         h.storage.pr_bars("POOL1", "1h")]
+            self.assertTrue(bars_cache)
+            ultimo = bars_cache[-1]
+            # entrega o MESMO ultimo candle de novo (janela sobreposta) -- nunca pode levantar.
+            h.live._sombra_feed(det, [ultimo, ultimo], pool_row, "1h", h.clock(), "queda_96_mais")
+        finally:
+            h.close()
+
+    def test_sombra_safe_swallows_any_exception_and_logs_a_warning_never_raises(self) -> None:
+        h = LiveHarness()
+        try:
+            def _explode() -> None:
+                raise RuntimeError("erro inesperado qualquer")
+
+            with self.assertLogs("signals_mvp.pos_runner.live", level="WARNING") as ctx:
+                resultado = h.live._sombra_safe(_explode, contexto="teste")
+            self.assertIsNone(resultado)
+            self.assertTrue(any("teste" in m for m in ctx.output))
+        finally:
+            h.close()
+
+
+class EquivalenciaComFalhaForcadaDaSombraTests(unittest.TestCase):
+    """A V1/V2 precisa ficar BYTE A BYTE igual mesmo quando a sombra falha (forcado) todo ciclo --
+    prova que o isolamento (`_sombra_safe`) realmente nunca influencia o caminho oficial."""
+
+    def test_v1_v2_signals_identical_even_when_the_shadow_raises_every_cycle(self) -> None:
+        h_normal = LiveHarness()
+        h_falha = LiveHarness()
+        try:
+            start_tracking(h_normal)
+            h_normal.run_hours(17)
+
+            def _sempre_falha(*_a: object, **_k: object) -> None:
+                raise RuntimeError("falha forcada (nunca deveria mudar o resultado oficial)")
+
+            h_falha.live._sombra_feed = _sempre_falha  # type: ignore[method-assign]
+            start_tracking(h_falha)
+            h_falha.run_hours(17)
+
+            cols_v1 = list(h_normal.storage.pr1_signals()[0].keys())
+            rows_normal_v1 = [{k: r[k] for k in cols_v1} for r in h_normal.storage.pr1_signals()]
+            rows_falha_v1 = [{k: r[k] for k in cols_v1} for r in h_falha.storage.pr1_signals()]
+            self.assertEqual(rows_normal_v1, rows_falha_v1)
+            cols_v2 = list(h_normal.storage.pr2_signals()[0].keys())
+            rows_normal_v2 = [{k: r[k] for k in cols_v2} for r in h_normal.storage.pr2_signals()]
+            rows_falha_v2 = [{k: r[k] for k in cols_v2} for r in h_falha.storage.pr2_signals()]
+            self.assertEqual(rows_normal_v2, rows_falha_v2)
+            self.assertEqual(h_falha.storage.pr_sombra_signals(), [],
+                            "a sombra falhou sempre -- nunca grava nada, mas tambem nunca quebra a V1/V2")
+        finally:
+            h_normal.close()
+            h_falha.close()
+
+
 if __name__ == "__main__":
     unittest.main()

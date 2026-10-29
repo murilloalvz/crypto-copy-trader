@@ -913,3 +913,36 @@ regra/filtro/tamanho/saída de V1/V2 (o R oficial `result_net` nunca muda). Apar
 Comandos da VM (sem mudança de processo): `git pull`, reiniciar o bot (`systemctl restart
 pos-runner-v1` ou `tmux`, conforme o deploy). Env novos: `SEM_SOMBRA` (padrão desligado) e
 `SOMBRA_MAX_POOLS` (padrão 10).
+
+### Incidente de produção 2026-10-29 (~21h): candles sobrepostos derrubavam o ciclo da sombra
+
+KIMCHIBULL/SHAVCOIN e outros repetiam `ValueError: candles fora de ordem ou repetidos` a cada ciclo,
+direto em `det_sombra_mc.update(b)` dentro de `_refresh_core`. Causa: o GT pode devolver janelas de
+candles SOBREPOSTAS; `seq` (candles novos da chamada) é calculado a partir de `last` (âncora em
+det/det_v1/det_v2 — nunca nos detectores sombra). Quando mc_baixo bloqueia V1 **e** V2 ao mesmo tempo
+(e V0 está desligado, `--sem-v0`), `last` fica `None` para sempre e `seq` passa a reentregar, a cada
+ciclo, candles que o detector sombra já tinha processado.
+
+- **O que quebrava**: a exceção subia de `_refresh_core` até o `except Exception` genérico de
+  `_refresh_safe`, que registra um backoff de erro genérico (`ultimo_erro="erro_inesperado"`, até 1h)
+  — **nunca** o agendamento normal por calor (`_schedule`) nem a coleta horária de carteiras para
+  aquele `(pool,tf)`, porque os dois ficam DEPOIS do bloco da sombra dentro de `_refresh_core`.
+- **O que NÃO quebrava**: a V1/V2 em si. `det_v1`/`det_v2` já tinham consumido os candles, alertado e
+  atualizado paper/evidência ANTES do bloco da sombra rodar (a sombra é a ÚLTIMA coisa no `if mc:`) —
+  nenhum candle ou sinal da V1/V2 foi perdido; nada precisa ser reprocessado. Só a sombra em si (que
+  nunca tinha avançado por causa do próprio bug) se autocorrige no primeiro ciclo após o `git pull` —
+  ela relê `pr_bars` do zero na primeira chamada, então não existe lacuna pra preencher.
+- **Correção**: `_sombra_feed` agora pula (idempotente) qualquer candle com `ts` <= o último já
+  processado por AQUELE detector sombra específico — nunca repete, nunca levanta por isso. `_sombra_
+  safe` envolve toda construção/alimentação dos detectores sombra (`_detector_sombra_mc`/`_detector_
+  sombra_queda96`/`_sombra_feed`): qualquer exceção (esperada ou não) vira só um AVISO no log, nunca
+  interrompe o resto de `_refresh_core`.
+- **Auditoria do mesmo risco em outros caminhos "ao lado"**: `_update_evidencia_v1`/`_update_
+  evidencia_v2` (trajetória/baseline) rodavam no MESMO caminho principal, sem isolamento — agora
+  também envoltas em try/except (log WARNING, nunca propaga). `_atualizar_carteiras_horaria` já
+  rodava DEPOIS do agendamento (não travava `_schedule`), mas ganhou o mesmo isolamento por
+  consistência (uma falha ali não precisa mais inflar o contador de erro do ciclo).
+- **Testes de regressão**: `SombraOverlappingWindowsRegressionTests` reproduz o cenário exato (mesmo
+  `--sem-v0` + MC sempre abaixo do piso) e confirma que não levanta mais e que a linha sombra sai 1x
+  só (idempotente); `EquivalenciaComFalhaForcadaDaSombraTests` prova que a V1/V2 ficam byte a byte
+  iguais mesmo com a sombra falhando forçadamente em TODO ciclo.
