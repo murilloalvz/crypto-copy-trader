@@ -61,6 +61,10 @@ POS_RUNNER_V1_COLUMNS = [
     "token_signal_seq",
     # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle que gerou a decisao ("gt"|"dexpaprika").
     "fonte_candle",
+    # PEDIDO (PARTE 2A) FASE 4: contexto/execucao na ENTRADA -- so dado JA disponivel no momento da
+    # decisao (zero chamada nova), nunca lido por regra/filtro/tamanho/saida. Colunas no FIM.
+    "dia_semana", "idade_dias", "mc_na_entrada", "volume_24h", "caixa_candles", "holder_top1_pct",
+    "slippage_estimado_pct", "r_liquido_estimado", "n_txs_24h", "ticket_medio_usd", "holders_count",
 ]
 POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
 # feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
@@ -88,6 +92,9 @@ POS_RUNNER_V2_COLUMNS = [
     "versao_config_v2", "perdido_offline",
     "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia", "token_signal_seq",
     "fonte_candle", "so_v2",
+    # PEDIDO (PARTE 2A) FASE 4: MESMAS colunas de contexto/execucao da V1 (ver POS_RUNNER_V1_COLUMNS).
+    "dia_semana", "idade_dias", "mc_na_entrada", "volume_24h", "caixa_candles", "holder_top1_pct",
+    "slippage_estimado_pct", "r_liquido_estimado", "n_txs_24h", "ticket_medio_usd", "holders_count",
 ]
 POS_RUNNER_V2_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v2"]
 
@@ -333,6 +340,35 @@ CREATE TABLE IF NOT EXISTS pr_baseline (
   criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
   UNIQUE (versao, entry_id)
 );
+-- PEDIDO (PARTE 2A) FASE 3: sinais sombra -- candidatos que as regras OFICIAIS de V1/V2 barraram
+-- (filtrado_mc_baixo, filtrado_idade) ou que a V1/V2 matariam como ONDA_INVALIDA (queda_96_mais, 96-
+-- 99,5% -- a V2 ja cobre 90-96%), mas que TERIAM gerado um gatilho -- `versao` = 'sombra:<motivo>'
+-- ('sombra:filtrado_mc_baixo' | 'sombra:filtrado_idade' | 'sombra:queda_96_mais'). MEDICAO AO LADO
+-- (live.py: `_on_event_sombra`/`_update_sombra`, reusa `simulate_v1` da V1, MESMAS regras) -- nunca
+-- vira sinal oficial, nunca entra na banca, nunca aparece em /relatorio v1|v2 (so em /analise e no
+-- aviso curto do Telegram p/ queda_96_mais). `event_json` guarda o EventV1 original (mesmo formato de
+-- pr1_signals) pra `_update_sombra` re-simular com candles mais recentes sem reconstruir nada.
+CREATE TABLE IF NOT EXISTS pr_sombra (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, chain TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, mint TEXT, symbol TEXT, ts_fechamento INTEGER NOT NULL,
+  gatilho TEXT, event_json TEXT, entry_price REAL, stop REAL, topo REAL, s_suporte REAL,
+  r_resistencia REAL, risco_pct REAL, queda_pct REAL, liquidez_usd REAL,
+  status TEXT NOT NULL DEFAULT 'aberto', exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, closed_ts REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- PEDIDO (PARTE 2A) FASE 4: contexto/execucao -- MESMAS colunas de pr1_signals/pr2_signals (ver
+  -- comentario la), zero chamada nova, nunca lidas por regra/filtro/banca.
+  dia_semana TEXT, idade_dias REAL, mc_na_entrada REAL, volume_24h REAL, caixa_candles INTEGER,
+  holder_top1_pct REAL, slippage_estimado_pct REAL, r_liquido_estimado REAL, n_txs_24h INTEGER,
+  ticket_medio_usd REAL, holders_count INTEGER,
+  UNIQUE (versao, chain, pool, tf, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr_sombra_aberta ON pr_sombra (status);
+-- teto SOMBRA_MAX_POOLS: 1 linha por candidato de sombra DESCARTADO por falta de slot (nunca
+-- sobrecarrega a fila do Setup 1/V0/V1/V2 -- contagem simples, pra auditoria/saude.py).
+CREATE TABLE IF NOT EXISTS pr_sombra_descartes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, motivo TEXT NOT NULL, pool TEXT, tf TEXT
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -416,6 +452,20 @@ class Storage:
             # 1 aqui em vez de inventar/interpolar a metrica. 0/NULL em todas as linhas normais.
             self._ensure_columns("pr_trajetoria", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
             self._ensure_columns("pr_baseline", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
+            # PEDIDO (PARTE 2A) FASE 4: colunas nullable de contexto/execucao na ENTRADA -- usando so
+            # dado que o GT/DexPaprika ja devolveram no momento da decisao (zero chamada nova); nunca
+            # lidas por regra/filtro/tamanho/saida de V1 ou V2. NULL em sinais anteriores a esta
+            # entrega (nunca inventa um valor retroativo). `holders_count` fica sempre NULL por agora
+            # (nem o RPC `getTokenLargestAccounts` nem o GT devolvem uma contagem agregada de holders
+            # no que ja e chamado hoje -- ver INTERPRETACOES.md).
+            contexto_execucao = {
+                "dia_semana": "TEXT", "idade_dias": "REAL", "mc_na_entrada": "REAL", "volume_24h": "REAL",
+                "caixa_candles": "INTEGER", "holder_top1_pct": "REAL", "slippage_estimado_pct": "REAL",
+                "r_liquido_estimado": "REAL", "n_txs_24h": "INTEGER", "ticket_medio_usd": "REAL",
+                "holders_count": "INTEGER",
+            }
+            self._ensure_columns("pr1_signals", contexto_execucao)
+            self._ensure_columns("pr2_signals", contexto_execucao)
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1199,6 +1249,12 @@ class Storage:
                 _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
                 r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
                 r["fonte_candle"] or "gt", 1 if r["so_v2"] else 0,
+                r["dia_semana"] or "", _num(r["idade_dias"], 2), _num(r["mc_na_entrada"]), _num(r["volume_24h"]),
+                r["caixa_candles"] if r["caixa_candles"] is not None else "", _num(r["holder_top1_pct"], 1),
+                _num(r["slippage_estimado_pct"], 3),
+                _num(None if r["r_liquido_estimado"] is None else 100 * r["r_liquido_estimado"], 2),
+                r["n_txs_24h"] if r["n_txs_24h"] is not None else "", _num(r["ticket_medio_usd"]),
+                r["holders_count"] if r["holders_count"] is not None else "",
             ])
         return out
 
@@ -1299,6 +1355,12 @@ class Storage:
                 _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
                 r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
                 r["fonte_candle"] or "gt",
+                r["dia_semana"] or "", _num(r["idade_dias"], 2), _num(r["mc_na_entrada"]), _num(r["volume_24h"]),
+                r["caixa_candles"] if r["caixa_candles"] is not None else "", _num(r["holder_top1_pct"], 1),
+                _num(r["slippage_estimado_pct"], 3),
+                _num(None if r["r_liquido_estimado"] is None else 100 * r["r_liquido_estimado"], 2),
+                r["n_txs_24h"] if r["n_txs_24h"] is not None else "", _num(r["ticket_medio_usd"]),
+                r["holders_count"] if r["holders_count"] is not None else "",
             ])
         return out
 
@@ -1582,3 +1644,43 @@ class Storage:
     def pr_baseline_resolvidas_com_dif(self, versao: str) -> list[sqlite3.Row]:
         """So as que ja tem `dif_pareada` calculada (ambos os lados resolvidos) -- usadas pela analise H1."""
         return self._all("SELECT * FROM pr_baseline WHERE versao=? AND dif_pareada IS NOT NULL ORDER BY id", (versao,))
+
+    # -- PEDIDO (PARTE 2A) FASE 3: sinais sombra -----------------------------------------------------
+    def pr_sombra_get(self, versao: str, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one(
+            "SELECT * FROM pr_sombra WHERE versao=? AND chain=? AND pool=? AND tf=? AND ts_fechamento=?",
+            (versao, chain, pool, tf, ts_fechamento))
+
+    def pr_sombra_insert(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (versao,chain,pool,tf,ts_fechamento) -- mesmo padrao de `pr1_insert_signal`."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr_sombra ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols])
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr_sombra_update(self, sombra_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_sombra SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), sombra_id])
+
+    def pr_sombra_signals(self, status: Optional[str] = None, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("versao", versao)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr_sombra" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr_sombra_descarte_insert(self, ts: float, motivo: str, pool: Optional[str], tf: Optional[str]) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO pr_sombra_descartes (ts, motivo, pool, tf) VALUES (?,?,?,?)",
+                             (ts, motivo, pool, tf))
+
+    def pr_sombra_descarte_count(self, since_ts: float = 0.0) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_sombra_descartes WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0

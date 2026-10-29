@@ -6,10 +6,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 BRT = timezone(timedelta(hours=-3))
+# PEDIDO (PARTE 2A) FASE 4: dia da semana, pela MESMA hora de fechamento usada em `hora_brt` (BRT fixo).
+DIAS_SEMANA = ("segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo")
 
 
 def hora_brt(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=BRT).strftime("%H:%M")
+
+
+def dia_semana_brt(ts: float) -> str:
+    return DIAS_SEMANA[datetime.fromtimestamp(ts, tz=BRT).weekday()]
 
 
 def na_janela_ouro(ts: float, inicio: str, fim: str) -> bool:

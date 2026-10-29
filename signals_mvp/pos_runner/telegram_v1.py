@@ -126,6 +126,18 @@ def watchlist_text(chain_name: str, symbol: str, s_suporte: float, r_resistencia
            f"Setup 1 maduro: S {fmt_usd(s_suporte)} – R {fmt_usd(r_resistencia)} | {n_testes} wick(s) de rejeição")
 
 
+def sombra_queda96_text(symbol: str, queda_pct: Optional[float], risco_pct: Optional[float],
+                        liquidez_usd: Optional[float]) -> str:
+    """PARTE 2A FASE 3: UNICA mensagem de Telegram da sombra (so pra `queda_96_mais`, 96-99,5% de
+    queda) -- aviso curto, sem botoes de entrada, fora da banca e de /relatorio v1|v2 (nunca convida a
+    agir, so marca o candidato pro operador conferir)."""
+    queda = f"{queda_pct:.1f}%" if queda_pct is not None else "s/d"
+    risco = f"{risco_pct:.1f}%" if risco_pct is not None else "s/d"
+    liq = fmt_usd(liquidez_usd) if liquidez_usd is not None else "s/d"
+    return (f"[SOMBRA · NÃO VALIDADO · queda extrema]\nCoin: ${_esc(symbol, 20)} | queda {queda} | "
+           f"risco {risco} | liquidez {liq}")
+
+
 def dado_invalido_text(chain_name: str, symbol: str, motivo: str) -> str:
     rotulo = {"wick": "candle do 1º fechamento com pavio absurdo", "l_bc_floor": "L_bc abaixo do piso de precisão",
              "l_bc_ceiling": "L_bc acima do teto de sanidade (defeito de candle do GT)"}.get(motivo, motivo)

@@ -268,6 +268,21 @@ nova de API — usa só candles já em cache):
   lista — `pr1_signals.carteiras_pro_presentes`/`n_pessoas_pro` e `pr_carteiras_snapshot`.
   `SEM_CARTEIRAS=1` desliga por completo.
 
+**PEDIDO (PARTE 2A, FASE 3/4): sombra dos filtros + contexto/execução:**
+
+- Candidatos que `filtrado_mc_baixo`/`filtrado_idade` barraram, ou que a V1/V2 matariam como
+  `ONDA_INVALIDA` entre 96% e 99,5% de queda (a V2 já cobre 90–96%), mas que TERIAM gerado gatilho,
+  viram sinais sombra (`pr_sombra`) — medição ao lado, nunca entram na banca/CSV oficiais nem em
+  `/relatorio v1|v2`; aparecem só em `/analise [v1|v2]` (R médio com vs sem o filtro) e, só para a
+  queda extrema, um aviso curto no Telegram sem botões. `SOMBRA_MAX_POOLS` (padrão 10) limita
+  detectores sombra simultâneos; `SEM_SOMBRA=1` desliga tudo.
+- `pr1_signals`/`pr2_signals`/`pr_sombra` ganharam colunas nullable de contexto/execução na ENTRADA
+  (dia da semana, idade em dias, MC na entrada, volume/transações/ticket médio em 24h, tamanho da
+  caixa, % do maior holder, slippage estimado de uma mão de US$10 pela liquidez do pool e o R líquido
+  com esse modelo simples) — tudo com dado que o GT já tinha devolvido, zero chamada nova; nunca
+  usadas por regra/filtro/tamanho/saída (o R oficial não muda). Aparecem nos CSVs
+  `pos_runner_v1.csv`/`pos_runner_v2.csv` (colunas no fim).
+
 ---
 
 ## Meta do dia (`meta.txt`)

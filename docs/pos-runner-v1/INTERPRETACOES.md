@@ -838,3 +838,78 @@ fase ainda), `runner` e `pullback` (`detector_v1.py: PHASE_NONE/PHASE_RUNNER/PHA
 4. Coberto pelo item 1 acima (reconstrução do detector no `_startup`).
 
 Comando de uso (sem alteração): `python -m signals_mvp.scripts.saude --db dados/estado.sqlite`.
+
+## PEDIDO (PARTE 2A): sombra dos filtros + contexto/execução
+
+PAPER/READ-ONLY. V1/V2 congeladas (hashes `279b79ffa3f0`/`d57b4331d51d` intactos) — tudo abaixo é
+medição ao lado; teste de equivalência (`EquivalenciaSombraTests`) prova que as saídas V1/V2 ficam
+byte a byte idênticas com `SEM_SOMBRA=1` ligado ou desligado.
+
+### FASE 3 — sinais sombra
+
+- **Nota confirmada (Murillo)**: "2d" = idade mínima do token de **2 dias** — o mesmo piso que V1
+  (`age_window_days=[2.0, 7.0]`) e V2 (`age_window_days=[2.0, 36500.0]`) já compartilham. A validar
+  com o professor; até lá, tratado como o piso oficial de ambas as versões.
+- `filtrado_mc_baixo`: `DetectorV1` nunca lê `min_mc_usd` (o piso é aplicado só FORA, em
+  `_detector_v1`/`_detector_v2`) — por isso um detector sombra PARALELO com os MESMOS parâmetros da
+  V1 (`_detector_sombra_mc`), alimentado enquanto o detector OFICIAL ainda não existe (MC do último
+  candle fechado < piso), mede se o gatilho teria disparado mesmo assim. Para quando o MC real cruza
+  o piso (o oficial assume, nunca duplica).
+- `filtrado_idade`: V1 e V2 compartilham a MESMA idade MÍNIMA (2 dias) — só o TETO diverge (V1: 7
+  dias; V2: ~sem teto). Reusa o evento `FORA_DA_IDADE` que o detector OFICIAL da V1 (ou da V2) já
+  emite — nunca um detector novo. Só conta como sombra quando a idade fica ABAIXO do mínimo
+  compartilhado: acima do teto da V1 (>7d) já é território REAL da V2 (gera ENTRADA de verdade ali),
+  nunca duplicado como sombra — mesmo raciocínio de `filtrado_queda_90_96` (abaixo).
+- `sombra:queda_96_mais`: candidatos com queda entre 96% e 99,5% do pico que teriam gerado gatilho —
+  a V1 (`drop_max=0,90`) e a V2 (`drop_max=0,96`) matam a onda como `ONDA_INVALIDA` nessa faixa; só a
+  sombra (`drop_max=0,995`, mesmos parâmetros da V2 fora isso) vê o gatilho. Única exceção de
+  Telegram: aviso curto `[SOMBRA · NÃO VALIDADO · queda extrema]` (token, queda%, risco%, liquidez),
+  sem botões de entrada/feedback, fora da banca e de `/relatorio v1|v2`. Queda <=96% nunca conta aqui
+  (já é território real da V2).
+- Teto `SOMBRA_MAX_POOLS` (padrão 10): conta `(pool,tf)` com um detector sombra PARALELO ativo
+  (`filtrado_mc_baixo` + `queda_96_mais` juntos — `filtrado_idade` nunca conta, não tem detector
+  próprio). Candidato novo além do teto é descartado (`pr_sombra_descarte_insert`, motivo
+  `teto_sombra_max_pools`), nunca sobrecarrega a fila oficial do Setup 1.
+- `pr_sombra` (tabela nova, `versao='sombra:<motivo>'`) nunca é lida por V1/V2/banca/CSV oficiais.
+  `_update_sombra` (cadência horária, junto de `_refresh_baselines`) progride os sinais `aberto` até
+  `fechado`/`cancelado` reusando o MESMO `simulate_v1`, só com os candles já em `pr_bars` (zero
+  chamada nova). Aparece só em `/analise [v1|v2]` (`comparar_sombra`: R médio dos sinais REAIS,
+  fechados, excluindo `risco_irrealista`/`contaminado_candle`/`candle_divergente`, contra os sinais
+  sombra fechados do mesmo motivo, excluindo risco<3% — mesmo n mínimo das exploratórias, 10 de cada
+  lado) — nunca em `/relatorio v1|v2`.
+- `SEM_SOMBRA=1` desliga a FASE 3 inteira (zero custo extra de CPU).
+
+### FASE 4 — contexto e execução nas ENTRADAs
+
+Colunas nullable novas em `pr1_signals`/`pr2_signals` (migração `_ensure_columns`, idempotente,
+nunca toca linha existente) e em `pr_sombra` (tabela nova, já nasce com elas) — nunca lidas por
+regra/filtro/tamanho/saída de V1/V2 (o R oficial `result_net` nunca muda). Aparecem no fim dos CSVs
+`pos_runner_v1.csv`/`pos_runner_v2.csv`.
+
+- `dia_semana`: nome do dia (BRT, mesmo fuso de `hora_brt`), da hora de FECHAMENTO do candle-gatilho.
+- `idade_dias`: mesma idade que já vai em `event_json["data"]["idade_dias"]` (e em `idade_h` no CSV,
+  só em horas) — aqui como coluna própria em dias, pelo nome que o pedido usou.
+- `mc_na_entrada`: mesmo valor de `entry_price`/`entry_price_alerta` (os candles já são em termos de
+  MC, não de preço do token) — nome dedicado para não confundir quem lê o CSV.
+- `volume_24h`/`n_txs_24h`/`ticket_medio_usd`: `vol`/`tx` da janela `h24` que o GeckoTerminal já
+  devolve no MESMO payload de `/pools` da descoberta (`geckoterminal.parse_pool`) — `offer()` agora
+  congela os 2 primeiros (`vol_h24_usd`/`n_txs_h24`) no `info` do pool (zero chamada nova, mesmo
+  padrão de `liq_usd`); `ticket_medio_usd = volume_24h / n_txs_24h`, calculado na hora.
+- `caixa_candles`: mesmo valor de `event_json["data"]["box_len"]` (também já no CSV como parte da
+  zona, aqui como coluna própria).
+- `holder_top1_pct`: `top_holder_pct` do MESMO `adapter.holders()` que a ENTRADA já chama (zero
+  chamada extra) — fica `NULL` na sombra (que nunca chama `holders()` só para preencher isto).
+- `holders_count`: sempre `NULL` — nem o RPC (`getTokenLargestAccounts` só devolve os ~20 maiores,
+  nunca uma contagem agregada) nem o GeckoTerminal devolvem isso no que já é chamado hoje. Documentado
+  aqui em vez de escondido; "quando vier no payload" nunca veio.
+- `slippage_estimado_pct`: modelo PRÓPRIO, simples e deliberadamente diferente do `CostModel` oficial
+  (que continua intocado) — impacto linear de uma mão simulada de US$10 contra a liquidez do pool:
+  `100 × 10 / liquidez_usd`. `NULL` quando `liquidez_usd` é `NULL`/0.
+- `r_liquido_estimado`: só preenchido no FECHAMENTO do trade (junto de `result_net`) — MESMO retorno
+  BRUTO oficial (`gross_ret`, interno ao `simulate_v1`), só troca o custo oficial pelas 2 pernas
+  (entrada+saída) do `slippage_estimado_pct` acima: `gross_ret − 2 × slippage_estimado_pct/100`.
+  Puramente diagnóstico — nunca sobrescreve `result_net`/`r_mult` oficiais.
+
+Comandos da VM (sem mudança de processo): `git pull`, reiniciar o bot (`systemctl restart
+pos-runner-v1` ou `tmux`, conforme o deploy). Env novos: `SEM_SOMBRA` (padrão desligado) e
+`SOMBRA_MAX_POOLS` (padrão 10).

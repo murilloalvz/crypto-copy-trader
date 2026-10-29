@@ -194,6 +194,67 @@ def n_tokens_distintos(sinais: Sequence[SinalResolvido]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# PARTE 2A FASE 3: comparacao com os sinais sombra (candidatos que os filtros barraram -- ver
+# `pos_runner/live.py: _on_event_sombra`) -- R medio COM o filtro (amostra normal da V1/V2, fechada)
+# vs SEM o filtro (`pr_sombra`, mesmo motivo, fechada). Nunca a comparacao confirmatoria H1 (n minimo
+# das exploratorias, 10 -- so informal/comparativo).
+# ---------------------------------------------------------------------------
+
+SOMBRA_MOTIVOS = ("filtrado_mc_baixo", "filtrado_idade", "queda_96_mais")
+RISCO_IRREALISTA_MIN_PCT = 3.0
+
+
+@dataclass(frozen=True)
+class ComparacaoSombra:
+    motivo: str
+    n_com_filtro: int
+    r_medio_com_filtro: Optional[float]
+    n_sem_filtro: int
+    r_medio_sem_filtro: Optional[float]
+    n_minimo: int
+    amostra_suficiente: bool
+
+
+def _r_multiplo(result_net: Optional[float], risco_pct: Optional[float]) -> Optional[float]:
+    if result_net is None or not risco_pct:
+        return None
+    return result_net / (risco_pct / 100.0)
+
+
+def comparar_sombra(storage: Any, versao: str, motivo: str, n_minimo: int = MIN_TOKENS_GRUPO) -> ComparacaoSombra:
+    """R medio dos sinais REAIS (COM o filtro aplicado -- ja passaram pela V1/V2, fechados) vs os
+    sinais sombra (SEM o filtro, `pr_sombra` versao=`sombra:<motivo>`, fechados). MESMAS exclusoes de
+    risco<3% nos 2 lados; candle contaminado/divergente SO no lado real (a sombra nao tem conferencia
+    cruzada DexPaprika nem marcacao retroativa do operador -- nunca finge ter essa checagem). MESMO n
+    minimo das exploratorias (10) -- esta comparacao e informal, nunca a confirmatoria H1."""
+    sinais_lookup = storage.pr1_signals if versao == "v1" else storage.pr2_signals
+    r_com: list[float] = []
+    for s in sinais_lookup(status="fechado"):
+        if _risco_irrealista(s) or _contaminado_candle(s) or _candle_divergente_confirmado(storage, versao, s):
+            continue
+        entry_price, stop = s["entry_price"], s["stop"]
+        risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
+        if risco_pct is not None and risco_pct < RISCO_IRREALISTA_MIN_PCT:
+            continue
+        r = _r_multiplo(s["result_net"], risco_pct)
+        if r is not None:
+            r_com.append(r)
+    r_sem: list[float] = []
+    for s in storage.pr_sombra_signals(versao=f"sombra:{motivo}", status="fechado"):
+        if s["risco_pct"] is not None and s["risco_pct"] < RISCO_IRREALISTA_MIN_PCT:
+            continue
+        r = _r_multiplo(s["result_net"], s["risco_pct"])
+        if r is not None:
+            r_sem.append(r)
+    media = (lambda xs: (sum(xs) / len(xs)) if xs else None)
+    return ComparacaoSombra(
+        motivo=motivo, n_com_filtro=len(r_com), r_medio_com_filtro=media(r_com),
+        n_sem_filtro=len(r_sem), r_medio_sem_filtro=media(r_sem), n_minimo=n_minimo,
+        amostra_suficiente=len(r_com) >= n_minimo and len(r_sem) >= n_minimo,
+    )
+
+
+# ---------------------------------------------------------------------------
 # bootstrap
 # ---------------------------------------------------------------------------
 
@@ -356,6 +417,7 @@ class RelatorioCondicional:
     exploratorias: list[GrupoExploratorio] = field(default_factory=list)
     h8_status: str = "nao_testada"
     excluidos: list[Excluido] = field(default_factory=list)
+    sombra: list[ComparacaoSombra] = field(default_factory=list)
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
@@ -363,7 +425,8 @@ def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> Relato
     sinais, excluidos = carregar_sinais_e_excluidos(storage, versao)
     h1 = rodar_h1(sinais)
     exploratorias = rodar_exploratorias(sinais) if h1.status in ("PASS", "FAIL") else []
-    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos)
+    sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
+    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos, sombra=sombra)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -389,12 +452,29 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
     linhas.append(f"## Excluídos (regra pré-declarada, candle/preço divergente confirmado): {len(rel.excluidos)}")
     for e in rel.excluidos:
         linhas.append(f"- entry_id={e.entry_id} {e.symbol} ({e.mint}): {e.motivo}")
+    linhas.append("")
+    linhas.append("## Sombra (candidatos que os filtros barraram, PARTE 2A FASE 3) — R médio com vs sem o filtro")
+    for c in rel.sombra:
+        suf = "amostra suficiente" if c.amostra_suficiente else f"amostra insuficiente (mín. {c.n_minimo} cada lado)"
+        com = f"{c.r_medio_com_filtro:+.2f} R" if c.r_medio_com_filtro is not None else "s/d"
+        sem = f"{c.r_medio_sem_filtro:+.2f} R" if c.r_medio_sem_filtro is not None else "s/d"
+        linhas.append(f"- {c.motivo}: com filtro n={c.n_com_filtro} ({com}) | sem filtro (sombra) "
+                      f"n={c.n_sem_filtro} ({sem}) | {suf}")
     return "\n".join(linhas)
 
 
 def formatar_telegram(rel: RelatorioCondicional) -> str:
     if rel.h1.status == "AMOSTRA_INSUFICIENTE":
-        return f"amostra insuficiente ({rel.h1.n_tokens}/{MIN_TOKENS_H1})"
+        # PARTE 2A FASE 3: a sombra tem o SEU PROPRIO n minimo (10, das exploratorias), independente
+        # da amostra H1 (30) -- nunca escondida so porque H1 ainda nao tem n suficiente. 1a linha
+        # IDENTICA a antes (testes existentes fixam esse texto exato) quando nao ha sombra pronta.
+        texto = f"amostra insuficiente ({rel.h1.n_tokens}/{MIN_TOKENS_H1})"
+        sombra_prontos = [c for c in rel.sombra if c.amostra_suficiente]
+        if not sombra_prontos:
+            return texto
+        extra = "Sombra (com vs sem filtro): " + " | ".join(
+            f"{c.motivo} {c.r_medio_com_filtro:+.2f}R vs {c.r_medio_sem_filtro:+.2f}R" for c in sombra_prontos)
+        return f"{texto}\n{extra}"
     linhas = [f"📐 ANÁLISE CONDICIONAL — {rel.versao.upper()} | H1: {rel.h1.status} (n={rel.h1.n_tokens})"]
     if rel.h1.media_dif_pareada is not None:
         linhas.append(f"dif_pareada médio: {rel.h1.media_dif_pareada:+.2f} R")
@@ -405,6 +485,12 @@ def formatar_telegram(rel: RelatorioCondicional) -> str:
         linhas.append("Sem candidato exploratório significativo (Holm) ainda.")
     if rel.excluidos:
         linhas.append(f"{len(rel.excluidos)} excluído(s) por candle/preço divergente confirmado.")
+    sombra_prontos = [c for c in rel.sombra if c.amostra_suficiente]
+    if sombra_prontos:
+        linhas.append("Sombra (com vs sem filtro): " + " | ".join(
+            f"{c.motivo} {c.r_medio_com_filtro:+.2f}R vs {c.r_medio_sem_filtro:+.2f}R" for c in sombra_prontos))
+    else:
+        linhas.append("Sombra: nenhum motivo com amostra suficiente ainda (ver /analise completo).")
     return "\n".join(linhas)
 
 

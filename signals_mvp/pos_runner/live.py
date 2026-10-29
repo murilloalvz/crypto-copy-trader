@@ -42,7 +42,7 @@ from ..util import clean_text, fmt_usd, iso_utc, to_float, utc_now
 from . import carteiras_pro, charts, telegram_v1
 from .bankroll import BankrollLedger, BankrollParams, BankrollState
 from .bankroll_v1 import BankrollLedgerV1, tamanho_posicao_usd
-from .brt import hora_brt, na_janela_ouro
+from .brt import dia_semana_brt, hora_brt, na_janela_ouro
 from .candles import Bar, OhlcvStore, fill_gaps, tf_seconds
 from .chain_adapter import HolderCheck, SolanaAdapter
 from .costs import CostModel
@@ -71,6 +71,10 @@ console = logging.getLogger("signals_mvp.console")
 TFS = ("5m", "1h", "4h")
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
+# PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
+# estimado (impacto linear de uma mao fixa contra a liquidez do pool, `mao_usd / liquidez_usd`),
+# NUNCA o modelo oficial de custo (`CostModel`, intocado) -- so diagnostico/analise futura.
+MAO_SIMULADA_USD = 10.0
 LINEAGE_MARGIN_S = 600       # janela da linhagem: +-10 min em volta da criacao informada pelo GT
 VERIFY_MAX_ATTEMPTS = 8      # falha de RPC repetida (espera 4, 8, 16, 30 min...): o pool sai (nunca entra sem linhagem)
 CREATION_MAX_PAGES = 100     # data de criacao: ate 100 mil assinaturas do mint antes da migracao (o SOLCAT teve ~10 mil)
@@ -511,6 +515,8 @@ class PosRunnerLive:
         sem_evidencia: bool = False,
         sem_carteiras: bool = False,
         carteiras_max_chamadas_dia: int = 200,
+        sem_sombra: bool = False,
+        sombra_max_pools: int = 10,
     ):
         self.settings = settings
         self.params = params
@@ -616,6 +622,25 @@ class PosRunnerLive:
         self.carteiras_max_chamadas_dia = carteiras_max_chamadas_dia
         self._mapa_carteiras_pro = carteiras_pro.carregar_mapa_grupos()   # {} se o arquivo nao existir
         self._carteiras_horaria_ultima: dict[str, int] = {}   # pool -> ultimo bucket de hora UTC coletado
+        # PEDIDO (PARTE 2A) FASE 3: sombra dos filtros filtrado_mc_baixo e queda_96_mais -- MEDICAO AO
+        # LADO (nunca altera deteccao/entrada/saida/banca/CSV oficiais de V1/V2). filtrado_idade nao
+        # precisa de detector proprio (reusa o evento FORA_DA_IDADE que o detector REAL da V1 ja emite
+        # -- ver `_on_event_v1`). mc_baixo e queda_96_mais precisam de um `DetectorV1` PARALELO (mesma
+        # classe/regras, so sem o piso de MC ou com drop_max estendido), alimentado pelos MESMOS
+        # candles `seq` ja buscados nesta mesma chamada pra V1/V2 (zero chamada nova de GT/DexPaprika).
+        # SOMBRA_MAX_POOLS (padrao 10) limita quantos (pool,tf) tem um detector sombra PARALELO ao
+        # mesmo tempo -- `sombra_descartada_teto` conta quando um candidato novo e descartado por isso.
+        # SEM_SOMBRA=1 desliga esta parte inteira (zero custo extra de CPU tambem).
+        self.sem_sombra = sem_sombra
+        self.sombra_max_pools = sombra_max_pools
+        self.dets_sombra_mc: dict[tuple[str, str], DetectorV1] = {}
+        self.dets_sombra_queda96: dict[tuple[str, str], DetectorV1] = {}
+        # MESMOS campos que decidem o trade dentro de `simulate_v1` (atr_period/power_atr_mult/
+        # exhaustion_wick_mult/exhaustion_doji_frac/tp1_frac) sao IDENTICOS entre V1 e V2 (so
+        # drop_max/age_window_days mudam) -- so drop_max precisa mudar aqui pra detectar o gatilho
+        # alem do que a V1/V2 matariam como ONDA_INVALIDA; nunca um Params novo/hash novo (fora do
+        # hash de ParamsV1/V2, nunca gravado como versao_config_v1/v2 de nenhum sinal real).
+        self._params_sombra_queda96 = dataclasses.replace(self.params_v2, drop_max=0.995)
         # PEDIDO 2026-10-29 (item 2/3, saude.py: CARTEIRAS com 0 snapshots): diagnostico da coleta, por
         # ciclo (zerado em `tick()`) + o ultimo erro/tentativa (persistem entre ciclos, ate o proximo).
         # `_carteiras_rpc_configurado` so e gravado em `meta` (saude.py le de la, processo separado)
@@ -757,7 +782,13 @@ class PosRunnerLive:
                 break
             # liq_usd: so CAPTURA o que o snapshot do radar ja trouxe (zero chamada nova) -- instrumentacao
             # de medicao da V1 (liquidez_usd em pr1_signals), nunca usada em filtro/regra.
-            info = {"fonte": fonte, "created_ts": s.created_ts, "side": s.target_side, "nome": s.name, "liq_usd": s.liq_usd}
+            # PEDIDO (PARTE 2A) FASE 4: vol_h24_usd/n_txs_h24 -- MESMO snapshot da descoberta (`s.vol`/
+            # `s.tx`, GT ja devolve isso no payload de pools), nunca uma chamada nova; ficam congelados
+            # aqui (a descoberta so acontece 1x por pool) pra estarem disponiveis na ENTRADA, mesmo
+            # horas/dias depois (zero chamada nova la tambem).
+            n_txs_h24 = s.tx.get("h24").total if s.tx.get("h24") else None
+            info = {"fonte": fonte, "created_ts": s.created_ts, "side": s.target_side, "nome": s.name,
+                    "liq_usd": s.liq_usd, "vol_h24_usd": s.vol.get("h24"), "n_txs_h24": n_txs_h24}
             self.storage.pr_upsert_pool(s.pool, mint=s.token, symbol=s.symbol, quote=s.other_token, dex=s.dex, status="pendente",
                                         found_ts=now, mc_found=mc, info=json.dumps(info, ensure_ascii=False))
             queued += 1
@@ -942,6 +973,7 @@ class PosRunnerLive:
         if now - self.last_baselines >= 3600.0:
             self.last_baselines = now
             self._refresh_baselines(now)
+            self._update_sombra(now)
         if now - self.last_prune >= 3600.0:
             self.last_prune = now
             removed = self.storage.pr_prune(now)
@@ -1388,6 +1420,160 @@ class PosRunnerLive:
         self.dets_v2[key] = det
         return det
 
+    # -- PEDIDO (PARTE 2A) FASE 3: sombra dos filtros -------------------------------------------------
+    def _sombra_abrir_slot(self, key: tuple[str, str]) -> bool:
+        """SOMBRA_MAX_POOLS: teto de (pool,tf) com um detector sombra PARALELO (mc_baixo + queda_96_mais)
+        ao mesmo tempo -- um (pool,tf) ja rastreado em QUALQUER um dos 2 nunca e recusado (so conta 1x);
+        um candidato NOVO alem do teto e descartado (`pr_sombra_descarte_insert`), nunca enfileirado."""
+        ativos = set(self.dets_sombra_mc) | set(self.dets_sombra_queda96)
+        if key in ativos:
+            return True
+        if len(ativos) >= self.sombra_max_pools:
+            self.storage.pr_sombra_descarte_insert(self.clock(), "teto_sombra_max_pools", key[0], key[1])
+            return False
+        return True
+
+    def _detector_sombra_mc(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
+        """Sombra de `filtrado_mc_baixo`: `DetectorV1` NUNCA le `min_mc_usd` (esse piso e aplicado so FORA,
+        em `_detector_v1`) -- entao o MESMO detector/params da V1, alimentado em paralelo enquanto o
+        detector OFICIAL ainda nao existe (MC atual < piso), mede se o gatilho teria disparado apesar
+        disso. Nunca vira sinal real, nunca alerta, nunca entra na banca (ver `_on_event_sombra`).
+        Quando o MC real cruza o piso, `_detector_v1` cria o detector OFICIAL com a MESMA janela de
+        candles e esta sombra para (libera o slot do teto -- nunca compete/duplica com o oficial)."""
+        key = (row["pool"], tf)
+        if self.dets_v1.get(key) is not None:
+            self.dets_sombra_mc.pop(key, None)
+            return None
+        if key in self._v1_invalid or row["l_bc"] is None:
+            return None
+        det = self.dets_sombra_mc.get(key)
+        if det is not None:
+            return det
+        if not self._sombra_abrir_slot(key):
+            return None
+        existing = self.storage.pr_bars(row["pool"], tf)
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing] + list(pending)
+        qual = avaliar_qualidade(bars, self.params_v1)
+        if not qual.valido:
+            return None
+        det = DetectorV1(self.params_v1, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        for ts, o, h, l, c, v, filled in existing:
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event_sombra(row, tf, ev, now, "filtrado_mc_baixo")
+        self.dets_sombra_mc[key] = det
+        return det
+
+    def _detector_sombra_queda96(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
+        """Sombra `queda_96_mais`: MESMOS parametros da V2 (que ja estende `drop_max` a 96%), so com
+        `drop_max` ainda mais largo (99,5%, `self._params_sombra_queda96`) -- mede candidatos que a
+        V1/V2 matariam como ONDA_INVALIDA entre 96% e 99,5% de queda, mas que teriam gerado gatilho.
+        Detector PARALELO sempre ligado (independente do mc_baixo), tambem sujeito ao teto
+        SOMBRA_MAX_POOLS; `_on_event_sombra` filtra pra so contar queda_pct > 96% (abaixo disso ja e
+        territorio real da V2, nunca duplicado aqui)."""
+        key = (row["pool"], tf)
+        det = self.dets_sombra_queda96.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        if not self._sombra_abrir_slot(key):
+            return None
+        existing = self.storage.pr_bars(row["pool"], tf)
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing] + list(pending)
+        qual = avaliar_qualidade(bars, self._params_sombra_queda96)
+        if not qual.valido:
+            return None
+        det = DetectorV1(self._params_sombra_queda96, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        for ts, o, h, l, c, v, filled in existing:
+            for ev in det.update(Bar(int(ts), o, h, l, c, v, bool(filled))):
+                self._on_event_sombra(row, tf, ev, now, "queda_96_mais")
+        self.dets_sombra_queda96[key] = det
+        return det
+
+    def _on_event_sombra(self, row: Any, tf: str, ev: EventV1, now: float, motivo: str) -> None:
+        """Grava 1 linha em `pr_sombra` (versao=`sombra:<motivo>`) por candidato que TERIA gatilhado --
+        so ENTRADA (do detector sombra PARALELO) ou FORA_DA_IDADE (do detector OFICIAL da V1, chamado
+        direto de `_on_event_v1` com motivo="filtrado_idade" -- reusa o evento que a V1 ja emite, nunca
+        duplica deteccao). `queda_96_mais` so conta quando `queda_pct` > 96% (<=96% ja e territorio
+        real da V2). Idempotente pela UNIQUE (versao,chain,pool,tf,ts_fechamento); dispara o aviso
+        curto do Telegram so para `queda_96_mais` (ver `_alerta_sombra_queda96`)."""
+        if self.sem_sombra or ev.kind not in ("ENTRADA", "FORA_DA_IDADE"):
+            return
+        queda_pct = ev.data.get("queda_pct")
+        if motivo == "queda_96_mais" and (queda_pct is None or queda_pct <= 96.0):
+            return
+        if motivo == "filtrado_idade":
+            # V1 e V2 usam a MESMA idade MINIMA (2 dias), so o TETO diverge (V1: 7d; V2: ~sem teto) --
+            # um candidato acima do teto da V1 ja e territorio REAL da V2 (gera ENTRADA de verdade ali,
+            # nunca sombra); so idade abaixo do minimo compartilhado e genuinamente barrada pelas 2.
+            idade = ev.data.get("idade_dias")
+            if idade is None or idade >= self.params_v1.age_window_days[0]:
+                return
+        pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
+        versao = f"sombra:{motivo}"
+        ts_fechamento = int(ev.decision_ts)
+        if self.storage.pr_sombra_get(versao, "solana", pool, tf, ts_fechamento) is not None:
+            return
+        info = json.loads(row["info"] or "{}")
+        row_insert = {
+            "versao": versao, "chain": "solana", "pool": pool, "tf": tf, "mint": mint, "symbol": symbol,
+            "ts_fechamento": ts_fechamento, "gatilho": json.dumps(list(ev.data.get("gatilho") or [])),
+            "event_json": event_v1_to_json(ev), "entry_price": ev.data.get("close"), "stop": ev.data.get("stop"),
+            "topo": ev.data.get("TOPO"), "s_suporte": ev.data.get("S"), "r_resistencia": ev.data.get("R"),
+            "risco_pct": ev.data.get("risco_pct"), "queda_pct": queda_pct, "liquidez_usd": info.get("liq_usd"),
+            "status": "aberto", "criado_ts": now, "atualizado_ts": now,
+            **self._contexto_execucao(row, ev),
+        }
+        sombra_id = self.storage.pr_sombra_insert(row_insert)
+        if sombra_id is None:
+            return
+        if motivo == "queda_96_mais":
+            self._alerta_sombra_queda96(row, ev)
+
+    def _alerta_sombra_queda96(self, row: Any, ev: EventV1) -> None:
+        """Unica excecao de Telegram para sombra (item da FASE 3): aviso curto, sem botoes de entrada,
+        fora de /relatorio e da banca -- so marca o candidato pro operador, nunca convida a agir."""
+        info = json.loads(row["info"] or "{}")
+        text = telegram_v1.sombra_queda96_text(
+            row["symbol"], ev.data.get("queda_pct"), ev.data.get("risco_pct"), info.get("liq_usd"))
+        self._send(text)
+
+    def _update_sombra(self, now: float) -> None:
+        """Progride sinais sombra 'aberto' ate 'fechado'/'cancelado' com os candles JA em `pr_bars`
+        (zero chamada nova) -- MESMO `simulate_v1` da V1 (reusa `self.params_v1`: os campos que
+        `simulate_v1` realmente le -- atr_period/power_atr_mult/exhaustion_*/tp1_frac -- sao IDENTICOS
+        entre V1/V2/sombra_queda96, so drop_max/age_window mudam, e esses nunca influenciam a
+        simulacao do trade em si). Chamado na MESMA cadencia horaria de `_refresh_baselines` (ver
+        `tick`). SEM_SOMBRA=1 pula por completo."""
+        if self.sem_sombra:
+            return
+        for s in self.storage.pr_sombra_signals(status="aberto"):
+            pool_row = self.storage.pr_pool(s["pool"])
+            if pool_row is None or pool_row["l_bc"] is None:
+                continue
+            bars_raw = self.storage.pr_bars(s["pool"], s["tf"])
+            if not bars_raw:
+                continue
+            bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in bars_raw]
+            try:
+                ev = event_v1_from_json(s["event_json"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            dex = DEX_OF_LAUNCHPAD.get(pool_row["launchpad"], "desconhecido")
+            res = simulate_v1(bars, ev, self.params_v1, self.costs, dex, pool_row["l_bc"], self._sol_at())
+            if res.entry_price is not None and s["entry_price"] != res.entry_price:
+                self.storage.pr_sombra_update(s["id"], entry_price=res.entry_price, atualizado_ts=now)
+            if res.status == "cancelado":
+                self.storage.pr_sombra_update(s["id"], status="cancelado", reason=res.reason,
+                                              closed_ts=now, atualizado_ts=now)
+                continue
+            if res.status != "fechado":
+                continue
+            exit_leg = res.legs[-1] if res.legs else None
+            self.storage.pr_sombra_update(
+                s["id"], status="fechado", exit_full_price=exit_leg.price if exit_leg else None,
+                exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
+                closed_ts=now, atualizado_ts=now,
+            )
+
     def _excluded_accounts_v1(self, row: Any) -> frozenset[str]:
         return self.adapter.excluded_accounts(row["pool"], row["mint"], row["launchpad"])
 
@@ -1466,6 +1652,7 @@ class PosRunnerLive:
         if ev.kind == "FORA_DA_IDADE":
             self.storage.pr1_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "filtrado_idade",
                                           f"{ev.data.get('idade_dias')}", self.version_v1)
+            self._on_event_sombra(row, tf, ev, now, "filtrado_idade")
             return
         late = self._late(now, ev.decision_ts, max(900.0, float(det.step)))
         if late:
@@ -1494,6 +1681,40 @@ class PosRunnerLive:
                     valor = f"MC={fmt_usd(mc) if mc is not None else 's/d'} queda={queda_pct:.1f}%"
                     self.storage.pr1_add_filtrado(now, "solana", pool, row["mint"], row["symbol"],
                                                   "filtrado_queda_90_96", valor, self.version_v1)
+
+    @staticmethod
+    def _contexto_execucao(row: Any, ev: EventV1, holders: Optional[HolderCheck] = None) -> dict[str, Any]:
+        """PARTE 2A FASE 4: colunas de contexto/execucao na ENTRADA -- so dado JA disponivel neste
+        exato momento (zero chamada nova): `ev.data` (gatilho/zona, ja calculado pelo detector),
+        `info` do pool (`vol_h24_usd`/`n_txs_h24`, congelados na descoberta -- ver `offer()`) e
+        `holders` (RPC ja chamado por outro motivo, nunca de novo aqui -- `None` na sombra, que nunca
+        chama `adapter.holders()` so para preencher isto: `holder_top1_pct` fica None la, nunca uma
+        chamada extra so pra medicao). `holders_count` fica sempre None -- nem o RPC nem o GT devolvem
+        uma contagem agregada de holders no que ja e chamado hoje (ver INTERPRETACOES.md, nunca um
+        numero inventado)."""
+        info = json.loads(row["info"] or "{}")
+        vol_h24 = info.get("vol_h24_usd")
+        n_txs_h24 = info.get("n_txs_h24")
+        liq_usd = info.get("liq_usd")
+        return {
+            "dia_semana": dia_semana_brt(ev.decision_ts), "idade_dias": ev.data.get("idade_dias"),
+            "mc_na_entrada": ev.data.get("close"), "volume_24h": vol_h24, "caixa_candles": ev.data.get("box_len"),
+            "holder_top1_pct": holders.top_holder_pct if holders is not None else None,
+            "slippage_estimado_pct": (100.0 * MAO_SIMULADA_USD / liq_usd) if liq_usd else None,
+            "n_txs_24h": n_txs_h24, "ticket_medio_usd": (vol_h24 / n_txs_h24) if vol_h24 and n_txs_h24 else None,
+            "holders_count": None,
+        }
+
+    @staticmethod
+    def _r_liquido_estimado(signal: Any, res: Any) -> Optional[float]:
+        """PARTE 2A FASE 4: MESMO retorno BRUTO do trade oficial (`res.gross_ret`), so troca o custo
+        OFICIAL (`CostModel`, intocado) pelo modelo simples de slippage estimado gravado na ENTRADA
+        (`slippage_estimado_pct`, 1 perna de entrada + 1 de saida) -- puramente diagnostico, NUNCA
+        sobrescreve `result_net`."""
+        slip = signal["slippage_estimado_pct"]
+        if slip is None or res.gross_ret is None:
+            return None
+        return res.gross_ret - 2.0 * (slip / 100.0)
 
     def _entry_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
@@ -1553,6 +1774,7 @@ class PosRunnerLive:
                 # (nunca inventa um 0 quando o dado nao existe).
                 "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
                 "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
+                **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
             if signal_id is None:   # corrida rara (outro ciclo/processo ja inseriu): usa o que ja existe
@@ -1654,6 +1876,7 @@ class PosRunnerLive:
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
                 r_exit_open_seguinte=res.r_exit_open_seguinte,
+                r_liquido_estimado=self._r_liquido_estimado(signal, res),
             )
             self._update_bankroll_v1(row, tf, det, signal, now)
 
@@ -1691,6 +1914,7 @@ class PosRunnerLive:
         if ev.kind == "FORA_DA_IDADE":
             self.storage.pr2_add_filtrado(now, "solana", pool, row["mint"], row["symbol"], "filtrado_idade",
                                           f"{ev.data.get('idade_dias')}", self.version_v2)
+            self._on_event_sombra(row, tf, ev, now, "filtrado_idade")
             return
         late = self._late(now, ev.decision_ts, max(900.0, float(det.step)))
         if late:
@@ -1759,6 +1983,7 @@ class PosRunnerLive:
                 "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
                 "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
                 "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
+                **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)
             if signal_id is None:
@@ -1834,6 +2059,7 @@ class PosRunnerLive:
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
                 r_exit_open_seguinte=res.r_exit_open_seguinte,
+                r_liquido_estimado=self._r_liquido_estimado(signal, res),
             )
             self._update_bankroll_v2(row, tf, det, signal, now)
 
@@ -2330,6 +2556,8 @@ class PosRunnerLive:
         det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
         det_v1 = self._detector_v1(row, tf, now)
         det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now)
+        det_sombra_mc = None if self.sem_sombra else self._detector_sombra_mc(row, tf, now)
+        det_sombra_q96 = None if self.sem_sombra else self._detector_sombra_queda96(row, tf, now)
         last = ((det.bars[-1] if det is not None and det.bars else None)
                or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
                or (det_v2.bars[-1] if det_v2 is not None and det_v2.bars else None))
@@ -2355,6 +2583,8 @@ class PosRunnerLive:
                 det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
                 det_v1 = self._detector_v1(row, tf, now, pending=seq)
                 det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now, pending=seq)
+                det_sombra_mc = None if self.sem_sombra else self._detector_sombra_mc(row, tf, now, pending=seq)
+                det_sombra_q96 = None if self.sem_sombra else self._detector_sombra_queda96(row, tf, now, pending=seq)
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
             self._fonte_candle_atual = fonte
             if det is not None:
@@ -2388,6 +2618,15 @@ class PosRunnerLive:
                 self._update_paper_v2(row, tf, det_v2, now)
                 if not self.sem_evidencia:
                     self._update_evidencia_v2(row, tf, now)
+            # PARTE 2A FASE 3: sombra -- MESMOS `seq` ja buscados acima pra V1/V2, zero chamada nova.
+            if det_sombra_mc is not None:
+                for b in seq:
+                    for ev in det_sombra_mc.update(b):
+                        self._on_event_sombra(row, tf, ev, now, "filtrado_mc_baixo")
+            if det_sombra_q96 is not None:
+                for b in seq:
+                    for ev in det_sombra_q96.update(b):
+                        self._on_event_sombra(row, tf, ev, now, "queda_96_mais")
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide
