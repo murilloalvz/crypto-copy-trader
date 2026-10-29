@@ -514,7 +514,7 @@ class PosRunnerLive:
         sem_v2: bool = False,
         sem_evidencia: bool = False,
         sem_carteiras: bool = False,
-        carteiras_max_chamadas_dia: int = 200,
+        carteiras_max_chamadas_dia: int = 600,
         sem_sombra: bool = False,
         sombra_max_pools: int = 10,
     ):
@@ -1047,6 +1047,34 @@ class PosRunnerLive:
             return "runner"
         return "sem_fase"
 
+    def _fase_label_v2(self, pool: str, tf: str) -> str:
+        """MESMO papel de `_fase_label_v1`, so que do detector PROPRIO da V2 (pode divergir do V1 pro
+        MESMO pool, parametros diferentes)."""
+        det = self.dets_v2.get((pool, tf))
+        if det is None:
+            return "sem_fase"
+        if det.phase == PHASE_PULLBACK:
+            return "pullback"
+        if det.phase == PHASE_RUNNER:
+            return "runner"
+        return "sem_fase"
+
+    def _persistir_fases(self, pool: str, tf: str) -> None:
+        """PEDIDO 2026-10-29: fase so existia na MEMORIA deste processo (so.saude.py tinha que ler do
+        ultimo heartbeat, defasado/ausente logo apos um restart) -- grava a fase ATUAL em `pr_pools`
+        a cada ciclo que processa candle novo pra essa (pool,tf), pra saude.py (processo separado)
+        ler o estado de AGORA, nunca o do ultimo heartbeat. So "sem_fase"/"runner"/"pullback" existem
+        no detector -- nao ha fase "caixa"."""
+        self.storage.pr_upsert_pool(pool, fase_v1=self._fase_label_v1(pool, tf), fase_v2=self._fase_label_v2(pool, tf))
+
+    def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
+        """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao
+        aberta (V1 ou V2) OU pool acompanhado nas fases runner/pullback (V1 ou V2; "caixa" nao existe
+        no detector, so sem_fase/runner/pullback)."""
+        if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+            return True
+        return self._fase_label_v1(pool, tf) in ("runner", "pullback") or self._fase_label_v2(pool, tf) in ("runner", "pullback")
+
     def _diagnostico_pool_fila(self, row: Any, tf: str, now: float) -> str:
         """PEDIDO 2026-10-28, item 2: token/fase/ultima tentativa/ultimo erro/fonte de 1 (pool,tf)
         pendente na fila -- so leitura de `self.sched`/`self.dets_v1` (gravados por `_refresh_safe`/
@@ -1185,11 +1213,10 @@ class PosRunnerLive:
         counts = self.storage.pr1_filtrado_counts(self._heartbeat_window_start)
         uptime_sessao_h = None if self._uptime_sessao_inicio is None else (now - self._uptime_sessao_inicio) / 3600.0
         fases_v1 = self._phase_counts_v1()
-        # PEDIDO 2026-10-29 (item 2, saude.py: distribuicao de fases): `det.phase` so existe na MEMORIA
-        # deste processo -- saude.py roda separado e so le banco/log. Persiste em `meta` o MESMO
-        # contador que ja vai pro heartbeat (zero calculo novo), com o `ts` desta captura, pra saude.py
-        # mostrar "ultima leitura conhecida" em vez de nada.
-        self.storage.set_meta("pr_fase_counts_v1", json.dumps({**fases_v1, "ts": now}))
+        # PEDIDO 2026-10-29: a distribuicao de fases agora e persistida em `pr_pools.fase_v1`/`fase_v2`
+        # a cada ciclo que processa candle novo (`_persistir_fases`, chamado em `_refresh_core`) --
+        # saude.py le de LA, nunca mais do ultimo heartbeat em memoria. `_phase_counts_v1` continua
+        # servindo so o texto do heartbeat em si (Telegram), sem persistir nada aqui.
         text = telegram_v1.heartbeat_text(
             self.storage.pr1_uptime_hours(self.version_v1_start or now, now), pools_ativos, chamadas_por_min,
             self._heartbeat_429, fases_v1, len(self._due_list(now)), counts.get("dado_invalido", 0),
@@ -1204,12 +1231,17 @@ class PosRunnerLive:
             # compartilhados (uptime/chamadas/429/fila), ja cobertos pelo heartbeat V1 acima.
             counts_v2 = self.storage.pr2_filtrado_counts(self._heartbeat_window_start)
             fases_v2 = self._phase_counts_v2()
-            self.storage.set_meta("pr_fase_counts_v2", json.dumps({**fases_v2, "ts": now}))
             text_v2 = telegram_v1.heartbeat_text_v2(
                 fases_v2, counts_v2.get("dado_invalido", 0), counts_v2.get("l_bc_suspeito", 0),
                 counts_v2.get("filtrado_mc_baixo", 0), counts_v2.get("filtrado_idade", 0), self.version_v2,
             )
             self._send(text_v2)
+        # PEDIDO 2026-10-29 (item 3, saude.py: sombra): "pools sombra ativos" (slots ocupados nos
+        # detectores paralelos de mc_baixo/queda_96_mais, SOMBRA_MAX_POOLS) so existe na memoria
+        # deste processo -- persiste a MESMA cadencia do heartbeat, pra saude.py mostrar a ultima
+        # leitura conhecida (nunca um numero ao vivo inventado).
+        n_sombra_ativos = len(set(self.dets_sombra_mc) | set(self.dets_sombra_queda96))
+        self.storage.set_meta("pr_sombra_ativos", json.dumps({"n_pools": n_sombra_ativos, "ts": now}))
         self._heartbeat_sent_at = now
         self._heartbeat_window_start = now
         self._heartbeat_calls = 0
@@ -2134,21 +2166,25 @@ class PosRunnerLive:
             grupos, versao=versao, entry_id=entry_id,
         )
 
-    def _atualizar_carteiras_horaria(self, row: Any, now: float) -> None:
-        """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora), SO para
-        pools com pelo menos 1 posicao ABERTA (V1 ou V2) -- nunca gasta orcamento de RPC em pools sem
-        posicao. Chamada NOVA de RPC (ao contrario da snapshot de ENTRADA, que reusa `adapter.holders`
-        ja chamado por outro motivo) -- orcada por `carteiras_max_chamadas_dia`
-        (`CARTEIRAS_MAX_CHAMADAS_DIA`), contada por dia UTC corrido."""
+    def _atualizar_carteiras_horaria(self, row: Any, tf: str, now: float) -> None:
+        """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
+        2026-10-29: elegivel quando ha posicao ABERTA (V1 ou V2) OU a fase atual (V1 ou V2) e runner/
+        pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra H9 sem
+        nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da snapshot
+        de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22 chamadas RPC
+        sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate 20x
+        `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada em
+        SNAPSHOTS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao 600/dia
+        => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido. Prioridade BAIXA:
+        nunca atrasa o agendamento oficial (roda DEPOIS de `_schedule` acima) e o proprio cliente RPC
+        (`SolanaRpc`) ja pausa/recua em 429 (rate limiter adaptativo por endpoint)."""
         if self.sem_carteiras:
             return
         pool = row["pool"]
         bucket = int(now // 3600)
         if self._carteiras_horaria_ultima.get(pool) == bucket:
             return
-        tem_posicao = bool(self.storage.pr1_signals(status="aberto", pool=pool)
-                          or self.storage.pr2_signals(status="aberto", pool=pool))
-        if not tem_posicao:
+        if not self._carteiras_elegivel(pool, tf):
             return
         inicio_do_dia = now - (now % 86400.0)
         if self.storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
@@ -2174,13 +2210,22 @@ class PosRunnerLive:
         candle seguinte quando ja existir nesta chamada (simulate_v1 e re-simulado a cada ciclo sobre
         os candles mais recentes -- quem decide 'confirmar pelo candle seguinte' e aqui, nao dentro do
         simulador, que so recebe a resposta ja resolvida)."""
-        divergentes = {int(r["candle_ts"]) for r in self.storage.pr1_dexpaprika_divergencias() if r["pool"] == pool}
+        # PEDIDO 2026-10-29: alem de SE o candle diverge, guarda a MAIOR diferenca % (qualquer campo)
+        # ja registrada pra ele -- so pra nomear a severidade (`candle_corrompido_provavel` quando
+        # >50%), o veto em si (nenhum gatilho/TP1/saida decide neste candle) e o MESMO nos dois casos.
+        divergencia_max: dict[int, float] = {}
+        for r in self.storage.pr1_dexpaprika_divergencias():
+            if r["pool"] != pool:
+                continue
+            ts = int(r["candle_ts"])
+            divergencia_max[ts] = max(divergencia_max.get(ts, 0.0), r["diff_pct"])
 
         def cb(j: int) -> Optional[str]:
             bar = bars[j]
             anterior = bars[j - 1].close if j > 0 else None
             seguinte = bars[j + 1].open if j + 1 < len(bars) else None
-            return qualidade_candle.motivo_suspeito(bar, anterior, peak, seguinte, bar.ts in divergentes)
+            return qualidade_candle.motivo_suspeito(bar, anterior, peak, seguinte, bar.ts in divergencia_max,
+                                                    divergencia_max.get(bar.ts))
         return cb
 
     # -- PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada ---------------------------
@@ -2661,6 +2706,13 @@ class PosRunnerLive:
                     except Exception:  # noqa: BLE001 - ver evidencia v1 acima (mesma auditoria)
                         log.warning("POS-RUNNER evidencia v2: erro inesperado em %s %s, ignorado neste ciclo",
                                    row["symbol"], tf, exc_info=True)
+            # PEDIDO 2026-10-29: persiste a fase ATUAL (V1 e V2) em pr_pools -- saude.py le daqui,
+            # nunca do ultimo heartbeat em memoria (que fica defasado/ausente logo apos um restart).
+            try:
+                self._persistir_fases(pool, tf)
+            except Exception:  # noqa: BLE001 - medicao ao lado, nunca derruba o ciclo
+                log.warning("POS-RUNNER fases: erro inesperado ao persistir %s %s, ignorado neste ciclo",
+                           row["symbol"], tf, exc_info=True)
             # PARTE 2A FASE 3: sombra -- MESMOS `seq` ja buscados acima pra V1/V2, zero chamada nova.
             # `_sombra_safe` garante que NENHUMA excecao daqui alcance o resto do ciclo (agendamento/
             # carteiras abaixo) -- ver docstring (incidente de producao 2026-10-29).
@@ -2686,7 +2738,7 @@ class PosRunnerLive:
             # mas uma excecao aqui ainda subiria pro catch-all de `_refresh_safe` (incrementando
             # `erros` sem motivo) -- isolada tambem, mesmo principio da sombra/evidencia.
             try:
-                self._atualizar_carteiras_horaria(row, now)
+                self._atualizar_carteiras_horaria(row, tf, now)
             except Exception:  # noqa: BLE001
                 log.warning("POS-RUNNER carteiras horaria: erro inesperado em %s %s, ignorado neste ciclo",
                            row["symbol"], tf, exc_info=True)

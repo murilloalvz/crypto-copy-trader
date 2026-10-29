@@ -128,7 +128,7 @@ class SaudeScriptTests(unittest.TestCase):
             self.assertIn("divergencias (24h)=18", texto)
             self.assertIn("regra candle_divergente:", texto)
             self.assertIn("tolerancia (padrao 1.0%)", texto)
-            self.assertIn("ultimas 15 de 18 divergencia(s)", texto)
+            self.assertIn("ultimos 15 de 18 candle(s) divergente(s)", texto)
             self.assertIn("CAT", texto)
             self.assertIn("close 2.00%", texto)
             self.assertLessEqual(len(texto.splitlines()), 60)
@@ -148,7 +148,7 @@ class SaudeScriptTests(unittest.TestCase):
                 "ts": h.clock(),
             }))
             texto = saude.executar(h.storage.paths.db, None, 48.0)
-            self.assertIn("elegiveis AGORA (posicao aberta V1 ou V2): 1 pool(s)", texto)
+            self.assertIn("elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2): 1 pool(s)", texto)
             self.assertIn("RPC configurado=NAO", texto)
             self.assertIn("orcamento hoje: 0/200", texto)
         finally:
@@ -180,18 +180,20 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
-    def test_carteiras_section_shows_the_last_known_phase_distribution(self) -> None:
-        """PEDIDO 2026-10-29 (item 2): distribuicao de fases (sem_fase/runner/pullback) -- so existe na
-        memoria do processo ao vivo, persistida em `meta` a cada heartbeat; saude.py mostra a ULTIMA
-        leitura conhecida (nunca inventa um numero ao vivo)."""
+    def test_carteiras_section_shows_the_current_phase_distribution_from_pr_pools(self) -> None:
+        """PEDIDO 2026-10-29 (item 2): fase persistida em `pr_pools.fase_v1`/`fase_v2` a cada ciclo
+        que processa candle novo -- saude.py le DAQUI, nunca do ultimo heartbeat em memoria."""
         h = LiveHarness()
         try:
-            h.storage.set_meta("pr_fase_counts_v1", json.dumps({"sem_fase": 3, "runner": 1, "pullback": 0, "ts": h.clock()}))
+            h.storage.pr_upsert_pool("POOL1", status="ativo", symbol="CAT", fase_v1="runner", fase_v2="sem_fase")
+            h.storage.pr_upsert_pool("POOL2", status="ativo", symbol="DOG", fase_v1="pullback", fase_v2="sem_fase")
             texto = saude.executar(h.storage.paths.db, None, 48.0)
-            self.assertIn("fases V1", texto)
-            self.assertIn("sem_fase=3", texto)
+            self.assertIn("fases V1 AGORA", texto)
             self.assertIn("runner=1", texto)
-            self.assertIn("fases V2: s/d", texto)
+            self.assertIn("pullback=1", texto)
+            self.assertIn("fases V2 AGORA", texto)
+            self.assertIn("sem_fase=2", texto)
+            self.assertIn("elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2): 2 pool(s)", texto)
         finally:
             h.close()
 

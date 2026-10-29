@@ -194,7 +194,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     sem_v2 = bool(os.environ.get("SEM_V2"))   # PEDIDO CONSOLIDADO FASE 2: SEM_V2=1 desliga a V2 por completo
     sem_evidencia = bool(os.environ.get("SEM_EVIDENCIA"))   # PEDIDO (PARTE 1 de 2): desliga trajetoria+baseline
     sem_carteiras = bool(os.environ.get("SEM_CARTEIRAS"))   # PEDIDO 2026-10-27 (H9): desliga o snapshot de carteiras pro
-    carteiras_max_chamadas_dia = int(os.environ.get("CARTEIRAS_MAX_CHAMADAS_DIA", "200"))
+    carteiras_max_chamadas_dia = int(os.environ.get("CARTEIRAS_MAX_CHAMADAS_DIA", "600"))
     sem_sombra = bool(os.environ.get("SEM_SOMBRA"))   # PEDIDO (PARTE 2A) FASE 3: desliga a sombra dos filtros
     sombra_max_pools = int(os.environ.get("SOMBRA_MAX_POOLS", "10"))
     settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)

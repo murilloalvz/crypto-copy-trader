@@ -36,6 +36,24 @@ class MotivoSuspeitoTests(unittest.TestCase):
         bar = _bar(100.0, 105.0, 98.0, 102.0)
         self.assertEqual(motivo_suspeito(bar, 100.0, 200.0, dex_divergente=True), "dexpaprika_divergente")
 
+    def test_dexpaprika_divergence_above_50pct_is_labeled_corrompido_provavel(self) -> None:
+        """PEDIDO 2026-10-29: >50% de diferenca (qualquer campo OHLC) entre GT e DexPaprika no MESMO
+        candle = `candle_corrompido_provavel` -- rotulo mais forte que o `dexpaprika_divergente`
+        generico, mas o VETO em si (nenhum gatilho/TP1/saida decide neste candle) e identico."""
+        bar = _bar(100.0, 105.0, 98.0, 102.0)
+        self.assertEqual(
+            motivo_suspeito(bar, 100.0, 200.0, dex_divergente=True, dex_diff_pct_max=63.2),
+            "candle_corrompido_provavel")
+
+    def test_dexpaprika_divergence_at_or_below_50pct_keeps_the_generic_label(self) -> None:
+        bar = _bar(100.0, 105.0, 98.0, 102.0)
+        self.assertEqual(
+            motivo_suspeito(bar, 100.0, 200.0, dex_divergente=True, dex_diff_pct_max=50.0),
+            "dexpaprika_divergente")
+        self.assertEqual(
+            motivo_suspeito(bar, 100.0, 200.0, dex_divergente=True, dex_diff_pct_max=12.5),
+            "dexpaprika_divergente")
+
     def test_close_far_above_the_peak_is_suspeito_mcrib_style(self) -> None:
         # McRib: pico (P_peak) 1,4M, close do gatilho 44,1M -- ~31x o pico.
         bar = _bar(1_400_000.0, 44_200_000.0, 1_300_000.0, 44_100_000.0)

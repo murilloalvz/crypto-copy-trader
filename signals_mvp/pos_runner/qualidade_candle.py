@@ -53,20 +53,31 @@ def _pico_do_candle(bar: Bar) -> float:
     return max(bar.high, bar.open, bar.close, bar.low if bar.low > 0 else 0.0)
 
 
+LIMIAR_CORROMPIDO_PROVAVEL_PCT = 50.0
+
+
 def motivo_suspeito(
     bar: Bar, vizinho_anterior_close: Optional[float], peak: Optional[float],
     vizinho_seguinte_open: Optional[float] = None, dex_divergente: bool = False,
-    limiares: LimiaresQualidadeCandle = LIMIARES_PADRAO,
+    dex_diff_pct_max: Optional[float] = None, limiares: LimiaresQualidadeCandle = LIMIARES_PADRAO,
 ) -> Optional[str]:
     """`None` = confiavel. Caso contrario, motivo curto (`ohlc_incoerente` / `dexpaprika_divergente` /
-    `close_vs_pico` / `sem_confirmacao_candle_seguinte` / `candle_isolado_vs_vizinhos`).
+    `candle_corrompido_provavel` / `close_vs_pico` / `sem_confirmacao_candle_seguinte` /
+    `candle_isolado_vs_vizinhos`).
 
     `vizinho_seguinte_open` SO deve ser passado quando a chamada e causalmente posterior ao candle
     seguinte existir (TP1/EXIT, re-simulado a cada ciclo) -- o gatilho de ENTRADA (decisao causal, no
-    fechamento do proprio candle) nunca passa esse argumento."""
+    fechamento do proprio candle) nunca passa esse argumento.
+
+    `dex_diff_pct_max` (PEDIDO 2026-10-29): a MAIOR diferenca % (qualquer campo OHLC) entre GT e
+    DexPaprika PARA ESTE candle, quando `dex_divergente=True` -- so pra NOMEAR a severidade (>50% =
+    `candle_corrompido_provavel`, provavel corrupcao de dado, nao so ruido normal de fonte); o VETO em
+    si (nenhum gatilho/TP1/saida decide neste candle) e IDENTICO nos dois casos, so o rotulo muda."""
     if not ohlc_coerente(bar):
         return "ohlc_incoerente"
     if dex_divergente:
+        if dex_diff_pct_max is not None and dex_diff_pct_max > LIMIAR_CORROMPIDO_PROVAVEL_PCT:
+            return "candle_corrompido_provavel"
         return "dexpaprika_divergente"
     pico_candle = _pico_do_candle(bar)
     if peak is not None and peak > 0 and bar.close > limiares.razao_pico_max * peak:

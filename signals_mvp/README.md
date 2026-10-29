@@ -263,9 +263,10 @@ nova de API — usa só candles já em cache):
 - `signals_mvp/dados/carteiras_pro_papodefi.json` (fornecido pelo operador, nunca baixado) +
   `python -m signals_mvp.scripts.carregar_carteiras_pro --db dados/estado.sqlite` — valida/registra
   a lista (sha256 + `lista_versao`) e gera `carteiras_grupos.csv` (agrupamento por pessoa);
-- a cada ENTRADA, e a cada hora para pools com posição aberta (orçado por
-  `CARTEIRAS_MAX_CHAMADAS_DIA`, padrão 200/dia), o bot cruza os top-20 holders do token contra a
-  lista — `pr1_signals.carteiras_pro_presentes`/`n_pessoas_pro` e `pr_carteiras_snapshot`.
+- a cada ENTRADA, e a cada hora para pools com posição aberta OU na fase runner/pullback (V1 ou V2
+  — PEDIDO 2026-10-29; orçado em SNAPSHOTS/dia por `CARTEIRAS_MAX_CHAMADAS_DIA`, padrão 600/dia,
+  ~22 chamadas RPC por snapshot), o bot cruza os top-20 holders do token contra a lista —
+  `pr1_signals.carteiras_pro_presentes`/`n_pessoas_pro` e `pr_carteiras_snapshot`.
   `SEM_CARTEIRAS=1` desliga por completo.
 
 **PEDIDO (PARTE 2A, FASE 3/4): sombra dos filtros + contexto/execução:**

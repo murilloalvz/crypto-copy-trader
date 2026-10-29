@@ -466,6 +466,11 @@ class Storage:
             }
             self._ensure_columns("pr1_signals", contexto_execucao)
             self._ensure_columns("pr2_signals", contexto_execucao)
+            # PEDIDO 2026-10-29 (saude.py: fases do heartbeat, nao persistidas): fase ATUAL do
+            # detector V1/V2 de cada pool (sem_fase/runner/pullback), gravada a cada ciclo que
+            # processa candle novo (`_refresh_core`) -- saude.py (processo separado) le daqui, nunca
+            # do ultimo heartbeat em memoria. NULL ate o 1o ciclo pos-migracao processar essa pool.
+            self._ensure_columns("pr_pools", {"fase_v1": "TEXT", "fase_v2": "TEXT"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

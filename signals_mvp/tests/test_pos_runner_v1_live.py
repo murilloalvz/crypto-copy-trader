@@ -256,21 +256,32 @@ class EntradaTests(unittest.TestCase):
             contagem["n"] += 1
             return HolderCheck(top_holders=[("ProWalletA", 5.0)])
 
-        self.h.live.adapter.holders = holders_fn
-        self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
-        self.h.live.carteiras_max_chamadas_dia = 1
-        self._run_to_entrada()   # a janela de 17h ja inclui horas suficientes p/ 1 snapshot horaria
-        self.assertGreaterEqual(len(self.h.storage.pr_carteiras_snapshot_all()), 1)
-        horarias_apos_entrada = [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
-        self.assertEqual(len(horarias_apos_entrada), 1, "orcamento diario = 1 -- nunca mais que 1 horaria")
-        chamadas_antes = contagem["n"]
-        # avanca mais horas: orcamento diario (1) ja foi gasto -- nenhuma chamada/linha horaria nova
-        for _ in range(3):
-            self.h.clock.advance(H)
-            self.h.tick()
-        horarias_depois = [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
-        self.assertEqual(len(horarias_depois), 1, "orcamento diario de 1 chamada horaria ja foi gasto")
-        self.assertEqual(contagem["n"], chamadas_antes, "orcamento esgotado -- nenhuma chamada RPC nova")
+        # PEDIDO 2026-10-29: elegibilidade agora INCLUI fase runner/pullback (nao so posicao aberta) --
+        # a janela fica elegivel bem mais cedo que antes, entao o `start` padrao da LiveHarness (que
+        # cruza meia-noite UTC dentro desta janela) deixaria o orcamento "diario" resetar no meio do
+        # teste por causa pura do relogio, nao do orcamento em si. Usa um `start` que mantem toda a
+        # janela (17h + as 3h extras abaixo) no MESMO dia UTC -- o teste continua sobre o cenario REAL
+        # de `start_tracking`/textbook(), so com o relogio deslocado pra nao cruzar o dia por acidente.
+        h = LiveHarness(start=GRAD + 11 * H + 120)
+        try:
+            h.live.adapter.holders = holders_fn
+            h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
+            h.live.carteiras_max_chamadas_dia = 1
+            start_tracking(h)
+            h.run_hours(17)
+            self.assertGreaterEqual(len(h.storage.pr_carteiras_snapshot_all()), 1)
+            horarias_apos_entrada = [r for r in h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
+            self.assertEqual(len(horarias_apos_entrada), 1, "orcamento diario = 1 -- nunca mais que 1 horaria")
+            chamadas_antes = contagem["n"]
+            # avanca mais horas: orcamento diario (1) ja foi gasto -- nenhuma chamada/linha horaria nova
+            for _ in range(3):
+                h.clock.advance(H)
+                h.tick()
+            horarias_depois = [r for r in h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"]
+            self.assertEqual(len(horarias_depois), 1, "orcamento diario de 1 chamada horaria ja foi gasto")
+            self.assertEqual(contagem["n"], chamadas_antes, "orcamento esgotado -- nenhuma chamada RPC nova")
+        finally:
+            h.close()
 
     def test_hourly_carteiras_collection_runs_after_the_schedule_is_already_advanced(self) -> None:
         """INCIDENTE 2026-10-27 (fila de atualizacao 1h presa 30-59min depois do fechamento da hora): a

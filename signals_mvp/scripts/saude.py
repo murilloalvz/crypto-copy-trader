@@ -176,11 +176,12 @@ _RE_ERRO_CARTEIRAS = re.compile(
 
 def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     """PEDIDO 2026-10-29, item 1/2: diagnostico completo da coleta "ao lado" de carteiras "pro" --
-    elegiveis AGORA (posicao aberta), RPC configurado (gravado pelo PROPRIO processo ao vivo em
-    `meta` -- nunca um env var lido por ESTE script, que pode rodar num shell diferente), orcamento
-    usado/limite, ultima tentativa/resultado e ultimo erro (do log, `_atualizar_carteiras_horaria`),
-    e a distribuicao de fases (tambem so existe na memoria do processo ao vivo -- aqui mostra a
-    ULTIMA leitura conhecida, persistida a cada heartbeat, nunca um numero ao vivo)."""
+    elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2 -- PEDIDO 2026-10-29), RPC
+    configurado (gravado pelo PROPRIO processo ao vivo em `meta` -- nunca um env var lido por ESTE
+    script, que pode rodar num shell diferente), orcamento usado/limite, ultima tentativa/resultado e
+    ultimo erro (do log, `_atualizar_carteiras_horaria`), e a distribuicao de fases AGORA (lida de
+    `pr_pools.fase_v1`/`fase_v2`, persistida a cada ciclo que processa candle novo -- NUNCA mais do
+    ultimo heartbeat em memoria)."""
     from ..pos_runner import carteiras_pro as cp
     sha = storage.get_meta(cp.META_KEY_SHA256)
     n_carteiras = storage.get_meta(cp.META_KEY_N_CARTEIRAS)
@@ -193,9 +194,24 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     out = [f"CARTEIRAS: lista carregada={'sim' if sha else 'NAO'} (sha256={sha[:12] + '...' if sha else 's/d'}) "
           f"| n_carteiras_pro={n_carteiras or 's/d'} n_pessoas_pro={n_pessoas or 's/d'}",
           f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s)"]
-    elegiveis = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
-                {s["pool"] for s in storage.pr2_signals(status="aberto")}
-    out.append(f"  elegiveis AGORA (posicao aberta V1 ou V2): {len(elegiveis)} pool(s)")
+    pools_ativos = storage.pr_pools("ativo")
+    abertos = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
+              {s["pool"] for s in storage.pr2_signals(status="aberto")}
+    fases_v1: Counter = Counter()
+    fases_v2: Counter = Counter()
+    elegiveis = set(abertos)
+    for row in pools_ativos:
+        f1 = row["fase_v1"] or "sem_fase"
+        f2 = row["fase_v2"] or "sem_fase"
+        fases_v1[f1] += 1
+        fases_v2[f2] += 1
+        if f1 in ("runner", "pullback") or f2 in ("runner", "pullback"):
+            elegiveis.add(row["pool"])
+    out.append(f"  elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2): {len(elegiveis)} pool(s)")
+    for versao, fases in (("V1", fases_v1), ("V2", fases_v2)):
+        out.append(f"  fases {versao} AGORA ({len(pools_ativos)} pool(s) ativo(s), de pr_pools -- nao e "
+                  "'caixa', so sem_fase/runner/pullback existem no detector): " +
+                  " ".join(f"{k}={fases.get(k, 0)}" for k in ("sem_fase", "runner", "pullback")))
     runtime_raw = storage.get_meta("pr_carteiras_runtime")
     if runtime_raw:
         rt = json.loads(runtime_raw)
@@ -227,17 +243,47 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
             ultimo_erro = m
     out.append(f"  ultimo erro da coleta: [{ultimo_erro['ts']}] {ultimo_erro['msg']}" if ultimo_erro
               else "  ultimo erro da coleta: nenhum no log (24h)")
-    for versao, chave in (("V1", "pr_fase_counts_v1"), ("V2", "pr_fase_counts_v2")):
-        raw = storage.get_meta(chave)
-        if raw is None:
-            out.append(f"  fases {versao}: s/d (so existe na memoria do processo ao vivo -- "
-                      "aparece apos o 1o heartbeat)")
-            continue
-        fases = json.loads(raw)
-        ts_fases = fases.pop("ts")
-        out.append(f"  fases {versao} (ha {_fmt_h(now - ts_fases)}, no ultimo heartbeat -- nao e 'caixa', "
-                  f"so sem_fase/runner/pullback existem no detector): " +
-                  " ".join(f"{k}={v}" for k, v in fases.items()))
+    return out
+
+
+_RE_ERRO_SOMBRA = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER sombra \((?P<motivo>[^)]+)\): erro inesperado"
+)
+
+
+def _secao_sombra(storage: Storage, now: float, logs_dir: Path) -> list[str]:
+    """PEDIDO 2026-10-29, item 3: pools sombra ativos (ultima leitura conhecida, persistida a cada
+    heartbeat -- so existe na memoria do processo ao vivo), descartados por teto
+    (SOMBRA_MAX_POOLS), sinais por motivo/status (`pr_sombra`) e erros da sombra (log, `_sombra_safe`
+    -- ver incidente de producao 2026-10-29, candles sobrepostos)."""
+    out = ["SOMBRA:"]
+    ativos_raw = storage.get_meta("pr_sombra_ativos")
+    if ativos_raw:
+        ativos = json.loads(ativos_raw)
+        out.append(f"  pools ativos: {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
+    else:
+        out.append("  pools ativos: s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
+    descartados = storage.pr_sombra_descarte_count(now - 86400.0)
+    out.append(f"  descartados por teto (SOMBRA_MAX_POOLS, 24h): {descartados}")
+    por_motivo: Counter = Counter()
+    por_status: Counter = Counter()
+    for s in storage.pr_sombra_signals():
+        por_motivo[s["versao"]] += 1
+        por_status[s["status"]] += 1
+    if por_motivo:
+        out.append("  sinais por motivo: " + " | ".join(f"{k}={v}" for k, v in sorted(por_motivo.items())))
+        out.append("  sinais por status: " + " | ".join(f"{k}={v}" for k, v in sorted(por_status.items())))
+    else:
+        out.append("  sinais: 0 (nenhum candidato sombra ainda)")
+    linhas = _linhas_log(logs_dir, 86400.0, now)
+    ultimo_erro, erros_24h = None, 0
+    for linha in linhas:
+        m = _RE_ERRO_SOMBRA.match(linha)
+        if m:
+            erros_24h += 1
+            ultimo_erro = m
+    out.append(f"  erros da sombra (24h, log): {erros_24h}" +
+              (f" | ultimo: [{ultimo_erro['ts']}] {ultimo_erro['motivo']}" if ultimo_erro else ""))
     return out
 
 
@@ -260,24 +306,39 @@ def _secao_dexpaprika(storage: Storage, now: float) -> list[str]:
     div_24h = storage.pr1_dexpaprika_divergencia_count_since(now - 86400.0)
     candle_divergente = sum(1 for s in storage.pr1_signals()
                             if "candle_divergente" in json.loads(s["tags"] or "[]"))
-    out = [f"DEXPAPRIKA: divergencias (24h)={div_24h} | sinais ja marcados candle_divergente={candle_divergente} | "
+    out = [f"DEXPAPRIKA: divergencias (24h)={div_24h} (linhas = campo x candle; ver candles distintos "
+          f"abaixo) | sinais ja marcados candle_divergente={candle_divergente} | "
           "creditos usados/restantes: s/d (so no processo ao vivo -- ver resumo diario/heartbeat)"]
     # PEDIDO 2026-10-29, item 4: cada linha ja registrada JA passou da tolerancia (so loga quando
     # diverge) -- a regra que decide `candle_divergente` (condicional.py: _candle_divergente_confirmado)
     # e: qualquer linha aqui cujo `candle_ts` seja EXATAMENTE o candle do GATILHO (`ts_fechamento`) do
-    # sinal confirma a tag -- nunca um limiar novo, so presenca.
+    # sinal confirma a tag -- nunca um limiar novo, so presenca. diff% > 50% em QUALQUER campo do MESMO
+    # candle = `candle_corrompido_provavel` (qualidade_candle.py) -- MESMO veto do `dexpaprika_divergente`
+    # generico (nenhum gatilho/TP1/saida decide nesse candle ate confirmar pelo seguinte ou pelas fontes
+    # concordarem), so um rotulo mais forte pra severidade.
     out.append("  regra candle_divergente: campo (open/high/low/close/volume) com diff% > tolerancia "
               "(padrao 1.0%) ENTRE GT e DexPaprika no MESMO candle -- só uma linha aqui já passou desse "
               "teto; confirma a tag quando o candle_ts bate com o candle do GATILHO do sinal (presença, "
-              "sem limiar novo).")
+              "sem limiar novo). diff% > 50% em qualquer campo = candle_corrompido_provavel -- nenhum "
+              "gatilho/TP1/saída decide nesse candle até o seguinte ou as fontes concordarem.")
     recentes = [r for r in storage.pr1_dexpaprika_divergencias() if now - r["ts"] <= 86400.0]
-    recentes.sort(key=lambda r: r["ts"], reverse=True)
-    if recentes:
-        out.append(f"  ultimas {min(15, len(recentes))} de {len(recentes)} divergencia(s) (24h) "
-                  "[token hora campo diff%]:")
-        for r in recentes[:15]:
-            hora = time.strftime("%H:%M", time.gmtime(r["candle_ts"])) if r["candle_ts"] is not None else "s/d"
-            out.append(f"    {r['symbol'] or 's/d'} {hora} {r['campo']} {r['diff_pct']:.2f}%")
+    # PEDIDO 2026-10-29, item 4: dedupe -- 1 linha por (pool,candle_ts), nunca 1 por (pool,candle_ts,
+    # campo); um candle com 2+ campos divergentes aparecia 2x+ no relatorio antes desta correcao.
+    agrupado: dict[tuple[Optional[str], Optional[int]], dict[str, Any]] = {}
+    for r in recentes:
+        chave = (r["pool"], r["candle_ts"])
+        g = agrupado.setdefault(chave, {"symbol": r["symbol"], "campos": [], "diff_max": 0.0, "ts": r["ts"]})
+        g["campos"].append(f"{r['campo']} {r['diff_pct']:.2f}%")
+        g["diff_max"] = max(g["diff_max"], r["diff_pct"])
+        g["ts"] = max(g["ts"], r["ts"])
+    linhas = sorted(agrupado.items(), key=lambda kv: kv[1]["ts"], reverse=True)
+    if linhas:
+        out.append(f"  ultimos {min(15, len(linhas))} de {len(linhas)} candle(s) divergente(s) (24h, "
+                  "dedupe por pool+candle_ts) [token hora campos]:")
+        for (_pool, candle_ts), g in linhas[:15]:
+            hora = time.strftime("%H:%M", time.gmtime(candle_ts)) if candle_ts is not None else "s/d"
+            marca = " [CORROMPIDO_PROVAVEL]" if g["diff_max"] > 50.0 else ""
+            out.append(f"    {g['symbol'] or 's/d'} {hora} {', '.join(g['campos'])}{marca}")
     return out
 
 
@@ -354,6 +415,8 @@ def _secao_healthchecks_contaminados(storage: Storage) -> list[str]:
 def _secao_consistencia(storage: Storage, now: float) -> list[str]:
     problemas: Counter = Counter()
     vistos_ts: Counter = Counter()
+    # PEDIDO 2026-10-29, item 5: nao so contar -- NOMEAR qual entrada esta sem trajetoria/baseline.
+    sem_evidencia: list[str] = []
     for versao, sinais, traj_get, base_get in (
         ("v1", storage.pr1_signals(), lambda eid: storage.pr_trajetoria_get("v1", eid),
          lambda eid: storage.pr_baseline_get("v1", eid)),
@@ -374,14 +437,28 @@ def _secao_consistencia(storage: Storage, now: float) -> list[str]:
             # trajetoria/baseline sao preenchidas por um refresh HORARIO separado (`_refresh_baselines`)
             # -- um sinal com menos de 2h ainda nao teve chance de ganhar essas linhas, isso NAO e bug.
             if now - s["ts_fechamento"] > 2 * 3600.0:
-                if traj_get(s["id"]) is None:
+                traj, base = traj_get(s["id"]), base_get(s["id"])
+                falta_traj = traj is None
+                falta_base = base is None
+                if falta_traj:
                     problemas["entrada_sem_trajetoria_apos_2h"] += 1
-                if base_get(s["id"]) is None:
+                if falta_base:
                     problemas["entrada_sem_baseline_apos_2h"] += 1
+                if falta_traj or falta_base:
+                    motivo = "trajetoria" if falta_traj and not falta_base else (
+                        "baseline" if falta_base and not falta_traj else "trajetoria+baseline")
+                    sem_evidencia.append(f"{versao}:{s['id']} {s['symbol']} (pool {s['pool'][:8]}...): sem {motivo}")
     problemas["ts_fechamento_duplicado"] = sum(1 for n in vistos_ts.values() if n > 1)
     if not any(problemas.values()):
         return ["CONSISTENCIA: nenhum problema encontrado (timestamps, trajetoria/baseline, R, duplicados)"]
-    return ["CONSISTENCIA:"] + [f"  {chave}: {n}" for chave, n in problemas.items() if n]
+    out = ["CONSISTENCIA:"] + [f"  {chave}: {n}" for chave, n in problemas.items() if n]
+    if sem_evidencia:
+        out.append(f"  entradas sem trajetoria/baseline ({len(sem_evidencia)}, primeiras 10):")
+        out.extend(f"    {linha}" for linha in sem_evidencia[:10])
+        out.append("  corrige com: python -m signals_mvp.scripts.backfill_evidencia --db dados/estado.sqlite "
+                  "(reusa candles ja em pr_bars, zero chamada nova; marca pre_instrumentacao quando o "
+                  "candle nao esta mais em cache)")
+    return out
 
 
 def executar(db_path: Path, logs_dir: Optional[Path], janela_h: float) -> str:
@@ -397,6 +474,7 @@ def executar(db_path: Path, logs_dir: Optional[Path], janela_h: float) -> str:
             lambda: _secao_uptime_versoes(storage, now),
             lambda: _secao_fila(storage, now),
             lambda: _secao_carteiras(storage, now, logs_dir),
+            lambda: _secao_sombra(storage, now, logs_dir),
             lambda: _secao_trajetoria_baseline(storage, now),
             lambda: _secao_dexpaprika(storage, now),
             lambda: _secao_429(storage, now, logs_dir),
