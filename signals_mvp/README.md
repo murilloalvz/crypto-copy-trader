@@ -284,6 +284,27 @@ nova de API — usa só candles já em cache):
   usadas por regra/filtro/tamanho/saída (o R oficial não muda). Aparecem nos CSVs
   `pos_runner_v1.csv`/`pos_runner_v2.csv` (colunas no fim).
 
+**PEDIDO 2026-10-29 (auditoria + sensibilidade + sombra `base_min4` + Radar):**
+
+- `docs/pos-runner-v1/AUDITORIA_PARAMETROS.md` lista todos os limiares de gatilho/entrada/stop/saída
+  de V1/V2 (arquivo:linha + se o número foi confirmado pelo operador, é literal do prompt, herdado do
+  V0 ou foi o Claude que escolheu sem confirmação — ex.: `HOLDER_CONCENTRADO_PCT`/`VAMP_RISK`).
+- `python -m signals_mvp.scripts.sensibilidade_parametros --db dados/estado.sqlite --versao v1|v2` —
+  somente leitura, zero chamada nova (replay dos candles já em `pr_bars`); relaxa um parâmetro por
+  vez e mede quantos sinais a mais/menos apareceriam e quantos candidatos "quase" dispararam
+  (near-miss) só por aquele parâmetro.
+- Terceira sombra, `sombra:base_min4`: mesmas regras da V1, só `zone_min_candles=4` (em vez de 12) —
+  mede candidatos cuja caixa é mais curta do que a V1/V2 reais jamais aceitariam. Alimenta a `H13`
+  (tamanho da base vs R realizado, `/analise`). Conta para o mesmo `SOMBRA_MAX_POOLS`.
+- **Radar "👀 caixa em formação"**: alerta de ESTUDO, **não é um sinal** — nunca convida a agir, nunca
+  entra na banca/CSV/`/relatorio v1|v2`. Dispara quando a caixa da V1 (mínimo 4 candles, sem limite de
+  wicks) arma com queda de 80–99,5% do pico, MC atual ≥ 100k e idade ≥ 2 dias (sem teto). Mensagem com
+  token/queda %/MC/liquidez/tamanho da base/idade/tags + botões de link + 👀 acompanhando/❌ ignorar
+  (idempotentes, só gravam o horário da decisão — nunca os botões 👍/👎/📝 de feedback existentes).
+  Teto diário `RADAR_MAX_DIA` (padrão 8, só sobre os enviados — acima do teto o candidato ainda é
+  gravado, nunca descartado em silêncio). Trajetória mecânica de 72h alimenta a `H14`
+  (acompanhando vs ignorar, `/analise`). `SEM_RADAR=1` desliga por completo.
+
 ---
 
 ## Meta do dia (`meta.txt`)
