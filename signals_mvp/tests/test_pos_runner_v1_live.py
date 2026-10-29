@@ -327,6 +327,34 @@ class EntradaTests(unittest.TestCase):
         self._tp1_then_stop()
         self.assertIn("ÚLTIMOS 3 FECHADOS", self.h.live.fechados_texto(3))
 
+    def test_risco_irrealista_trade_is_excluded_from_daily_r_stats_and_from_fechados_r(self) -> None:
+        """PEDIDO 2026-10-28 (McRib: R acumulado -564,74R/-561,43R contaminado): um trade fechado
+        tagueado `risco_irrealista` (fill colado no stop, risco real <3%) nunca pode entrar no R
+        acumulado/medio/mediana do resumo diario -- fica de fora, contado em 'excluidos: N (motivo)',
+        e some do R individual do /fechados (continua listado, so o numero fica s/d)."""
+        self._tp1_then_stop()
+        sinal = self.h.storage.pr1_signals()[0]
+        self.h.storage.pr1_update_signal(sinal["id"], tags=json.dumps(["risco_irrealista"]))
+        resumo = self.h.live.daily_summary_v1()
+        self.assertIn("ainda sem trade fechado (0/30 tokens distintos)", resumo)
+        self.assertIn("excluídos: 1 (risco_irrealista: 1)", resumo)
+        fechados = self.h.live.fechados_texto()
+        self.assertIn(sinal["symbol"], fechados)
+        self.assertIn("R realizado: s/d", fechados)
+
+    def test_contaminado_candle_trade_is_excluded_from_weekly_report_pnl_and_votes(self) -> None:
+        """PEDIDO 2026-10-28, item 1a: a mesma exclusao vale pro /relatorio (PnL do periodo, votos,
+        quebras por gatilho/janela/stop) -- `contaminado_candle` (marcacao retroativa do operador)
+        nunca entra em nenhuma estatistica agregada, so fica fora com motivo explicito."""
+        self._tp1_then_stop()
+        sinal = self.h.storage.pr1_signals()[0]
+        self.h.storage.pr1_update_signal(sinal["id"], tags=json.dumps(["contaminado_candle"]))
+        self.h.storage.pr1_feedback_upsert(sinal["id"], "voto", "555", self.h.clock(), voto="bom")
+        texto = self.h.live.relatorio_semanal_v1()
+        self.assertIn("excluídos: 1 (contaminado_candle: 1)", texto)
+        self.assertIn("👍 0", texto, "o voto do trade contaminado nao pode contar")
+        self.assertIn("de 0 sinais com feedback", texto)
+
 
 class QualityFilterTests(unittest.TestCase):
     def setUp(self) -> None:

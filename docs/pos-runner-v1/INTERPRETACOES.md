@@ -572,3 +572,90 @@ separada ou dar-lhe um teto de espera próprio e mais curto é uma mudança maio
 não ser necessária para resolver o incidente relatado (o alerta media reagendamento, não tempo de
 ciclo) — fica anotado para o operador decidir se quer endurecer isso depois de observar o
 comportamento real.
+
+## 17. PEDIDO 2026-10-28 — R contaminado pelo McRib, fila de atualização idempotente, fallback por pendência
+
+### Item 1 — R acumulado/médio contaminado (resumo diário)
+
+**(a) onde `contaminado_candle`/`risco_irrealista` entravam e a exclusão aplicada:**
+
+| Consumidor | Antes | Depois |
+|---|---|---|
+| Resumo diário (`daily_summary_v1`/`v2`, `_stats_r_de_fechados`) | recalculava `risco_pct` de `entry_price`/`stop`, sem olhar tags | pula o trade (motivo contado em `excluidos`), mostra `excluídos: N (motivo)` |
+| `/relatorio` (`relatorio_semanal_v1`/`v2`) | `pnl_pct`/votos/quebras usavam TODOS os sinais da semana | mesma exclusão (1x por `id`, nunca conta 2x mesmo entrando em `rows` E `sinais_semana`), mostra `excluídos: N (motivo)` |
+| `/analise` (`condicional.py: carregar_sinais_e_excluidos`) | já excluía (`_risco_irrealista`/`_contaminado_candle`, PATCH 2026-10-27) | sem mudança — já listava motivo por `entry_id` |
+| CSVs (`pos_runner_v1.csv`) | linha por sinal, SEM coluna de R-múltiplo (só `risco_pct`/`resultado_liq_pct` crus) | sem mudança — é despejo bruto auditável (nunca deleta dado), a tag `contaminado_candle`/`risco_irrealista` já aparece na coluna `tags` |
+| `/fechados`/`/abertos` (R realizado/não realizado individual) | mesma fórmula sem checar tag | R individual também fica `s/d` (nunca remove o trade da lista) |
+| PnL da banca ($100, `pr1_bankroll_resumos`) | ledger sequencial, já executado | **sem mudança, por decisão** — ver abaixo |
+
+**PnL da banca não foi alterado de propósito**: `BankrollStateV1`/`pr1_bankroll_trades` é um ledger
+CUMULATIVO (saldo/sequência de trades já simulados), não uma média recomputável a cada chamada —
+excluir um trade dele exigiria reproduzir o ledger inteiro sem ele, o que reescreveria histórico
+científico já "queimado" (proibido pelo `CLAUDE.md` raiz, invariante 11, e pela decisão explícita do
+operador no PATCH 2026-10-27: risco_irrealista "nunca bloqueia o sinal — continua negociando no
+paper normalmente"). Além disso o PnL da banca é em **%/USD realizados** (não é uma divisão por
+`risco_pct`), então o McRib não o explode do mesmo jeito que explode o R-múltiplo — ver item (b).
+
+**(b) como se chegou a ~-561R**: `R = 100 × resultado_líquido_% / risco_%`, com
+`risco_% = 100 × (1 − stop/entry_price)`. O candle contaminado (spike de ~100×, volume 0) fez o
+`entry_price` registrado (fill real, `simulate_v1.py`) ficar colado a poucos pontos-base do `stop`
+original — risco real medido ≈0,008% (bem abaixo do teto de 3% de `RISCO_IRREALISTA_MIN_PCT`). Um
+`resultado_líquido_%` comum de stop (algo como -0,045%, já líquido de custo) dividido por um
+`risco_%` de 0,008% produz `R ≈ -0,045/0,00008 ≈ -561` — a mesma fórmula que qualquer outro trade
+usa, só que o denominador quase zero amplifica qualquer resultado pequeno em centenas de R. A
+confirmação de que `-564,74/4 ≈ -141` (R médio informado) é consistente com 4 trades fechados na V1
+onde só este domina a soma (os outros 3 somam ≈ -3,3R, plausível para trades normais) apoia esse
+mecanismo — não há acesso ao banco real de produção neste container para extrair os valores exatos
+linha a linha; a explicação é a fórmula + a ordem de grandeza relatada, não uma leitura direta do
+SQLite da VM.
+
+**(c) nunca calcular R com risco <3%**: `_motivo_exclusao_r` (tag) + o teto `risco_pct <
+RISCO_IRREALISTA_MIN_PCT` direto em `_stats_r_de_fechados`/`_bloco_fechados`/`_bloco_abertos` — dupla
+proteção: cobre tanto sinais já tagueados quanto, por segurança, qualquer sinal com risco real <3%
+mesmo que a tag não tenha sido gravada por algum motivo (nunca depende SÓ da marcação manual).
+
+**(d) marcação retroativa — manual, nunca automática**: `scripts/marcar_contaminados.py` não é
+chamado por nenhuma migração/startup (confirmado via grep — só aparece em comentários/testes). É
+deliberado: "só o operador que leu a auditoria decide o que marcar" (docstring do script). Comando
+exato para a VM (os 3 trades já identificados na auditoria anterior):
+
+```bash
+python -m signals_mvp.scripts.marcar_contaminados --db dados/estado.sqlite \
+    --trade v1:6 --trade v2:2 --trade v2:1
+```
+
+Faz backup automático (`Storage.backup_to`) ANTES de qualquer escrita, é idempotente (rodar 2x não
+duplica a tag). Nuance: o McRib (V1#6/V2#2) já fica fora do R-múltiplo automaticamente pelo teto de
+3% do item (c), com ou sem rodar o script — mas a ヤギ V2#1 (TP1 mal-rotulado, não necessariamente
+risco baixo) só fica marcada/excluída depois de rodar o script, porque esse tipo de contaminação não
+é detectável por limiar de risco. Rodar o script continua necessário para os 3, inclusive pro
+registro de auditoria explícito e para a exclusão em `/analise` (H1-H8).
+
+### Item 2 — alerta de fila atrasada agora idempotente (`_checar_fila_atrasada`)
+
+Sintoma real: a versão anterior re-alertava a cada transição 0→≥1 DENTRO da mesma hora — como o
+pendente oscilava (flapping), isso produzia ~1 Telegram a cada 1-2 min por quase 30 min seguidos.
+Reescrito para no máximo 3 avisos por hora de fechamento (no teto configurável — padrão 30min —,
++60min e +120min) mais exatamente 1 mensagem "✅ ... normalizada" quando a fila esvazia de verdade
+(só se algum aviso tinha saído nessa hora). Cada aviso lista, por `(pool,tf)` pendente: token, fase
+do detector V1 (`_fase_label_v1`, lê `self.dets_v1`), há quanto tempo foi a última tentativa e qual
+foi o último erro/fonte (`_diagnostico_pool_fila`, lê `self.sched` — campos novos `ultimo_erro`
+`429|timeout|network|http|not_found|bad_json|sem_cotacao_usd|sem_cotacao_no_fim|sem_candle_novo|
+erro_inesperado`, `ultima_tentativa`, `fonte` `gt|dexpaprika_fallback`, gravados em
+`_refresh_safe`/`_refresh_core`/`_refresh_fallback_dexpaprika`, nunca influenciam detecção/sinal).
+
+**Diagnóstico do travamento real**: a causa já identificada e corrigida na §16 (coleta horária de
+carteiras "pro" atrasando o próprio `_schedule`) explica por que ESTE pool específico (o único com
+posição aberta) ficava pendente; o novo campo `ultimo_erro` deixa visível, nas próximas ocorrências,
+se a causa é 429/timeout da GeckoTerminal ou outra coisa, sem precisar adivinhar pelo log.
+
+### Item 3 — fallback DexPaprika por pendência (`_tentar_fallback_por_pendencia`)
+
+Independente do motivo (erro explícito do GT ou só "sem candle novo ainda"), um `(pool,"1h")`
+pendente ≥ `POS_RUNNER_FALLBACK_DP_MIN` (padrão 20) minutos depois do fechamento da hora tenta o
+DexPaprika uma vez (no máximo 1x por hora por pool — nunca martela a cada tick). Reaproveita
+`_refresh_fallback_dexpaprika`/`_refresh_core`, que já passa pela MESMA validação de qualidade de
+candle do caminho GT (`_usd_prefix`/`to_mc_bars`/`fill_gaps`) — nenhuma regra nova de qualidade.
+Continua "nunca reagenda/encerra por conta própria" (o `_schedule`/alerta de fila seguem dependendo
+só do GT se recuperar) — este item é sobre continuidade de dado para detecção/paper, não sobre
+silenciar o alerta do item 2.

@@ -283,7 +283,8 @@ def _contagem_lines(title: str, counts: dict[str, int]) -> list[str]:
 
 
 def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_config_v1: str,
-                           sinais_semana: Optional[list[Any]] = None, scam_count: int = 0) -> str:
+                           sinais_semana: Optional[list[Any]] = None, scam_count: int = 0,
+                           excluidos: Optional[dict[str, int]] = None) -> str:
     """"Bons vs ruins" da semana (complemento FASE 3, item 3): contagem de votos 👍/👎 por gatilho, por
     janela_ouro/fora_da_janela, por tag (`RELATORIO_TAGS`) e por token, mais o PnL paper do periodo --
     `rows` ja vem filtrada por `versao_config_v1` (nunca mistura versoes de config, mesma regra de
@@ -325,6 +326,7 @@ def relatorio_semanal_text(rows: list[Any], pnl_pct: Optional[float], versao_con
         "📊 RELATÓRIO SEMANAL — POS-RUNNER-V1 (bons vs ruins)",
         f"Votos: 👍 {bons} | 👎 {ruins} (de {len(rows)} sinais com feedback)",
         f"PnL paper (líquido, período): {pnl} | versão: {versao_config_v1}",
+        _linha_excluidos(excluidos),
         *_lines("Por gatilho", por_gatilho),
         *_lines("Por janela de ouro", por_janela),
         *_lines("Por tag", por_tag),
@@ -387,16 +389,31 @@ def fechados_text(blocos: list[tuple[str, list[dict[str, Any]]]], n: int) -> str
     return "\n".join(lines)
 
 
+def _linha_excluidos(excluidos: Optional[dict[str, int]]) -> str:
+    """PEDIDO 2026-10-28 (McRib R acumulado -564,74R/-561,43R contaminado): linha fixa, sempre
+    presente (mesmo com 0), provando que o filtro de contaminado_candle/risco_irrealista esta ativo
+    -- nunca silencioso."""
+    excluidos = excluidos or {}
+    total = sum(excluidos.values())
+    if not total:
+        return "excluídos: 0"
+    motivos = ", ".join(f"{k}: {v}" for k, v in sorted(excluidos.items()))
+    return f"excluídos: {total} ({motivos})"
+
+
 def stats_r_text(titulo: str, n_tokens: int, alvo_tokens: int, r_acumulado: Optional[float],
-                 taxa_r_positivo: Optional[float], r_medio: Optional[float], r_mediana: Optional[float]) -> str:
+                 taxa_r_positivo: Optional[float], r_medio: Optional[float], r_mediana: Optional[float],
+                 excluidos: Optional[dict[str, int]] = None) -> str:
     """PEDIDO ADICIONAL FASE 5, item 3: n de tokens DISTINTOS com trade fechado sobre o alvo (padrão
     30, configurável), R acumulado, taxa de trades com R>0, R médio e mediana -- bloco por versão,
-    nunca misturado com a outra."""
+    nunca misturado com a outra. `excluidos` (PEDIDO 2026-10-28): trades contaminado_candle/
+    risco_irrealista nunca entram nessas contas -- a linha mostra quantos e por qual motivo."""
+    linha_excl = _linha_excluidos(excluidos)
     if n_tokens == 0:
-        return f"{titulo}: ainda sem trade fechado (0/{alvo_tokens} tokens distintos)"
+        return f"{titulo}: ainda sem trade fechado (0/{alvo_tokens} tokens distintos) | {linha_excl}"
     taxa = "s/d" if taxa_r_positivo is None else f"{taxa_r_positivo:.0f}%"
     return (
         f"{titulo}: {n_tokens}/{alvo_tokens} tokens distintos com trade fechado | "
         f"R acumulado: {_fmt_r(r_acumulado)} | taxa R>0: {taxa} | "
-        f"R médio: {_fmt_r(r_medio)} | R mediana: {_fmt_r(r_mediana)}"
+        f"R médio: {_fmt_r(r_medio)} | R mediana: {_fmt_r(r_mediana)} | {linha_excl}"
     )

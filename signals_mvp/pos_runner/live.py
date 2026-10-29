@@ -537,7 +537,12 @@ class PosRunnerLive:
         # paper/CSV -- nunca alerta (a combinacao primaria original, extremos, continua a unica com alerta).
         self.dets_fecham: dict[tuple[str, str], Detector] = {}
         self.params_fecham = dataclasses.replace(params, queda_medida="fechamentos")
-        self.sched: dict[tuple[str, str], dict[str, float]] = {}
+        # PEDIDO 2026-10-28: alem de "next"/"erros", agora tambem guarda diagnostico (nunca influencia
+        # deteccao/sinal, so o texto do alerta operacional de fila atrasada) -- "ultimo_erro" (None |
+        # "429" | "timeout" | "network" | "http" | "not_found" | "bad_json" | "sem_cotacao_usd" |
+        # "sem_cotacao_no_fim" | "sem_candle_novo" | "erro_inesperado"), "ultima_tentativa" (ts) e
+        # "fonte" ("gt" | "dexpaprika_fallback").
+        self.sched: dict[tuple[str, str], dict[str, Any]] = {}
         self.next_discovery = 0.0
         self.source_idx = 0
         self.last_prune = 0.0
@@ -587,7 +592,11 @@ class PosRunnerLive:
         # OCORRENCIA, sem spam. `_tick_history` e uma janela rolante (ts, rate_limited) por ciclo.
         self._tick_history: list[tuple[float, bool]] = []
         self._alerta_429_ativo = False
-        self._fila_alertada_hora: Optional[int] = None
+        # PEDIDO 2026-10-28: substitui o marcador simples por hora por um estado completo -- no maximo 3
+        # avisos por hora de fechamento (teto/+60/+120 min) em vez de 1 por transicao 0->=1 (o que
+        # produzia 1 aviso a cada 1-2 min quando a fila oscilava), mais 1 mensagem "resolvido" (nunca
+        # mais de 1) quando a fila esvazia de verdade. Ver `_checar_fila_atrasada`.
+        self._fila_estado: Optional[dict[str, Any]] = None
         # PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada -- medicao AO LADO de
         # V1/V2 (ver evidencia.py), nunca altera deteccao/entrada/saida/banca/Telegram/CSV oficiais. So
         # candles JA em cache (zero chamada nova de GT/DexPaprika -- ver INTERPRETACOES.md para o porque
@@ -908,27 +917,69 @@ class PosRunnerLive:
     def _teto_fila_atraso_min() -> float:
         return float(os.environ.get("POS_RUNNER_FILA_ATRASO_MIN", "30"))
 
+    def _fase_label_v1(self, pool: str, tf: str) -> str:
+        det = self.dets_v1.get((pool, tf))
+        if det is None:
+            return "sem_fase"
+        if det.phase == PHASE_PULLBACK:
+            return "pullback"
+        if det.phase == PHASE_RUNNER:
+            return "runner"
+        return "sem_fase"
+
+    def _diagnostico_pool_fila(self, row: Any, tf: str, now: float) -> str:
+        """PEDIDO 2026-10-28, item 2: token/fase/ultima tentativa/ultimo erro/fonte de 1 (pool,tf)
+        pendente na fila -- so leitura de `self.sched`/`self.dets_v1` (gravados por `_refresh_safe`/
+        `_refresh_core`/`_refresh_fallback_dexpaprika`), nunca uma chamada nova."""
+        pool = row["pool"]
+        st = self.sched.get((pool, tf), {})
+        ultima = st.get("ultima_tentativa")
+        desde = "nunca (desde que o bot subiu)" if ultima is None else f"{(now - ultima) / 60.0:.0f}min atrás"
+        erro = st.get("ultimo_erro") or "nenhum (aguardando candle novo do provedor)"
+        fonte = st.get("fonte") or "s/d"
+        return (f"  {row['symbol']} ({pool[:8]}…) | fase: {self._fase_label_v1(pool, tf)} | "
+                f"última tentativa: {desde} | último erro: {erro} | fonte: {fonte}")
+
     def _checar_fila_atrasada(self, now: float, due: list[tuple[int, float, Any, str]]) -> None:
         """Fila de atualizacao (candles 1h) que nao esvazia ate N min (padrao 30) depois do fechamento
-        da hora -- 1 alerta por hora fechada (nunca repete na mesma hora; libera de novo quando a fila
-        esvaziar ou quando a proxima hora fechar e ainda estiver atrasada)."""
+        da hora.
+
+        PEDIDO 2026-10-28: a versao anterior re-alertava a cada transicao 0->=1 dentro da MESMA hora --
+        quando a fila oscilava (flapping), isso produzia 1 Telegram a cada 1-2 min por quase 30 min
+        seguidos (sintoma real relatado). Agora e idempotente de verdade: no MAXIMO 3 avisos por hora
+        de fechamento (no teto, teto+60min e teto+120min -- nunca mais, mesmo com flapping continuo) e
+        exatamente 1 mensagem "resolvido" quando a fila esvazia de verdade (so se algum aviso foi
+        mandado nesta hora; nunca manda "resolvido" sem ter alertado antes). Cada aviso traz, por
+        (pool,tf) pendente: token, fase do detector V1, ha quanto tempo foi a ultima tentativa, qual
+        foi o ultimo erro (429/timeout/network/http/sem_cotacao_*/sem_candle_novo/erro_inesperado) e a
+        fonte (gt/dexpaprika_fallback) -- `_diagnostico_pool_fila`."""
         hora_boundary = (now // 3600) * 3600
         minutos_desde_fechamento = (now - hora_boundary) / 60.0
-        if minutos_desde_fechamento < self._teto_fila_atraso_min():
-            return
-        pendentes_1h = sum(1 for _rank, _next, _row, tf in due if tf == "1h")
         hora_marcador = int(hora_boundary)
-        if pendentes_1h == 0:
-            if self._fila_alertada_hora == hora_marcador:
-                self._fila_alertada_hora = None
+        if self._fila_estado is None or self._fila_estado["hora"] != hora_marcador:
+            self._fila_estado = {"hora": hora_marcador, "avisos": set()}
+        estado = self._fila_estado
+        pendentes = [(row, tf) for _rank, _next, row, tf in due if tf == "1h"]
+        if not pendentes:
+            if estado["avisos"]:
+                self._send_alerta_operacional(
+                    "✅ POS-RUNNER: fila de atualização (1h) normalizada (0 pool(s)/tf pendente(s)).")
+                estado["avisos"] = set()
             return
-        if self._fila_alertada_hora == hora_marcador:
+        teto = self._teto_fila_atraso_min()
+        if minutos_desde_fechamento < teto:
             return
-        self._fila_alertada_hora = hora_marcador
-        self._send_alerta_operacional(
-            f"⚠ POS-RUNNER: fila de atualizacao (1h) ainda com {pendentes_1h} pool(s)/tf pendente(s) "
-            f"{minutos_desde_fechamento:.0f} min depois do fechamento da hora (teto "
-            f"{self._teto_fila_atraso_min():.0f} min).")
+        for tier in (teto, teto + 60.0, teto + 120.0):
+            if minutos_desde_fechamento >= tier and tier not in estado["avisos"]:
+                estado["avisos"].add(tier)
+                linhas = [
+                    f"⚠ POS-RUNNER: fila de atualizacao (1h) ainda com {len(pendentes)} pool(s)/tf "
+                    f"pendente(s) {minutos_desde_fechamento:.0f} min depois do fechamento da hora "
+                    f"(teto {teto:.0f} min)."
+                ]
+                linhas.extend(self._diagnostico_pool_fila(row, tf, now) for row, tf in pendentes)
+                self._send_alerta_operacional("\n".join(linhas))
+                break
 
     def _phase_counts_v1(self) -> dict[str, int]:
         """Pools acompanhados AGORA por fase do detector da V1 (item do heartbeat da revisao FASE 1.1)."""
@@ -973,9 +1024,19 @@ class PosRunnerLive:
 
     def _refresh_safe(self, row: Any, tf: str, now: float, out: dict[str, Any]) -> None:
         key = (row["pool"], tf)
+        fallback_ja_tentado = False
         try:
             self._refresh(self.storage.pr_pool(row["pool"]), tf, now)
-        except (RateLimited, TelegramError):
+        except RateLimited as exc:
+            # PEDIDO 2026-10-28 (diagnostico da fila atrasada): grava o 429 ANTES de relancar -- o
+            # abort do ciclo inteiro (budget.exhaust() em `tick()`) continua igual, so acrescenta o
+            # motivo pro alerta operacional.
+            st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
+            st["ultimo_erro"] = "429"
+            st["ultima_tentativa"] = now
+            st["fonte"] = "gt"
+            raise
+        except TelegramError:
             raise
         except ApiError as exc:
             if exc.kind == "budget":
@@ -984,6 +1045,9 @@ class PosRunnerLive:
             st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
             st["erros"] += 1
             st["next"] = now + min(1800.0, 60.0 * (2 ** st["erros"]))
+            st["ultimo_erro"] = exc.kind
+            st["ultima_tentativa"] = now
+            st["fonte"] = "gt"
             log.warning("POS-RUNNER: candles de %s %s falharam (%s)", row["symbol"], tf, exc)
             if exc.kind == "not_found" and st["erros"] >= 3:
                 self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="pool nao existe mais no GT (404)")
@@ -992,6 +1056,7 @@ class PosRunnerLive:
             # proxima tentativa normal (o `_schedule`/retry acima continua igual, isto e so um extra).
             if self.dexpaprika is not None and (exc.kind in ("timeout", "network")
                                                 or (exc.kind == "http" and (exc.status or 0) >= 500)):
+                fallback_ja_tentado = True
                 try:
                     if self._refresh_fallback_dexpaprika(self.storage.pr_pool(row["pool"]), tf, now):
                         log.info("POS-RUNNER: fallback DexPaprika cobriu %s %s enquanto o GT falhava", row["symbol"], tf)
@@ -1002,7 +1067,45 @@ class PosRunnerLive:
             st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
             st["erros"] += 1
             st["next"] = now + min(3600.0, 120.0 * (2 ** st["erros"]))
+            st["ultimo_erro"] = "erro_inesperado"
+            st["ultima_tentativa"] = now
+            st["fonte"] = "gt"
             log.exception("POS-RUNNER: erro inesperado em %s %s (pool em espera)", row["symbol"], tf)
+        if not fallback_ja_tentado:
+            self._tentar_fallback_por_pendencia(row, tf, now)
+
+    @staticmethod
+    def _fallback_dexpaprika_min_pendente() -> float:
+        return float(os.environ.get("POS_RUNNER_FALLBACK_DP_MIN", "20"))
+
+    def _tentar_fallback_por_pendencia(self, row: Any, tf: str, now: float) -> None:
+        """PEDIDO 2026-10-28, item 3: independente do MOTIVO (erro explicito do GT ou so sem candle
+        novo ainda -- `sem_candle_novo`), se o (pool,tf) 1h continua pendente >= `POS_RUNNER_
+        FALLBACK_DP_MIN` (padrao 20) min depois do fechamento da hora, tenta a mesma fonte DexPaprika
+        de fallback (credito e barato/ocioso -- ver INTERPRETACOES.md). Reaproveita
+        `_refresh_fallback_dexpaprika`/`_refresh_core`, que ja aplica a MESMA validacao de qualidade
+        de candle do caminho GT (`_usd_prefix`/`to_mc_bars`/`fill_gaps`), nunca uma regra nova -- e
+        nunca reagenda/encerra por conta propria (ver comentario em `_refresh_core`), so preenche
+        candle pra deteccao/paper nao atrasarem junto. No maximo 1 tentativa por (pool,tf) por hora
+        (nunca martela DexPaprika a cada tick so porque continua pendente)."""
+        if tf != "1h" or self.dexpaprika is None:
+            return
+        hora_boundary = (now // 3600) * 3600
+        minutos = (now - hora_boundary) / 60.0
+        if minutos < self._fallback_dexpaprika_min_pendente():
+            return
+        key = (row["pool"], tf)
+        st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
+        hora_marcador = int(hora_boundary)
+        if st.get("fallback_pendencia_hora") == hora_marcador:
+            return
+        st["fallback_pendencia_hora"] = hora_marcador
+        try:
+            if self._refresh_fallback_dexpaprika(self.storage.pr_pool(row["pool"]), tf, now):
+                log.info("POS-RUNNER: fallback DexPaprika (>=%.0fmin pendente) cobriu %s %s",
+                         self._fallback_dexpaprika_min_pendente(), row["symbol"], tf)
+        except Exception:  # noqa: BLE001 - o fallback e so um extra, nunca pode piorar o ciclo
+            log.exception("POS-RUNNER: fallback DexPaprika (pendencia) falhou em %s %s", row["symbol"], tf)
 
     # -- candles e detector ------------------------------------------------------------------------
     def _detector(self, row: Any, tf: str, now: float) -> Optional[Detector]:
@@ -1758,33 +1861,59 @@ class PosRunnerLive:
             )
 
     @staticmethod
+    def _motivo_exclusao_r(tags_json: Optional[str]) -> Optional[str]:
+        """PEDIDO 2026-10-28 (McRib: R acumulado -564,74R/-561,43R contaminado): candle contaminado
+        (marcacao retroativa do operador, `scripts/marcar_contaminados.py`, tag `contaminado_candle`)
+        ou risco real <3% (fill colado no stop, PATCH 2026-10-27, tag `risco_irrealista`) tornam o
+        R-multiplo (lucro_liquido_% / risco_%) uma divisao por quase-zero -- NUNCA entram em
+        estatistica agregada (resumo diario, /relatorio); ficam fora com motivo explicito, nunca
+        silenciosamente. O trade continua visivel (CSV, tags, /fechados) -- so as estatisticas
+        agregadas excluem, nunca os dados em si (nunca deletar dado)."""
+        tags = json.loads(tags_json or "[]")
+        for motivo in ("contaminado_candle", "risco_irrealista"):
+            if motivo in tags:
+                return motivo
+        return None
+
+    @staticmethod
     def _stats_r_de_fechados(sinais: Sequence[Any]) -> dict[str, Any]:
         """PEDIDO ADICIONAL FASE 5, item 3: R-multiplo (lucro_liquido_% / risco_%, MESMA formula da
         analise Monte Carlo -- `signals_mvp/analise/simulacao_bloco.py`) sobre todos os sinais
-        FECHADOS recebidos. `n_tokens` conta tokens DISTINTOS (mint), nao sinais."""
+        FECHADOS recebidos. `n_tokens` conta tokens DISTINTOS (mint), nao sinais.
+
+        PEDIDO 2026-10-28: nunca calcula R quando o risco real e <3% (`RISCO_IRREALISTA_MIN_PCT`) ou
+        o sinal foi marcado `contaminado_candle` -- R fica de fora (nao NULL misturado na media, fora
+        da amostra mesmo), contado em `excluidos` por motivo."""
         valores: list[float] = []
         tokens: set[str] = set()
+        excluidos: dict[str, int] = {}
         for s in sinais:
             if s["status"] != "fechado" or s["result_net"] is None:
+                continue
+            motivo = PosRunnerLive._motivo_exclusao_r(s["tags"])
+            if motivo is not None:
+                excluidos[motivo] = excluidos.get(motivo, 0) + 1
                 continue
             entry, stop = s["entry_price"], s["stop"]
             if not entry or stop is None:
                 continue
             risco_pct = 100.0 * (1.0 - stop / entry)
-            if not risco_pct:
+            if not risco_pct or risco_pct < PosRunnerLive.RISCO_IRREALISTA_MIN_PCT:
+                excluidos["risco_irrealista"] = excluidos.get("risco_irrealista", 0) + 1
                 continue
             valores.append(100.0 * s["result_net"] / risco_pct)
             if s["mint"]:
                 tokens.add(s["mint"])
         n = len(valores)
         if n == 0:
-            return {"n_tokens": 0, "r_acumulado": None, "taxa_r_positivo": None, "r_medio": None, "r_mediana": None}
+            return {"n_tokens": 0, "r_acumulado": None, "taxa_r_positivo": None, "r_medio": None,
+                    "r_mediana": None, "excluidos": excluidos}
         ordenados = sorted(valores)
         mediana = ordenados[n // 2] if n % 2 else (ordenados[n // 2 - 1] + ordenados[n // 2]) / 2.0
         return {
             "n_tokens": len(tokens), "r_acumulado": sum(valores),
             "taxa_r_positivo": 100.0 * sum(1 for v in valores if v > 0) / n,
-            "r_medio": sum(valores) / n, "r_mediana": mediana,
+            "r_medio": sum(valores) / n, "r_mediana": mediana, "excluidos": excluidos,
         }
 
     @staticmethod
@@ -1820,7 +1949,8 @@ class PosRunnerLive:
         stats = self._stats_r_de_fechados(self.storage.pr1_signals())
         return texto + "\n" + telegram_v1.stats_r_text("V1", stats["n_tokens"], self._alvo_tokens(),
                                                        stats["r_acumulado"], stats["taxa_r_positivo"],
-                                                       stats["r_medio"], stats["r_mediana"])
+                                                       stats["r_medio"], stats["r_mediana"],
+                                                       excluidos=stats["excluidos"])
 
     def send_daily_summary_v1(self) -> None:
         self._send(self.daily_summary_v1())
@@ -1831,7 +1961,7 @@ class PosRunnerLive:
         stats = self._stats_r_de_fechados(self.storage.pr2_signals())
         return "📋 RESUMO DIÁRIO — POS-RUNNER-V2\n" + telegram_v1.stats_r_text(
             "V2", stats["n_tokens"], self._alvo_tokens(), stats["r_acumulado"], stats["taxa_r_positivo"],
-            stats["r_medio"], stats["r_mediana"])
+            stats["r_medio"], stats["r_mediana"], excluidos=stats["excluidos"])
 
     def send_daily_summary_v2(self) -> None:
         if self.sem_v2:
@@ -1846,6 +1976,9 @@ class PosRunnerLive:
             entry, stop = s["entry_price"], s["stop"]
             ultimo = self._ultimo_preco_fechado(s["pool"], s["tf"])
             risco_pct = 100.0 * (1.0 - stop / entry) if entry and stop is not None else None
+            if self._motivo_exclusao_r(s["tags"]) is not None or (risco_pct is not None
+                                                                   and risco_pct < self.RISCO_IRREALISTA_MIN_PCT):
+                risco_pct = None
             r_na = None
             if ultimo is not None and entry and risco_pct:
                 r_na = (100.0 * (ultimo / entry - 1.0)) / risco_pct
@@ -1870,6 +2003,12 @@ class PosRunnerLive:
         for s in recentes:
             entry, stop = s["entry_price"], s["stop"]
             risco_pct = 100.0 * (1.0 - stop / entry) if entry and stop is not None else None
+            # PEDIDO 2026-10-28: nunca calcula R quando contaminado/risco real <3% (mesma regra de
+            # `_stats_r_de_fechados`) -- aqui so troca o R individual por s/d, nunca remove o trade
+            # da lista (/fechados sempre mostra TODOS os trades fechados, so o numero fica de fora).
+            if self._motivo_exclusao_r(s["tags"]) is not None or (risco_pct is not None
+                                                                   and risco_pct < self.RISCO_IRREALISTA_MIN_PCT):
+                risco_pct = None
             r_realizado = (100.0 * s["result_net"] / risco_pct) if (s["result_net"] is not None and risco_pct) else None
             out.append({
                 "symbol": s["symbol"], "r_realizado": r_realizado, "motivo_saida": s["reason"],
@@ -1887,19 +2026,36 @@ class PosRunnerLive:
 
     def relatorio_semanal_v1(self) -> str:
         """"Bons vs ruins" da ultima semana (FASE 3, item 3): so votos (👍/👎) e so da versao congelada ATUAL
-        (`version_v1`) -- nunca mistura versoes de config, mesma regra do `daily_summary_v1`."""
+        (`version_v1`) -- nunca mistura versoes de config, mesma regra do `daily_summary_v1`.
+
+        PEDIDO 2026-10-28: sinais contaminado_candle/risco_irrealista (excluidos uma unica vez pelo
+        `id`, mesmo entrando em mais de uma estatistica abaixo) ficam fora de TODAS as quebras do
+        relatorio (PnL, votos, risco_fora_da_faixa, histograma) -- `excluidos` mostra quantos e por
+        qual motivo, nunca some o trade silenciosamente (continua no CSV/tags/`/fechados`)."""
         now = self.clock()
         since = now - 7 * 86400.0
-        rows = self.storage.pr1_feedback_votes_since(since, now, self.version_v1)
-        pnl_values = [r["sig_result_net"] for r in rows if r["sig_result_net"] is not None]
-        pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
         # item 4 do pedido de ajustes de alerta/medicao: quebra de risco_fora_da_faixa por gatilho e
         # histograma do % de stop vem de TODOS os sinais ENTRADA da semana (nao so os com feedback do
         # operador, que e um subconjunto bem menor) -- so leitura, nunca muda o que ja esta em pr1_signals.
-        sinais_semana = [s for s in self.storage.pr1_signals()
-                         if s["versao_config_v1"] == self.version_v1 and s["ts_fechamento"] >= since]
+        sinais_semana_todos = [s for s in self.storage.pr1_signals()
+                               if s["versao_config_v1"] == self.version_v1 and s["ts_fechamento"] >= since]
+        excluidos: dict[str, int] = {}
+        excluidos_ids: set[int] = set()
+        sinais_semana = []
+        for s in sinais_semana_todos:
+            motivo = self._motivo_exclusao_r(s["tags"])
+            if motivo is not None:
+                excluidos[motivo] = excluidos.get(motivo, 0) + 1
+                excluidos_ids.add(s["id"])
+                continue
+            sinais_semana.append(s)
+        rows = [r for r in self.storage.pr1_feedback_votes_since(since, now, self.version_v1)
+               if r["pr1_signal_id"] not in excluidos_ids]
+        pnl_values = [r["sig_result_net"] for r in rows if r["sig_result_net"] is not None]
+        pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
         scam_count = self.storage.pr1_feedback_scam_count_since(since, now, self.version_v1)
-        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1, sinais_semana, scam_count)
+        return telegram_v1.relatorio_semanal_text(rows, pnl_pct, self.version_v1, sinais_semana, scam_count,
+                                                  excluidos=excluidos)
 
     def send_relatorio_semanal_v1(self) -> None:
         self._send(self.relatorio_semanal_v1())
@@ -1907,14 +2063,24 @@ class PosRunnerLive:
     def relatorio_semanal_v2(self) -> str:
         """PEDIDO CONSOLIDADO FASE 2: MESMO relatorio da V1, so que a partir das tabelas pr2_* -- sem
         feedback (a FASE 3 de botoes/votos e um recurso so da V1 por ora, `rows=[]`); PnL vem direto dos
-        sinais FECHADOS da V2 na semana. `/relatorio v2` chama este metodo; nunca mistura com a V1."""
+        sinais FECHADOS da V2 na semana. `/relatorio v2` chama este metodo; nunca mistura com a V1.
+
+        PEDIDO 2026-10-28: mesma exclusao contaminado_candle/risco_irrealista da V1."""
         now = self.clock()
         since = now - 7 * 86400.0
-        sinais_semana = [s for s in self.storage.pr2_signals()
-                         if s["versao_config_v2"] == self.version_v2 and s["ts_fechamento"] >= since]
+        sinais_semana_todos = [s for s in self.storage.pr2_signals()
+                               if s["versao_config_v2"] == self.version_v2 and s["ts_fechamento"] >= since]
+        excluidos: dict[str, int] = {}
+        sinais_semana = []
+        for s in sinais_semana_todos:
+            motivo = self._motivo_exclusao_r(s["tags"])
+            if motivo is not None:
+                excluidos[motivo] = excluidos.get(motivo, 0) + 1
+                continue
+            sinais_semana.append(s)
         pnl_values = [s["result_net"] for s in sinais_semana if s["status"] == "fechado" and s["result_net"] is not None]
         pnl_pct = None if not pnl_values else 100.0 * sum(pnl_values) / len(pnl_values)
-        return telegram_v1.relatorio_semanal_text([], pnl_pct, self.version_v2, sinais_semana)
+        return telegram_v1.relatorio_semanal_text([], pnl_pct, self.version_v2, sinais_semana, excluidos=excluidos)
 
     def send_relatorio_semanal_v2(self) -> None:
         self._send(self.relatorio_semanal_v2())

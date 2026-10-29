@@ -5,6 +5,7 @@ o harness do V0/V1 (`LiveHarness`/`start_tracking`), so leitura, sem rede real (
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from ..http import ApiError
 from ..pos_runner.dexpaprika_v1 import Divergencia
@@ -108,6 +109,62 @@ class FallbackIntegrationTests(unittest.TestCase):
             h.world.fail = ApiError("timeout", "GT fora do ar (simulado)")
             h.clock.advance(H)
             h.tick()   # nao pode levantar nem quebrar so por nao ter o provider
+        finally:
+            h.close()
+
+
+class PendenciaFallbackTests(unittest.TestCase):
+    """PEDIDO 2026-10-28, item 3: independente de erro explicito do GT, um (pool,tf) 1h pendente
+    >= `POS_RUNNER_FALLBACK_DP_MIN` (padrao 20) min depois do fechamento da hora tenta o fallback
+    DexPaprika uma vez (nunca martela a cada tick, nunca mais de 1x por hora)."""
+
+    def test_fires_once_past_20_minutes_pending_then_never_twice_in_the_same_hour(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(5)
+            stub = _StubDexPaprikaProvider(fallback_bars=[])
+            h.live.dexpaprika = stub
+            row = h.storage.pr_pool("POOL1")
+            hora = (h.clock() // 3600) * 3600
+            h.live._tentar_fallback_por_pendencia(row, "1h", hora + 10 * 60.0)  # noqa: SLF001 -- ainda sob o teto (20)
+            self.assertEqual(stub.fallback_chamadas, [])
+            h.live._tentar_fallback_por_pendencia(row, "1h", hora + 25 * 60.0)  # noqa: SLF001 -- passou o teto
+            self.assertEqual(len(stub.fallback_chamadas), 1)
+            h.live._tentar_fallback_por_pendencia(row, "1h", hora + 40 * 60.0)  # noqa: SLF001 -- mesma hora
+            self.assertEqual(len(stub.fallback_chamadas), 1, "nunca martela DexPaprika 2x na mesma hora")
+            proxima_hora = hora + H
+            h.live._tentar_fallback_por_pendencia(row, "1h", proxima_hora + 25 * 60.0)  # noqa: SLF001
+            self.assertEqual(len(stub.fallback_chamadas), 2, "nova hora pendente libera 1 nova tentativa")
+        finally:
+            h.close()
+
+    def test_never_fires_for_timeframes_other_than_1h(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(5)
+            stub = _StubDexPaprikaProvider(fallback_bars=[])
+            h.live.dexpaprika = stub
+            row = h.storage.pr_pool("POOL1")
+            hora = (h.clock() // 3600) * 3600
+            h.live._tentar_fallback_por_pendencia(row, "4h", hora + 25 * 60.0)  # noqa: SLF001
+            self.assertEqual(stub.fallback_chamadas, [])
+        finally:
+            h.close()
+
+    def test_the_minutes_threshold_is_configurable_via_env(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(5)
+            stub = _StubDexPaprikaProvider(fallback_bars=[])
+            h.live.dexpaprika = stub
+            row = h.storage.pr_pool("POOL1")
+            hora = (h.clock() // 3600) * 3600
+            with mock.patch.dict("os.environ", {"POS_RUNNER_FALLBACK_DP_MIN": "5"}):
+                h.live._tentar_fallback_por_pendencia(row, "1h", hora + 6 * 60.0)  # noqa: SLF001
+            self.assertEqual(len(stub.fallback_chamadas), 1)
         finally:
             h.close()
 
