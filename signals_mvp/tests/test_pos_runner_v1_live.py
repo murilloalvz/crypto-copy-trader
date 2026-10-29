@@ -61,6 +61,22 @@ class EntradaTests(unittest.TestCase):
         self.assertEqual(len(_entrada_v1(self.h)), 1, "reinicio nao pode repetir o alerta de entrada")
         self.assertEqual(len(self.h.storage.pr1_signals()), 1, "reinicio nao pode duplicar a linha do sinal")
 
+    def test_startup_rehydrates_the_detector_of_an_open_position_before_any_refresh(self) -> None:
+        """PEDIDO 2026-10-29, item 4 (saude.py: CARTEIRAS 0 snapshots mesmo com posicao aberta): apos um
+        reinicio, `self.dets_v1` comeca vazio e `_heat_v1` devolve -1 (nao rank 0) para uma posicao JA
+        aberta ate o detector ser reconstruido -- isso atrasava o PROPRIO refresh que dispara o snapshot
+        horario de carteiras (so roda depois de 1 refresh). `_startup` agora reconstroi o detector dessas
+        posicoes imediatamente, a partir dos MESMOS candles ja em `pr_bars` (zero candle novo) -- sem
+        esperar a fila."""
+        self._run_to_entrada()
+        sinal = self.h.storage.pr1_signals(status="aberto")[0]
+        pool, tf = sinal["pool"], sinal["tf"]
+        fresh = self.h.new_live()
+        self.assertIsNone(fresh.dets_v1.get((pool, tf)), "pre-condicao: reinicio comeca sem detector")
+        fresh._startup(self.h.clock())   # noqa: SLF001 -- isola o que o startup faz, sem o refresh do mesmo tick
+        self.assertIsNotNone(fresh.dets_v1.get((pool, tf)), "startup deveria reconstruir o detector da posicao aberta")
+        self.assertEqual(fresh._heat_v1(pool, tf), 0, "posicao aberta precisa de rank 0 (prioridade absoluta) logo apos o reinicio")
+
     def _tp1_then_stop(self) -> None:
         # Depois do rompimento, fabrica candles que levam o preco ao TOPO (1M) com exaustao (TP1), depois
         # caem e tocam o stop (fecha o trade). Mesmos valores de P_peak/S/stop do textbook() do V0; sem a

@@ -135,6 +135,66 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_carteiras_section_reports_eligibility_rpc_configured_and_daily_budget(self) -> None:
+        """PEDIDO 2026-10-29 (item 1/2): elegiveis AGORA (posicao aberta), RPC configurado (gravado
+        pelo PROPRIO processo ao vivo em `meta`, nunca um env var deste script) e orcamento usado/
+        limite -- os 3 primeiros diagnosticos pedidos pra CARTEIRAS com 0 snapshots."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)   # abre 1 posicao V1 e 1 V2, no MESMO pool (POOL1)
+            h.storage.set_meta("pr_carteiras_runtime", json.dumps({
+                "rpc_configurado": False, "sem_carteiras": False, "carteiras_max_chamadas_dia": 200,
+                "ts": h.clock(),
+            }))
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("elegiveis AGORA (posicao aberta V1 ou V2): 1 pool(s)", texto)
+            self.assertIn("RPC configurado=NAO", texto)
+            self.assertIn("orcamento hoje: 0/200", texto)
+        finally:
+            h.close()
+
+    def test_carteiras_section_shows_last_cycle_counters_and_last_error_from_the_log(self) -> None:
+        """PEDIDO 2026-10-29 (item 1/3): ultima tentativa/resultado da coleta horaria (log INFO por
+        ciclo) e o ultimo erro (log WARNING por falha de RPC), sem precisar do processo ao vivo."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            logs_dir = h.storage.paths.db.parent.parent / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            agora = _time.time()
+            ts_ciclo = _time.strftime("%Y-%m-%d %H:%M:%S", _time.gmtime(agora - 120))
+            ts_erro = _time.strftime("%Y-%m-%d %H:%M:%S", _time.gmtime(agora - 60))
+            linhas = [
+                f"{ts_ciclo}Z INFO     signals_mvp.pos_runner.live: POS-RUNNER-V1: ciclo | fila=2 | "
+                "chamadas=1 | 429=False | tempo=0.01s | carteiras_tentativas=1 carteiras_gravados=0 "
+                "carteiras_erros=1 carteiras_orcamento_esgotado=0",
+                f"{ts_erro}Z WARNING  signals_mvp.pos_runner.live: POS-RUNNER carteiras: snapshot "
+                "horario falhou em CAT (sem RPC configurado)",
+            ]
+            (logs_dir / "signals_mvp.log").write_text("\n".join(linhas) + "\n", encoding="utf-8")
+            texto = saude.executar(h.storage.paths.db, logs_dir, 48.0)
+            self.assertIn(f"ultima tentativa da coleta (log, [{ts_ciclo}]): tentativas=1 gravados=0 "
+                         "erros=1 orcamento_esgotado=0", texto)
+            self.assertIn(f"ultimo erro da coleta: [{ts_erro}] CAT (sem RPC configurado)", texto)
+        finally:
+            h.close()
+
+    def test_carteiras_section_shows_the_last_known_phase_distribution(self) -> None:
+        """PEDIDO 2026-10-29 (item 2): distribuicao de fases (sem_fase/runner/pullback) -- so existe na
+        memoria do processo ao vivo, persistida em `meta` a cada heartbeat; saude.py mostra a ULTIMA
+        leitura conhecida (nunca inventa um numero ao vivo)."""
+        h = LiveHarness()
+        try:
+            h.storage.set_meta("pr_fase_counts_v1", json.dumps({"sem_fase": 3, "runner": 1, "pullback": 0, "ts": h.clock()}))
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("fases V1", texto)
+            self.assertIn("sem_fase=3", texto)
+            self.assertIn("runner=1", texto)
+            self.assertIn("fases V2: s/d", texto)
+        finally:
+            h.close()
+
     def test_contaminated_trades_are_counted_and_excluded_note_is_present(self) -> None:
         h = LiveHarness()
         try:

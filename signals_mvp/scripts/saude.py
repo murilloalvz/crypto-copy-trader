@@ -164,13 +164,28 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     return out
 
 
-def _secao_carteiras(storage: Storage, now: float) -> list[str]:
+_RE_CICLO_CARTEIRAS = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER-V1: ciclo .*"
+    r"carteiras_tentativas=(?P<tent>\d+) carteiras_gravados=(?P<grav>\d+) "
+    r"carteiras_erros=(?P<err>\d+) carteiras_orcamento_esgotado=(?P<orc>\d+)"
+)
+_RE_ERRO_CARTEIRAS = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER carteiras: snapshot horario falhou em (?P<msg>.*)$"
+)
+
+
+def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
+    """PEDIDO 2026-10-29, item 1/2: diagnostico completo da coleta "ao lado" de carteiras "pro" --
+    elegiveis AGORA (posicao aberta), RPC configurado (gravado pelo PROPRIO processo ao vivo em
+    `meta` -- nunca um env var lido por ESTE script, que pode rodar num shell diferente), orcamento
+    usado/limite, ultima tentativa/resultado e ultimo erro (do log, `_atualizar_carteiras_horaria`),
+    e a distribuicao de fases (tambem so existe na memoria do processo ao vivo -- aqui mostra a
+    ULTIMA leitura conhecida, persistida a cada heartbeat, nunca um numero ao vivo)."""
     from ..pos_runner import carteiras_pro as cp
     sha = storage.get_meta(cp.META_KEY_SHA256)
     n_carteiras = storage.get_meta(cp.META_KEY_N_CARTEIRAS)
     n_pessoas = storage.get_meta(cp.META_KEY_N_PESSOAS)
     por_hora = Counter()
-    erros = 0
     for row in storage.pr_carteiras_snapshot_all():
         if now - row["ts"] <= 86400.0:
             por_hora[int(row["ts"] // 3600)] += 1
@@ -178,6 +193,51 @@ def _secao_carteiras(storage: Storage, now: float) -> list[str]:
     out = [f"CARTEIRAS: lista carregada={'sim' if sha else 'NAO'} (sha256={sha[:12] + '...' if sha else 's/d'}) "
           f"| n_carteiras_pro={n_carteiras or 's/d'} n_pessoas_pro={n_pessoas or 's/d'}",
           f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s)"]
+    elegiveis = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
+                {s["pool"] for s in storage.pr2_signals(status="aberto")}
+    out.append(f"  elegiveis AGORA (posicao aberta V1 ou V2): {len(elegiveis)} pool(s)")
+    runtime_raw = storage.get_meta("pr_carteiras_runtime")
+    if runtime_raw:
+        rt = json.loads(runtime_raw)
+        inicio_do_dia = now - (now % 86400.0)
+        usado_hoje = storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria")
+        out.append(f"  RPC configurado={'sim' if rt['rpc_configurado'] else 'NAO'} | "
+                  f"SEM_CARTEIRAS={'sim (desligado)' if rt['sem_carteiras'] else 'nao'} | "
+                  f"orcamento hoje: {usado_hoje}/{rt['carteiras_max_chamadas_dia']} chamada(s) | "
+                  f"(config lida ha {_fmt_h(now - rt['ts'])}, no proprio processo ao vivo)")
+    else:
+        out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
+    linhas = _linhas_log(logs_dir, 86400.0, now)
+    ultimo_ciclo = None
+    for linha in linhas:
+        m = _RE_CICLO_CARTEIRAS.match(linha)
+        if m:
+            ultimo_ciclo = m
+    if ultimo_ciclo:
+        out.append(f"  ultima tentativa da coleta (log, [{ultimo_ciclo['ts']}]): "
+                  f"tentativas={ultimo_ciclo['tent']} gravados={ultimo_ciclo['grav']} "
+                  f"erros={ultimo_ciclo['err']} orcamento_esgotado={ultimo_ciclo['orc']}")
+    else:
+        out.append("  ultima tentativa da coleta: nenhuma linha de ciclo no log (bot nunca rodou 1 tick "
+                  "nesta janela, ou --logs nao aponta pro diretorio certo)")
+    ultimo_erro = None
+    for linha in linhas:
+        m = _RE_ERRO_CARTEIRAS.match(linha)
+        if m:
+            ultimo_erro = m
+    out.append(f"  ultimo erro da coleta: [{ultimo_erro['ts']}] {ultimo_erro['msg']}" if ultimo_erro
+              else "  ultimo erro da coleta: nenhum no log (24h)")
+    for versao, chave in (("V1", "pr_fase_counts_v1"), ("V2", "pr_fase_counts_v2")):
+        raw = storage.get_meta(chave)
+        if raw is None:
+            out.append(f"  fases {versao}: s/d (so existe na memoria do processo ao vivo -- "
+                      "aparece apos o 1o heartbeat)")
+            continue
+        fases = json.loads(raw)
+        ts_fases = fases.pop("ts")
+        out.append(f"  fases {versao} (ha {_fmt_h(now - ts_fases)}, no ultimo heartbeat -- nao e 'caixa', "
+                  f"so sem_fase/runner/pullback existem no detector): " +
+                  " ".join(f"{k}={v}" for k, v in fases.items()))
     return out
 
 
@@ -336,7 +396,7 @@ def executar(db_path: Path, logs_dir: Optional[Path], janela_h: float) -> str:
             lambda: _secao_log(logs_dir, janela_h, now),
             lambda: _secao_uptime_versoes(storage, now),
             lambda: _secao_fila(storage, now),
-            lambda: _secao_carteiras(storage, now),
+            lambda: _secao_carteiras(storage, now, logs_dir),
             lambda: _secao_trajetoria_baseline(storage, now),
             lambda: _secao_dexpaprika(storage, now),
             lambda: _secao_429(storage, now, logs_dir),

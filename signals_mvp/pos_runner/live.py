@@ -616,6 +616,14 @@ class PosRunnerLive:
         self.carteiras_max_chamadas_dia = carteiras_max_chamadas_dia
         self._mapa_carteiras_pro = carteiras_pro.carregar_mapa_grupos()   # {} se o arquivo nao existir
         self._carteiras_horaria_ultima: dict[str, int] = {}   # pool -> ultimo bucket de hora UTC coletado
+        # PEDIDO 2026-10-29 (item 2/3, saude.py: CARTEIRAS com 0 snapshots): diagnostico da coleta, por
+        # ciclo (zerado em `tick()`) + o ultimo erro/tentativa (persistem entre ciclos, ate o proximo).
+        # `_carteiras_rpc_configurado` so e gravado em `meta` (saude.py le de la, processo separado)
+        # dentro de `_startup`, reflete o adapter REAL deste processo (nunca um env var lido por outro
+        # processo, que pode nao compartilhar o mesmo ambiente do bot).
+        self._carteiras_ciclo = {"tentativas": 0, "gravados": 0, "erros": 0, "orcamento_esgotado": 0}
+        self._carteiras_ultimo_erro: Optional[str] = None
+        self._carteiras_ultima_tentativa_ts: Optional[float] = None
 
     # -- controle -----------------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -686,6 +694,36 @@ class PosRunnerLive:
                 pool_row = self.storage.pr_pool(signal["pool"])
                 if pool_row is None or pool_row["status"] != "ativo":
                     self.storage.pr2_update_signal(signal["id"], status="perdido_offline", closed_ts=now)
+        # PEDIDO 2026-10-29 (item 4, saude.py: CARTEIRAS com 0 snapshots mesmo com posicao aberta): a
+        # cada reinicio `self.dets_v1`/`self.dets_v2` comecam vazios, e `_heat_v1`/`_heat_v2` (task #94,
+        # prioridade ABSOLUTA de posicao aberta) so devolvem rank 0 quando ja existe um Detector para o
+        # (pool,tf) -- antes do 1o refresh pos-reinicio reconstruir isso, uma posicao JA aberta perdia
+        # essa prioridade absoluta, atrasando o proprio refresh que dispara
+        # `_atualizar_carteiras_horaria` (so roda APOS um refresh ja ter acontecido pra aquele pool).
+        # Aqui so chama `_detector_v1`/`_detector_v2` mais cedo (nenhuma logica nova) -- a MESMA
+        # reconstrucao inteira a partir de `pr_bars` ja em cache que ja aconteceria no 1o refresh
+        # natural pos-reinicio ("reiniciar o bot refaz o mesmo estado a partir dos candles congelados",
+        # docstring do topo deste arquivo) -- so adiantada. Restrito as posicoes JA abertas (conjunto
+        # pequeno) e nunca o universo inteiro de pools ativos, pra nao disparar de 1 vez o replay de
+        # historico (RPC/DexPaprika) de todo pool rastreado.
+        for signal in self.storage.pr1_signals(status="aberto"):
+            pool_row = self.storage.pr_pool(signal["pool"])
+            if pool_row is not None:
+                self._detector_v1(pool_row, signal["tf"], now)
+        if not self.sem_v2:
+            for signal in self.storage.pr2_signals(status="aberto"):
+                pool_row = self.storage.pr_pool(signal["pool"])
+                if pool_row is not None:
+                    self._detector_v2(pool_row, signal["tf"], now)
+        # PEDIDO 2026-10-29 (item 1/2, saude.py: CARTEIRAS com 0 snapshots): grava em `meta` a config
+        # REAL deste processo (RPC configurado, orcamento, sem_carteiras) -- saude.py roda num processo
+        # SEPARADO e so le banco/log, nunca o env var de OUTRO processo (que pode nao compartilhar o
+        # mesmo ambiente do bot ao vivo na VM).
+        self.storage.set_meta("pr_carteiras_runtime", json.dumps({
+            "rpc_configurado": getattr(self.adapter, "rpc", None) is not None,
+            "sem_carteiras": self.sem_carteiras, "carteiras_max_chamadas_dia": self.carteiras_max_chamadas_dia,
+            "ts": now,
+        }))
 
     def shutdown(self, now: float, motivo: str = "parado") -> None:
         """Fecha a sessao de uptime da V1 (item "registro completo"). Chamado uma vez no desligamento limpo."""
@@ -852,6 +890,7 @@ class PosRunnerLive:
         t0 = time.monotonic()
         if self.version_start is None:
             self._startup(now)
+        self._carteiras_ciclo = {"tentativas": 0, "gravados": 0, "erros": 0, "orcamento_esgotado": 0}
         fila_tamanho = 0
         due: list[tuple[int, float, Any, str]] = []
         cap_total = self.settings.chamadas_por_ciclo
@@ -908,8 +947,14 @@ class PosRunnerLive:
             removed = self.storage.pr_prune(now)
             if removed:
                 log.info("POS-RUNNER poda: %s", removed)
-        log.info("POS-RUNNER-V1: ciclo | fila=%d | chamadas=%d | 429=%s | tempo=%.2fs",
-                 fila_tamanho, out.get("chamadas", 0), out.get("rate_limited", False), time.monotonic() - t0)
+        # PEDIDO 2026-10-29 (item 3, saude.py: CARTEIRAS com 0 snapshots): diagnostico por ciclo da
+        # coleta horaria -- pools tentados (RPC nova), gravados, com erro e com orcamento diario
+        # esgotado -- pra auditar pelo log sem precisar de acesso ao processo ao vivo.
+        log.info("POS-RUNNER-V1: ciclo | fila=%d | chamadas=%d | 429=%s | tempo=%.2fs | "
+                 "carteiras_tentativas=%d carteiras_gravados=%d carteiras_erros=%d carteiras_orcamento_esgotado=%d",
+                 fila_tamanho, out.get("chamadas", 0), out.get("rate_limited", False), time.monotonic() - t0,
+                 self._carteiras_ciclo["tentativas"], self._carteiras_ciclo["gravados"],
+                 self._carteiras_ciclo["erros"], self._carteiras_ciclo["orcamento_esgotado"])
         self._heartbeat_v1(now, out.get("chamadas", 0), out.get("rate_limited", False))
         self._checar_alerta_429(now, bool(out.get("rate_limited", False)))
         self._checar_fila_atrasada(now, due)
@@ -1107,9 +1152,15 @@ class PosRunnerLive:
         pools_ativos = len(self.storage.pr_pools("ativo"))
         counts = self.storage.pr1_filtrado_counts(self._heartbeat_window_start)
         uptime_sessao_h = None if self._uptime_sessao_inicio is None else (now - self._uptime_sessao_inicio) / 3600.0
+        fases_v1 = self._phase_counts_v1()
+        # PEDIDO 2026-10-29 (item 2, saude.py: distribuicao de fases): `det.phase` so existe na MEMORIA
+        # deste processo -- saude.py roda separado e so le banco/log. Persiste em `meta` o MESMO
+        # contador que ja vai pro heartbeat (zero calculo novo), com o `ts` desta captura, pra saude.py
+        # mostrar "ultima leitura conhecida" em vez de nada.
+        self.storage.set_meta("pr_fase_counts_v1", json.dumps({**fases_v1, "ts": now}))
         text = telegram_v1.heartbeat_text(
             self.storage.pr1_uptime_hours(self.version_v1_start or now, now), pools_ativos, chamadas_por_min,
-            self._heartbeat_429, self._phase_counts_v1(), len(self._due_list(now)), counts.get("dado_invalido", 0),
+            self._heartbeat_429, fases_v1, len(self._due_list(now)), counts.get("dado_invalido", 0),
             counts.get("l_bc_suspeito", 0), counts.get("filtrado_mc_baixo", 0), counts.get("filtrado_idade", 0),
             self.version_v1, uptime_sessao_h=uptime_sessao_h,
         )
@@ -1120,8 +1171,10 @@ class PosRunnerLive:
             # PROPRIA (nunca mistura com a V1); contadores PROPRIOS da V2 (fase/filtros), nunca os
             # compartilhados (uptime/chamadas/429/fila), ja cobertos pelo heartbeat V1 acima.
             counts_v2 = self.storage.pr2_filtrado_counts(self._heartbeat_window_start)
+            fases_v2 = self._phase_counts_v2()
+            self.storage.set_meta("pr_fase_counts_v2", json.dumps({**fases_v2, "ts": now}))
             text_v2 = telegram_v1.heartbeat_text_v2(
-                self._phase_counts_v2(), counts_v2.get("dado_invalido", 0), counts_v2.get("l_bc_suspeito", 0),
+                fases_v2, counts_v2.get("dado_invalido", 0), counts_v2.get("l_bc_suspeito", 0),
                 counts_v2.get("filtrado_mc_baixo", 0), counts_v2.get("filtrado_idade", 0), self.version_v2,
             )
             self._send(text_v2)
@@ -1845,9 +1898,19 @@ class PosRunnerLive:
             return
         inicio_do_dia = now - (now % 86400.0)
         if self.storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
+            self._carteiras_ciclo["orcamento_esgotado"] += 1
             return
         self._carteiras_horaria_ultima[pool] = bucket
+        self._carteiras_ciclo["tentativas"] += 1
+        self._carteiras_ultima_tentativa_ts = now
         holders = self.adapter.holders(row["mint"], self._excluded_accounts_v1(row))
+        if holders.tag == "holders_indisponivel":
+            self._carteiras_ciclo["erros"] += 1
+            motivo = (holders.detail or {}).get("motivo", "s/d")
+            self._carteiras_ultimo_erro = f"{row['symbol'] or pool}: {motivo}"
+            log.warning("POS-RUNNER carteiras: snapshot horario falhou em %s (%s)", row["symbol"] or pool, motivo)
+        else:
+            self._carteiras_ciclo["gravados"] += 1
         self._registrar_snapshot_carteiras("horaria", pool, row["mint"], holders, now)
 
     # -- PATCH 2026-10-27 (diagnostico McRib/yagi, qualidade_candle.py) -----------------------------------------

@@ -801,3 +801,40 @@ qualquer regra V1/V2 — hashes seguem `279b79ffa3f0` (V1) / `d57b4331d51d` (V2)
    `pr1_dexpaprika_divergencias` já excedeu a tolerância (padrão 1.0%) por construção
    (`dexpaprika_v1.comparar_candle`); a tag confirma por presença (candle_ts do sinal bate com algum
    registro já logado), sem limiar novo.
+
+## PEDIDO 2026-10-29 19:36 (CARTEIRAS com 0 snapshots em 24h)
+
+Nenhum destes 4 itens tocou `detector.py`/`simulate_v1.py`/`params_v1.py`/`params_v2.py` nem
+qualquer regra V1/V2 — hashes seguem `279b79ffa3f0` (V1) / `d57b4331d51d` (V2).
+
+**Diagnóstico**: o snapshot `horaria` de carteiras "pro" (`_atualizar_carteiras_horaria`) só roda
+dentro de `_refresh_core`, ou seja, só depois de um refresh de candle já ter acontecido para aquele
+pool — e só quando o pool tem posição V1 **ou** V2 aberta (`tem_posicao`). A cada reinício,
+`self.dets_v1`/`self.dets_v2` começam vazios e `_heat_v1`/`_heat_v2` (prioridade absoluta de posição
+aberta, task #94) só devolvem rank 0 quando já existe um `Detector` reconstruído para aquele
+`(pool,tf)` — antes disso, mesmo uma posição **já aberta** herdada de antes do restart perdia essa
+prioridade absoluta até o primeiro refresh natural reconstruir o detector, atrasando exatamente o
+refresh (e o snapshot) daquela posição. Não existe fase `"caixa"` no código — só `sem_fase` (nenhuma
+fase ainda), `runner` e `pullback` (`detector_v1.py: PHASE_NONE/PHASE_RUNNER/PHASE_PULLBACK`).
+
+1. **`_startup` reconstrói o detector das posições já abertas imediatamente** (`live.py`), chamando
+   os MESMOS `_detector_v1`/`_detector_v2` que já reconstruiriam isso no primeiro refresh pós-reinício
+   (nenhuma lógica nova) — apenas mais cedo, a partir dos candles já em `pr_bars` (zero candle novo),
+   exatamente a invariante já documentada ("reiniciar o bot refaz o mesmo estado a partir dos candles
+   congelados"). Restrito às posições já abertas (conjunto pequeno), nunca ao universo inteiro de
+   pools ativos, para não disparar de uma vez o replay de histórico (RPC/DexPaprika) de todo pool
+   rastreado.
+2. **`saude.py`, seção CARTEIRAS**, ganhou: elegíveis AGORA (pools com posição V1 ou V2 aberta);
+   RPC configurado sim/não e orçamento usado/limite do dia (gravados pelo PRÓPRIO processo ao vivo em
+   `meta` dentro de `_startup` — nunca um env var lido por este script, que roda num processo/shell
+   separado e pode não compartilhar o mesmo ambiente); a última tentativa/resultado e o último erro da
+   coleta (lidos do novo log por ciclo, item 3); e a última distribuição de fases conhecida
+   (`sem_fase`/`runner`/`pullback`, persistida em `meta` a cada heartbeat — só existe de verdade na
+   memória do processo ao vivo, então aqui é sempre "última leitura conhecida", nunca um número
+   inventado ao vivo).
+3. **Log INFO por ciclo da coleta** (`live.py`, mesma linha `"POS-RUNNER-V1: ciclo"` já existente):
+   `carteiras_tentativas`/`carteiras_gravados`/`carteiras_erros`/`carteiras_orcamento_esgotado`.
+   Log WARNING dedicado por falha (`"POS-RUNNER carteiras: snapshot horario falhou em <symbol> (<motivo>)"`).
+4. Coberto pelo item 1 acima (reconstrução do detector no `_startup`).
+
+Comando de uso (sem alteração): `python -m signals_mvp.scripts.saude --db dados/estado.sqlite`.
