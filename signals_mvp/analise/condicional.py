@@ -481,6 +481,17 @@ def _rank_medios(valores: Sequence[float]) -> list[float]:
     return ranks
 
 
+def _rho_spearman(xs: Sequence[float], ys: Sequence[float]) -> float:
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    rx = np.array(_rank_medios(list(xs)))
+    ry = np.array(_rank_medios(list(ys)))
+    if np.std(rx) == 0.0 or np.std(ry) == 0.0:
+        return 0.0
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
 def spearman(
     xs: Sequence[float], ys: Sequence[float], n_permutacoes: int = N_PERMUTACOES_MONTECARLO,
     seed: int = SEED_PADRAO,
@@ -684,6 +695,104 @@ def h12_ordem_sinal_token(sinais: Sequence[SinalResolvido]) -> list[GrupoExplora
     return out
 
 
+# ---------------------------------------------------------------------------
+# PEDIDO 2026-10-29 (auditoria+sensibilidade+sombra+radar), item 3: H13 -- tamanho_base_candles
+# (`caixa_candles`, box_len no gatilho -- MESMA coluna ja persistida pela FASE 4 em pr1_signals/
+# pr2_signals/pr_sombra, nenhuma coluna nova) vs R REALIZADO. Geracao de hipoteses, nao
+# confirmatoria. Fora da familia de Holm de H2-H12 (fonte de dados DIFERENTE -- pool ENTRADAS reais
+# fechadas (box_len sempre >=12, mesma mecanica de caixa em V1 e V2) com o candidato sombra
+# `sombra:base_min4` fechado (box_len 4-11 -- >=12 ali e EXCLUIDO em `_on_event_sombra`, pra nunca
+# duplicar o territorio real) -- e a UNICA forma de observar box_len < 12, que o V1/V2 reais nunca
+# produzem (zone_min_candles=12 congelado). Reportada 1x, independente de --versao (pergunta sobre
+# mecanica do detector, compartilhada por V1/V2 -- nunca mistura `dif_pareada`/H1-H9, que e sobre a
+# baseline pareada).
+# ---------------------------------------------------------------------------
+
+FAIXAS_H13: tuple[tuple[str, int, Optional[int]], ...] = (("4-7", 4, 7), ("8-11", 8, 11), (">=12", 12, None))
+
+
+def _risco_pct_sinal(s: Any) -> Optional[float]:
+    entry_price, stop = s["entry_price"], s["stop"]
+    return 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
+
+
+def _pares_tamanho_base(storage: Any) -> list[tuple[int, float, str]]:
+    """[(tamanho_base_candles, R_realizado, mint), ...] -- V1/V2 reais fechados + sombra:base_min4
+    fechado. `None` em qualquer um dos campos (box_len/result_net/risco_pct) nunca entra -- dado
+    ausente nunca e inventado."""
+    pares: list[tuple[int, float, str]] = []
+    for sinais_fn in (storage.pr1_signals, storage.pr2_signals):
+        for s in sinais_fn(status="fechado"):
+            box_len = s["caixa_candles"]
+            r = _r_multiplo(s["result_net"], _risco_pct_sinal(s))
+            if box_len is not None and r is not None and s["mint"]:
+                pares.append((int(box_len), r, s["mint"]))
+    for s in storage.pr_sombra_signals(versao="sombra:base_min4", status="fechado"):
+        box_len = s["caixa_candles"]
+        r = _r_multiplo(s["result_net"], s["risco_pct"])
+        if box_len is not None and r is not None and s["mint"]:
+            pares.append((int(box_len), r, s["mint"]))
+    return pares
+
+
+def _spearman_bootstrap_p_por_token(
+    pares: Sequence[tuple[float, float, str]], n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO,
+) -> float:
+    """H13: p-valor bootstrap em blocos POR TOKEN (reamostra TOKENS com reposicao, recalcula rho a
+    cada replica -- nunca reamostra pares individuais, que quebraria a correlacao dentro do mesmo
+    token/episodio) -- 'agrupando por token' do pedido, mesmo principio de `bootstrap_media_e_
+    limite_inferior`/H12, generalizado para uma correlacao em vez de uma media. p = P(rho_bootstrap
+    <= 0), unilateral (testando rho > 0)."""
+    grupos: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for x, y, token in pares:
+        grupos[token].append((x, y))
+    chaves = sorted(grupos)
+    n = len(chaves)
+    if n == 0:
+        return 1.0
+    rng = np.random.default_rng(seed)
+    contagem = 0
+    for _ in range(n_bootstrap):
+        escolhidos = rng.integers(0, n, size=n)
+        xs: list[float] = []
+        ys: list[float] = []
+        for idx in escolhidos:
+            for x, y in grupos[chaves[idx]]:
+                xs.append(x)
+                ys.append(y)
+        if _rho_spearman(xs, ys) <= 0.0:
+            contagem += 1
+    return contagem / n_bootstrap
+
+
+def _faixas_h13(pares: Sequence[tuple[int, float, str]]) -> dict[str, Optional[tuple[int, float]]]:
+    out: dict[str, Optional[tuple[int, float]]] = {}
+    for nome, lo, hi in FAIXAS_H13:
+        membros = [p for p in pares if p[0] >= lo and (hi is None or p[0] <= hi)]
+        n = len({p[2] for p in membros})
+        out[nome] = (n, float(np.mean([p[1] for p in membros]))) if n >= MIN_TOKENS_GRUPO else None
+    return out
+
+
+@dataclass(frozen=True)
+class ResultadoH13:
+    n_tokens: int
+    rho: float
+    p_valor: float
+    por_faixa: dict[str, Optional[tuple[int, float]]]
+
+
+def rodar_h13(storage: Any) -> Optional[ResultadoH13]:
+    """`None` (nao reportada) com < 10 tokens distintos no total."""
+    pares = _pares_tamanho_base(storage)
+    n = len({p[2] for p in pares})
+    if n < MIN_TOKENS_GRUPO:
+        return None
+    rho = _rho_spearman([float(p[0]) for p in pares], [p[1] for p in pares])
+    p = _spearman_bootstrap_p_por_token(pares)
+    return ResultadoH13(n, rho, p, _faixas_h13(pares))
+
+
 def rodar_exploratorias(sinais: Sequence[SinalResolvido]) -> list[GrupoExploratorio]:
     """H2-H7 + H10-H12 (EMENDA 1): so grupos/testes com n >= 10 tokens distintos (por lado) entram;
     Holm aplicado sobre a familia completa. H8 fica de fora (carteiras_pro_presentes sempre NULL
@@ -723,6 +832,7 @@ class RelatorioCondicional:
     h8_status: str = "nao_testada"
     excluidos: list[Excluido] = field(default_factory=list)
     sombra: list[ComparacaoSombra] = field(default_factory=list)
+    h13: Optional[ResultadoH13] = None
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
@@ -731,7 +841,9 @@ def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> Relato
     h1 = rodar_h1(sinais)
     exploratorias = rodar_exploratorias(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
     sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
-    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos, sombra=sombra)
+    h13 = rodar_h13(storage)
+    return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos,
+                                sombra=sombra, h13=h13)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -781,6 +893,19 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
         sem = f"{c.r_medio_sem_filtro:+.2f} R" if c.r_medio_sem_filtro is not None else "s/d"
         linhas.append(f"- {c.motivo}: com filtro n={c.n_com_filtro} ({com}) | sem filtro (sombra) "
                       f"n={c.n_sem_filtro} ({sem}) | {suf}")
+    linhas.append("")
+    linhas.append("## H13 (tamanho_base_candles vs R realizado, geração de hipóteses, não confirmatória)")
+    if rel.h13 is None:
+        linhas.append("(não reportada: < 10 tokens distintos no total V1/V2 reais + sombra:base_min4)")
+    else:
+        linhas.append(f"n (tokens distintos): {rel.h13.n_tokens}, rho={rel.h13.rho:+.3f}, "
+                      f"p={rel.h13.p_valor:.4f} (bootstrap por token)")
+        for nome, _lo, _hi in FAIXAS_H13:
+            dado = rel.h13.por_faixa.get(nome)
+            if dado is None:
+                linhas.append(f"  faixa {nome}: n/d (< 10 tokens distintos)")
+            else:
+                linhas.append(f"  faixa {nome}: n={dado[0]}, R médio={dado[1]:+.2f}")
     return "\n".join(linhas)
 
 

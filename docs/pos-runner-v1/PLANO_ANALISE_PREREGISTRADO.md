@@ -235,6 +235,47 @@ distribuído é detectado) e verificação/teste anti-lookahead do mecanismo de 
 elegibilidade de um candle só acumula o máximo dos candles ANTERIORES a ele, nunca um valor que só é
 conhecido depois.
 
+## EMENDA 2 (2026-10-29) — H13: tamanho_base_candles vs R realizado
+
+Pré-registrada antes de qualquer análise sobre dados novos desta hipótese especificamente (nova
+seção; EMENDA 1 acima fica intacta). Pedido "auditoria + sensibilidade + sombra + Radar", item 3.
+
+**H13** (geração de hipóteses, **não confirmatória**, fora da família de Holm de H2–H12 — fonte de
+dados diferente): correlação de Spearman contínua entre `tamanho_base_candles` (coluna `caixa_candles`
+— tamanho REAL da caixa/consolidação no candle do gatilho; mesma coluna já persistida pela FASE 4 em
+`pr1_signals`/`pr2_signals`/`pr_sombra`, **nenhuma coluna nova**) e o **R realizado** de cada entrada
+fechada. Amostra: ENTRADAs reais fechadas de V1 e V2 (ambas com `caixa_candles` sempre ≥ 12, mesma
+mecânica de caixa congelada) **combinadas** com o candidato sombra `sombra:base_min4` fechado
+(`caixa_candles` sempre < 12 — a única forma de observar caixas mais curtas que a V1/V2 reais jamais
+produziriam, já que `zone_min_candles=12` está congelado nas duas). Reportada 1 vez, independente de
+`--versao` — é uma pergunta sobre a mecânica do detector (compartilhada por V1/V2), nunca sobre
+`dif_pareada`/a baseline pareada de H1–H9 (que **continua** nunca misturando V1 com V2).
+
+p-valor por **bootstrap em blocos por TOKEN** (reamostra tokens com reposição, recalcula rho a cada
+réplica — nunca reamostra pares individuais, que quebraria a correlação dentro do mesmo
+token/episódio; mesmo princípio de H1/H12, generalizado para uma correlação). Reportada também por
+faixa de `tamanho_base_candles` (4–7, 8–11, ≥12) com a média de R em cada uma — faixa com < 10 tokens
+distintos não é reportada (mesma convenção de H2–H12). H13 em si não é reportada com < 10 tokens
+distintos no total (V1 + V2 + sombra).
+
+### Sombra `sombra:base_min4`
+
+Novo detector sombra (3º, junto de `filtrado_mc_baixo`/`queda_96_mais`): mesmas regras/parâmetros da
+V1, só `zone_min_candles=4` em vez de 12 — mesmo princípio de medição ao lado dos outros 2 (fora do
+hash de `ParamsV1`, nunca grava `versao_config_v1` de nenhum sinal real, nunca entra na banca/CSV/
+`/relatorio v1|v2`). Conta para o mesmo teto `SOMBRA_MAX_POOLS`. Só é gravado quando `box_len` (no
+candle do gatilho) é **menor** que `zone_min_candles=12` da V1 — um candidato com caixa ≥ 12 já é
+território que a V1 real cobriria a partir daquele ponto em diante, nunca um candidato novo (mesmo
+raciocínio de `queda_96_mais`/`filtrado_idade` já em vigor).
+
+**Custo medido (CPU/memória, 15 pools, offline):** medição isolada do custo de `DetectorV1.update()`
+por candle (a parte que de fato cresce com um detector paralelo a mais — zero chamada nova de rede em
+qualquer cenário, candles sempre reaproveitados dos já buscados pra V1/V2) sobre 500 candles
+sintéticos/pool: 2 sombras (mc_baixo + queda_96_mais) → 0,066s CPU / 63KB pico; 3 sombras
+(+ `base_min4`) → 0,089s CPU / 82KB pico — **+35% de CPU, +18KB de memória** pra 15 pools (ambos
+dentro do orçamento trivial de um processo Python de longa duração; nenhuma chamada de rede nova em
+nenhum dos dois cenários).
+
 ## O que NÃO pode acontecer depois deste documento estar committado
 
 - editar os limiares/grupos acima (nova interpretação = nova seção/versão, nunca reescrever o texto

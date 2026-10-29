@@ -499,5 +499,107 @@ class FormatarTelegramTests(unittest.TestCase):
         self.assertIn("entry_id=9 X (MINTX): candle_divergente", texto)
 
 
+class H13FuncoesTests(unittest.TestCase):
+    """PEDIDO 2026-10-29 (auditoria+sensibilidade+sombra+radar), item 3: funcoes puras de H13 --
+    `_faixas_h13`/`_spearman_bootstrap_p_por_token` (bootstrap/breakdown por token, sem storage)."""
+
+    def test_faixas_h13_groups_by_range_and_respects_the_n10_gate(self) -> None:
+        pares = ([(5, 1.0, f"a{i}") for i in range(12)] + [(9, 2.0, f"b{i}") for i in range(3)]
+                + [(15, 3.0, f"c{i}") for i in range(10)])
+        faixas = cond._faixas_h13(pares)
+        self.assertIsNotNone(faixas["4-7"])
+        self.assertEqual(faixas["4-7"][0], 12)
+        self.assertAlmostEqual(faixas["4-7"][1], 1.0)
+        self.assertIsNone(faixas["8-11"], "so 3 tokens distintos -- abaixo do minimo de 10")
+        self.assertIsNotNone(faixas[">=12"])
+        self.assertEqual(faixas[">=12"][0], 10)
+
+    def test_bootstrap_p_por_token_is_small_for_a_strong_consistent_relationship(self) -> None:
+        pares = [(float(i), float(i) * 2.0, f"m{i}") for i in range(15)]
+        p = cond._spearman_bootstrap_p_por_token(pares)
+        self.assertLess(p, 0.05)
+
+    def test_bootstrap_p_por_token_is_large_for_unrelated_data(self) -> None:
+        pares = [(0.0, 3.0, "m0"), (1.0, 1.0, "m1"), (2.0, 4.0, "m2"), (3.0, 1.0, "m3"),
+                (4.0, 5.0, "m4"), (5.0, 9.0, "m5"), (6.0, 2.0, "m6"), (7.0, 6.0, "m7"),
+                (8.0, 0.0, "m8"), (9.0, 1.0, "m9"), (10.0, 7.0, "m10"), (11.0, 3.0, "m11")]
+        p = cond._spearman_bootstrap_p_por_token(pares)
+        self.assertGreater(p, 0.2)
+
+    def test_bootstrap_p_por_token_is_not_dominated_by_a_single_hyperactive_token(self) -> None:
+        """Mesma logica anti-pseudo-replicacao de H12: um UNICO token com dezenas de pares
+        (x,y) correlacionados nunca pode, por si so, inflar a significancia -- o bloco e o TOKEN."""
+        pares = [(float(i), float(i), "hiperativo") for i in range(50)]
+        pares += [(float(i), -float(i), f"m{i}") for i in range(9)]   # 9 tokens com relacao OPOSTA
+        p = cond._spearman_bootstrap_p_por_token(pares)
+        # com blocos por token (10 tokens: 1 hiperativo positivo + 9 negativos), a maioria dos
+        # bootstraps inclui pelo menos um token negativo -- p nao deve ficar artificialmente pequeno
+        # so porque 1 token concentra 50/59 dos PARES individuais.
+        self.assertGreater(p, 0.05)
+
+
+class RodarH13Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="h13_storage_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _v1_fechado(self, mint: str, caixa_candles: int, result_net: float, risco_pct: float = 20.0) -> None:
+        entry_price = 100.0
+        stop = entry_price * (1.0 - risco_pct / 100.0)
+        sid = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": f"POOL-{mint}", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": mint, "symbol": mint, "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": entry_price, "stop": stop,
+            "caixa_candles": caixa_candles, "result_net": result_net,
+        })
+        self.assertIsNotNone(sid)
+
+    def _sombra_base4_fechado(self, mint: str, caixa_candles: int, result_net: float, risco_pct: float = 20.0) -> None:
+        sid = self.storage.pr_sombra_insert({
+            "versao": "sombra:base_min4", "chain": "solana", "pool": f"POOL-{mint}", "tf": "1h",
+            "mint": mint, "symbol": mint, "ts_fechamento": 1_000, "status": "fechado",
+            "criado_ts": 0.0, "atualizado_ts": 0.0, "risco_pct": risco_pct, "caixa_candles": caixa_candles,
+            "result_net": result_net,
+        })
+        self.assertIsNotNone(sid)
+
+    def test_rodar_h13_is_none_below_10_tokens_total(self) -> None:
+        for i in range(5):
+            self._v1_fechado(f"m{i}", 12, 0.1 * i)
+        self.assertIsNone(cond.rodar_h13(self.storage))
+
+    def test_rodar_h13_pools_v1_and_sombra_base_min4_and_detects_the_planted_relationship(self) -> None:
+        for i in range(10):
+            self._sombra_base4_fechado(f"s{i}", 4 + i % 4, 0.02 * (i + 1))   # box 4-7, R baixo
+        for i in range(10):
+            self._v1_fechado(f"v{i}", 14 + i, 0.30 + 0.03 * i)               # box 14..23, R alto
+        r = cond.rodar_h13(self.storage)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.n_tokens, 20)
+        self.assertGreater(r.rho, 0.5)
+        self.assertLess(r.p_valor, 0.05)
+        self.assertIsNotNone(r.por_faixa["4-7"])
+        self.assertIsNotNone(r.por_faixa[">=12"])
+
+    def test_rodar_h13_ignores_signals_without_caixa_candles_or_result_net(self) -> None:
+        for i in range(10):
+            self._v1_fechado(f"v{i}", 12 + i, 0.1 * i)
+        # sinal sem caixa_candles (sinal antigo, coluna NULL) -- nunca inventa um valor
+        self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL-SEMBOX", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "SEMBOX", "symbol": "SEMBOX", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": 100.0, "stop": 80.0, "result_net": 0.5,
+        })
+        r = cond.rodar_h13(self.storage)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.n_tokens, 10, "SEMBOX nunca entra -- caixa_candles ausente")
+
+
 if __name__ == "__main__":
     unittest.main()

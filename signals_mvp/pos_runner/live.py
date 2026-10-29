@@ -641,6 +641,13 @@ class PosRunnerLive:
         # alem do que a V1/V2 matariam como ONDA_INVALIDA; nunca um Params novo/hash novo (fora do
         # hash de ParamsV1/V2, nunca gravado como versao_config_v1/v2 de nenhum sinal real).
         self._params_sombra_queda96 = dataclasses.replace(self.params_v2, drop_max=0.995)
+        # PEDIDO 2026-10-29 (item 3, auditoria+sensibilidade+sombra+radar): 3a sombra, `base_min4` --
+        # MESMAS regras/params da V1 (`self.params_v1`), so `zone_min_candles=4` em vez de 12. Mede
+        # candidatos cuja caixa e MAIS CURTA do que a V1 jamais aceitaria, pra alimentar a H13
+        # (tamanho_base_candles vs R realizado). Params fora do hash de ParamsV1 (mesmo principio de
+        # `_params_sombra_queda96`), nunca gravado como `versao_config_v1` de nenhum sinal real.
+        self.dets_sombra_base4: dict[tuple[str, str], DetectorV1] = {}
+        self._params_sombra_base4 = dataclasses.replace(self.params_v1, zone_min_candles=4)
         # PEDIDO 2026-10-29 (item 2/3, saude.py: CARTEIRAS com 0 snapshots): diagnostico da coleta, por
         # ciclo (zerado em `tick()`) + o ultimo erro/tentativa (persistem entre ciclos, ate o proximo).
         # `_carteiras_rpc_configurado` so e gravado em `meta` (saude.py le de la, processo separado)
@@ -1240,7 +1247,7 @@ class PosRunnerLive:
         # detectores paralelos de mc_baixo/queda_96_mais, SOMBRA_MAX_POOLS) so existe na memoria
         # deste processo -- persiste a MESMA cadencia do heartbeat, pra saude.py mostrar a ultima
         # leitura conhecida (nunca um numero ao vivo inventado).
-        n_sombra_ativos = len(set(self.dets_sombra_mc) | set(self.dets_sombra_queda96))
+        n_sombra_ativos = len(set(self.dets_sombra_mc) | set(self.dets_sombra_queda96) | set(self.dets_sombra_base4))
         self.storage.set_meta("pr_sombra_ativos", json.dumps({"n_pools": n_sombra_ativos, "ts": now}))
         self._heartbeat_sent_at = now
         self._heartbeat_window_start = now
@@ -1457,7 +1464,7 @@ class PosRunnerLive:
         """SOMBRA_MAX_POOLS: teto de (pool,tf) com um detector sombra PARALELO (mc_baixo + queda_96_mais)
         ao mesmo tempo -- um (pool,tf) ja rastreado em QUALQUER um dos 2 nunca e recusado (so conta 1x);
         um candidato NOVO alem do teto e descartado (`pr_sombra_descarte_insert`), nunca enfileirado."""
-        ativos = set(self.dets_sombra_mc) | set(self.dets_sombra_queda96)
+        ativos = set(self.dets_sombra_mc) | set(self.dets_sombra_queda96) | set(self.dets_sombra_base4)
         if key in ativos:
             return True
         if len(ativos) >= self.sombra_max_pools:
@@ -1548,18 +1555,48 @@ class PosRunnerLive:
         self.dets_sombra_queda96[key] = det
         return det
 
+    def _detector_sombra_base4(self, row: Any, tf: str, now: float, pending: Sequence[Bar] = ()) -> Optional[DetectorV1]:
+        """Sombra `base_min4` (item 3, pedido 2026-10-29): MESMOS parametros da V1 (`self.params_v1`),
+        so `zone_min_candles=4` em vez de 12 (`self._params_sombra_base4`) -- mede candidatos cuja
+        caixa e mais curta do que a V1 jamais aceitaria. Detector PARALELO sempre ligado (mesmo padrao
+        de `_detector_sombra_queda96`), tambem sujeito ao teto SOMBRA_MAX_POOLS; `_on_event_sombra`
+        filtra pra so contar `box_len < zone_min_candles da V1` (>=12 ali e territorio REAL da V1,
+        nunca duplicado aqui)."""
+        key = (row["pool"], tf)
+        det = self.dets_sombra_base4.get(key)
+        if det is not None or row["l_bc"] is None:
+            return det
+        if not self._sombra_abrir_slot(key):
+            return None
+        existing = self.storage.pr_bars(row["pool"], tf)
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing] + list(pending)
+        qual = avaliar_qualidade(bars, self._params_sombra_base4)
+        if not qual.valido:
+            return None
+        det = DetectorV1(self._params_sombra_base4, tf, row["l_bc"], row["grad_ts"], self._created(row))
+        self._sombra_feed(det, [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in existing],
+                          row, tf, now, "base_min4")
+        self.dets_sombra_base4[key] = det
+        return det
+
     def _on_event_sombra(self, row: Any, tf: str, ev: EventV1, now: float, motivo: str) -> None:
         """Grava 1 linha em `pr_sombra` (versao=`sombra:<motivo>`) por candidato que TERIA gatilhado --
         so ENTRADA (do detector sombra PARALELO) ou FORA_DA_IDADE (do detector OFICIAL da V1, chamado
         direto de `_on_event_v1` com motivo="filtrado_idade" -- reusa o evento que a V1 ja emite, nunca
         duplica deteccao). `queda_96_mais` so conta quando `queda_pct` > 96% (<=96% ja e territorio
-        real da V2). Idempotente pela UNIQUE (versao,chain,pool,tf,ts_fechamento); dispara o aviso
-        curto do Telegram so para `queda_96_mais` (ver `_alerta_sombra_queda96`)."""
+        real da V2). `base_min4` so conta quando `box_len` < `zone_min_candles` da V1 (12 -- box_len
+        >=12 e territorio REAL da V1: a partir dali os 2 detectores tem exatamente o mesmo estado,
+        nunca um candidato NOVO). Idempotente pela UNIQUE (versao,chain,pool,tf,ts_fechamento);
+        dispara o aviso curto do Telegram so para `queda_96_mais` (ver `_alerta_sombra_queda96`)."""
         if self.sem_sombra or ev.kind not in ("ENTRADA", "FORA_DA_IDADE"):
             return
         queda_pct = ev.data.get("queda_pct")
         if motivo == "queda_96_mais" and (queda_pct is None or queda_pct <= 96.0):
             return
+        if motivo == "base_min4":
+            box_len = ev.data.get("box_len")
+            if box_len is None or box_len >= self.params_v1.zone_min_candles:
+                return
         if motivo == "filtrado_idade":
             # V1 e V2 usam a MESMA idade MINIMA (2 dias), so o TETO diverge (V1: 7d; V2: ~sem teto) --
             # um candidato acima do teto da V1 ja e territorio REAL da V2 (gera ENTRADA de verdade ali,
@@ -2633,6 +2670,8 @@ class PosRunnerLive:
             self._detector_sombra_mc, row, tf, now, contexto="filtrado_mc_baixo")
         det_sombra_q96 = None if self.sem_sombra else self._sombra_safe(
             self._detector_sombra_queda96, row, tf, now, contexto="queda_96_mais")
+        det_sombra_base4 = None if self.sem_sombra else self._sombra_safe(
+            self._detector_sombra_base4, row, tf, now, contexto="base_min4")
         last = ((det.bars[-1] if det is not None and det.bars else None)
                or (det_v1.bars[-1] if det_v1 is not None and det_v1.bars else None)
                or (det_v2.bars[-1] if det_v2 is not None and det_v2.bars else None))
@@ -2662,6 +2701,8 @@ class PosRunnerLive:
                     self._detector_sombra_mc, row, tf, now, seq, contexto="filtrado_mc_baixo")
                 det_sombra_q96 = None if self.sem_sombra else self._sombra_safe(
                     self._detector_sombra_queda96, row, tf, now, seq, contexto="queda_96_mais")
+                det_sombra_base4 = None if self.sem_sombra else self._sombra_safe(
+                    self._detector_sombra_base4, row, tf, now, seq, contexto="base_min4")
             self.storage.pr_append_bars(pool, tf, [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in seq], fonte=fonte)
             self._fonte_candle_atual = fonte
             if det is not None:
@@ -2720,6 +2761,8 @@ class PosRunnerLive:
                               contexto="filtrado_mc_baixo")
             self._sombra_safe(self._sombra_feed, det_sombra_q96, seq, row, tf, now, "queda_96_mais",
                               contexto="queda_96_mais")
+            self._sombra_safe(self._sombra_feed, det_sombra_base4, seq, row, tf, now, "base_min4",
+                              contexto="base_min4")
             self._fonte_candle_atual = "gt"
         if fonte != "gt":
             return    # fallback: nunca reagenda/encerra por conta propria -- o ciclo normal do GT decide

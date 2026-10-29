@@ -9,6 +9,7 @@ import json
 import unittest
 
 from ..pos_runner.candles import Bar
+from ..pos_runner.detector_v1 import EventV1
 from ..pos_runner.live import LineageVerifier
 from .test_pos_runner import GRAD, H, flat, textbook
 from .test_pos_runner_live import LiveHarness, created_at, ok_lineage, start_tracking
@@ -131,6 +132,65 @@ class Queda96MaisSombraTests(unittest.TestCase):
             h.run_hours(17)
             self.assertEqual(len(h.storage.pr2_signals()), 1)   # queda ~85%, dentro do drop_max da V2
             self.assertEqual(h.storage.pr_sombra_signals(versao="sombra:queda_96_mais"), [])
+        finally:
+            h.close()
+
+
+def _base_min4_bars() -> list[Bar]:
+    """MESMO `textbook()`, so com a caixa mais CURTA (`range_len=6`, confirmado por construcao: o
+    gatilho real dispara com `box_len=8`) -- a V1 (`zone_min_candles=12`) nunca arma a zona a tempo;
+    so a sombra (`zone_min_candles=4`) ve o gatilho."""
+    return textbook(range_len=6).bars
+
+
+class BaseMin4SombraTests(unittest.TestCase):
+    """PEDIDO 2026-10-29 (item 3): caixa mais curta que `zone_min_candles=12` da V1 -- so a sombra
+    `base_min4` (`zone_min_candles=4`) ve o gatilho. `caixa_candles` (tamanho_base_candles) persistido
+    via `_contexto_execucao`, mesma coluna de pr1_signals/pr2_signals."""
+
+    def test_a_shorter_box_than_the_real_v1_minimum_is_recorded_as_sombra(self) -> None:
+        h = LiveHarness(sem_v0=True)
+        try:
+            h.world.add_series("POOL1", "1h", _base_min4_bars())
+            h.list_pool()
+            h.tick()
+            h.verifier.step()
+            h.tick()
+            h.run_hours(30)
+            self.assertEqual(h.storage.pr1_signals(), [], "caixa curta demais pra V1 real (zone_min_candles=12)")
+            self.assertEqual(_entrada_v1(h), [])
+            sombra = h.storage.pr_sombra_signals(versao="sombra:base_min4")
+            self.assertEqual(len(sombra), 1, h.texts())
+            self.assertEqual(sombra[0]["caixa_candles"], 8)
+            self.assertIsNotNone(sombra[0]["entry_price"])
+        finally:
+            h.close()
+
+    def test_a_box_at_or_above_the_real_v1_minimum_is_never_recorded(self) -> None:
+        """box_len >= zone_min_candles da V1 (12) ja e territorio que a V1 real cobriria dali em
+        diante -- nunca um candidato NOVO (mesmo raciocinio de `queda_96_mais`/`filtrado_idade`).
+        Unitario e direto em `_on_event_sombra`: no cenario padrao (`start_tracking`) a sombra
+        `base_min4` costuma disparar ANTES da V1 real, com um box_len genuinamente MENOR (near-miss
+        legitimo, nao duplicado) -- e por isso que o filtro precisa ser testado isolado, nao so
+        contra o cenario end-to-end padrao."""
+        row = {"pool": "POOL1", "mint": "MINT1", "symbol": "CAT", "info": "{}"}
+        h = LiveHarness()
+        try:
+            ev_igual = EventV1("ENTRADA", 10, 0, 0, {"box_len": 12, "gatilho": [], "close": 1.0, "stop": 0.5})
+            h.live._on_event_sombra(row, "1h", ev_igual, h.clock(), "base_min4")   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sombra_signals(versao="sombra:base_min4"), [])
+            ev_abaixo = EventV1("ENTRADA", 10, 0, 1, {"box_len": 11, "gatilho": [], "close": 1.0, "stop": 0.5})
+            h.live._on_event_sombra(row, "1h", ev_abaixo, h.clock(), "base_min4")   # noqa: SLF001
+            self.assertEqual(len(h.storage.pr_sombra_signals(versao="sombra:base_min4")), 1)
+        finally:
+            h.close()
+
+    def test_sombra_max_pools_cap_counts_base_min4_slots_too(self) -> None:
+        h = LiveHarness(sombra_max_pools=1)
+        try:
+            h.live.dets_sombra_base4[("OUTRO_POOL", "1h")] = object()
+            self.assertFalse(h.live._sombra_abrir_slot(("POOL1", "1h")))   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sombra_descarte_count(), 1)
         finally:
             h.close()
 
