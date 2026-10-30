@@ -169,6 +169,16 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     out.append(f"  entradas_atrasadas (24h, nunca abriram posicao): {entradas_atrasadas_24h}")
     out.append("  eventos_pre_admissao (24h, setup real enquanto esperava vaga): " +
               (", ".join(f"{k}={v}" for k, v in sorted(eventos_pre_admissao_24h.items())) or "0"))
+    # PEDIDO 2026-10-30 (FASE 2, item 5): rotacao por incapacidade estrutural -- aposentados (vao pra
+    # 'dormente', nunca 'encerrado') e readmitidos nas ultimas 24h, dormentes atuais, candidatos
+    # esperando vaga agora (mesmo universo de `_promote`/`_rotacionar_vagas`: 'verificado' com
+    # criado_ts conhecido).
+    aposentados_rotacao_24h = storage.pr_dormentes_rotacionados_count_desde(now - 24 * 3600.0)
+    readmitidos_24h = storage.pr_dormentes_readmitidos_count_desde(now - 24 * 3600.0)
+    dormentes_agora = len(storage.pr_dormentes("dormente"))
+    candidatos_esperando = sum(1 for r in storage.pr_pools("verificado") if "criado_ts" in json.loads(r["info"] or "{}"))
+    out.append(f"  rotacao: aposentados (24h)={aposentados_rotacao_24h} | readmitidos (24h)={readmitidos_24h} | "
+              f"dormentes agora={dormentes_agora} | candidatos esperando vaga={candidatos_esperando}")
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])

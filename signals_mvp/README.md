@@ -307,6 +307,14 @@ nova de API — usa só candles já em cache):
   Teto diário `RADAR_MAX_DIA` (padrão 8, só sobre os enviados — acima do teto o candidato ainda é
   gravado, nunca descartado em silêncio). Trajetória mecânica de 72h alimenta a `H14`
   (acompanhando vs ignorar, `/analise`). `SEM_RADAR=1` desliga por completo.
+- **Rotação de vagas por incapacidade estrutural** (`max_pools`): aposenta pool sem_fase em V1 **e**
+  V2 há mais de 72h, incapaz de sinalizar (MC atual < piso OU queda do pico > 96%), sem posição nem
+  evidência (trajetória/baseline) pendente, máx. 2/hora e só se houver candidato esperando vaga.
+  Nunca toca detector/regra de V1/V2 — só decide quem fica sob observação. Pool vai pra **dormente**
+  (nunca encerrado): MC rechecado ~1x/dia, readmitido com prioridade se recuperar o piso. Todo sinal
+  grava `regime_amostragem` (pré/pós-rotação); `/analise` reporta a homogeneidade entre os dois
+  antes de juntá-los no mesmo teste. `SEM_ROTACAO=1` desliga por completo — ver
+  `docs/pos-runner-v1/EMENDA_2026-10-30_AMOSTRAGEM_ROTACAO_VAGAS.md`.
 
 ---
 

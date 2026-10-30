@@ -415,6 +415,23 @@ CREATE TABLE IF NOT EXISTS pr_eventos_pre_admissao (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, versao TEXT NOT NULL, pool TEXT NOT NULL,
   tf TEXT NOT NULL, kind TEXT NOT NULL, candle_ts REAL NOT NULL
 );
+-- PEDIDO 2026-10-30 (FASE 2, item 1): marco de funil (1a vez que o pool chega a cada etapa, PRIMARY
+-- KEY evita duplicar) -- "runner"/"caixa" (FASE2) nunca eram persistidos antes (so WATCHLIST/
+-- ONDA_INVALIDA/ENTRADA tinham tabela propria); zero mudanca de regra, so observabilidade do funil
+-- descoberta->admissao->runner->caixa->sinal->fechado.
+CREATE TABLE IF NOT EXISTS pr_funil_marcos (
+  pool TEXT NOT NULL, versao TEXT NOT NULL, etapa TEXT NOT NULL, ts REAL NOT NULL,
+  PRIMARY KEY (pool, versao, etapa)
+);
+-- PEDIDO 2026-10-30 (FASE 2, item 3): pool rotacionado por incapacidade ESTRUTURAL (nunca morto como
+-- `_retire_estagnado` -- ver `motivo`) fica "dormente", nao "encerrado": recheck diario de MC (1
+-- chamada/pool/dia, orcamento proprio) pode READMITIR com prioridade sobre candidatos novos.
+CREATE TABLE IF NOT EXISTS pr_dormentes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, mint TEXT, symbol TEXT, motivo TEXT NOT NULL,
+  mc_na_saida REAL, ts_dormente REAL NOT NULL, status TEXT NOT NULL DEFAULT 'dormente',
+  ts_recheck_ultimo REAL, mc_recheck_ultimo REAL, ts_readmitido REAL
+);
+CREATE INDEX IF NOT EXISTS pr_dormentes_status ON pr_dormentes (status);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -523,6 +540,23 @@ class Storage:
             # ver scripts/auditar_atraso_entradas.py pra estimar os antigos a partir de ts_alerta).
             self._ensure_columns("pr1_signals", {"atraso_candles": "REAL"})
             self._ensure_columns("pr2_signals", {"atraso_candles": "REAL"})
+            # PEDIDO 2026-10-30 (FASE 2, item 3): desde quando V1 E V2 estao sem_fase AO MESMO TEMPO
+            # neste pool (NULL se qualquer um dos dois esta ativo agora) -- persistido incrementalmente
+            # por `_persistir_fases` a cada ciclo, nunca recalculado por replay (ao contrario do script
+            # read-only `diagnostico_vagas.py`, que nao tem esse historico). So `_rotacionar_vagas` le.
+            self._ensure_columns("pr_pools", {"sem_fase_desde": "REAL"})
+            # PEDIDO 2026-10-30 (FASE 2, item 4): regime de amostragem (pre_rotacao/pos_rotacao) no
+            # momento em que o sinal foi decidido -- gravado 1x na criacao, nunca retroativo (NULL em
+            # sinais anteriores a esta entrega == pre_rotacao, ja que a rotacao nunca existiu antes).
+            self._ensure_columns("pr1_signals", {"regime_amostragem": "TEXT"})
+            self._ensure_columns("pr2_signals", {"regime_amostragem": "TEXT"})
+            # PEDIDO 2026-10-30 (FASE 2, item 1): dados do MOMENTO do descarte por falta de vaga --
+            # nunca recalculados depois (o candidato pode mudar de estado); NULL em descartes
+            # anteriores a esta entrega (nunca inventados retroativamente).
+            self._ensure_columns("pr_vaga_descartes", {
+                "mc_atual": "REAL", "idade_dias": "REAL", "pico": "REAL", "queda_pct": "REAL",
+                "liquidez_usd": "REAL",
+            })
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1756,16 +1790,22 @@ class Storage:
         return row["n"] if row else 0
 
     # -- PEDIDO 2026-10-30 (item 5b): candidatos sem vaga em `max_pools` ------------------------------
-    def pr_vaga_descarte_insert(self, ts: float, pool: str) -> None:
+    def pr_vaga_descarte_insert(self, ts: float, pool: str, mc_atual: Optional[float] = None,
+                               idade_dias: Optional[float] = None, pico: Optional[float] = None,
+                               queda_pct: Optional[float] = None, liquidez_usd: Optional[float] = None) -> None:
         """Idempotente por pool por DIA UTC (mesmo principio do item 5a) -- o mesmo pool verificado
         continua sem vaga tick apos tick enquanto a vaga nao abre; 1 linha/dia basta pra contar
-        'quantos candidatos NOVOS foram bloqueados', nunca 'quantos ciclos'."""
+        'quantos candidatos NOVOS foram bloqueados', nunca 'quantos ciclos'. PEDIDO 2026-10-30
+        (FASE 2, item 1): dados do MOMENTO do descarte (opcionais, so no 1o registro do dia -- uma
+        chamada tardia no MESMO dia nunca sobrescreve o que ja foi gravado)."""
         inicio_do_dia = ts - (ts % 86_400.0)
         if self._one("SELECT 1 AS x FROM pr_vaga_descartes WHERE pool=? AND ts>=? LIMIT 1",
                      (pool, inicio_do_dia)) is not None:
             return
         with self._lock:
-            self._db.execute("INSERT INTO pr_vaga_descartes (ts, pool) VALUES (?,?)", (ts, pool))
+            self._db.execute(
+                "INSERT INTO pr_vaga_descartes (ts, pool, mc_atual, idade_dias, pico, queda_pct, liquidez_usd) "
+                "VALUES (?,?,?,?,?,?,?)", (ts, pool, mc_atual, idade_dias, pico, queda_pct, liquidez_usd))
 
     def pr_vaga_descarte_count(self, since_ts: float = 0.0) -> int:
         row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_vaga_descartes WHERE ts>=?", (since_ts,))
@@ -1795,6 +1835,62 @@ class Storage:
         rows = self._all("SELECT kind, COUNT(*) AS n FROM pr_eventos_pre_admissao WHERE ts>=? GROUP BY kind",
                          (since_ts,))
         return {r["kind"]: r["n"] for r in rows}
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 1): marcos do funil (descoberta->admissao->runner->caixa-> --
+    # -- sinal->fechado) -- "runner"/"caixa" nunca tinham tabela propria antes desta entrega. ----------
+    def pr_funil_marco_insert(self, pool: str, versao: str, etapa: str, ts: float) -> None:
+        """1a vez que este (pool, versao) chega a esta etapa -- PRIMARY KEY faz o INSERT OR IGNORE
+        ser idempotente, nunca duplica mesmo chamado todo ciclo."""
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO pr_funil_marcos (pool, versao, etapa, ts) VALUES (?,?,?,?)",
+                             (pool, versao, etapa, ts))
+
+    def pr_funil_marcos_por_etapa(self, etapa: str, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        if versao is None:
+            return self._all("SELECT * FROM pr_funil_marcos WHERE etapa=? ORDER BY ts", (etapa,))
+        return self._all("SELECT * FROM pr_funil_marcos WHERE etapa=? AND versao=? ORDER BY ts", (etapa, versao))
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 4): data de ativacao da rotacao (1a vez que uma rotacao de --
+    # -- verdade aconteceu) -- fixada na 1a vez, nunca movida (mesmo padrao de `pr_version_start`). ----
+    def pr_rotacao_ativacao_ts(self, ts: float) -> float:
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('pr_rotacao_ativacao_ts', ?)",
+                             (repr(float(ts)),))
+            row = self._db.execute("SELECT value FROM meta WHERE key='pr_rotacao_ativacao_ts'").fetchone()
+        return float(row[0])
+
+    def pr_rotacao_ativacao_ts_get(self) -> Optional[float]:
+        row = self._one("SELECT value FROM meta WHERE key='pr_rotacao_ativacao_ts'")
+        return float(row["value"]) if row else None
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 3): lista dormente (pool rotacionado por incapacidade --
+    # -- estrutural, nunca "encerrado" como `_retire_estagnado` -- pode ser readmitido). --------------
+    def pr_dormente_insert(self, pool: str, mint: Optional[str], symbol: Optional[str], motivo: str,
+                           mc_na_saida: Optional[float], ts: float) -> int:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO pr_dormentes (pool, mint, symbol, motivo, mc_na_saida, ts_dormente) "
+                "VALUES (?,?,?,?,?,?)", (pool, mint, symbol, motivo, mc_na_saida, ts))
+            return int(cur.lastrowid)
+
+    def pr_dormentes(self, status: str = "dormente") -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_dormentes WHERE status=? ORDER BY ts_dormente", (status,))
+
+    def pr_dormente_update(self, dormente_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_dormentes SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), dormente_id])
+
+    def pr_dormentes_rotacionados_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_dormentes WHERE ts_dormente>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    def pr_dormentes_readmitidos_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_dormentes WHERE status='readmitido' AND ts_readmitido>=?",
+                        (since_ts,))
+        return row["n"] if row else 0
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:

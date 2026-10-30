@@ -118,6 +118,11 @@ class SinalResolvido:
     ticket_medio_usd: Optional[float] = None
     token_signal_seq: Optional[int] = None
     tempo_pico_caixa_s: Optional[float] = None
+    # PEDIDO 2026-10-30 (FASE 2, item 4): colunas ja existentes em pr1_signals/pr2_signals
+    # (`_contexto_execucao`), nenhum campo novo no banco -- so pra homogeneidade pre/pos_rotacao.
+    idade_dias: Optional[float] = None
+    mc_na_entrada: Optional[float] = None
+    regime_amostragem: Optional[str] = None
 
     @property
     def dia_utc(self) -> str:
@@ -236,6 +241,8 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str,
             tags=tuple(json.loads(sinal["tags"] or "[]")), janela_ouro=sinal["janela_ouro"],
             result_net=sinal["result_net"], ticket_medio_usd=sinal["ticket_medio_usd"],
             token_signal_seq=sinal["token_signal_seq"], tempo_pico_caixa_s=_tempo_pico_caixa_s(sinal),
+            idade_dias=sinal["idade_dias"], mc_na_entrada=sinal["mc_na_entrada"],
+            regime_amostragem=sinal["regime_amostragem"] or "pre_rotacao",
         ))
     return out, excluidos
 
@@ -841,6 +848,40 @@ def rodar_h14(storage: Any) -> Optional[ResultadoH14]:
     return ResultadoH14(n_acomp, n_ignorar, u, p)
 
 
+@dataclass(frozen=True)
+class ResultadoHomogeneidadeRegimes:
+    """PEDIDO 2026-10-30 (FASE 2, item 4): compara pre_rotacao vs pos_rotacao ANTES de juntar no
+    mesmo H1/H2-H8 -- Mann-Whitney U por campo (idade_dias, mc_na_entrada, tempo_pico_caixa_s),
+    MESMO metodo de H11/H14. Nunca bloqueia H1 -- so disclosure (homogeneidade quebrada e um motivo
+    pra olhar os 2 regimes separados, decisao do operador, nunca automatica aqui)."""
+    n_pre: int
+    n_pos: int
+    p_idade_dias: Optional[float] = None
+    p_mc_na_entrada: Optional[float] = None
+    p_tempo_pico_caixa: Optional[float] = None
+
+
+def rodar_homogeneidade_regimes(sinais: Sequence[SinalResolvido]) -> Optional[ResultadoHomogeneidadeRegimes]:
+    """`None` (nao reportada) com < 10 sinais em algum regime -- antes da rotacao ser ativada pela
+    1a vez, `pos_rotacao` fica sempre vazio (nunca reportada), o que e o esperado."""
+    pre = [s for s in sinais if s.regime_amostragem != "pos_rotacao"]
+    pos = [s for s in sinais if s.regime_amostragem == "pos_rotacao"]
+    if len(pre) < MIN_TOKENS_GRUPO or len(pos) < MIN_TOKENS_GRUPO:
+        return None
+
+    def _p(campo: str) -> Optional[float]:
+        a = [getattr(s, campo) for s in pre if getattr(s, campo) is not None]
+        b = [getattr(s, campo) for s in pos if getattr(s, campo) is not None]
+        if len(a) < MIN_TOKENS_GRUPO or len(b) < MIN_TOKENS_GRUPO:
+            return None
+        _, p = mann_whitney_u(a, b)
+        return p
+
+    return ResultadoHomogeneidadeRegimes(
+        n_pre=len(pre), n_pos=len(pos), p_idade_dias=_p("idade_dias"),
+        p_mc_na_entrada=_p("mc_na_entrada"), p_tempo_pico_caixa=_p("tempo_pico_caixa_s"))
+
+
 def rodar_exploratorias(sinais: Sequence[SinalResolvido]) -> list[GrupoExploratorio]:
     """H2-H7 + H10-H12 (EMENDA 1): so grupos/testes com n >= 10 tokens distintos (por lado) entram;
     Holm aplicado sobre a familia completa. H8 fica de fora (carteiras_pro_presentes sempre NULL
@@ -885,6 +926,8 @@ class RelatorioCondicional:
     # PEDIDO 2026-10-30 (FASE 1c): H1 recalculado SEM excluir `entrada_atrasada` -- so pra medir
     # sensibilidade (homogeneidade) do veredito, nunca usado como primario/confirmatorio.
     h1_com_entrada_atrasada: Optional[ResultadoH1] = None
+    # PEDIDO 2026-10-30 (FASE 2, item 4): homogeneidade pre_rotacao vs pos_rotacao, nunca bloqueia H1.
+    homogeneidade_regimes: Optional[ResultadoHomogeneidadeRegimes] = None
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
@@ -897,9 +940,11 @@ def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> Relato
     sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
     h13 = rodar_h13(storage)
     h14 = rodar_h14(storage)
+    homogeneidade_regimes = rodar_homogeneidade_regimes(sinais)
     return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos,
                                 sombra=sombra, h13=h13, h14=h14,
-                                h1_com_entrada_atrasada=h1_com_entrada_atrasada)
+                                h1_com_entrada_atrasada=h1_com_entrada_atrasada,
+                                homogeneidade_regimes=homogeneidade_regimes)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -930,6 +975,14 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
         linhas.append(f"  sensibilidade entrada_atrasada — excluindo (primário): {rel.h1.status} | "
                       f"incluindo (nunca confirmatório): {rel.h1_com_entrada_atrasada.status}")
     linhas.append("")
+    if rel.homogeneidade_regimes is not None:
+        h = rel.homogeneidade_regimes
+        linhas.append(f"## Homogeneidade pre_rotacao (n={h.n_pre}) vs pos_rotacao (n={h.n_pos}) — "
+                      "nunca bloqueia H1, só disclosure antes de juntar")
+        for campo, p in (("idade_dias", h.p_idade_dias), ("mc_na_entrada", h.p_mc_na_entrada),
+                        ("tempo_pico_caixa", h.p_tempo_pico_caixa)):
+            linhas.append(f"  {campo}: {'p=' + format(p, '.4f') if p is not None else 's/d (n<10 em algum lado)'}")
+        linhas.append("")
     linhas.append("## H2–H8, H10–H12 (exploratórias, Holm sobre as testadas; H10–H12 geração de "
                   "hipóteses, não confirmatórias)")
     if not rel.exploratorias:

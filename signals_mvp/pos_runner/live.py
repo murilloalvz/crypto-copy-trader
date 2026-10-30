@@ -74,6 +74,12 @@ TFS = ("5m", "1h", "4h")
 # pra descoberta). Nunca aposenta com posicao real aberta (V1 ou V2) -- mesma guarda de `_retire`.
 RETIRADA_SEM_CANDLE_H = 24.0
 RETIRADA_QUEDA_PCT = 99.5
+# PEDIDO 2026-10-30 (FASE 2, item 2): rotacao por incapacidade ESTRUTURAL -- limiar MAIS CONSERVADOR
+# que `_retire_estagnado` (sem_fase ha mais tempo, queda alem da faixa mais LARGA que existe -- V2,
+# 96% -- em vez de 99,5%): nunca remove runner/pullback/posicao/trajetoria/baseline pendente, so
+# libera vaga quando NENHUMA versao congelada (V1 ou V2) jamais aceitaria mais um sinal desta onda.
+POS_RUNNER_ROTACAO_HORAS = 72.0
+QUEDA_ROTACAO_PCT = 96.0
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 # PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
@@ -524,6 +530,8 @@ class PosRunnerLive:
         sombra_max_pools: int = 10,
         sem_radar: bool = False,
         radar_max_dia: int = 8,
+        sem_rotacao: bool = False,
+        rotacao_max_por_hora: int = 2,
     ):
         self.settings = settings
         self.params = params
@@ -666,6 +674,13 @@ class PosRunnerLive:
         self.sem_radar = sem_radar
         self.radar_max_dia = radar_max_dia
         self.dets_radar: dict[tuple[str, str], DetectorV1] = {}
+        # PEDIDO 2026-10-30 (FASE 2, item 2): rotacao por incapacidade ESTRUTURAL -- SEM_ROTACAO=1
+        # desliga por completo; `_rotacoes_recentes` e so em memoria (pacing operacional, nunca um
+        # invariante cientifico -- um restart no meio da hora nunca e um problema real).
+        self.sem_rotacao = sem_rotacao
+        self.rotacao_max_por_hora = rotacao_max_por_hora
+        self._rotacoes_recentes: list[float] = []
+        self.last_dormentes_check = 0.0
         self._radar_suspeito: dict[tuple[str, str], bool] = {}
         self._params_radar = dataclasses.replace(
             self.params_v1, zone_min_candles=4, wicks_max=9_999, drop_max=0.995, age_window_days=(2.0, 36_500.0))
@@ -847,11 +862,20 @@ class PosRunnerLive:
         self.next_discovery = now + self.settings.descoberta_min * 60.0
         self.offer(snaps, now, fonte=name)
 
+    @staticmethod
+    def _prioridade_espera(row: Any) -> tuple[int, float]:
+        """PEDIDO 2026-10-30 (FASE 2, item 3): pool readmitido da lista dormente (`info.
+        readmitido_dormente`) entra na FRENTE de candidatos novos -- unico caso de priorizacao fora
+        de `mc_found` (nunca uma priorizacao de "qualidade" nos candidatos normais, pedido explicito)."""
+        info = LineageVerifier._info(row)
+        return (0 if info.get("readmitido_dormente") else 1, -(row["mc_found"] or 0.0))
+
     def _promote(self, now: float) -> None:
-        """Verificado (com a data de criacao) -> ativo enquanto houver vaga (maior MC na descoberta primeiro)."""
+        """Verificado (com a data de criacao) -> ativo enquanto houver vaga (maior MC na descoberta
+        primeiro; readmitido da lista dormente tem prioridade -- ver `_prioridade_espera`)."""
         active = len(self.storage.pr_pools("ativo"))
         waiting = sorted((r for r in self.storage.pr_pools("verificado") if "criado_ts" in LineageVerifier._info(r)),
-                         key=lambda r: -(r["mc_found"] or 0.0))
+                         key=self._prioridade_espera)
         for row in waiting:
             if row["grad_ts"] is None or now - row["grad_ts"] > self.settings.idade_max_dias * 86400.0:
                 self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="passou da idade maxima na fila")
@@ -862,7 +886,14 @@ class PosRunnerLive:
                 # registrar todos, nunca so o 1o) em vez de `break`; sao sempre os MESMOS enquanto a
                 # vaga nao abrir, entao `pr_vaga_descarte_insert` e idempotente por dia (nunca
                 # acumula 1 linha por tick).
-                self.storage.pr_vaga_descarte_insert(now, row["pool"])
+                # PEDIDO 2026-10-30 (FASE 2, item 1): dados do MOMENTO (MC/idade/liquidez congelados na
+                # descoberta -- `info`; pico/queda nunca existem pra um candidato 'verificado', que
+                # ainda nao tem candle algum em cache -- None explicito, nunca inventado).
+                info = LineageVerifier._info(row)
+                criado_ts = info.get("criado_ts")
+                idade_dias = (now - criado_ts) / 86400.0 if criado_ts else None
+                self.storage.pr_vaga_descarte_insert(now, row["pool"], mc_atual=row["mc_found"],
+                                                     idade_dias=idade_dias, liquidez_usd=info.get("liq_usd"))
                 continue
             self.storage.pr_upsert_pool(row["pool"], status="ativo", added_ts=now)
             active += 1
@@ -912,6 +943,124 @@ class PosRunnerLive:
                 self.dets_radar.pop((pool, tf), None)
                 self.sched.pop((pool, tf), None)
             console.info("POS-RUNNER: $%s aposentado (%s) -- vaga liberada", row["symbol"] or pool, motivo)
+
+    def _evidencia_pendente(self, pool: str) -> bool:
+        """PEDIDO 2026-10-30 (FASE 2, item 2): algum sinal (V1 ou V2, QUALQUER status) deste pool
+        ainda tem trajetoria/baseline em coleta -- mesma condicao `precisa_traj`/`precisa_base` de
+        `scripts/backfill_evidencia.py`. Protege a CIENCIA (H1 precisa dos candles ainda chegando),
+        nunca uma regra de V1/V2."""
+        for versao, sinais in (("v1", self.storage.pr1_signals(pool=pool)), ("v2", self.storage.pr2_signals(pool=pool))):
+            for s in sinais:
+                traj = self.storage.pr_trajetoria_get(versao, s["id"])
+                if traj is not None and not traj["fechado"] and not traj["pre_instrumentacao"]:
+                    return True
+                base = self.storage.pr_baseline_get(versao, s["id"])
+                if base is not None and base["dif_pareada"] is None and not base["pre_instrumentacao"]:
+                    return True
+        return False
+
+    def _rotacionar_vagas(self, now: float) -> None:
+        """PEDIDO 2026-10-30 (FASE 2, item 2): libera vaga de `max_pools` por incapacidade
+        ESTRUTURAL -- TODAS as condicoes: sem_fase em V1 E V2 ha mais de `POS_RUNNER_ROTACAO_HORAS`
+        (`_persistir_fases` rastreia `sem_fase_desde`); MC atual < piso OU queda do pico >
+        `QUEDA_ROTACAO_PCT` (a faixa MAIS LARGA que existe -- V2 -- nenhuma versao congelada
+        aceitaria mais um sinal desta onda); sem posicao aberta nem evidencia pendente
+        (`_evidencia_pendente`); NUNCA runner/pullback (so entra na lista se `sem_fase_desde` nao e
+        None). Max `rotacao_max_por_hora` (pacing em memoria, nunca um invariante cientifico), so
+        SE houver candidato esperando vaga. `SEM_ROTACAO=1` desliga por completo. Nunca toca
+        detector/regra de V1/V2 -- so decide QUEM fica sob observacao; pool vai pra 'dormente'
+        (pode ser readmitido, `_recheck_dormentes`), NUNCA 'encerrado' como `_retire_estagnado`."""
+        if self.sem_rotacao:
+            return
+        self._rotacoes_recentes = [t for t in self._rotacoes_recentes if now - t < 3600.0]
+        vagas = self.rotacao_max_por_hora - len(self._rotacoes_recentes)
+        if vagas <= 0:
+            return
+        esperando = [r for r in self.storage.pr_pools("verificado") if "criado_ts" in LineageVerifier._info(r)]
+        if not esperando:
+            return
+        candidatos: list[tuple[float, Any, Optional[float]]] = []
+        for row in self.storage.pr_pools("ativo"):
+            pool = row["pool"]
+            if row["sem_fase_desde"] is None or now - row["sem_fase_desde"] < POS_RUNNER_ROTACAO_HORAS * 3600.0:
+                continue
+            if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+                continue
+            if self._evidencia_pendente(pool):
+                continue
+            bars = self.storage.pr_bars(pool, "1h")
+            mc_atual = bars[-1][4] if bars else None
+            quedas = [d.drop_pct() for d in (self.dets_v1.get((pool, "1h")), self.dets_v2.get((pool, "1h"))) if d is not None]
+            quedas = [q for q in quedas if q is not None]
+            queda_pct = max(quedas) if quedas else None
+            incapaz = (mc_atual is not None and mc_atual < self.params_v1.min_mc_usd) or \
+                      (queda_pct is not None and queda_pct > QUEDA_ROTACAO_PCT)
+            if incapaz:
+                candidatos.append((row["sem_fase_desde"], row, mc_atual))
+        candidatos.sort(key=lambda x: x[0])   # sem_fase ha mais tempo primeiro
+        for _, row, mc_atual in candidatos[:min(vagas, len(esperando))]:
+            pool = row["pool"]
+            motivo = f"rotacao: incapacidade estrutural (sem_fase > {POS_RUNNER_ROTACAO_HORAS:.0f}h, V1 e V2)"
+            self.storage.pr_upsert_pool(pool, status="dormente", checked_ts=now, motivo=motivo)
+            self.storage.pr_dormente_insert(pool, row["mint"], row["symbol"], motivo, mc_atual, now)
+            self.storage.pr_rotacao_ativacao_ts(now)
+            self._rotacoes_recentes.append(now)
+            for tf in TFS:
+                self.dets.pop((pool, tf), None)
+                self.dets_fecham.pop((pool, tf), None)
+                self.dets_v1.pop((pool, tf), None)
+                self.dets_v2.pop((pool, tf), None)
+                self.dets_sombra_mc.pop((pool, tf), None)
+                self.dets_sombra_queda96.pop((pool, tf), None)
+                self.dets_sombra_base4.pop((pool, tf), None)
+                self.dets_radar.pop((pool, tf), None)
+                self.sched.pop((pool, tf), None)
+            console.info("POS-RUNNER: $%s rotacionado pra dormente (%s)", row["symbol"] or pool, motivo)
+
+    def _recheck_dormentes(self, now: float) -> None:
+        """PEDIDO 2026-10-30 (FASE 2, item 3): 1 chamada de GT por CICLO (nunca mais -- orcamento
+        PROPRIO, nunca compete com o ciclo principal), no pool dormente ha mais tempo sem recheck
+        (ou nunca rechecado) -- paga pra cada um ser conferido mais ou menos 1x/dia, sem rajada.
+        Readmite ('verificado', prioridade sobre candidatos novos via `_prioridade_espera`) se
+        MC >= piso."""
+        candidatos = [d for d in self.storage.pr_dormentes("dormente")
+                     if d["ts_recheck_ultimo"] is None or now - d["ts_recheck_ultimo"] >= 86_400.0]
+        if not candidatos:
+            return
+        candidatos.sort(key=lambda d: d["ts_recheck_ultimo"] or 0.0)
+        d = candidatos[0]
+        pool = d["pool"]
+        row = self.storage.pr_pool(pool)
+        if row is None or row["status"] != "dormente":
+            return
+        info = json.loads(row["info"] or "{}")
+        try:
+            # 1 CHAMADA so (`_page`, nunca `history()` -- esta caminha pra tras confirmando onde o
+            # historico acaba, custando VARIAS chamadas so pra devolver o ultimo candle).
+            raw = self.ohlcv._page(pool, "1h", int(now), "token", info.get("side", "base"))   # noqa: SLF001
+        except (RateLimited, ApiError):
+            return
+        if not raw:
+            self.storage.pr_dormente_update(d["id"], ts_recheck_ultimo=now)
+            return
+        # MESMA conversao token -> MC USD de `_refresh_core` (`to_mc_bars`/`self.quotes.series`) --
+        # `raw` vem em unidade de TOKEN (preco bruto), nunca MC direto.
+        usd = self.quotes.series(row["quote"], raw[-1].ts + tf_seconds("1h"), now)
+        if usd is None:
+            self.storage.pr_dormente_update(d["id"], ts_recheck_ultimo=now)
+            return
+        mc_bars, _missing = to_mc_bars(raw, "1h", usd, row["supply"])
+        if not mc_bars:
+            self.storage.pr_dormente_update(d["id"], ts_recheck_ultimo=now)
+            return
+        mc_atual = mc_bars[-1].close
+        self.storage.pr_dormente_update(d["id"], ts_recheck_ultimo=now, mc_recheck_ultimo=mc_atual)
+        if mc_atual >= self.params_v1.min_mc_usd:
+            info_novo = dict(info, readmitido_dormente=True)
+            self.storage.pr_upsert_pool(pool, status="verificado", mc_found=mc_atual, checked_ts=now,
+                                        info=json.dumps(info_novo))
+            self.storage.pr_dormente_update(d["id"], status="readmitido", ts_readmitido=now)
+            console.info("POS-RUNNER: $%s readmitido da lista dormente (MC=%.0f)", row["symbol"] or pool, mc_atual)
 
     # -- agenda ------------------------------------------------------------------------------------
     def _heat(self, pool: str, tf: str) -> int:
@@ -1039,6 +1188,20 @@ class PosRunnerLive:
             out["chamadas"] += self.http.disarm()
         self._retire(now)
         self._retire_estagnado(now)
+        self._rotacionar_vagas(now)
+        # PEDIDO 2026-10-30 (FASE 2, item 3): orcamento PROPRIO (1 chamada, nunca soma a `cap_total`
+        # do ciclo principal) -- mesmo `budget`/limitador compartilhado do GT, so uma permissao extra
+        # e pequena, nunca uma rajada.
+        self.http.arm(budget, keep, 1)
+        try:
+            self._recheck_dormentes(now)
+        except RateLimited:
+            pass
+        except ApiError as exc:
+            if exc.kind != "budget":
+                log.warning("POS-RUNNER: recheck dormentes falhou: %s", exc)
+        finally:
+            out["chamadas"] += self.http.disarm()
         if now - self.last_baselines >= 3600.0:
             self.last_baselines = now
             self._refresh_baselines(now)
@@ -1129,13 +1292,23 @@ class PosRunnerLive:
             return "runner"
         return "sem_fase"
 
-    def _persistir_fases(self, pool: str, tf: str) -> None:
+    def _persistir_fases(self, pool: str, tf: str, now: float) -> None:
         """PEDIDO 2026-10-29: fase so existia na MEMORIA deste processo (so.saude.py tinha que ler do
         ultimo heartbeat, defasado/ausente logo apos um restart) -- grava a fase ATUAL em `pr_pools`
         a cada ciclo que processa candle novo pra essa (pool,tf), pra saude.py (processo separado)
         ler o estado de AGORA, nunca o do ultimo heartbeat. So "sem_fase"/"runner"/"pullback" existem
-        no detector -- nao ha fase "caixa"."""
-        self.storage.pr_upsert_pool(pool, fase_v1=self._fase_label_v1(pool, tf), fase_v2=self._fase_label_v2(pool, tf))
+        no detector -- nao ha fase "caixa".
+
+        PEDIDO 2026-10-30 (FASE 2, item 2): tambem rastreia `sem_fase_desde` -- desde quando V1 E V2
+        estao sem_fase AO MESMO TEMPO (NULL se qualquer um dos dois esta ativo agora). Persistido
+        incrementalmente aqui (nunca recalculado por replay) -- so `_rotacionar_vagas` le."""
+        fase_v1, fase_v2 = self._fase_label_v1(pool, tf), self._fase_label_v2(pool, tf)
+        ambos_sem_fase = fase_v1 == "sem_fase" and fase_v2 == "sem_fase"
+        sem_fase_desde = None
+        if ambos_sem_fase:
+            row = self.storage.pr_pool(pool)
+            sem_fase_desde = now if row is None or row["sem_fase_desde"] is None else row["sem_fase_desde"]
+        self.storage.pr_upsert_pool(pool, fase_v1=fase_v1, fase_v2=fase_v2, sem_fase_desde=sem_fase_desde)
 
     def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
         """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao
@@ -1917,6 +2090,12 @@ class PosRunnerLive:
                     and ev.kind in ("WATCHLIST", "ENTRADA", "ONDA_INVALIDA")):
                 self.storage.pr_evento_pre_admissao_insert(now, "v1", pool, tf, ev.kind, ev.decision_ts)
             return
+        # PEDIDO 2026-10-30 (FASE 2, item 1): marco do funil (1a vez, idempotente) -- "runner"/"caixa"
+        # nunca eram persistidos antes desta entrega (so observabilidade, nunca um alerta/filtro novo).
+        if ev.kind == "RUNNER":
+            self.storage.pr_funil_marco_insert(pool, "v1", "runner", now)
+        elif ev.kind == "FASE2":
+            self.storage.pr_funil_marco_insert(pool, "v1", "caixa", now)
         if ev.kind in ("WATCHLIST", "ENTRADA"):
             self._conferencia_cruzada_dexpaprika(row, tf, ev)
         if ev.kind == "ENTRADA":
@@ -2059,6 +2238,7 @@ class PosRunnerLive:
                 # o momento em que o bot decidiu -- 0 no caso normal (candle atual); nunca passa do
                 # limiar de _late() acima, que ja teria descartado o evento antes de chegar aqui.
                 "atraso_candles": (now - ts_fechamento) / det.step,
+                "regime_amostragem": self._regime_amostragem(ts_fechamento),
                 **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
@@ -2197,6 +2377,10 @@ class PosRunnerLive:
                     and ev.kind in ("WATCHLIST", "ENTRADA", "ONDA_INVALIDA")):
                 self.storage.pr_evento_pre_admissao_insert(now, "v2", pool, tf, ev.kind, ev.decision_ts)
             return
+        if ev.kind == "RUNNER":
+            self.storage.pr_funil_marco_insert(pool, "v2", "runner", now)
+        elif ev.kind == "FASE2":
+            self.storage.pr_funil_marco_insert(pool, "v2", "caixa", now)
         if ev.kind == "ENTRADA":
             self._entry_v2(row, tf, det, ev, now)
             return
@@ -2277,6 +2461,7 @@ class PosRunnerLive:
                 "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
                 "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
                 "atraso_candles": (now - ts_fechamento) / det.step,
+                "regime_amostragem": self._regime_amostragem(ts_fechamento),
                 **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)
@@ -2951,7 +3136,7 @@ class PosRunnerLive:
             # PEDIDO 2026-10-29: persiste a fase ATUAL (V1 e V2) em pr_pools -- saude.py le daqui,
             # nunca do ultimo heartbeat em memoria (que fica defasado/ausente logo apos um restart).
             try:
-                self._persistir_fases(pool, tf)
+                self._persistir_fases(pool, tf, now)
             except Exception:  # noqa: BLE001 - medicao ao lado, nunca derruba o ciclo
                 log.warning("POS-RUNNER fases: erro inesperado ao persistir %s %s, ignorado neste ciclo",
                            row["symbol"], tf, exc_info=True)
@@ -3024,6 +3209,14 @@ class PosRunnerLive:
     @staticmethod
     def _late(now: float, known_ts: float, limit_s: float) -> bool:
         return now - known_ts > limit_s
+
+    def _regime_amostragem(self, ts_fechamento: float) -> str:
+        """PEDIDO 2026-10-30 (FASE 2, item 4): 'pos_rotacao' se o candle-gatilho fechou DEPOIS da 1a
+        rotacao de verdade (`pr_rotacao_ativacao_ts`, fixada so quando `_rotacionar_vagas` de fato
+        remove um pool); 'pre_rotacao' em todo o resto (inclui TODO sinal gravado antes da rotacao
+        existir -- nunca retroativo, so compara contra a data real de ativacao)."""
+        ativacao = self.storage.pr_rotacao_ativacao_ts_get()
+        return "pos_rotacao" if (ativacao is not None and ts_fechamento >= ativacao) else "pre_rotacao"
 
     def _key(self, kind: str, *parts: Any) -> str:
         """Chave de alerta por versao_config (a numeracao de onda/zona/entrada recomeca com outra regra)."""
