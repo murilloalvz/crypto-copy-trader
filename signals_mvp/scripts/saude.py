@@ -417,16 +417,29 @@ def _secao_healthchecks_contaminados(storage: Storage) -> list[str]:
     ]
 
 
+def _confirmado_com_fill_real(storage: Storage, versao: str, versao_config: Optional[str], signal_id: int) -> bool:
+    """PEDIDO 2026-10-30 (diagnostico risco_lt_3pct_sem_tag): a tag `risco_irrealista` NUNCA e
+    calculada a partir de `entry_price`/`stop` (congelados no PLANO do alerta, nunca reescritos) --
+    so e gravada por `live.py: _confirmar_entrada`, e so quando o operador usa `/entrei` com um fill
+    REAL (`risco_real_pct = 100*res.risk_frac`, uma grandeza DIFERENTE do risco do plano). Mesma
+    chave de idempotencia gravada la (`PosRunnerLive._key_v1`/`_key_v2`, formato
+    "<versao>:confirma:<versao_config>:<signal_id>") -- nunca recalculada aqui, so leitura de
+    `pr_alerts`."""
+    if not versao_config:
+        return False
+    return storage.pr_alert_seen(f"{versao}:confirma:{versao_config}:{signal_id}")
+
+
 def _secao_consistencia(storage: Storage, now: float) -> list[str]:
     problemas: Counter = Counter()
     vistos_ts: Counter = Counter()
     # PEDIDO 2026-10-29, item 5: nao so contar -- NOMEAR qual entrada esta sem trajetoria/baseline.
     sem_evidencia: list[str] = []
-    for versao, sinais, traj_get, base_get in (
+    for versao, sinais, traj_get, base_get, versao_col in (
         ("v1", storage.pr1_signals(), lambda eid: storage.pr_trajetoria_get("v1", eid),
-         lambda eid: storage.pr_baseline_get("v1", eid)),
+         lambda eid: storage.pr_baseline_get("v1", eid), "versao_config_v1"),
         ("v2", storage.pr2_signals(), lambda eid: storage.pr_trajetoria_get("v2", eid),
-         lambda eid: storage.pr_baseline_get("v2", eid)),
+         lambda eid: storage.pr_baseline_get("v2", eid), "versao_config_v2"),
     ):
         for s in sinais:
             if s["ts_fechamento"] and s["ts_fechamento"] > now + 3600.0:
@@ -438,7 +451,13 @@ def _secao_consistencia(storage: Storage, now: float) -> list[str]:
                 if s["result_net"] is None:
                     problemas["fechado_sem_result_net"] += 1
                 elif risco_pct is not None and risco_pct < 3.0 and "risco_irrealista" not in (s["tags"] or ""):
-                    problemas["risco_lt_3pct_sem_tag"] += 1
+                    # PEDIDO 2026-10-30: so e uma inconsistencia de verdade se o operador CONFIRMOU
+                    # um fill real (unica fonte da tag) e ela ainda assim ficou faltando -- sem
+                    # confirmacao, o risco <3% e so do PLANO (nunca comparavel a tag), nunca um bug.
+                    if _confirmado_com_fill_real(storage, versao, s[versao_col], s["id"]):
+                        problemas["risco_lt_3pct_sem_tag"] += 1
+                    else:
+                        problemas["risco_planejado_lt_3pct_sem_confirmacao_real"] += 1
             # trajetoria/baseline sao preenchidas por um refresh HORARIO separado (`_refresh_baselines`)
             # -- um sinal com menos de 2h ainda nao teve chance de ganhar essas linhas, isso NAO e bug.
             if now - s["ts_fechamento"] > 2 * 3600.0:

@@ -225,6 +225,39 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_closed_signal_with_tight_planned_risk_and_no_real_confirmation_is_informational_not_a_bug(self) -> None:
+        """PEDIDO 2026-10-30: `entry_price`/`stop` sao o PLANO congelado no alerta, nunca o fill real
+        -- a tag `risco_irrealista` so existe se o operador confirmou com `/entrei` (`_confirmar_entrada`).
+        Sem essa confirmacao, risco do plano <3% nunca e um bug de marcacao (nao ha tag pra faltar)."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            sinal = h.storage.pr1_signals()[0]
+            h.storage.pr1_update_signal(sinal["id"], status="fechado", entry_price=441_000.0, stop=440_000.0,
+                                        result_net=0.0, ts_fechamento=h.clock())
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("risco_planejado_lt_3pct_sem_confirmacao_real: 1", texto)
+            self.assertNotIn("risco_lt_3pct_sem_tag", texto)
+        finally:
+            h.close()
+
+    def test_closed_signal_confirmed_with_real_fill_and_still_missing_the_tag_is_the_real_bug(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            sinal = h.storage.pr1_signals()[0]
+            h.storage.pr1_update_signal(sinal["id"], status="fechado", entry_price=441_000.0, stop=440_000.0,
+                                        result_net=0.0, ts_fechamento=h.clock())
+            chave = f"v1:confirma:{sinal['versao_config_v1']}:{sinal['id']}"
+            h.storage.pr_alert_once(chave, h.clock())   # confirmacao real ja existe, tag ficou faltando
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("risco_lt_3pct_sem_tag: 1", texto)
+            self.assertNotIn("risco_planejado_lt_3pct_sem_confirmacao_real", texto)
+        finally:
+            h.close()
+
 
 if __name__ == "__main__":
     unittest.main()
