@@ -32,7 +32,7 @@ from ..config import make_paths
 from ..storage import Storage
 
 LOG_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z (?P<level>\w+)\s+(?P<logger>\S+): (?P<msg>.*)$")
-TAGS_EXCLUSAO_R = ("contaminado_candle", "risco_irrealista")
+TAGS_EXCLUSAO_R = ("contaminado_candle", "risco_irrealista", "entrada_atrasada")
 
 
 def _abrir_storage_no_arquivo(db_path: Path) -> Storage:
@@ -161,6 +161,14 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     # isto so mede se ainda sobra demanda sem atender.
     vaga_negada_48h = storage.pr_vaga_descarte_count(now - 48 * 3600.0)
     out.append(f"  candidatos novos sem vaga (max_pools, 48h): {vaga_negada_48h} pool(s) distinto(s)")
+    # PEDIDO 2026-10-30 (FASE 1a/1b): ENTRADA descartada por staleness (_late) nunca abre posicao/
+    # alerta; evento pre-admissao mede setup que aconteceu no mercado real enquanto o pool esperava
+    # vaga -- os dois so existem a partir desta entrega (0 em bancos sem o patch, nunca inventado).
+    entradas_atrasadas_24h = storage.pr_entrada_atrasada_count(now - 24 * 3600.0)
+    eventos_pre_admissao_24h = storage.pr_evento_pre_admissao_count_por_tipo(now - 24 * 3600.0)
+    out.append(f"  entradas_atrasadas (24h, nunca abriram posicao): {entradas_atrasadas_24h}")
+    out.append("  eventos_pre_admissao (24h, setup real enquanto esperava vaga): " +
+              (", ".join(f"{k}={v}" for k, v in sorted(eventos_pre_admissao_24h.items())) or "0"))
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])
@@ -413,7 +421,8 @@ def _secao_healthchecks_contaminados(storage: Storage) -> list[str]:
         "HEALTHCHECKS.IO: ultimo ping bem-sucedido: s/d (so no painel do servico -- o bot nunca "
         "persiste isso localmente, so loga quando um ping FALHA)",
         f"TAGS: contaminado_candle={contados.get('contaminado_candle', 0)} | "
-        f"risco_irrealista={contados.get('risco_irrealista', 0)} | resumo diario/relatorio ja excluem (ver §17/§18)",
+        f"risco_irrealista={contados.get('risco_irrealista', 0)} | "
+        f"entrada_atrasada={contados.get('entrada_atrasada', 0)} | resumo diario/relatorio ja excluem (ver §17/§18)",
     ]
 
 

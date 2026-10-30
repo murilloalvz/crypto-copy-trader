@@ -258,6 +258,23 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_fila_section_shows_entradas_atrasadas_and_eventos_pre_admissao_in_24h(self) -> None:
+        """PEDIDO 2026-10-30 (FASE 1d): mesma ressalva de tempo real (`time.time()`, nunca o
+        FakeClock) ja usada pro vaga_descarte -- ver nota da suite sobre esse bug."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_entrada_atrasada_insert(now, "v1", "POOL1", "1h", now - 5_000.0, 5_000.0)
+            h.storage.pr_evento_pre_admissao_insert(now, "v1", "POOL1", "1h", "ENTRADA", now - 10_000.0)
+            h.storage.pr_evento_pre_admissao_insert(now, "v1", "POOL2", "1h", "WATCHLIST", now - 10_000.0)
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("entradas_atrasadas (24h, nunca abriram posicao): 1", texto)
+            self.assertIn("ENTRADA=1", texto)
+            self.assertIn("WATCHLIST=1", texto)
+        finally:
+            h.close()
+
 
 if __name__ == "__main__":
     unittest.main()

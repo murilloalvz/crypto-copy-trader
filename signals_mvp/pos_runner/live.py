@@ -1910,6 +1910,12 @@ class PosRunnerLive:
         tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
                    and self.version_v1_start is not None and ev.decision_ts >= self.version_v1_start)
         if not tracked:
+            # PEDIDO 2026-10-30 (FASE 1b): isola especificamente `decision_ts < added_ts` (o pool
+            # ainda esperava vaga quando o setup aconteceu no mercado real) do motivo de versao
+            # (`version_v1_start`) -- so o 1o mede "quantos setups o bot perde so por falta de vaga".
+            if (row["added_ts"] is not None and ev.decision_ts < row["added_ts"]
+                    and ev.kind in ("WATCHLIST", "ENTRADA", "ONDA_INVALIDA")):
+                self.storage.pr_evento_pre_admissao_insert(now, "v1", pool, tf, ev.kind, ev.decision_ts)
             return
         if ev.kind in ("WATCHLIST", "ENTRADA"):
             self._conferencia_cruzada_dexpaprika(row, tf, ev)
@@ -1988,6 +1994,14 @@ class PosRunnerLive:
         ts_fechamento = int(ev.decision_ts)
         signal = self.storage.pr1_signal_by_key("solana", pool, tf, "ENTRADA", ts_fechamento)
         if signal is None:
+            # PEDIDO 2026-10-30 (FASE 1a): MESMO _late() que ja existia so pro alerta (ate aqui, bem
+            # mais abaixo) -- agora bloqueia a CRIACAO do sinal/posicao tambem, nunca so o Telegram.
+            # Candle-gatilho atrasado (ex.: pool esperou muito na fila e o replay/backfill demora
+            # varios ciclos pra alcancar "agora") nunca abre posicao de verdade, nunca alerta --
+            # so registra o descarte (funil/saude), nunca retenta este MESMO evento depois.
+            if self._late(now, ev.decision_ts, max(300.0, det.step / 2.0)):
+                self.storage.pr_entrada_atrasada_insert(now, "v1", pool, tf, ts_fechamento, now - ev.decision_ts)
+                return
             gatilho = list(ev.data.get("gatilho") or [])
             tags: list[str] = []
             if ev.data.get("risco_fora_da_faixa"):
@@ -2041,6 +2055,10 @@ class PosRunnerLive:
                 # (nunca inventa um 0 quando o dado nao existe).
                 "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
                 "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
+                # PEDIDO 2026-10-30 (FASE 1d): atraso em candles entre o fechamento do candle-gatilho e
+                # o momento em que o bot decidiu -- 0 no caso normal (candle atual); nunca passa do
+                # limiar de _late() acima, que ja teria descartado o evento antes de chegar aqui.
+                "atraso_candles": (now - ts_fechamento) / det.step,
                 **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr1_insert_signal(row_insert)
@@ -2174,6 +2192,10 @@ class PosRunnerLive:
         tracked = (row["added_ts"] is not None and ev.decision_ts >= row["added_ts"]
                   and self.version_v2_start is not None and ev.decision_ts >= self.version_v2_start)
         if not tracked:
+            # PEDIDO 2026-10-30 (FASE 1b): mesma medicao de `_on_event_v1` -- ver comentario la.
+            if (row["added_ts"] is not None and ev.decision_ts < row["added_ts"]
+                    and ev.kind in ("WATCHLIST", "ENTRADA", "ONDA_INVALIDA")):
+                self.storage.pr_evento_pre_admissao_insert(now, "v2", pool, tf, ev.kind, ev.decision_ts)
             return
         if ev.kind == "ENTRADA":
             self._entry_v2(row, tf, det, ev, now)
@@ -2212,6 +2234,10 @@ class PosRunnerLive:
         sinal_v1 = self.storage.pr1_signal_by_key("solana", pool, tf, "ENTRADA", ts_fechamento)
         so_v2 = sinal_v1 is None or sinal_v1["versao_config_v1"] != self.version_v1
         if signal is None:
+            # PEDIDO 2026-10-30 (FASE 1a): mesma guarda de `_entry_v1` -- ver comentario la.
+            if self._late(now, ev.decision_ts, max(300.0, det.step / 2.0)):
+                self.storage.pr_entrada_atrasada_insert(now, "v2", pool, tf, ts_fechamento, now - ev.decision_ts)
+                return
             gatilho = list(ev.data.get("gatilho") or [])
             tags: list[str] = []
             if ev.data.get("risco_fora_da_faixa"):
@@ -2250,6 +2276,7 @@ class PosRunnerLive:
                 "qualidade_versao": qualidade_candle.QUALIDADE_VERSAO,
                 "carteiras_pro_presentes": n_carteiras_pro if holders.tag != "holders_indisponivel" else None,
                 "n_pessoas_pro": n_pessoas_pro if holders.tag != "holders_indisponivel" else None,
+                "atraso_candles": (now - ts_fechamento) / det.step,
                 **self._contexto_execucao(row, ev, holders),
             }
             signal_id = self.storage.pr2_insert_signal(row_insert)

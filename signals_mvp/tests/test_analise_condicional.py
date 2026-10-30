@@ -404,6 +404,26 @@ class CarregarSinaisResolvidosTests(unittest.TestCase):
         self.assertEqual(len(excluidos), 1)
         self.assertEqual(excluidos[0].motivo, "contaminado_candle")
 
+    def test_a_signal_tagged_entrada_atrasada_is_excluded_by_default_but_kept_for_sensitivity(self) -> None:
+        """PEDIDO 2026-10-30 (FASE 1c): mesma exclusao de risco_irrealista/contaminado_candle por
+        padrao; `excluir_entrada_atrasada=False` devolve o sinal, so pra medir sensibilidade de H1."""
+        signal_id = self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": '["entrada_atrasada"]',
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "fechado",
+            "entry_price": 100.0, "stop": 80.0,
+        })
+        self._resolver(signal_id)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1")
+        self.assertEqual(sinais, [])
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "entrada_atrasada")
+        sinais_sens, excluidos_sens = cond.carregar_sinais_e_excluidos(self.storage, "v1",
+                                                                       excluir_entrada_atrasada=False)
+        self.assertEqual(len(sinais_sens), 1)
+        self.assertEqual(excluidos_sens, [])
+
     def test_v2_is_never_excluded_by_the_dexpaprika_criterion_since_it_has_no_cross_check_of_its_own(self) -> None:
         signal_id = self.storage.pr2_insert_signal({
             "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,

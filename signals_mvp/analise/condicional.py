@@ -137,7 +137,8 @@ class Excluido:
     entry_id: int
     mint: str
     symbol: str
-    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente' | 'risco_irrealista' | 'contaminado_candle'
+    motivo: str  # 'preco_entrada_divergente' | 'candle_divergente' | 'risco_irrealista' |
+                # 'contaminado_candle' | 'entrada_atrasada'
 
 
 def _preco_entrada_divergente(sinal: Any) -> bool:
@@ -171,6 +172,16 @@ def _risco_irrealista(sinal: Any) -> bool:
     return "risco_irrealista" in json.loads(sinal["tags"] or "[]")
 
 
+def _entrada_atrasada(sinal: Any) -> bool:
+    """PEDIDO 2026-10-30 (FASE 1): ENTRADA cujo alerta saiu atrasado em relacao ao fechamento do
+    candle-gatilho (tag `entrada_atrasada`, `scripts/auditar_atraso_entradas.py` pra sinais antigos
+    -- ao vivo, desde a FASE 1a, `live.py: _entry_v1`/`_entry_v2` ja bloqueiam a CRIACAO do sinal
+    quando atrasado, entao isto so deveria marcar sinais de ANTES desse patch). Fora de H1-H8 por
+    padrao; `carregar_sinais_e_excluidos(..., excluir_entrada_atrasada=False)` os devolve de volta,
+    so pra medir sensibilidade (ver `rodar_h1` com/sem)."""
+    return "entrada_atrasada" in json.loads(sinal["tags"] or "[]")
+
+
 def _contaminado_candle(sinal: Any) -> bool:
     """PATCH 2026-10-27 (item 2 do pedido pos-auditoria): marcacao RETROATIVA e EXPLICITA do operador
     (`scripts/marcar_contaminados.py`, tag `contaminado_candle`) para um trade confirmado contaminado
@@ -180,7 +191,8 @@ def _contaminado_candle(sinal: Any) -> bool:
     return "contaminado_candle" in json.loads(sinal["tags"] or "[]")
 
 
-def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalResolvido], list[Excluido]]:
+def carregar_sinais_e_excluidos(storage: Any, versao: str,
+                                excluir_entrada_atrasada: bool = True) -> tuple[list[SinalResolvido], list[Excluido]]:
     """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
     `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
     `t_entrada` (pr_baseline nao guarda isso) e com pr1_signals/pr2_signals para os campos de grupo.
@@ -209,6 +221,10 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str) -> tuple[list[SinalRe
         if _contaminado_candle(sinal):
             excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
                                        "contaminado_candle"))
+            continue
+        if excluir_entrada_atrasada and _entrada_atrasada(sinal):
+            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+                                       "entrada_atrasada"))
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
         risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
@@ -866,18 +882,24 @@ class RelatorioCondicional:
     sombra: list[ComparacaoSombra] = field(default_factory=list)
     h13: Optional[ResultadoH13] = None
     h14: Optional[ResultadoH14] = None
+    # PEDIDO 2026-10-30 (FASE 1c): H1 recalculado SEM excluir `entrada_atrasada` -- so pra medir
+    # sensibilidade (homogeneidade) do veredito, nunca usado como primario/confirmatorio.
+    h1_com_entrada_atrasada: Optional[ResultadoH1] = None
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
     garantir_plano_registrado(storage, plano_path)
     sinais, excluidos = carregar_sinais_e_excluidos(storage, versao)
     h1 = rodar_h1(sinais)
+    sinais_com_atrasada, _ = carregar_sinais_e_excluidos(storage, versao, excluir_entrada_atrasada=False)
+    h1_com_entrada_atrasada = rodar_h1(sinais_com_atrasada)
     exploratorias = rodar_exploratorias(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
     sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
     h13 = rodar_h13(storage)
     h14 = rodar_h14(storage)
     return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos,
-                                sombra=sombra, h13=h13, h14=h14)
+                                sombra=sombra, h13=h13, h14=h14,
+                                h1_com_entrada_atrasada=h1_com_entrada_atrasada)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -904,6 +926,9 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
         linhas.append(f"  média aparada (10%, só relatório): {rel.h1.media_aparada_10pct:+.3f} R")
         linhas.append(f"  diferenças positivas: {rel.h1.n_diferencas_positivas}/{rel.h1.n_diferencas_total}")
         linhas.append(f"  escalar mão liberado (n>=100 tokens OU p_permutação<0.01): {rel.h1.escalar_liberado}")
+    if rel.h1_com_entrada_atrasada is not None:
+        linhas.append(f"  sensibilidade entrada_atrasada — excluindo (primário): {rel.h1.status} | "
+                      f"incluindo (nunca confirmatório): {rel.h1_com_entrada_atrasada.status}")
     linhas.append("")
     linhas.append("## H2–H8, H10–H12 (exploratórias, Holm sobre as testadas; H10–H12 geração de "
                   "hipóteses, não confirmatórias)")

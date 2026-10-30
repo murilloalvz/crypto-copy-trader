@@ -399,6 +399,22 @@ CREATE TABLE IF NOT EXISTS pr_radar (
   UNIQUE (chain, pool, tf, ts_fechamento)
 );
 CREATE INDEX IF NOT EXISTS pr_radar_aberta ON pr_radar (status);
+-- PEDIDO 2026-10-30 (FASE 1a, guarda de atraso da ENTRADA): ENTRADA cujo candle-gatilho ja estava
+-- atrasado (mesmo `_late()`, mesmo limiar que ja existia so pro alerta -- `live.py: _entry_v1`/
+-- `_entry_v2`) NUNCA mais cria `pr1_signals`/`pr2_signals` (nunca alerta, nunca abre posicao) -- 1
+-- linha aqui por evento descartado, pro funil e pro saude.py contarem.
+CREATE TABLE IF NOT EXISTS pr_entradas_atrasadas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, versao TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, candle_ts REAL NOT NULL, atraso_s REAL NOT NULL
+);
+-- PEDIDO 2026-10-30 (FASE 1b): evento (WATCHLIST/ENTRADA/ONDA_INVALIDA) decidido num candle ANTERIOR
+-- a `added_ts` (pool ainda esperando vaga quando o setup aconteceu no mercado real) -- a guarda
+-- `tracked` (`live.py: _on_event_v1`/`_on_event_v2`) ja descartava isso silenciosamente; agora conta
+-- por tipo, pra medir quantos setups o bot perde so por falta de vaga.
+CREATE TABLE IF NOT EXISTS pr_eventos_pre_admissao (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, versao TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, kind TEXT NOT NULL, candle_ts REAL NOT NULL
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -501,6 +517,12 @@ class Storage:
             # processa candle novo (`_refresh_core`) -- saude.py (processo separado) le daqui, nunca
             # do ultimo heartbeat em memoria. NULL ate o 1o ciclo pos-migracao processar essa pool.
             self._ensure_columns("pr_pools", {"fase_v1": "TEXT", "fase_v2": "TEXT"})
+            # PEDIDO 2026-10-30 (FASE 1d): ha quanto tempo (em candles do tf) o candle-gatilho da
+            # ENTRADA ja estava fechado quando o bot finalmente decidiu (0 = candle atual, o caso
+            # normal). NULL em sinais anteriores a esta entrega (nunca inventa o valor retroativo --
+            # ver scripts/auditar_atraso_entradas.py pra estimar os antigos a partir de ts_alerta).
+            self._ensure_columns("pr1_signals", {"atraso_candles": "REAL"})
+            self._ensure_columns("pr2_signals", {"atraso_candles": "REAL"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1748,6 +1770,31 @@ class Storage:
     def pr_vaga_descarte_count(self, since_ts: float = 0.0) -> int:
         row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_vaga_descartes WHERE ts>=?", (since_ts,))
         return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (FASE 1a): ENTRADA descartada por staleness (_late) antes de alertar/abrir ----
+    def pr_entrada_atrasada_insert(self, ts: float, versao: str, pool: str, tf: str, candle_ts: float,
+                                   atraso_s: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_entradas_atrasadas (ts, versao, pool, tf, candle_ts, atraso_s) VALUES (?,?,?,?,?,?)",
+                (ts, versao, pool, tf, candle_ts, atraso_s))
+
+    def pr_entrada_atrasada_count(self, since_ts: float = 0.0) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_entradas_atrasadas WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (FASE 1b): evento decidido antes do pool entrar em 'ativo' (`tracked`=False) ----
+    def pr_evento_pre_admissao_insert(self, ts: float, versao: str, pool: str, tf: str, kind: str,
+                                      candle_ts: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_eventos_pre_admissao (ts, versao, pool, tf, kind, candle_ts) VALUES (?,?,?,?,?,?)",
+                (ts, versao, pool, tf, kind, candle_ts))
+
+    def pr_evento_pre_admissao_count_por_tipo(self, since_ts: float = 0.0) -> dict[str, int]:
+        rows = self._all("SELECT kind, COUNT(*) AS n FROM pr_eventos_pre_admissao WHERE ts>=? GROUP BY kind",
+                         (since_ts,))
+        return {r["kind"]: r["n"] for r in rows}
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
