@@ -25,6 +25,14 @@ tag, nunca o gatilho em si) ficam de fora desta tabela, com nota: `tp1_frac`, `e
 Uso (na VM, dentro do diretorio do bot):
     python -m signals_mvp.scripts.sensibilidade_parametros --db dados/estado.sqlite --versao v1
     python -m signals_mvp.scripts.sensibilidade_parametros --db dados/estado.sqlite --versao v2
+
+PEDIDO 2026-10-30 (passos mais largos): `--passo largo` (padrao continua `--passo padrao`, output
+IDENTICO ao de antes) acrescenta uma 2a secao so com valores ABSOLUTOS mais distantes da base, na
+MESMA direcao "relaxada" ja documentada acima, para 4 parametros: `zone_min_candles` 12->8/6/4,
+idade minima 2d->1,5/1,0, `drop_min` 80%->75/70, `recover_mult` 1,25->1,15/1,05. Mesma mecanica
+(SOMENTE LEITURA, `dataclasses.replace` em memoria, nunca grava `ParamsV1`/yaml/hash) -- uma
+combinacao invalida (ex.: `recover_mult=1,05` bate no piso `> 1+test_zone`) e pulada, nunca forcada.
+    python -m signals_mvp.scripts.sensibilidade_parametros --db dados/estado.sqlite --versao v1 --passo largo
 """
 
 from __future__ import annotations
@@ -59,6 +67,26 @@ def _bars_do_pool(con: sqlite3.Connection, pool: str, tf: str) -> list[Bar]:
 def _pools_acompanhados(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """"Pools acompanhados" = status ativo em `pr_pools` (mesmo universo do heartbeat/saude.py)."""
     return con.execute("SELECT pool, l_bc, grad_ts, info FROM pr_pools WHERE status='ativo'").fetchall()
+
+
+def _fases_cache(con: sqlite3.Connection, pools: list[str]) -> tuple[int, int]:
+    """PEDIDO 2026-10-30: conta, dentro do MESMO universo em cache usado pela sensibilidade (pools
+    com candles em `pr_bars` p/ este tf), quantos estao sem_fase/dead vs em fase ativa (runner OU
+    pullback, V1 OU V2) -- le `pr_pools.fase_v1`/`fase_v2`, a MESMA coluna persistida a cada ciclo
+    que ja alimenta o heartbeat/`saude.py` (nunca recalculada aqui, zero logica nova de fase)."""
+    if not pools:
+        return 0, 0
+    placeholders = ",".join("?" for _ in pools)
+    rows = con.execute(f"SELECT fase_v1, fase_v2 FROM pr_pools WHERE pool IN ({placeholders})", pools).fetchall()
+    sem_fase = ativa = 0
+    for r in rows:
+        f1 = r["fase_v1"] or "sem_fase"
+        f2 = r["fase_v2"] or "sem_fase"
+        if f1 in ("runner", "pullback") or f2 in ("runner", "pullback"):
+            ativa += 1
+        else:
+            sem_fase += 1
+    return sem_fase, ativa
 
 
 def _created_ts(info_json: Optional[str]) -> Optional[float]:
@@ -120,6 +148,53 @@ def _variar_idade(base: ParamsV1, qual: str, delta: float) -> Optional[ParamsV1]
         return dataclasses.replace(base, age_window_days=novo)
     except ValueError:
         return None
+
+
+def _aplicar_absoluto(base: ParamsV1, nome: str, valor: Any) -> Optional[ParamsV1]:
+    """PEDIDO 2026-10-30 (`--passo largo`): mesma mecanica de `_aplicar_delta`, so que recebe o
+    valor FINAL (absoluto), nao um delta -- mais claro pros 4 parametros pedidos (ex.:
+    `zone_min_candles=8`, nao "delta -4")."""
+    if isinstance(getattr(base, nome), int):
+        valor = int(round(valor))
+    try:
+        return dataclasses.replace(base, **{nome: valor})
+    except ValueError:
+        return None   # combinacao invalida -- pulada, nunca forcada (mesma regra de `_aplicar_delta`)
+
+
+def _construir_idade_min_absoluta(base: ParamsV1, valor: float) -> Optional[ParamsV1]:
+    lo, hi = base.age_window_days
+    try:
+        return dataclasses.replace(base, age_window_days=(valor, hi))
+    except ValueError:
+        return None
+
+
+@dataclasses.dataclass(frozen=True)
+class VariacaoLarga:
+    nome: str
+    valores: tuple   # valores ABSOLUTOS, na MESMA direcao "relaxada" de VARIACOES, so mais distante
+    descricao: str
+    construir: Any   # (base, valor) -> Optional[ParamsV1]
+
+
+# PEDIDO 2026-10-30: passos mais largos, so para estes 4 parametros, SEMPRE na direcao "relaxada"
+# ja documentada em VARIACOES (box menor/idade minima menor/queda-minima menor/recover_mult menor =
+# mais permissivo) -- nunca um parametro novo, nunca uma direcao nova.
+def _construtor_absoluto(nome: str):
+    return lambda base, valor: _aplicar_absoluto(base, nome, valor)
+
+
+VARIACOES_LARGAS: tuple[VariacaoLarga, ...] = (
+    VariacaoLarga("zone_min_candles", (8, 6, 4), "minimo de candles da caixa (base 12)",
+                 _construtor_absoluto("zone_min_candles")),
+    VariacaoLarga("age_window_days (minimo)", (1.5, 1.0), "idade minima em dias (base 2,0)",
+                 _construir_idade_min_absoluta),
+    VariacaoLarga("drop_min", (0.75, 0.70), "queda minima p/ iniciar a zona (base 80%)",
+                 _construtor_absoluto("drop_min")),
+    VariacaoLarga("recover_mult", (1.15, 1.05), "multiplicador de recuperacao da zona (base 1,25x)",
+                 _construtor_absoluto("recover_mult")),
+)
 
 
 def _pool_elegivel(bars: list[Bar], params: ParamsV1) -> bool:
@@ -203,9 +278,53 @@ def avaliar_sensibilidade(con: sqlite3.Connection, base: ParamsV1) -> list[dict[
     return linhas
 
 
-def formatar_markdown(versao: str, n_pools: int, linhas: list[dict[str, Any]]) -> str:
+def avaliar_sensibilidade_larga(con: sqlite3.Connection, base: ParamsV1) -> list[dict[str, Any]]:
+    """PEDIDO 2026-10-30 (`--passo largo`): mesmos pools/base da tabela padrao, varios passos
+    ABSOLUTOS por parametro (nao so um relaxado/restrito) -- so os 4 parametros pedidos."""
+    pools = _coletar_pools(con, base.timeframes[0])
+    base_por_pool = {pool: _rodar(bars, base, l_bc, grad_ts, created_ts)
+                     for pool, bars, l_bc, grad_ts, created_ts in pools}
+    linhas = []
+    for v in VARIACOES_LARGAS:
+        passos = []
+        for valor in v.valores:
+            params_var = v.construir(base, valor)
+            if params_var is None:
+                passos.append({"valor": valor, "delta_sinais": None, "near_miss": None})
+                continue
+            delta_entradas, near_miss = 0, 0
+            for pool, bars, l_bc, grad_ts, created_ts in pools:
+                n_base, sem_entrada_base, _ = base_por_pool[pool]
+                n_var, _, com_entrada_var = _rodar(bars, params_var, l_bc, grad_ts, created_ts)
+                delta_entradas += n_var - n_base
+                if sem_entrada_base:
+                    near_miss += len(sem_entrada_base & com_entrada_var)
+            passos.append({"valor": valor, "delta_sinais": delta_entradas, "near_miss": near_miss})
+        linhas.append({"parametro": v.nome, "descricao": v.descricao, "passos": passos})
+    return linhas
+
+
+def formatar_markdown_largo(versao: str, linhas: list[dict[str, Any]]) -> str:
+    out = [f"## Passos largos (--passo largo) — POS-RUNNER-{versao.upper()}", "",
+          "Mesma direcao \"relaxada\" ja documentada acima, so mais distante da base; valor ABSOLUTO "
+          "(nao delta). Combinacao invalida = pulada (nunca forcada).", "",
+          "| parametro | valor base -> novo | Δ sinais | near-miss |", "|---|---|---|---|"]
+    for linha in linhas:
+        for passo in linha["passos"]:
+            if passo["delta_sinais"] is None:
+                out.append(f"| {linha['parametro']} ({linha['descricao']}) | -> {passo['valor']} | "
+                          "pulado (combinacao invalida) | – |")
+            else:
+                out.append(f"| {linha['parametro']} ({linha['descricao']}) | -> {passo['valor']} | "
+                          f"{passo['delta_sinais']:+d} | {passo['near_miss']} |")
+    return "\n".join(out)
+
+
+def formatar_markdown(versao: str, n_pools: int, linhas: list[dict[str, Any]], sem_fase: int,
+                      fase_ativa: int) -> str:
     out = [f"# Sensibilidade de parametros — POS-RUNNER-{versao.upper()}", "",
-          f"Pools acompanhados com candles em cache: {n_pools}.", "",
+          f"Pools acompanhados com candles em cache: {n_pools} (sem_fase/dead: {sem_fase} | "
+          f"fase ativa [runner/pullback, V1 ou V2]: {fase_ativa}).", "",
           "| parametro | passo | relaxado: Δ sinais | relaxado: near-miss | restrito: Δ sinais |",
           "|---|---|---|---|---|"]
     for linha in linhas:
@@ -227,13 +346,18 @@ def formatar_markdown(versao: str, n_pools: int, linhas: list[dict[str, Any]]) -
     return "\n".join(out)
 
 
-def executar(db_path: Path, versao: str) -> str:
+def executar(db_path: Path, versao: str, passo: str = "padrao") -> str:
     con = _conectar_ro(db_path)
     try:
         base = load_params_v1() if versao == "v1" else load_params_v2()
         pools = _coletar_pools(con, base.timeframes[0])
         linhas = avaliar_sensibilidade(con, base)
-        return formatar_markdown(versao, len(pools), linhas)
+        sem_fase, fase_ativa = _fases_cache(con, [p[0] for p in pools])
+        texto = formatar_markdown(versao, len(pools), linhas, sem_fase, fase_ativa)
+        if passo == "largo":
+            linhas_largas = avaliar_sensibilidade_larga(con, base)
+            texto = texto + "\n\n" + formatar_markdown_largo(versao, linhas_largas)
+        return texto
     finally:
         con.close()
 
@@ -242,8 +366,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Sensibilidade offline dos parametros V1/V2 (PAPER / so leitura).")
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--versao", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--passo", choices=("padrao", "largo"), default="padrao",
+                        help="padrao (default): so a tabela ja existente. largo: acrescenta passos "
+                             "mais distantes p/ zone_min_candles/idade minima/drop_min/recover_mult.")
     args = parser.parse_args(argv)
-    print(executar(args.db, args.versao))
+    print(executar(args.db, args.versao, args.passo))
     return 0
 
 

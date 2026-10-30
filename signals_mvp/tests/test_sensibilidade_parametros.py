@@ -105,6 +105,66 @@ class SensibilidadeParametrosTests(unittest.TestCase):
         self.assertIn("age_window_days (minimo)", nomes)
         self.assertIn("age_window_days (maximo)", nomes)
 
+    def test_fases_cache_counts_sem_fase_and_fase_ativa_from_pr_pools(self) -> None:
+        """PEDIDO 2026-10-30: le `pr_pools.fase_v1`/`fase_v2` (mesma coluna do heartbeat/saude.py),
+        nunca recalcula fase."""
+        self._gravar_pool("POOLSEMFASE", lateral=4)
+        self._gravar_pool("POOLRUNNER", lateral=4)
+        self.storage.pr_upsert_pool("POOLSEMFASE", fase_v1=None, fase_v2=None)
+        self.storage.pr_upsert_pool("POOLRUNNER", fase_v1="runner", fase_v2=None)
+        con = sens._conectar_ro(self.storage.paths.db)
+        try:
+            sem_fase, fase_ativa = sens._fases_cache(con, ["POOLSEMFASE", "POOLRUNNER"])
+        finally:
+            con.close()
+        self.assertEqual((sem_fase, fase_ativa), (1, 1))
+
+    def test_passo_padrao_output_is_unchanged_when_passo_largo_is_not_requested(self) -> None:
+        self._gravar_pool("POOLNEARMISS", lateral=3)
+        texto = sens.executar(self.storage.paths.db, "v1")
+        self.assertNotIn("Passos largos", texto)
+
+    def test_passo_largo_adds_a_second_section_with_absolute_values(self) -> None:
+        self._gravar_pool("POOLNEARMISS", lateral=3)
+        antes = self.storage._all("SELECT * FROM pr_bars")  # noqa: SLF001
+        texto = sens.executar(self.storage.paths.db, "v1", passo="largo")
+        depois = self.storage._all("SELECT * FROM pr_bars")  # noqa: SLF001
+        self.assertEqual([dict(r) for r in antes], [dict(r) for r in depois], "somente leitura")
+        self.assertIn("Passos largos (--passo largo)", texto)
+        self.assertIn("zone_min_candles", texto)
+        self.assertIn("-> 8", texto)
+        self.assertIn("-> 4", texto)
+        self.assertIn("drop_min", texto)
+        self.assertIn("recover_mult", texto)
+        self.assertIn("age_window_days (minimo)", texto)
+
+    def test_passo_largo_skips_the_invalid_recover_mult_1_05_combination(self) -> None:
+        """`recover_mult` precisa ser > 1+test_zone (1,05 com test_zone padrao 0,05) -- o passo largo
+        pedido (1,05) bate exatamente no piso e e invalido; nunca forcado."""
+        self._gravar_pool("POOLNEARMISS", lateral=4)
+        con = sens._conectar_ro(self.storage.paths.db)
+        try:
+            linhas = sens.avaliar_sensibilidade_larga(con, params())
+        finally:
+            con.close()
+        linha = next(l for l in linhas if l["parametro"] == "recover_mult")
+        passo_1_05 = next(p for p in linha["passos"] if p["valor"] == 1.05)
+        self.assertIsNone(passo_1_05["delta_sinais"])
+        passo_1_15 = next(p for p in linha["passos"] if p["valor"] == 1.15)
+        self.assertIsNotNone(passo_1_15["delta_sinais"])
+
+    def test_passo_largo_relaxing_zone_min_candles_to_8_fires_the_near_miss_entrada(self) -> None:
+        self._gravar_pool("POOLNEARMISS", lateral=3)   # arma WATCHLIST, so dispara com box <= 11
+        con = sens._conectar_ro(self.storage.paths.db)
+        try:
+            linhas = sens.avaliar_sensibilidade_larga(con, params())
+        finally:
+            con.close()
+        linha = next(l for l in linhas if l["parametro"] == "zone_min_candles")
+        passo_8 = next(p for p in linha["passos"] if p["valor"] == 8)
+        self.assertEqual(passo_8["delta_sinais"], 1)
+        self.assertEqual(passo_8["near_miss"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
