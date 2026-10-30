@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Optional
+from unittest import mock
 
 from ..config import ConfigError, build_config, make_paths
 from ..http import ApiError, CallBudget, RateLimited
@@ -121,7 +122,8 @@ def created_at(ts: Optional[float] = CREATED, seen: int = 1234):
 
 
 class LiveHarness:
-    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True):
+    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True,
+                **live_kwargs: Any):
         self.tmp = Path(tempfile.mkdtemp(prefix="pr_live_"))
         self.paths = make_paths(self.tmp)
         self.storage = Storage(self.paths)
@@ -131,12 +133,12 @@ class LiveHarness:
         self.settings = settings or LiveSettings(ligado=True, timeframes=("1h",), max_pools=5, chamadas_por_ciclo=3,
                                                  descoberta_min=3, fontes=("pumpswap",), grafico=False)
         self.params = params()
-        self.live = self.new_live()
+        self.live = self.new_live(**live_kwargs)
         self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage(), creation=created_at())
 
-    def new_live(self, telegram: Any = None) -> PosRunnerLive:
+    def new_live(self, telegram: Any = None, **kwargs: Any) -> PosRunnerLive:
         return PosRunnerLive(self.settings, self.params, self.storage, self.world, CTX, telegram or self.tg, LINKS, "solana",
-                             self.paths.dados / "pos_runner", clock=self.clock)
+                             self.paths.dados / "pos_runner", clock=self.clock, **kwargs)
 
     def list_pool(self, pool: str = "POOL1", mint: str = "MINT1", symbol: str = "CAT", mc: float = 1_000_000.0,
                   created: float = GRAD + 60, dex: str = "pumpswap") -> None:
@@ -408,10 +410,13 @@ class LiveFlowTest(unittest.TestCase):
         row = h.storage.pr_pool("POOL1")
         self.assertEqual(row["status"], "ativo")
         self.assertAlmostEqual(row["l_bc"], textbook().bars[0].open)
+        # "👀 WATCHLIST POS-RUNNER" e o prefixo exato do V0 (`watch_text`); a V1 roda em paralelo sobre os
+        # mesmos candles e tem seu proprio alerta de watchlist ("👀 [POS_RUNNER] WATCHLIST") -- o filtro aqui
+        # pega so o do V0, que e o que este teste verifica.
         h.run_hours(15)                                      # candle 22: zona com teste, mas ainda sem 12 candles
-        self.assertEqual([t for t in h.texts() if t.startswith("👀")], [])
+        self.assertEqual([t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")], [])
         h.run_hours(1)                                       # candle 23: zona madura (12 candles desde o fundo + 1 teste)
-        watch = [t for t in h.texts() if t.startswith("👀")]
+        watch = [t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")]
         self.assertEqual(len(watch), 1, h.texts())
         self.assertIn("Zona S 150k – R 260k", watch[0])            # R inclui o 1o repique
         self.assertIn("morre se fechar abaixo de 152k", watch[0])  # minima do teste (155k) - 2%
@@ -688,7 +693,10 @@ class CreationAndVersionTest(unittest.TestCase):
         signals = h.storage.pr_signals()
         self.assertEqual(len(signals), 2)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
         self.assertEqual({s["status"] for s in signals}, {"descontinuado"})
-        self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
+        # +2: o heartbeat da V1 E da V2 (PEDIDO 2026-10-29) saem ja no 1o tick de QUALQUER instancia
+        # nova (revisao FASE 1.1) -- nao e um alerta novo do V0 (o que este teste verifica), e sim o
+        # heartbeat do live2 recem-criado.
+        self.assertEqual(len(h.texts()), sent + 2)
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
     def test_switching_back_to_an_old_version_does_not_adopt_what_another_version_decided(self) -> None:
@@ -810,6 +818,97 @@ class BudgetTest(unittest.TestCase):
             out = h.tick()
             self.assertEqual(out["erros"], 1)
             self.assertGreater(h.live.sched[("POOL1", "1h")]["next"], h.clock())
+        finally:
+            h.close()
+
+
+class PriorityAndStarvationTests(unittest.TestCase):
+    """PEDIDO 2026-10-29 (ELON, fase runner, "ultima tentativa: nunca desde que o bot subiu"): (1)
+    posicao ABERTA (rank 0 em `_due_list`) tem prioridade ABSOLUTA sobre watchlist/runner (rank>0);
+    (2) mesmo assim, rank>0 nao pode ficar com ZERO chance pra sempre so porque rank==0 consome o
+    orcamento inteiro (`chamadas_por_ciclo`, padrao 3) todo ciclo -- sintoma real: logo depois de um
+    restart `self.sched` zera e TODO pool ativo fica "devido" ao mesmo tempo."""
+
+    @staticmethod
+    def _stub_pipeline(h: LiveHarness, due_rows: list) -> tuple[list[str], dict[str, int]]:
+        """Substitui promocao/descoberta/fila por dublês controlados e deixa `_refresh_safe` consumir
+        1 chamada REAL do orcamento armado (`self.http`, o mesmo `BudgetedHttp` que `tick()` usa) --
+        testa a alocacao de orcamento de verdade, sem precisar simular candles/GT."""
+        ordem: list[str] = []
+        chamadas: dict[str, int] = {row["pool"]: 0 for _rank, _next, row, _tf in due_rows}
+
+        def fake_refresh_safe(row: Any, tf: str, now: float, out: dict) -> None:
+            h.live.http.get_json("fake", {})   # levanta ApiError("budget") se nao houver ficha armada
+            ordem.append(row["pool"])
+            chamadas[row["pool"]] += 1
+
+        h.live._promote = lambda now: None
+        h.live._discover = lambda now, out: None
+        h.live._due_list = lambda now: due_rows
+        h.live._refresh_safe = fake_refresh_safe
+        h.live.http.http.get_json = lambda *a, **kw: {}   # chamada "real" sem rede, sempre sucesso
+        return ordem, chamadas
+
+    def test_open_positions_are_always_serviced_before_watchlist_runner_pools(self) -> None:
+        h = LiveHarness()
+        try:
+            due_rows = [
+                (3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"),
+                (0, 0.0, {"pool": "ABERTO1", "symbol": "OPEN"}, "1h"),
+            ]
+            # a lista ja vem com o rank>0 ANTES do rank 0 de proposito -- a ordem de atendimento tem
+            # que vir da estrutura em 2 passadas do `tick()`, nunca da ordem do `due`.
+            ordem, _ = self._stub_pipeline(h, due_rows)
+            h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertEqual(ordem[0], "ABERTO1", "posicao aberta tem prioridade absoluta, mesmo vindo depois na lista")
+        finally:
+            h.close()
+
+    def test_watchlist_pools_still_get_a_chance_even_when_open_positions_alone_would_spend_the_whole_budget(self) -> None:
+        """Com `chamadas_por_ciclo=3` (padrao) e 3 posicoes abertas disputando o MESMO ciclo, a 1a
+        passada (rank 0) fica limitada a `3 - reserva` (padrao reserva=1) -- 2 das 3 sao atendidas
+        AGORA, a 3a fica para o proximo tick (nunca perdida); o restante do orcamento (>= 1) vai pra
+        descoberta/rank>0, garantindo que ELON seja tentado neste MESMO ciclo."""
+        h = LiveHarness()
+        try:
+            due_rows = [(0, 0.0, {"pool": f"ABERTO{i}", "symbol": f"OPEN{i}"}, "1h") for i in range(3)]
+            due_rows.append((3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"))
+            ordem, chamadas = self._stub_pipeline(h, due_rows)
+            h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertIn("RUNNER1", ordem, "ELON precisa ser tentado mesmo com 3 posicoes abertas no mesmo ciclo")
+            self.assertEqual(sum(chamadas[f"ABERTO{i}"] for i in range(3)), 2,
+                             "rank==0 fica limitado a cap_total-reserva (3-1=2) neste ciclo, nunca gasta o orcamento inteiro")
+        finally:
+            h.close()
+
+    def test_the_reserve_is_configurable_via_env(self) -> None:
+        h = LiveHarness()
+        try:
+            due_rows = [(0, 0.0, {"pool": f"ABERTO{i}", "symbol": f"OPEN{i}"}, "1h") for i in range(3)]
+            due_rows.append((3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"))
+            ordem, _ = self._stub_pipeline(h, due_rows)
+            with mock.patch.dict("os.environ", {"POS_RUNNER_RESERVA_RANK_MAIOR": "0"}):
+                h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertNotIn("RUNNER1", ordem, "reserva=0 volta ao comportamento antigo (sem garantia)")
+        finally:
+            h.close()
+
+    def test_a_never_attempted_pool_is_sorted_before_a_same_rank_pool_already_tried_before(self) -> None:
+        """PEDIDO 2026-10-29: dentro do MESMO rank (aqui, heat=-1/rank 1 -- nenhum detector carregado
+        ainda, o caso tipico logo depois de um restart), o pool que NUNCA recebeu tentativa alguma
+        (sem entrada em `self.sched`) vem ANTES do que ja foi tentado ao menos 1x (mesmo que ha muito
+        tempo) -- `_due_list` real, sem dublê."""
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("JATENTADO", status="ativo")
+            h.storage.pr_upsert_pool("NUNCATENTADO", status="ativo")
+            h.live.sched[("JATENTADO", "1h")] = {
+                "next": 0.0, "erros": 0.0, "ultimo_erro": None, "ultima_tentativa": h.clock() - 7200.0, "fonte": "gt",
+            }
+            due = h.live._due_list(h.clock())  # noqa: SLF001
+            pools_na_ordem = [row["pool"] for _rank, _next, row, _tf in due]
+            self.assertLess(pools_na_ordem.index("NUNCATENTADO"), pools_na_ordem.index("JATENTADO"),
+                            "nunca tentado tem que vir antes do que ja foi tentado, dentro do MESMO rank")
         finally:
             h.close()
 

@@ -217,6 +217,8 @@ class FakeTelegram:
         self.replies: list[Optional[int]] = []
         self.photos: list[tuple[bytes, str, Optional[dict], Optional[int]]] = []
         self.fail_photo = False
+        self.documents: list[tuple[bytes, str, str]] = []
+        self.fail_document = False
 
     def send_message(self, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = "HTML",
                      reply_to: Optional[int] = None) -> int:
@@ -240,6 +242,13 @@ class FakeTelegram:
             raise TelegramError("Bad Request: PHOTO_INVALID_DIMENSIONS", status=400)
         self._next_id += 1
         self.photos.append((png, caption, reply_markup, reply_to))
+        return self._next_id
+
+    def send_document(self, data: bytes, filename: str, caption: str = "") -> int:
+        if self.fail_document:
+            raise TelegramError("Bad Request: FILE_PART_TOO_BIG", status=400)
+        self._next_id += 1
+        self.documents.append((data, filename, caption))
         return self._next_id
 
     def notify(self, text: str) -> None:

@@ -11,6 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from .config import Paths
@@ -41,6 +42,61 @@ POS_RUNNER_DETALHE_COLUMNS = [
     # atributos das regras do operador (2026-10-16): nenhum e filtro
     "faixa_pico", "S_acima_100k", "R_S", "idade_grad_d", "max_caminho_A_pct", "max_caminho_B_pct",
 ]
+# POS-RUNNER-V1 ("regras do professor"): contrato CSV proprio, independente do V0 (mesmo espirito das colunas
+# do handoff do V0 -- data/token/contrato/launchpad/tf/idade/pico/L_bc/queda/S/R/n_wicks/entrada/stop/tp/rr/
+# power_candle/resultado/tempo/motivo/versao_config -- mais o que a V1 pede: hora BRT, origem, tags, janela de
+# ouro, teste_vol_ratio, holders/authority/liquidez (None por ora) e perdido_offline).
+POS_RUNNER_V1_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "launchpad", "tf", "idade_h", "janela_ouro",
+    "topo", "L_bc", "queda_pct", "S", "R", "n_wicks", "gatilho", "entrada_mc", "stop_mc", "risco_pct",
+    "tp1_mc", "exit_full_mc", "resultado_liq_pct", "tempo_trade_h", "motivo_saida", "tags",
+    "holders_tag", "mint_authority", "freeze_authority", "liquidez_usd", "teste_vol_ratio", "origem",
+    "versao_config_v1", "perdido_offline",
+    # instrumentacao de medicao (sem mudar regra nenhuma): colunas acrescentadas no FIM, nunca no meio.
+    "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia",
+    # sequencial do sinal dentro do MESMO token (mint): 1o ENTRADA do mint = 1, 2o = 2, etc. -- agrupamento
+    # por token no /relatorio e na analise Monte Carlo (ver detector_v1.py: "uma decisao por zona; nova
+    # maxima acima de P_peak = nova onda" -- varias ENTRADA no mesmo mint, com a 1a ainda aberta, sao POR
+    # DESENHO, nao erro; ver docs/pos-runner-v1/INTERPRETACOES.md #11).
+    "token_signal_seq",
+    # PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle que gerou a decisao ("gt"|"dexpaprika").
+    "fonte_candle",
+    # PEDIDO (PARTE 2A) FASE 4: contexto/execucao na ENTRADA -- so dado JA disponivel no momento da
+    # decisao (zero chamada nova), nunca lido por regra/filtro/tamanho/saida. Colunas no FIM.
+    "dia_semana", "idade_dias", "mc_na_entrada", "volume_24h", "caixa_candles", "holder_top1_pct",
+    "slippage_estimado_pct", "r_liquido_estimado", "n_txs_24h", "ticket_medio_usd", "holders_count",
+]
+POS_RUNNER_V1_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v1"]
+# feedback do operador na V1 (FASE 3): 1 linha por (sinal, acao) -- ver pr1_feedback.
+POS_RUNNER_V1_FEEDBACK_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "tf", "acao", "voto", "valor", "texto", "chat_id",
+    "versao_config_v1",
+    # instrumentacao de medicao: preco real do /entrei|/sai e o slippage contra a referencia do alerta/saida.
+    "preco_real", "slippage_entrada_pct", "slippage_saida_pct",
+]
+# /pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar (registro separado
+# de pr1_feedback -- feedback e sobre um trade que o operador fez; aqui e o oposto, nunca um trade).
+POS_RUNNER_V1_PULADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "versao_config_v1"]
+# PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: 1 linha por (candle, campo) divergente -- so log.
+POS_RUNNER_V1_DEXPAPRIKA_COLUMNS = [
+    "data", "chain", "token", "contrato", "tf", "candle_ts", "campo", "valor_gt", "valor_dexpaprika",
+    "diff_pct", "versao_config_v1",
+]
+# PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 -- MESMO contrato de colunas da V1 (schema identico, so a
+# tabela/CSV e propria; "so_v2" e novo no FIM: True = "SOMENTE V2 (experimental)", False = "V1+V2").
+POS_RUNNER_V2_COLUMNS = [
+    "data", "hora_brt", "chain", "token", "contrato", "launchpad", "tf", "idade_h", "janela_ouro",
+    "topo", "L_bc", "queda_pct", "S", "R", "n_wicks", "gatilho", "entrada_mc", "stop_mc", "risco_pct",
+    "tp1_mc", "exit_full_mc", "resultado_liq_pct", "tempo_trade_h", "motivo_saida", "tags",
+    "holders_tag", "mint_authority", "freeze_authority", "liquidez_usd", "teste_vol_ratio", "origem",
+    "versao_config_v2", "perdido_offline",
+    "ts_fechamento_candle", "ts_alerta", "ts_envio_telegram", "retorno_sol_dia", "token_signal_seq",
+    "fonte_candle", "so_v2",
+    # PEDIDO (PARTE 2A) FASE 4: MESMAS colunas de contexto/execucao da V1 (ver POS_RUNNER_V1_COLUMNS).
+    "dia_semana", "idade_dias", "mc_na_entrada", "volume_24h", "caixa_candles", "holder_top1_pct",
+    "slippage_estimado_pct", "r_liquido_estimado", "n_txs_24h", "ticket_medio_usd", "holders_count",
+]
+POS_RUNNER_V2_FILTRADOS_COLUMNS = ["data", "chain", "token", "contrato", "motivo", "valor", "versao_config_v2"]
 
 SCHEMA_VERSION = 1
 PR_SIGNALS_DDL = """CREATE TABLE IF NOT EXISTS pr_signals (
@@ -106,6 +162,9 @@ CREATE INDEX IF NOT EXISTS pr_pools_status ON pr_pools (status);
 -- candles de MC (USD) que o detector ja consumiu: CONGELADOS (so acrescenta; reiniciar refaz o mesmo estado)
 CREATE TABLE IF NOT EXISTS pr_bars (
   pool TEXT NOT NULL, tf TEXT NOT NULL, ts INTEGER NOT NULL, o REAL, h REAL, l REAL, c REAL, v REAL, filled INTEGER,
+  -- PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle ("gt"|"dexpaprika"). NUNCA lida por
+  -- `pr_bars()`/o detector (que so seleciona ts,o,h,l,c,v,filled) -- auditoria/CSV, nunca entra no hot path.
+  fonte TEXT NOT NULL DEFAULT 'gt',
   PRIMARY KEY (pool, tf, ts)
 );
 """ + PR_SIGNALS_DDL + """
@@ -124,6 +183,255 @@ CREATE TABLE IF NOT EXISTS pr_bankroll_trades (
   versao_config TEXT NOT NULL, pr_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL,
   UNIQUE (pr_signal_id, variante)
 );
+-- POS-RUNNER-V1 ("regras do professor", PROMPT DEFINITIVO): estrategia INDEPENDENTE do V0 (versao_config_v1
+-- e um hash separado); candles compartilhados com o V0 (mesmo pr_bars, por pool+tf). Idempotencia pela chave
+-- UNIQUE (chain, pool, tf, evento, ts_fechamento) do item 3.7: um sinal por decisao, nunca duplicado num
+-- reinicio, reconstruido a partir dos candles congelados.
+CREATE TABLE IF NOT EXISTS pr1_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v1 TEXT NOT NULL,
+  gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT, teste_vol_ratio REAL,
+  event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto',
+  entry_price REAL, stop REAL, topo REAL, s_suporte REAL, r_resistencia REAL,
+  tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, tempo_h REAL,
+  holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, liquidez_usd REAL,
+  tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  -- instrumentacao de medicao (sem mudar regra nenhuma -- ver _ensure_columns para bancos ja existentes):
+  -- ts_fechamento_candle duplica ts_fechamento (epoch explicito p/ analise); ts_alerta e quando o bot DECIDIU
+  -- alertar (antes do envio); ts_envio_telegram e o MESMO instante de alert_ts, so com nome mais claro;
+  -- retorno_sol_dia e o retorno % do SOL/USD nas 24h antes de ts_fechamento (so leitura da cotacao JA
+  -- cacheada, nunca uma chamada nova -- None quando a cobertura cacheada nao alcanca).
+  ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
+  -- sequencial do sinal dentro do MESMO token (mint) -- ver POS_RUNNER_V1_COLUMNS acima.
+  token_signal_seq INTEGER,
+  -- PEDIDO CONSOLIDADO FASE 1 (DexPaprika): fonte do candle que gerou a decisao ("gt"|"dexpaprika") --
+  -- "dexpaprika" so no fallback de atualizacao recente (item 3a), nunca na reconstrucao do setup.
+  fonte_candle TEXT NOT NULL DEFAULT 'gt',
+  UNIQUE (chain, pool, tf, evento, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr1_signals_open ON pr1_signals (status);
+-- tudo que o filtro cortou (dado_invalido, filtrado_mc_baixo, filtrado_idade): contado no resumo diario,
+-- nunca silencioso (item 2.4/3.6 do prompt).
+CREATE TABLE IF NOT EXISTS pr1_filtrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, valor TEXT, versao_config_v1 TEXT
+);
+-- uptime (item "registro completo"): um par inicio/fim por execucao continua do processo.
+CREATE TABLE IF NOT EXISTS pr1_uptime (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, inicio_ts REAL NOT NULL, fim_ts REAL, motivo_fim TEXT
+);
+-- gestao de banca da V1 (item 2.10): mesmo padrao do pr_bankroll_* do V0, 1 ajuste por tf (sem variante A/B).
+CREATE TABLE IF NOT EXISTS pr1_bankroll_state (
+  tf TEXT NOT NULL, versao_config_v1 TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (tf, versao_config_v1)
+);
+CREATE TABLE IF NOT EXISTS pr1_bankroll_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v1 TEXT NOT NULL,
+  pr1_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr1_signal_id)
+);
+-- feedback do operador na V1 (FASE 3 do prompt definitivo): botoes 👍/👎/📝 e os comandos /entrei, /sai, /nota.
+-- 1 linha por (sinal, acao) -- repetir a acao (clicar 2x, rodar o comando de novo) ATUALIZA a linha, nunca
+-- duplica (item 1/2 da Fase 3). `acao` em {'voto','nota','entrei','sai'}; `voto` so para acao='voto'
+-- ('bom'/'ruim'); `valor` = preco para acao in ('entrei','sai'); `texto` = nota para acao='nota'.
+CREATE TABLE IF NOT EXISTS pr1_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER NOT NULL, chain TEXT, pool TEXT, tf TEXT,
+  mint TEXT, symbol TEXT, versao_config_v1 TEXT, acao TEXT NOT NULL, voto TEXT, valor REAL, texto TEXT,
+  chat_id TEXT, criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- instrumentacao de medicao: preco_real duplica `valor` p/ nome claro (so para acao in ('entrei','sai'));
+  -- slippage_entrada_pct = preco_real contra entry_price do alerta; slippage_saida_pct = preco_real contra
+  -- a ULTIMA referencia que a V1 alcancou (exit_full_price, senao tp1_price, senao stop) -- None quando
+  -- nenhuma existe ainda (nunca inventa referencia).
+  preco_real REAL, slippage_entrada_pct REAL, slippage_saida_pct REAL,
+  UNIQUE (pr1_signal_id, acao)
+);
+-- /pulei <pool|ticker> <motivo>: sinal da V1 que o operador VIU e decidiu NAO executar. Tabela separada de
+-- pr1_feedback (feedback e sobre um trade que o operador FEZ; aqui e o oposto) -- nunca conta como paper
+-- nem como execucao manual, so como "visto e pulado".
+CREATE TABLE IF NOT EXISTS pr1_pulados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pr1_signal_id INTEGER, chain TEXT, pool TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, chat_id TEXT, versao_config_v1 TEXT, criado_ts REAL NOT NULL
+);
+-- PEDIDO CONSOLIDADO FASE 1 (DexPaprika), item 3b: conferencia cruzada SO LOG, nunca decide. Uma linha por
+-- (candle, campo) divergente alem da tolerancia configurada; `candle_divergente` (tag informativa no
+-- sinal, se houver) nunca bloqueia nada -- so isto grava o detalhe pra auditoria.
+CREATE TABLE IF NOT EXISTS pr1_dexpaprika_divergencias (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  tf TEXT, candle_ts INTEGER, campo TEXT NOT NULL, valor_gt REAL, valor_dexpaprika REAL, diff_pct REAL,
+  versao_config_v1 TEXT
+);
+-- PEDIDO 2026-10-27 (H9): snapshot dos top holders de um token (RPC getTokenLargestAccounts, ja
+-- resolvido pra owner -- `ChainAdapter.holders`) cruzados contra a lista de carteiras "pro"
+-- (carteiras_pro.py). `chave` e a idempotencia: "entrada:{versao}:{entry_id}" (1x por sinal, reusa a
+-- MESMA chamada RPC que o alerta ENTRADA ja faz) ou "horaria:{pool}:{hora_utc}" (1x por pool por hora,
+-- chamada EXTRA, orcada por CARTEIRAS_MAX_CHAMADAS_DIA). Nunca entra em regra/filtro/alerta/banca de
+-- V1/V2 -- so medicao/H9, fora do hash de ParamsV1/V2.
+CREATE TABLE IF NOT EXISTS pr_carteiras_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chave TEXT NOT NULL UNIQUE, ts REAL NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, mint TEXT NOT NULL, momento TEXT NOT NULL,
+  versao TEXT, entry_id INTEGER,
+  top_holders_json TEXT NOT NULL, n_carteiras_pro INTEGER NOT NULL, n_pessoas_pro INTEGER NOT NULL,
+  grupos_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_carteiras_snapshot_pool ON pr_carteiras_snapshot (pool, momento);
+-- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
+-- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
+-- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
+-- MESMO candle de um ENTRADA da V1 colidiria com a linha da V1 (INSERT OR IGNORE devolveria a linha
+-- da V1, com o gatilho/risco/tags ERRADOS para a V2). Por isso V2 tem sua propria familia de tabelas,
+-- schema IDENTICO ao pr1_* (so o nome muda), estatisticas/banca/CSV nunca se misturam com a V1.
+CREATE TABLE IF NOT EXISTS pr2_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v2 TEXT NOT NULL,
+  gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT, teste_vol_ratio REAL,
+  event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto',
+  entry_price REAL, stop REAL, topo REAL, s_suporte REAL, r_resistencia REAL,
+  tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, tempo_h REAL,
+  holders_tag TEXT, mint_authority TEXT, freeze_authority TEXT, liquidez_usd REAL,
+  tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL, retorno_sol_dia REAL,
+  token_signal_seq INTEGER, fonte_candle TEXT NOT NULL DEFAULT 'gt',
+  -- so_v2: True quando NAO houve ENTRADA da V1 no MESMO (pool,tf,ts_fechamento) -- "SOMENTE V2
+  -- (experimental)"; False = "V1+V2" (mesmo candle, mesmo gatilho -- 1 alerta so, combinado).
+  so_v2 INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (chain, pool, tf, evento, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr2_signals_open ON pr2_signals (status);
+CREATE TABLE IF NOT EXISTS pr2_filtrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, valor TEXT, versao_config_v2 TEXT
+);
+CREATE TABLE IF NOT EXISTS pr2_bankroll_state (
+  tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (tf, versao_config_v2)
+);
+CREATE TABLE IF NOT EXISTS pr2_bankroll_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL,
+  pr2_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr2_signal_id)
+);
+-- PEDIDO (PARTE 1 de 2) FASE 1: trajetoria pos-entrada (MFE/MAE/retornos em R, 1,2,4,8,24,48,72h), medicao
+-- AO LADO de V1/V2 -- nunca altera pr1_signals/pr2_signals nem nenhuma saida oficial (ver evidencia.py).
+-- `entry_id` = id em pr1_signals (versao='v1') ou pr2_signals (versao='v2'); `fechado` = 1 depois de 72h
+-- reais desde a entrada (dado que faltou ficar faltando pra sempre -- nunca interpolado).
+CREATE TABLE IF NOT EXISTS pr_trajetoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, entry_id INTEGER NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL, mint TEXT, symbol TEXT,
+  t_entrada REAL, preco_entrada REAL, risco_pct REAL, r_unidade REAL,
+  mfe_r REAL, mfe_h REAL, mae_r REAL, mae_h REAL,
+  ret_r_1h REAL, ret_r_2h REAL, ret_r_4h REAL, ret_r_8h REAL, ret_r_24h REAL, ret_r_48h REAL, ret_r_72h REAL,
+  tocou_tp1 INTEGER NOT NULL DEFAULT 0, tocou_stop_antes_de_tp1 INTEGER NOT NULL DEFAULT 0,
+  fonte_candle TEXT NOT NULL DEFAULT 'gt', fechado INTEGER NOT NULL DEFAULT 0,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  UNIQUE (versao, entry_id)
+);
+CREATE INDEX IF NOT EXISTS pr_trajetoria_aberta ON pr_trajetoria (fechado);
+-- PEDIDO (PARTE 1 de 2) FASE 2a: baseline pareada (controles sinteticos sorteados, MESMO risco_pct e
+-- MESMA forma de saida em R do sinal real, reusando simulate_v1 -- ver evidencia.py). `controles_json`
+-- guarda a lista de {idx, ts, status, r_controle} (status: 'pendente'|'fechado'|'cancelado' -- um
+-- controle sem desfecho resolvido fica pendente e e recalculado no proximo ciclo, nunca perdido).
+-- `r_controle_medio`/`dif_pareada` so ficam preenchidos quando TODOS os controles amostrados resolveram
+-- (fechado ou cancelado) E o sinal real tambem fechou -- antes disso ficam NULL (nunca parcial/chutado).
+CREATE TABLE IF NOT EXISTS pr_baseline (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, entry_id INTEGER NOT NULL,
+  chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL, mint TEXT, symbol TEXT,
+  n_controles INTEGER NOT NULL DEFAULT 0, controles_json TEXT NOT NULL DEFAULT '[]',
+  r_controle_medio REAL, r_sinal REAL, dif_pareada REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  UNIQUE (versao, entry_id)
+);
+-- PEDIDO (PARTE 2A) FASE 3: sinais sombra -- candidatos que as regras OFICIAIS de V1/V2 barraram
+-- (filtrado_mc_baixo, filtrado_idade) ou que a V1/V2 matariam como ONDA_INVALIDA (queda_96_mais, 96-
+-- 99,5% -- a V2 ja cobre 90-96%), mas que TERIAM gerado um gatilho -- `versao` = 'sombra:<motivo>'
+-- ('sombra:filtrado_mc_baixo' | 'sombra:filtrado_idade' | 'sombra:queda_96_mais'). MEDICAO AO LADO
+-- (live.py: `_on_event_sombra`/`_update_sombra`, reusa `simulate_v1` da V1, MESMAS regras) -- nunca
+-- vira sinal oficial, nunca entra na banca, nunca aparece em /relatorio v1|v2 (so em /analise e no
+-- aviso curto do Telegram p/ queda_96_mais). `event_json` guarda o EventV1 original (mesmo formato de
+-- pr1_signals) pra `_update_sombra` re-simular com candles mais recentes sem reconstruir nada.
+CREATE TABLE IF NOT EXISTS pr_sombra (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, chain TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, mint TEXT, symbol TEXT, ts_fechamento INTEGER NOT NULL,
+  gatilho TEXT, event_json TEXT, entry_price REAL, stop REAL, topo REAL, s_suporte REAL,
+  r_resistencia REAL, risco_pct REAL, queda_pct REAL, liquidez_usd REAL,
+  status TEXT NOT NULL DEFAULT 'aberto', exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, closed_ts REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- PEDIDO (PARTE 2A) FASE 4: contexto/execucao -- MESMAS colunas de pr1_signals/pr2_signals (ver
+  -- comentario la), zero chamada nova, nunca lidas por regra/filtro/banca.
+  dia_semana TEXT, idade_dias REAL, mc_na_entrada REAL, volume_24h REAL, caixa_candles INTEGER,
+  holder_top1_pct REAL, slippage_estimado_pct REAL, r_liquido_estimado REAL, n_txs_24h INTEGER,
+  ticket_medio_usd REAL, holders_count INTEGER,
+  UNIQUE (versao, chain, pool, tf, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr_sombra_aberta ON pr_sombra (status);
+-- teto SOMBRA_MAX_POOLS: 1 linha por candidato de sombra DESCARTADO por falta de slot (nunca
+-- sobrecarrega a fila do Setup 1/V0/V1/V2 -- contagem simples, pra auditoria/saude.py).
+CREATE TABLE IF NOT EXISTS pr_sombra_descartes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, motivo TEXT NOT NULL, pool TEXT, tf TEXT
+);
+-- PEDIDO 2026-10-30 (item 5a): 1 linha por pool verificado SEM VAGA pra promover (`max_pools`) --
+-- idempotente por dia UTC (`pr_vaga_descarte_insert`), pra saude.py/relatorio contarem quantos
+-- candidatos NOVOS foram bloqueados por falta de vaga, nunca o mesmo pool repetido tick apos tick.
+CREATE TABLE IF NOT EXISTS pr_vaga_descartes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL
+);
+-- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- alerta de ESTUDO, NUNCA um sinal (nunca
+-- entra na banca/CSV/relatorio v1|v2, nunca convida a agir). Reusa a definicao de caixa da V1
+-- (zone_min_candles=4, sem teto de wicks, drop_max=0,995, idade sem teto -- `live.py:
+-- _params_radar`), detector PARALELO, MEDICAO AO LADO -- 1 linha por evento WATCHLIST (1x por
+-- zona/episodio, mesma semantica ja usada pela sombra). `close_ref`/`s_suporte`/`r_resistencia`:
+-- referencia MECANICA (nunca um fill real) pra `_update_radar_trajetoria` reusar `calcular_
+-- trajetoria` (mesmo modulo de pr_trajetoria) com risco_frac=1.0 (sem stop real -- R aqui e
+-- equivalente a retorno fracionario puro). `enviado`=0 quando RADAR_MAX_DIA estourou (persistido
+-- do mesmo jeito, nunca descartado so por falta de orcamento do Telegram).
+CREATE TABLE IF NOT EXISTS pr_radar (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  mint TEXT, symbol TEXT, ts_fechamento INTEGER NOT NULL,
+  event_json TEXT, close_ref REAL, s_suporte REAL, r_resistencia REAL, queda_pct REAL, liquidez_usd REAL,
+  tags TEXT, enviado INTEGER NOT NULL DEFAULT 0,
+  decisao TEXT, decisao_ts REAL, decisao_chat_id TEXT,
+  status TEXT NOT NULL DEFAULT 'aberto', fechado_ts REAL, mfe_r REAL, mfe_h REAL, mae_r REAL, mae_h REAL,
+  criado_ts REAL NOT NULL, atualizado_ts REAL NOT NULL,
+  -- PEDIDO (PARTE 2A) FASE 4: MESMAS colunas de contexto/execucao de pr1_signals/pr2_signals/pr_sombra.
+  dia_semana TEXT, idade_dias REAL, mc_na_entrada REAL, volume_24h REAL, caixa_candles INTEGER,
+  holder_top1_pct REAL, slippage_estimado_pct REAL, r_liquido_estimado REAL, n_txs_24h INTEGER,
+  ticket_medio_usd REAL, holders_count INTEGER,
+  UNIQUE (chain, pool, tf, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr_radar_aberta ON pr_radar (status);
+-- PEDIDO 2026-10-30 (FASE 1a, guarda de atraso da ENTRADA): ENTRADA cujo candle-gatilho ja estava
+-- atrasado (mesmo `_late()`, mesmo limiar que ja existia so pro alerta -- `live.py: _entry_v1`/
+-- `_entry_v2`) NUNCA mais cria `pr1_signals`/`pr2_signals` (nunca alerta, nunca abre posicao) -- 1
+-- linha aqui por evento descartado, pro funil e pro saude.py contarem.
+CREATE TABLE IF NOT EXISTS pr_entradas_atrasadas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, versao TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, candle_ts REAL NOT NULL, atraso_s REAL NOT NULL
+);
+-- PEDIDO 2026-10-30 (FASE 1b): evento (WATCHLIST/ENTRADA/ONDA_INVALIDA) decidido num candle ANTERIOR
+-- a `added_ts` (pool ainda esperando vaga quando o setup aconteceu no mercado real) -- a guarda
+-- `tracked` (`live.py: _on_event_v1`/`_on_event_v2`) ja descartava isso silenciosamente; agora conta
+-- por tipo, pra medir quantos setups o bot perde so por falta de vaga.
+CREATE TABLE IF NOT EXISTS pr_eventos_pre_admissao (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, versao TEXT NOT NULL, pool TEXT NOT NULL,
+  tf TEXT NOT NULL, kind TEXT NOT NULL, candle_ts REAL NOT NULL
+);
+-- PEDIDO 2026-10-30 (FASE 2, item 1): marco de funil (1a vez que o pool chega a cada etapa, PRIMARY
+-- KEY evita duplicar) -- "runner"/"caixa" (FASE2) nunca eram persistidos antes (so WATCHLIST/
+-- ONDA_INVALIDA/ENTRADA tinham tabela propria); zero mudanca de regra, so observabilidade do funil
+-- descoberta->admissao->runner->caixa->sinal->fechado.
+CREATE TABLE IF NOT EXISTS pr_funil_marcos (
+  pool TEXT NOT NULL, versao TEXT NOT NULL, etapa TEXT NOT NULL, ts REAL NOT NULL,
+  PRIMARY KEY (pool, versao, etapa)
+);
+-- PEDIDO 2026-10-30 (FASE 2, item 3): pool rotacionado por incapacidade ESTRUTURAL (nunca morto como
+-- `_retire_estagnado` -- ver `motivo`) fica "dormente", nao "encerrado": recheck diario de MC (1
+-- chamada/pool/dia, orcamento proprio) pode READMITIR com prioridade sobre candidatos novos.
+CREATE TABLE IF NOT EXISTS pr_dormentes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, mint TEXT, symbol TEXT, motivo TEXT NOT NULL,
+  mc_na_saida REAL, ts_dormente REAL NOT NULL, status TEXT NOT NULL DEFAULT 'dormente',
+  ts_recheck_ultimo REAL, mc_recheck_ultimo REAL, ts_readmitido REAL
+);
+CREATE INDEX IF NOT EXISTS pr_dormentes_status ON pr_dormentes (status);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -160,13 +468,106 @@ class Storage:
             self._db.execute("PRAGMA busy_timeout=30000")
             self._db.executescript(SCHEMA)
             self._migrate_pr_signals()
+            # instrumentacao de medicao: banco do operador ja existe SEM essas colunas (CREATE TABLE IF NOT
+            # EXISTS acima nao alcanca tabela ja criada) -- ALTER TABLE idempotente, nunca muda dado existente.
+            self._ensure_columns("pr1_signals", {
+                "ts_fechamento_candle": "INTEGER", "ts_alerta": "REAL", "ts_envio_telegram": "REAL",
+                "retorno_sol_dia": "REAL", "token_signal_seq": "INTEGER",
+                "fonte_candle": "TEXT NOT NULL DEFAULT 'gt'",
+            })
+            self._ensure_columns("pr_bars", {"fonte": "TEXT NOT NULL DEFAULT 'gt'"})
+            self._ensure_columns("pr1_feedback", {
+                "preco_real": "REAL", "slippage_entrada_pct": "REAL", "slippage_saida_pct": "REAL",
+            })
+            # PEDIDO (PARTE 1 de 2), regra 9 / FASE 2b (H8): coluna nullable, sempre NULL por agora -- a
+            # coleta da lista de carteiras "pro" ainda nao existe (fica para um pedido futuro). Nunca muda
+            # regra/filtro/saida de V1 ou V2 (so instrumentacao, mesmo padrao das colunas de medicao
+            # anteriores -- ver ts_fechamento_candle/retorno_sol_dia/token_signal_seq acima).
+            self._ensure_columns("pr1_signals", {"carteiras_pro_presentes": "INTEGER"})
+            self._ensure_columns("pr2_signals", {"carteiras_pro_presentes": "INTEGER"})
+            # DIAGNOSTICO 2026-10-27: preco PROVISORIO exibido no alerta ENTRADA (ev.data["close"], antes do
+            # fill real -- bars[j0].open -- ser conhecido). Gravado 1x, nunca sobrescrito (ao contrario de
+            # `entry_price`, que _update_paper_v1/v2 corrige silenciosamente quando o fill real e conhecido).
+            # Puramente diagnostico/exclusao (analise.condicional) -- nunca lido por regra/filtro/alerta/banca
+            # de V1 ou V2. NULL para sinais antigos (nunca inventa um valor retroativo).
+            self._ensure_columns("pr1_signals", {"entry_price_alerta": "REAL"})
+            self._ensure_columns("pr2_signals", {"entry_price_alerta": "REAL"})
+            # PATCH 2026-10-27 (qualidade_candle.py): qual versao do gate de qualidade de candle estava
+            # ativa quando o sinal foi decidido -- diagnostico/auditoria, fora do hash de ParamsV1/V2.
+            # NULL em sinais anteriores ao patch (nunca inventa a versao retroativamente).
+            self._ensure_columns("pr1_signals", {"qualidade_versao": "TEXT"})
+            self._ensure_columns("pr2_signals", {"qualidade_versao": "TEXT"})
+            # PATCH 2026-10-27 (item 4, pos-auditoria): R de SENSIBILIDADE p/ saidas por stop -- saida no
+            # OPEN do candle seguinte ao candle que violou o stop, em vez do preenchimento no nivel do
+            # stop (sem gap/slippage, convencao oficial intacta -- ver simulate_v1.py). So preenchida
+            # quando o trade fechou por "stop" E havia um candle seguinte; NULL nos demais casos (TP1/
+            # exit_full ja usam o OPEN do candle seguinte na saida oficial, nada a comparar) e em sinais
+            # anteriores a este patch. Nunca lida por regra/filtro/alerta/banca de V1 ou V2.
+            self._ensure_columns("pr1_signals", {"r_exit_open_seguinte": "REAL"})
+            self._ensure_columns("pr2_signals", {"r_exit_open_seguinte": "REAL"})
+            # PEDIDO 2026-10-27 (H9): n_pessoas_pro (grupos distintos) ao lado de carteiras_pro_presentes
+            # (que ja existia, nullable desde a FASE 2b -- agora passa a guardar n_carteiras_pro, a
+            # CONTAGEM de enderecos, nao so um booleano) -- nunca confundir pessoas com carteiras.
+            self._ensure_columns("pr1_signals", {"n_pessoas_pro": "INTEGER"})
+            self._ensure_columns("pr2_signals", {"n_pessoas_pro": "INTEGER"})
+            # PEDIDO 2026-10-29, item 3: ENTRADA anterior a instrumentacao de trajetoria/baseline (FASES
+            # 1-2) cujo candle NAO esta mais em cache (`pr_bars`) -- scripts/backfill_evidencia.py marca
+            # 1 aqui em vez de inventar/interpolar a metrica. 0/NULL em todas as linhas normais.
+            self._ensure_columns("pr_trajetoria", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
+            self._ensure_columns("pr_baseline", {"pre_instrumentacao": "INTEGER NOT NULL DEFAULT 0"})
+            # PEDIDO (PARTE 2A) FASE 4: colunas nullable de contexto/execucao na ENTRADA -- usando so
+            # dado que o GT/DexPaprika ja devolveram no momento da decisao (zero chamada nova); nunca
+            # lidas por regra/filtro/tamanho/saida de V1 ou V2. NULL em sinais anteriores a esta
+            # entrega (nunca inventa um valor retroativo). `holders_count` fica sempre NULL por agora
+            # (nem o RPC `getTokenLargestAccounts` nem o GT devolvem uma contagem agregada de holders
+            # no que ja e chamado hoje -- ver INTERPRETACOES.md).
+            contexto_execucao = {
+                "dia_semana": "TEXT", "idade_dias": "REAL", "mc_na_entrada": "REAL", "volume_24h": "REAL",
+                "caixa_candles": "INTEGER", "holder_top1_pct": "REAL", "slippage_estimado_pct": "REAL",
+                "r_liquido_estimado": "REAL", "n_txs_24h": "INTEGER", "ticket_medio_usd": "REAL",
+                "holders_count": "INTEGER",
+            }
+            self._ensure_columns("pr1_signals", contexto_execucao)
+            self._ensure_columns("pr2_signals", contexto_execucao)
+            # PEDIDO 2026-10-29 (saude.py: fases do heartbeat, nao persistidas): fase ATUAL do
+            # detector V1/V2 de cada pool (sem_fase/runner/pullback), gravada a cada ciclo que
+            # processa candle novo (`_refresh_core`) -- saude.py (processo separado) le daqui, nunca
+            # do ultimo heartbeat em memoria. NULL ate o 1o ciclo pos-migracao processar essa pool.
+            self._ensure_columns("pr_pools", {"fase_v1": "TEXT", "fase_v2": "TEXT"})
+            # PEDIDO 2026-10-30 (FASE 1d): ha quanto tempo (em candles do tf) o candle-gatilho da
+            # ENTRADA ja estava fechado quando o bot finalmente decidiu (0 = candle atual, o caso
+            # normal). NULL em sinais anteriores a esta entrega (nunca inventa o valor retroativo --
+            # ver scripts/auditar_atraso_entradas.py pra estimar os antigos a partir de ts_alerta).
+            self._ensure_columns("pr1_signals", {"atraso_candles": "REAL"})
+            self._ensure_columns("pr2_signals", {"atraso_candles": "REAL"})
+            # PEDIDO 2026-10-30 (FASE 2, item 3): desde quando V1 E V2 estao sem_fase AO MESMO TEMPO
+            # neste pool (NULL se qualquer um dos dois esta ativo agora) -- persistido incrementalmente
+            # por `_persistir_fases` a cada ciclo, nunca recalculado por replay (ao contrario do script
+            # read-only `diagnostico_vagas.py`, que nao tem esse historico). So `_rotacionar_vagas` le.
+            self._ensure_columns("pr_pools", {"sem_fase_desde": "REAL"})
+            # PEDIDO 2026-10-30 (FASE 2, item 4): regime de amostragem (pre_rotacao/pos_rotacao) no
+            # momento em que o sinal foi decidido -- gravado 1x na criacao, nunca retroativo (NULL em
+            # sinais anteriores a esta entrega == pre_rotacao, ja que a rotacao nunca existiu antes).
+            self._ensure_columns("pr1_signals", {"regime_amostragem": "TEXT"})
+            self._ensure_columns("pr2_signals", {"regime_amostragem": "TEXT"})
+            # PEDIDO 2026-10-30 (FASE 2, item 1): dados do MOMENTO do descarte por falta de vaga --
+            # nunca recalculados depois (o candidato pode mudar de estado); NULL em descartes
+            # anteriores a esta entrega (nunca inventados retroativamente).
+            self._ensure_columns("pr_vaga_descartes", {
+                "mc_atual": "REAL", "idade_dias": "REAL", "pico": "REAL", "queda_pct": "REAL",
+                "liquidez_usd": "REAL",
+            })
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             elif current > SCHEMA_VERSION:
                 raise RuntimeError(f"banco {paths.db} e de uma versao mais nova do bot (schema {current})")
         self._dirty = {"sinais": True, "descartados": True, "trades": True, "detalhe": True, "pos_runner": True,
-                       "pos_runner_detalhe": True, "pos_runner_banca": True}
+                       "pos_runner_detalhe": True, "pos_runner_banca": True, "pos_runner_v1": True,
+                       "pos_runner_v1_filtrados": True, "pos_runner_v1_banca": True, "pos_runner_v1_feedback": True,
+                       "pos_runner_v1_pulados": True, "pos_runner_v1_dexpaprika": True,
+                       "pos_runner_v2": True, "pos_runner_v2_filtrados": True, "pos_runner_v2_banca": True,
+                       "pos_runner_v1_trajetoria": True}
         self._warned: set[str] = set()
 
     def _migrate_pr_signals(self) -> None:
@@ -190,9 +591,30 @@ class Storage:
             self._db.execute("ROLLBACK")
             raise
 
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        """ALTER TABLE ... ADD COLUMN idempotente (so para colunas que ainda nao existem) -- nunca toca em
+        coluna/linha ja existente, so acrescenta."""
+        existentes = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})").fetchall()}
+        for nome, tipo in columns.items():
+            if nome not in existentes:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {nome} {tipo}")
+
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+    def backup_to(self, dest_path: Path) -> None:
+        """PEDIDO ADICIONAL FASE 6, item 1: backup consistente com a API nativa de backup do SQLite
+        (`Connection.backup`) -- funciona com o banco aberto e em modo WAL, nunca uma copia de arquivo
+        "crua" que poderia pegar uma escrita no meio. `dest_path` e um arquivo NOVO (nunca sobrescreve o
+        banco em uso)."""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest = sqlite3.connect(str(dest_path))
+        try:
+            with self._lock:
+                self._db.backup(dest)
+        finally:
+            dest.close()
 
     # -- util -------------------------------------------------------------------------
     def _one(self, sql: str, params: Sequence[Any] = ()) -> Optional[sqlite3.Row]:
@@ -478,6 +900,21 @@ class Storage:
             "pos_runner": (self.paths.pos_runner_csv, lambda: (POS_RUNNER_COLUMNS, self._pos_runner_rows())),
             "pos_runner_detalhe": (self.paths.pos_runner_detalhe_csv, self._pos_runner_detail_rows),
             "pos_runner_banca": (self.paths.pos_runner_banca_csv, self._pos_runner_banca_header_rows),
+            "pos_runner_v1": (self.paths.pos_runner_v1_csv, lambda: (POS_RUNNER_V1_COLUMNS, self._pos_runner_v1_rows())),
+            "pos_runner_v1_filtrados": (self.paths.pos_runner_v1_filtrados_csv,
+                                       lambda: (POS_RUNNER_V1_FILTRADOS_COLUMNS, self._pos_runner_v1_filtrados_rows())),
+            "pos_runner_v1_banca": (self.paths.pos_runner_v1_banca_csv, self._pos_runner_v1_banca_header_rows),
+            "pos_runner_v1_feedback": (self.paths.pos_runner_v1_feedback_csv,
+                                       lambda: (POS_RUNNER_V1_FEEDBACK_COLUMNS, self._pos_runner_v1_feedback_rows())),
+            "pos_runner_v1_pulados": (self.paths.pos_runner_v1_pulados_csv,
+                                      lambda: (POS_RUNNER_V1_PULADOS_COLUMNS, self._pos_runner_v1_pulados_rows())),
+            "pos_runner_v1_dexpaprika": (self.paths.pos_runner_v1_dexpaprika_csv,
+                                        lambda: (POS_RUNNER_V1_DEXPAPRIKA_COLUMNS, self._pos_runner_v1_dexpaprika_rows())),
+            "pos_runner_v2": (self.paths.pos_runner_v2_csv, lambda: (POS_RUNNER_V2_COLUMNS, self._pos_runner_v2_rows())),
+            "pos_runner_v2_filtrados": (self.paths.pos_runner_v2_filtrados_csv,
+                                       lambda: (POS_RUNNER_V2_FILTRADOS_COLUMNS, self._pos_runner_v2_filtrados_rows())),
+            "pos_runner_v2_banca": (self.paths.pos_runner_v2_banca_csv, self._pos_runner_v2_banca_header_rows),
+            "pos_runner_v1_trajetoria": (self.paths.pos_runner_v1_trajetoria_csv, self._pos_runner_v1_trajetoria_rows),
         }
         for name, (path, build) in jobs.items():
             with self._lock:
@@ -538,16 +975,18 @@ class Storage:
         rows = self._all("SELECT ts, o, h, l, c, v, filled FROM pr_bars WHERE pool=? AND tf=? ORDER BY ts", (pool, tf))
         return [tuple(r) for r in rows]
 
-    def pr_append_bars(self, pool: str, tf: str, rows: Sequence[tuple]) -> None:
-        """Acrescenta candles consumidos (ts, o, h, l, c, v, filled). Candle ja gravado nunca e reescrito."""
+    def pr_append_bars(self, pool: str, tf: str, rows: Sequence[tuple], fonte: str = "gt") -> None:
+        """Acrescenta candles consumidos (ts, o, h, l, c, v, filled). Candle ja gravado nunca e reescrito.
+        `fonte` ("gt"|"dexpaprika", PEDIDO CONSOLIDADO FASE 1): so auditoria -- `pr_bars()` continua
+        selecionando so as 7 colunas de sempre, o detector nunca ve este campo."""
         if not rows:
             return
         with self._lock:
             self._db.execute("BEGIN")
             try:
                 self._db.executemany(
-                    "INSERT OR IGNORE INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [(pool, tf, int(r[0]), r[1], r[2], r[3], r[4], r[5], int(bool(r[6]))) for r in rows],
+                    "INSERT OR IGNORE INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled, fonte) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(pool, tf, int(r[0]), r[1], r[2], r[3], r[4], r[5], int(bool(r[6])), fonte) for r in rows],
                 )
                 self._db.execute("COMMIT")
             except Exception:
@@ -682,6 +1121,14 @@ class Storage:
             return {}
         return value if isinstance(value, dict) else {}
 
+    @staticmethod
+    def _pr_list(text: Optional[str]) -> list[str]:
+        try:
+            value = json.loads(text or "[]")
+        except ValueError:
+            return []
+        return [str(x) for x in value] if isinstance(value, list) else []
+
     def _pos_runner_rows(self) -> list[list[Any]]:
         """EMENDA 2026-10-16 (grade de 24 combinacoes): o contrato ESTAVEL do handoff continua so a combinacao
         primaria (extremos); a 2a medida da queda (fechamentos) vai so em `pos_runner_detalhe.csv` (fora do
@@ -736,3 +1183,746 @@ class Storage:
                 _num(det.get("max_caminho_B"), 1),
             ])
         return POS_RUNNER_DETALHE_COLUMNS, rows
+
+    # -- POS-RUNNER-V1 ("regras do professor") ------------------------------------------------------------
+    def pr1_insert_signal(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (chain,pool,tf,evento,ts_fechamento): reinicio nunca duplica um sinal."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr1_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols],
+            )
+            self._dirty["pos_runner_v1"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr1_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr1_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), signal_id])
+            self._dirty["pos_runner_v1"] = True
+
+    def pr1_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr1_signals WHERE id=?", (signal_id,))
+
+    def pr1_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr1_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
+                         (chain, pool, tf, evento, ts_fechamento))
+
+    # -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (tabelas PROPRIAS -- ver comentario da DDL acima) -----------
+    def pr2_insert_signal(self, row: dict) -> Optional[int]:
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr2_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols],
+            )
+            self._dirty["pos_runner_v2"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr2_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr2_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), signal_id])
+            self._dirty["pos_runner_v2"] = True
+
+    def pr2_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr2_signals WHERE id=?", (signal_id,))
+
+    def pr2_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr2_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
+                         (chain, pool, tf, evento, ts_fechamento))
+
+    def pr2_token_next_seq(self, mint: Optional[str]) -> int:
+        if not mint:
+            return 1
+        row = self._one("SELECT COUNT(*) AS n FROM pr2_signals WHERE mint=? AND evento='ENTRADA'", (mint,))
+        return (row["n"] if row else 0) + 1
+
+    def pr2_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr2_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr2_add_filtrado(self, ts: float, chain: str, pool: str, mint: str, symbol: str, motivo: str, valor: str,
+                         versao_config_v2: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr2_filtrados (ts,chain,pool,mint,symbol,motivo,valor,versao_config_v2) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, motivo, valor, versao_config_v2),
+            )
+            self._dirty["pos_runner_v2_filtrados"] = True
+
+    def pr2_version_start(self, version: str, ts: float) -> float:
+        key = f"pr2_versao_inicio:{version}"
+        with self._lock:
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr2_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr2_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return float(row[0])
+
+    def pr2_filtrado_counts(self, since_ts: float) -> dict[str, int]:
+        return {r[0]: r[1] for r in self._all(
+            "SELECT motivo, COUNT(*) FROM pr2_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
+
+    def pr2_bankroll_load(self, tf: str, versao_config_v2: str) -> Optional[str]:
+        row = self._one("SELECT state_json FROM pr2_bankroll_state WHERE tf=? AND versao_config_v2=?", (tf, versao_config_v2))
+        return row[0] if row else None
+
+    def pr2_bankroll_save(self, tf: str, versao_config_v2: str, state_json: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO pr2_bankroll_state (tf, versao_config_v2, state_json) VALUES (?, ?, ?)",
+                (tf, versao_config_v2, state_json))
+
+    def pr2_bankroll_append(self, tf: str, versao_config_v2: str, pr2_signal_id: int, row: dict, ts: float) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr2_bankroll_trades (ts, tf, versao_config_v2, pr2_signal_id, row_json) VALUES (?, ?, ?, ?, ?)",
+                (ts, tf, versao_config_v2, pr2_signal_id, json.dumps(row, default=str)))
+            if cur.rowcount:
+                self._dirty["pos_runner_v2_banca"] = True
+            return bool(cur.rowcount)
+
+    def pr2_bankroll_resumos(self) -> dict[str, dict]:
+        from .pos_runner.bankroll_v1 import BankrollStateV1
+        out = {}
+        for r in self._all("SELECT tf, versao_config_v2, state_json FROM pr2_bankroll_state"):
+            out[f"{r['tf']}@{r['versao_config_v2'][:12]}"] = BankrollStateV1.from_json(r["state_json"]).resumo()
+        return out
+
+    def _pos_runner_v2_banca_header_rows(self) -> tuple[list[str], list[list[Any]]]:
+        from .pos_runner.bankroll_v1 import COLUMNS, HEADER_LABELS
+        header = [HEADER_LABELS.get(c, c) for c in COLUMNS]
+        rows = []
+        for r in self._all("SELECT row_json FROM pr2_bankroll_trades ORDER BY ts, id"):
+            d = json.loads(r[0])
+            rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
+        return header, rows
+
+    def _pos_runner_v2_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all("SELECT * FROM pr2_signals WHERE evento='ENTRADA' ORDER BY ts_fechamento, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            age = d.get("idade_dias")
+            gatilho = self._pr_list(r["gatilho"])
+            tags = self._pr_list(r["tags"])
+            if r["status"] == "aberto":
+                motivo_saida = "em_aberto"
+            elif r["reason"]:
+                motivo_saida = r["reason"]
+            else:
+                motivo_saida = r["status"]
+            out.append([
+                iso_utc(r["ts_fechamento"]), r["hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["launchpad"], r["tf"], _num(None if age is None else age * 24, 1), r["janela_ouro"] or "",
+                _num(r["topo"]), _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(r["s_suporte"]), _num(r["r_resistencia"]),
+                d.get("n_testes", ""), ",".join(gatilho),
+                _num(r["entry_price"]), _num(r["stop"]), _num(d.get("risco_pct"), 1),
+                _num(r["tp1_price"]), _num(r["exit_full_price"]), _num(None if r["result_net"] is None else 100 * r["result_net"], 2),
+                _num(r["tempo_h"], 1), motivo_saida, ",".join(tags),
+                r["holders_tag"] or "", r["mint_authority"] or "", r["freeze_authority"] or "", _num(r["liquidez_usd"]),
+                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v2"],
+                1 if r["status"] == "perdido_offline" else 0,
+                r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
+                _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
+                r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
+                r["fonte_candle"] or "gt", 1 if r["so_v2"] else 0,
+                r["dia_semana"] or "", _num(r["idade_dias"], 2), _num(r["mc_na_entrada"]), _num(r["volume_24h"]),
+                r["caixa_candles"] if r["caixa_candles"] is not None else "", _num(r["holder_top1_pct"], 1),
+                _num(r["slippage_estimado_pct"], 3),
+                _num(None if r["r_liquido_estimado"] is None else 100 * r["r_liquido_estimado"], 2),
+                r["n_txs_24h"] if r["n_txs_24h"] is not None else "", _num(r["ticket_medio_usd"]),
+                r["holders_count"] if r["holders_count"] is not None else "",
+            ])
+        return out
+
+    def _pos_runner_v2_filtrados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v2"]]
+            for r in self._all("SELECT * FROM pr2_filtrados ORDER BY ts, id")
+        ]
+
+    def pr1_token_next_seq(self, mint: Optional[str]) -> int:
+        """Sequencial do sinal dentro do MESMO token (mint): 1 para o 1o ENTRADA desse mint, 2 para o 2o,
+        etc. -- varias ENTRADA no mesmo mint sao por desenho (zonas/ondas diferentes, ver detector_v1.py),
+        token_signal_seq so marca a ordem pra agrupar por token no /relatorio e na analise Monte Carlo."""
+        if not mint:
+            return 1
+        row = self._one("SELECT COUNT(*) AS n FROM pr1_signals WHERE mint=? AND evento='ENTRADA'", (mint,))
+        return (row["n"] if row else 0) + 1
+
+    def pr1_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr1_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr1_add_filtrado(self, ts: float, chain: str, pool: str, mint: str, symbol: str, motivo: str, valor: str,
+                         versao_config_v1: str) -> None:
+        """Nunca silencioso (item 2.4/3.6): filtrado_mc_baixo, filtrado_idade e dado_invalido entram aqui e
+        contam no resumo diario, mesmo sem nunca virar alerta."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_filtrados (ts,chain,pool,mint,symbol,motivo,valor,versao_config_v1) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, motivo, valor, versao_config_v1),
+            )
+            self._dirty["pos_runner_v1_filtrados"] = True
+
+    def pr1_version_start(self, version: str, ts: float) -> float:
+        """Mesma ideia de `pr_version_start`, chave propria (nunca colide com a contagem do V0)."""
+        key = f"pr1_versao_inicio:{version}"
+        with self._lock:
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr1_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr1_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return float(row[0])
+
+    def pr1_filtrado_counts(self, since_ts: float) -> dict[str, int]:
+        return {r[0]: r[1] for r in self._all(
+            "SELECT motivo, COUNT(*) FROM pr1_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
+
+    def pr1_uptime_start(self, ts: float) -> int:
+        with self._lock:
+            cur = self._db.execute("INSERT INTO pr1_uptime (inicio_ts) VALUES (?)", (ts,))
+            return int(cur.lastrowid)
+
+    def pr1_uptime_stop(self, uptime_id: int, ts: float, motivo: str = "") -> None:
+        self._exec("UPDATE pr1_uptime SET fim_ts=?, motivo_fim=? WHERE id=?", (ts, motivo, uptime_id))
+
+    def pr1_uptime_hours(self, since_ts: float, now: float) -> float:
+        """Horas ligado desde `since_ts` (uma sessao ainda aberta conta ate `now`)."""
+        total = 0.0
+        for row in self._all("SELECT inicio_ts, fim_ts FROM pr1_uptime WHERE COALESCE(fim_ts, ?)>=?", (now, since_ts)):
+            ini = max(row["inicio_ts"], since_ts)
+            fim = row["fim_ts"] if row["fim_ts"] is not None else now
+            total += max(0.0, fim - ini)
+        return total / 3600.0
+
+    def _pos_runner_v1_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all("SELECT * FROM pr1_signals WHERE evento='ENTRADA' ORDER BY ts_fechamento, id"):
+            d = self._pr_json(r["event_json"]).get("data", {})
+            age = d.get("idade_dias")
+            gatilho = self._pr_list(r["gatilho"])
+            tags = self._pr_list(r["tags"])
+            if r["status"] == "aberto":
+                motivo_saida = "em_aberto"
+            elif r["reason"]:
+                motivo_saida = r["reason"]
+            else:
+                motivo_saida = r["status"]
+            out.append([
+                iso_utc(r["ts_fechamento"]), r["hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["launchpad"], r["tf"], _num(None if age is None else age * 24, 1), r["janela_ouro"] or "",
+                _num(r["topo"]), _num(d.get("L_bc")), _num(d.get("queda_pct"), 1), _num(r["s_suporte"]), _num(r["r_resistencia"]),
+                d.get("n_testes", ""), ",".join(gatilho),
+                _num(r["entry_price"]), _num(r["stop"]), _num(d.get("risco_pct"), 1),
+                _num(r["tp1_price"]), _num(r["exit_full_price"]), _num(None if r["result_net"] is None else 100 * r["result_net"], 2),
+                _num(r["tempo_h"], 1), motivo_saida, ",".join(tags),
+                r["holders_tag"] or "", r["mint_authority"] or "", r["freeze_authority"] or "", _num(r["liquidez_usd"]),
+                _num(r["teste_vol_ratio"], 2), r["origem"] or "", r["versao_config_v1"],
+                1 if r["status"] == "perdido_offline" else 0,
+                r["ts_fechamento_candle"] if r["ts_fechamento_candle"] is not None else "",
+                _num(r["ts_alerta"], 0), _num(r["ts_envio_telegram"], 0), _num(r["retorno_sol_dia"], 2),
+                r["token_signal_seq"] if r["token_signal_seq"] is not None else "",
+                r["fonte_candle"] or "gt",
+                r["dia_semana"] or "", _num(r["idade_dias"], 2), _num(r["mc_na_entrada"]), _num(r["volume_24h"]),
+                r["caixa_candles"] if r["caixa_candles"] is not None else "", _num(r["holder_top1_pct"], 1),
+                _num(r["slippage_estimado_pct"], 3),
+                _num(None if r["r_liquido_estimado"] is None else 100 * r["r_liquido_estimado"], 2),
+                r["n_txs_24h"] if r["n_txs_24h"] is not None else "", _num(r["ticket_medio_usd"]),
+                r["holders_count"] if r["holders_count"] is not None else "",
+            ])
+        return out
+
+    def _pos_runner_v1_filtrados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v1"]]
+            for r in self._all("SELECT * FROM pr1_filtrados ORDER BY ts, id")
+        ]
+
+    # -- feedback do operador na V1 (FASE 3: botoes 👍/👎/📝 + /entrei /sai /nota) -------------------------
+    def pr1_feedback_upsert(self, signal_id: int, acao: str, chat_id: str, now: float, voto: Optional[str] = None,
+                           valor: Optional[float] = None, texto: Optional[str] = None,
+                           preco_real: Optional[float] = None, slippage_entrada_pct: Optional[float] = None,
+                           slippage_saida_pct: Optional[float] = None) -> bool:
+        """1 linha por (sinal, acao) -- repetir a acao (botao de novo, comando de novo) ATUALIZA, nunca
+        duplica. False quando o sinal nao existe (comando/callback aponta pra um id que nao e da V1).
+        `preco_real`/`slippage_*`: so para acao in ('entrei','sai') com preco informado (instrumentacao)."""
+        signal = self.pr1_signal(signal_id)
+        if signal is None:
+            return False
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_feedback (pr1_signal_id,chain,pool,tf,mint,symbol,versao_config_v1,acao,voto,valor,texto,"
+                "chat_id,criado_ts,atualizado_ts,preco_real,slippage_entrada_pct,slippage_saida_pct) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(pr1_signal_id,acao) DO UPDATE SET voto=excluded.voto, valor=excluded.valor, "
+                "texto=excluded.texto, chat_id=excluded.chat_id, atualizado_ts=excluded.atualizado_ts, "
+                "preco_real=excluded.preco_real, slippage_entrada_pct=excluded.slippage_entrada_pct, "
+                "slippage_saida_pct=excluded.slippage_saida_pct",
+                (signal_id, signal["chain"], signal["pool"], signal["tf"], signal["mint"], signal["symbol"],
+                 signal["versao_config_v1"], acao, voto, valor, texto, chat_id, now, now,
+                 preco_real, slippage_entrada_pct, slippage_saida_pct),
+            )
+            self._dirty["pos_runner_v1_feedback"] = True
+        return True
+
+    def pr1_feedback_for_signal(self, signal_id: int) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_feedback WHERE pr1_signal_id=? ORDER BY acao", (signal_id,))
+
+    def pr1_feedback_votes_since(self, since_ts: float, until_ts: float, versao_config_v1: str) -> list[sqlite3.Row]:
+        """Para o relatorio semanal (so votos 👍/👎, SO da versao atual -- nunca mistura versoes de config,
+        complemento FASE 1.1 item 3 aplicado aqui tambem)."""
+        return self._all(
+            "SELECT f.*, s.gatilho AS sig_gatilho, s.tags AS sig_tags, s.janela_ouro AS sig_janela_ouro, "
+            "s.ts_fechamento AS sig_ts_fechamento, s.result_net AS sig_result_net, "
+            "s.mint_authority AS sig_mint_authority, s.freeze_authority AS sig_freeze_authority "
+            "FROM pr1_feedback f "
+            "JOIN pr1_signals s ON s.id = f.pr1_signal_id WHERE f.acao='voto' AND f.versao_config_v1=? "
+            "AND s.ts_fechamento>=? AND s.ts_fechamento<?",
+            (versao_config_v1, since_ts, until_ts),
+        )
+
+    def pr1_feedback_scam_count_since(self, since_ts: float, until_ts: float, versao_config_v1: str) -> int:
+        """PEDIDO ADICIONAL FASE 5, item 5: /scam marca manual (acao='scam' em pr1_feedback, mesma
+        tabela do voto/nota -- nunca bloqueia nem remove o sinal). So contagem para o /relatorio."""
+        row = self._one(
+            "SELECT COUNT(*) AS n FROM pr1_feedback f JOIN pr1_signals s ON s.id = f.pr1_signal_id "
+            "WHERE f.acao='scam' AND f.versao_config_v1=? AND s.ts_fechamento>=? AND s.ts_fechamento<?",
+            (versao_config_v1, since_ts, until_ts),
+        )
+        return int(row["n"]) if row else 0
+
+    def _pos_runner_v1_feedback_rows(self) -> list[list[Any]]:
+        out = []
+        for r in self._all(
+            "SELECT f.*, s.ts_fechamento AS sig_ts_fechamento, s.hora_brt AS sig_hora_brt FROM pr1_feedback f "
+            "JOIN pr1_signals s ON s.id = f.pr1_signal_id ORDER BY f.atualizado_ts, f.id"
+        ):
+            out.append([
+                iso_utc(r["sig_ts_fechamento"]), r["sig_hora_brt"] or "", r["chain"], csv_safe(r["symbol"]), r["mint"],
+                r["tf"], r["acao"], r["voto"] or "", "" if r["valor"] is None else r["valor"],
+                csv_safe(r["texto"] or ""), r["chat_id"] or "", r["versao_config_v1"],
+                _num(r["preco_real"], 6), _num(r["slippage_entrada_pct"], 2), _num(r["slippage_saida_pct"], 2),
+            ])
+        return out
+
+    # -- /pulei (sinal visto e NAO executado -- instrumentacao, separado de pr1_feedback) -----------------
+    def pr1_pulado_insert(self, ts: float, chain: Optional[str], pool: Optional[str], symbol: Optional[str],
+                          motivo: str, chat_id: str, versao_config_v1: Optional[str],
+                          pr1_signal_id: Optional[int]) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_pulados (pr1_signal_id,chain,pool,symbol,motivo,chat_id,versao_config_v1,criado_ts) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (pr1_signal_id, chain, pool, symbol, motivo, chat_id, versao_config_v1, ts),
+            )
+            self._dirty["pos_runner_v1_pulados"] = True
+
+    def pr1_pulados(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_pulados ORDER BY criado_ts, id")
+
+    def _pos_runner_v1_pulados_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["criado_ts"]), r["chain"] or "", csv_safe(r["symbol"] or ""), r["pool"] or "",
+             csv_safe(r["motivo"]), r["versao_config_v1"] or ""]
+            for r in self._all("SELECT * FROM pr1_pulados ORDER BY criado_ts, id")
+        ]
+
+    # -- conferencia cruzada DexPaprika (PEDIDO CONSOLIDADO FASE 1, item 3b) -- so log, nunca decide -------
+    def pr1_dexpaprika_divergencia_insert(self, ts: float, chain: Optional[str], pool: Optional[str],
+                                          mint: Optional[str], symbol: Optional[str], tf: str,
+                                          candle_ts: int, campo: str, valor_gt: float,
+                                          valor_dexpaprika: float, diff_pct: float,
+                                          versao_config_v1: Optional[str]) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr1_dexpaprika_divergencias (ts,chain,pool,mint,symbol,tf,candle_ts,campo,"
+                "valor_gt,valor_dexpaprika,diff_pct,versao_config_v1) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, tf, candle_ts, campo, valor_gt, valor_dexpaprika, diff_pct,
+                 versao_config_v1),
+            )
+            self._dirty["pos_runner_v1_dexpaprika"] = True
+
+    def pr1_dexpaprika_divergencias(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr1_dexpaprika_divergencias ORDER BY ts, id")
+
+    def pr1_dexpaprika_divergencia_count_since(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr1_dexpaprika_divergencias WHERE ts>=?", (since_ts,))
+        return int(row["n"]) if row else 0
+
+    def _pos_runner_v1_dexpaprika_rows(self) -> list[list[Any]]:
+        return [
+            [iso_utc(r["ts"]), r["chain"] or "", csv_safe(r["symbol"] or ""), r["mint"] or "", r["tf"] or "",
+             r["candle_ts"] if r["candle_ts"] is not None else "", r["campo"], _num(r["valor_gt"], 8),
+             _num(r["valor_dexpaprika"], 8), _num(r["diff_pct"], 3), r["versao_config_v1"] or ""]
+            for r in self._all("SELECT * FROM pr1_dexpaprika_divergencias ORDER BY ts, id")
+        ]
+
+    # -- snapshot de carteiras "pro" (PEDIDO 2026-10-27, H9) -- so medicao, nunca decide -------------------
+    def pr_carteiras_snapshot_insert(self, chave: str, ts: float, chain: str, pool: str, mint: str,
+                                     momento: str, top_holders: list[tuple[str, float]],
+                                     n_carteiras_pro: int, n_pessoas_pro: int, grupos: list[str],
+                                     versao: Optional[str] = None, entry_id: Optional[int] = None) -> bool:
+        """Idempotente por `chave` -- True se inseriu (1a vez), False se ja existia (nunca duplica)."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr_carteiras_snapshot (chave,ts,chain,pool,mint,momento,versao,"
+                "entry_id,top_holders_json,n_carteiras_pro,n_pessoas_pro,grupos_json) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (chave, ts, chain, pool, mint, momento, versao, entry_id, json.dumps(top_holders),
+                 n_carteiras_pro, n_pessoas_pro, json.dumps(grupos)),
+            )
+            return bool(cur.rowcount)
+
+    def pr_carteiras_snapshot_count_since(self, since_ts: float, momento: Optional[str] = None) -> int:
+        if momento is None:
+            row = self._one("SELECT COUNT(*) AS n FROM pr_carteiras_snapshot WHERE ts>=?", (since_ts,))
+        else:
+            row = self._one("SELECT COUNT(*) AS n FROM pr_carteiras_snapshot WHERE ts>=? AND momento=?",
+                            (since_ts, momento))
+        return int(row["n"]) if row else 0
+
+    def pr_carteiras_snapshot_existe(self, chave: str) -> bool:
+        return self._one("SELECT 1 FROM pr_carteiras_snapshot WHERE chave=?", (chave,)) is not None
+
+    def pr_carteiras_snapshot_para_sinal(self, versao: str, entry_id: int) -> list[sqlite3.Row]:
+        return self._all(
+            "SELECT * FROM pr_carteiras_snapshot WHERE versao=? AND entry_id=? ORDER BY ts",
+            (versao, entry_id),
+        )
+
+    def pr_carteiras_snapshot_all(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_carteiras_snapshot ORDER BY ts, id")
+
+    # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
+    def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:
+        row = self._one("SELECT state_json FROM pr1_bankroll_state WHERE tf=? AND versao_config_v1=?", (tf, versao_config_v1))
+        return row[0] if row else None
+
+    def pr1_bankroll_save(self, tf: str, versao_config_v1: str, state_json: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO pr1_bankroll_state (tf, versao_config_v1, state_json) VALUES (?, ?, ?)",
+                (tf, versao_config_v1, state_json))
+
+    def pr1_bankroll_append(self, tf: str, versao_config_v1: str, pr1_signal_id: int, row: dict, ts: float) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr1_bankroll_trades (ts, tf, versao_config_v1, pr1_signal_id, row_json) VALUES (?, ?, ?, ?, ?)",
+                (ts, tf, versao_config_v1, pr1_signal_id, json.dumps(row, default=str)))
+            if cur.rowcount:
+                self._dirty["pos_runner_v1_banca"] = True
+            return bool(cur.rowcount)
+
+    def pr1_bankroll_resumos(self) -> dict[str, dict]:
+        from .pos_runner.bankroll_v1 import BankrollStateV1
+        out = {}
+        for r in self._all("SELECT tf, versao_config_v1, state_json FROM pr1_bankroll_state"):
+            out[f"{r['tf']}@{r['versao_config_v1'][:12]}"] = BankrollStateV1.from_json(r["state_json"]).resumo()
+        return out
+
+    def _pos_runner_v1_banca_header_rows(self) -> tuple[list[str], list[list[Any]]]:
+        from .pos_runner.bankroll_v1 import COLUMNS, HEADER_LABELS
+        header = [HEADER_LABELS.get(c, c) for c in COLUMNS]
+        rows = []
+        for r in self._all("SELECT row_json FROM pr1_bankroll_trades ORDER BY ts, id"):
+            d = json.loads(r[0])
+            rows.append(["" if d.get(c) is None else d.get(c) for c in COLUMNS])
+        return header, rows
+
+    # -- PEDIDO (PARTE 1 de 2) FASE 1: pr_trajetoria (medicao AO LADO de V1/V2 -- ver evidencia.py) -----------
+    def pr_trajetoria_get(self, versao: str, entry_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_trajetoria WHERE versao=? AND entry_id=?", (versao, entry_id))
+
+    def pr_trajetoria_upsert(self, versao: str, entry_id: int, now: float, **fields: Any) -> None:
+        """Idempotente pela UNIQUE (versao, entry_id): a 1a chamada insere (precisa trazer os campos fixos
+        -- chain/pool/tf/mint/symbol/t_entrada/preco_entrada/risco_pct/r_unidade/fonte_candle -- em
+        `fields`), as seguintes so atualizam (nunca duplica, um restart nunca perde o progresso)."""
+        existing = self.pr_trajetoria_get(versao, entry_id)
+        with self._lock:
+            if existing is None:
+                cols = {"versao": versao, "entry_id": entry_id, "criado_ts": now, "atualizado_ts": now, **fields}
+                self._db.execute(
+                    f"INSERT INTO pr_trajetoria ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    list(cols.values()))
+            elif fields:
+                cols = {**fields, "atualizado_ts": now}
+                self._db.execute(
+                    f"UPDATE pr_trajetoria SET {', '.join(f'{k}=?' for k in cols)} WHERE versao=? AND entry_id=?",
+                    [*cols.values(), versao, entry_id])
+            self._dirty["pos_runner_v1_trajetoria"] = True
+
+    def pr_trajetoria_abertas(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        """So as linhas ainda NAO fechadas (fechado=0) precisam ser recalculadas a cada ciclo."""
+        if versao is None:
+            return self._all("SELECT * FROM pr_trajetoria WHERE fechado=0 ORDER BY t_entrada, id")
+        return self._all("SELECT * FROM pr_trajetoria WHERE fechado=0 AND versao=? ORDER BY t_entrada, id", (versao,))
+
+    def pr_trajetoria_all(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_trajetoria ORDER BY versao, t_entrada, id")
+
+    def _pos_runner_v1_trajetoria_rows(self) -> tuple[list[str], list[list[Any]]]:
+        header = ["entry_id", "versao", "chain", "pool", "tf", "mint", "symbol", "t_entrada", "preco_entrada",
+                  "risco_pct", "r_unidade", "mfe_r", "mfe_h", "mae_r", "mae_h",
+                  "ret_r_1h", "ret_r_2h", "ret_r_4h", "ret_r_8h", "ret_r_24h", "ret_r_48h", "ret_r_72h",
+                  "tocou_tp1", "tocou_stop_antes_de_tp1", "fonte_candle", "fechado"]
+        rows = []
+        for r in self.pr_trajetoria_all():
+            rows.append([
+                r["entry_id"], r["versao"], r["chain"], csv_safe(r["pool"]), r["tf"], r["mint"] or "", csv_safe(r["symbol"]),
+                iso_utc(r["t_entrada"]) if r["t_entrada"] else "", _num(r["preco_entrada"], 6), _num(r["risco_pct"], 2),
+                _num(r["r_unidade"], 6), _num(r["mfe_r"], 3), _num(r["mfe_h"], 1), _num(r["mae_r"], 3), _num(r["mae_h"], 1),
+                _num(r["ret_r_1h"], 3), _num(r["ret_r_2h"], 3), _num(r["ret_r_4h"], 3), _num(r["ret_r_8h"], 3),
+                _num(r["ret_r_24h"], 3), _num(r["ret_r_48h"], 3), _num(r["ret_r_72h"], 3),
+                r["tocou_tp1"], r["tocou_stop_antes_de_tp1"], r["fonte_candle"], r["fechado"],
+            ])
+        return header, rows
+
+    # -- PEDIDO (PARTE 1 de 2) FASE 2a: pr_baseline (controles pareados -- ver evidencia.py) ------------------
+    def pr_baseline_get(self, versao: str, entry_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_baseline WHERE versao=? AND entry_id=?", (versao, entry_id))
+
+    def pr_baseline_upsert(self, versao: str, entry_id: int, now: float, **fields: Any) -> None:
+        """Mesmo padrao idempotente de `pr_trajetoria_upsert`. A 1a chamada precisa trazer os campos fixos
+        (chain/pool/tf/mint/symbol) em `fields`."""
+        existing = self.pr_baseline_get(versao, entry_id)
+        with self._lock:
+            if existing is None:
+                cols = {"versao": versao, "entry_id": entry_id, "criado_ts": now, "atualizado_ts": now, **fields}
+                self._db.execute(
+                    f"INSERT INTO pr_baseline ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    list(cols.values()))
+            elif fields:
+                cols = {**fields, "atualizado_ts": now}
+                self._db.execute(
+                    f"UPDATE pr_baseline SET {', '.join(f'{k}=?' for k in cols)} WHERE versao=? AND entry_id=?",
+                    [*cols.values(), versao, entry_id])
+
+    def pr_baseline_pendentes(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        """Linhas cujo `dif_pareada` ainda nao foi fechado (algum controle pendente ou o sinal real ainda
+        nao fechou) -- so estas precisam ser recalculadas; as prontas nunca sao reabertas."""
+        if versao is None:
+            return self._all("SELECT * FROM pr_baseline WHERE dif_pareada IS NULL ORDER BY id")
+        return self._all("SELECT * FROM pr_baseline WHERE dif_pareada IS NULL AND versao=? ORDER BY id", (versao,))
+
+    def pr_baseline_all(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        if versao is None:
+            return self._all("SELECT * FROM pr_baseline ORDER BY versao, id")
+        return self._all("SELECT * FROM pr_baseline WHERE versao=? ORDER BY id", (versao,))
+
+    def pr_baseline_resolvidas_com_dif(self, versao: str) -> list[sqlite3.Row]:
+        """So as que ja tem `dif_pareada` calculada (ambos os lados resolvidos) -- usadas pela analise H1."""
+        return self._all("SELECT * FROM pr_baseline WHERE versao=? AND dif_pareada IS NOT NULL ORDER BY id", (versao,))
+
+    # -- PEDIDO (PARTE 2A) FASE 3: sinais sombra -----------------------------------------------------
+    def pr_sombra_get(self, versao: str, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one(
+            "SELECT * FROM pr_sombra WHERE versao=? AND chain=? AND pool=? AND tf=? AND ts_fechamento=?",
+            (versao, chain, pool, tf, ts_fechamento))
+
+    def pr_sombra_insert(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (versao,chain,pool,tf,ts_fechamento) -- mesmo padrao de `pr1_insert_signal`."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr_sombra ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols])
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr_sombra_update(self, sombra_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_sombra SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), sombra_id])
+
+    def pr_sombra_signals(self, status: Optional[str] = None, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("versao", versao)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr_sombra" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr_sombra_descarte_insert(self, ts: float, motivo: str, pool: Optional[str], tf: Optional[str]) -> None:
+        """PEDIDO 2026-10-30 (item 5a, auditoria do contador): idempotente por (pool,tf) por DIA UTC
+        -- sem isto, o MESMO (pool,tf) bloqueado pelo teto gravava 1 linha por TICK (o detector sombra
+        e chamado a cada ciclo), inflando a contagem muito alem do numero real de pools distintos
+        bloqueados (visto na VM: "130" descartes com so 1 pool sombra ativo)."""
+        if pool is not None and tf is not None:
+            inicio_do_dia = ts - (ts % 86_400.0)
+            if self._one("SELECT 1 AS x FROM pr_sombra_descartes WHERE pool=? AND tf=? AND ts>=? LIMIT 1",
+                         (pool, tf, inicio_do_dia)) is not None:
+                return
+        with self._lock:
+            self._db.execute("INSERT INTO pr_sombra_descartes (ts, motivo, pool, tf) VALUES (?,?,?,?)",
+                             (ts, motivo, pool, tf))
+
+    def pr_sombra_descarte_count(self, since_ts: float = 0.0) -> int:
+        """PEDIDO 2026-10-30 (item 5a): conta POOL DISTINTO (nunca a linha crua) -- a metrica util pro
+        operador e "quantos pools diferentes o teto bloqueou", nao "quantos ciclos passaram enquanto
+        bloqueado"."""
+        row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_sombra_descartes WHERE ts>=? AND pool IS NOT NULL",
+                        (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (item 5b): candidatos sem vaga em `max_pools` ------------------------------
+    def pr_vaga_descarte_insert(self, ts: float, pool: str, mc_atual: Optional[float] = None,
+                               idade_dias: Optional[float] = None, pico: Optional[float] = None,
+                               queda_pct: Optional[float] = None, liquidez_usd: Optional[float] = None) -> None:
+        """Idempotente por pool por DIA UTC (mesmo principio do item 5a) -- o mesmo pool verificado
+        continua sem vaga tick apos tick enquanto a vaga nao abre; 1 linha/dia basta pra contar
+        'quantos candidatos NOVOS foram bloqueados', nunca 'quantos ciclos'. PEDIDO 2026-10-30
+        (FASE 2, item 1): dados do MOMENTO do descarte (opcionais, so no 1o registro do dia -- uma
+        chamada tardia no MESMO dia nunca sobrescreve o que ja foi gravado)."""
+        inicio_do_dia = ts - (ts % 86_400.0)
+        if self._one("SELECT 1 AS x FROM pr_vaga_descartes WHERE pool=? AND ts>=? LIMIT 1",
+                     (pool, inicio_do_dia)) is not None:
+            return
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_vaga_descartes (ts, pool, mc_atual, idade_dias, pico, queda_pct, liquidez_usd) "
+                "VALUES (?,?,?,?,?,?,?)", (ts, pool, mc_atual, idade_dias, pico, queda_pct, liquidez_usd))
+
+    def pr_vaga_descarte_count(self, since_ts: float = 0.0) -> int:
+        row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_vaga_descartes WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (FASE 1a): ENTRADA descartada por staleness (_late) antes de alertar/abrir ----
+    def pr_entrada_atrasada_insert(self, ts: float, versao: str, pool: str, tf: str, candle_ts: float,
+                                   atraso_s: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_entradas_atrasadas (ts, versao, pool, tf, candle_ts, atraso_s) VALUES (?,?,?,?,?,?)",
+                (ts, versao, pool, tf, candle_ts, atraso_s))
+
+    def pr_entrada_atrasada_count(self, since_ts: float = 0.0) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_entradas_atrasadas WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (FASE 1b): evento decidido antes do pool entrar em 'ativo' (`tracked`=False) ----
+    def pr_evento_pre_admissao_insert(self, ts: float, versao: str, pool: str, tf: str, kind: str,
+                                      candle_ts: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_eventos_pre_admissao (ts, versao, pool, tf, kind, candle_ts) VALUES (?,?,?,?,?,?)",
+                (ts, versao, pool, tf, kind, candle_ts))
+
+    def pr_evento_pre_admissao_count_por_tipo(self, since_ts: float = 0.0) -> dict[str, int]:
+        rows = self._all("SELECT kind, COUNT(*) AS n FROM pr_eventos_pre_admissao WHERE ts>=? GROUP BY kind",
+                         (since_ts,))
+        return {r["kind"]: r["n"] for r in rows}
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 1): marcos do funil (descoberta->admissao->runner->caixa-> --
+    # -- sinal->fechado) -- "runner"/"caixa" nunca tinham tabela propria antes desta entrega. ----------
+    def pr_funil_marco_insert(self, pool: str, versao: str, etapa: str, ts: float) -> None:
+        """1a vez que este (pool, versao) chega a esta etapa -- PRIMARY KEY faz o INSERT OR IGNORE
+        ser idempotente, nunca duplica mesmo chamado todo ciclo."""
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO pr_funil_marcos (pool, versao, etapa, ts) VALUES (?,?,?,?)",
+                             (pool, versao, etapa, ts))
+
+    def pr_funil_marcos_por_etapa(self, etapa: str, versao: Optional[str] = None) -> list[sqlite3.Row]:
+        if versao is None:
+            return self._all("SELECT * FROM pr_funil_marcos WHERE etapa=? ORDER BY ts", (etapa,))
+        return self._all("SELECT * FROM pr_funil_marcos WHERE etapa=? AND versao=? ORDER BY ts", (etapa, versao))
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 4): data de ativacao da rotacao (1a vez que uma rotacao de --
+    # -- verdade aconteceu) -- fixada na 1a vez, nunca movida (mesmo padrao de `pr_version_start`). ----
+    def pr_rotacao_ativacao_ts(self, ts: float) -> float:
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('pr_rotacao_ativacao_ts', ?)",
+                             (repr(float(ts)),))
+            row = self._db.execute("SELECT value FROM meta WHERE key='pr_rotacao_ativacao_ts'").fetchone()
+        return float(row[0])
+
+    def pr_rotacao_ativacao_ts_get(self) -> Optional[float]:
+        row = self._one("SELECT value FROM meta WHERE key='pr_rotacao_ativacao_ts'")
+        return float(row["value"]) if row else None
+
+    # -- PEDIDO 2026-10-30 (FASE 2, item 3): lista dormente (pool rotacionado por incapacidade --
+    # -- estrutural, nunca "encerrado" como `_retire_estagnado` -- pode ser readmitido). --------------
+    def pr_dormente_insert(self, pool: str, mint: Optional[str], symbol: Optional[str], motivo: str,
+                           mc_na_saida: Optional[float], ts: float) -> int:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO pr_dormentes (pool, mint, symbol, motivo, mc_na_saida, ts_dormente) "
+                "VALUES (?,?,?,?,?,?)", (pool, mint, symbol, motivo, mc_na_saida, ts))
+            return int(cur.lastrowid)
+
+    def pr_dormentes(self, status: str = "dormente") -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr_dormentes WHERE status=? ORDER BY ts_dormente", (status,))
+
+    def pr_dormente_update(self, dormente_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_dormentes SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), dormente_id])
+
+    def pr_dormentes_rotacionados_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_dormentes WHERE ts_dormente>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    def pr_dormentes_readmitidos_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_dormentes WHERE status='readmitido' AND ts_readmitido>=?",
+                        (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
+    def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one(
+            "SELECT * FROM pr_radar WHERE chain=? AND pool=? AND tf=? AND ts_fechamento=?",
+            (chain, pool, tf, ts_fechamento))
+
+    def pr_radar_insert(self, row: dict) -> Optional[int]:
+        """Idempotente pela UNIQUE (chain,pool,tf,ts_fechamento) -- mesmo padrao de `pr_sombra_insert`.
+        Gravado SEMPRE (enviado=0/1), nunca so quando o Telegram realmente manda a mensagem."""
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr_radar ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols])
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr_radar_by_id(self, radar_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr_radar WHERE id=?", (radar_id,))
+
+    def pr_radar_update(self, radar_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr_radar SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), radar_id])
+
+    def pr_radar_signals(self, status: Optional[str] = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM pr_radar" + (" WHERE status=?" if status is not None else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, (status,) if status is not None else ())
+
+    def pr_radar_enviados_count(self, since_ts: float) -> int:
+        """Orcamento diario RADAR_MAX_DIA: so os efetivamente ENVIADOS (enviado=1) contam contra o teto."""
+        row = self._one("SELECT COUNT(*) AS n FROM pr_radar WHERE enviado=1 AND criado_ts>=?", (since_ts,))
+        return row["n"] if row else 0

@@ -1,0 +1,64 @@
+# POS-RUNNER-V1 — parametros da estrategia do professor (PAPER / somente leitura).
+#
+# ESTADO: CONGELADA em 2026-10-22 ao fim da revisao FASE 1.1, hash `279b79ffa3f0` (ver
+# docs/pos-runner-v1/STATUS_FASE1.md). V1 e INDEPENDENTE do V0 (pos_runner_v0.yaml): mudar este arquivo nunca
+# muda o hash do V0 e vice-versa. Cada linha de log/CSV/alerta da V1 carrega `versao_config_v1` = hash deste
+# arquivo. QUALQUER mudanca aqui a partir de agora e uma versao NOVA, nunca um retune da congelada (estatisticas
+# de versoes diferentes nunca se misturam). Justificativa de cada limiar: docs/pos-runner-v1/INTERPRETACOES.md.
+# Duracoes em NUMERO DE CANDLES do timeframe. MC = preco USD x supply total.
+
+parametros:
+  # --- timeframe principal (item 2.5: 5m/4h desligados por padrao para poupar orcamento do GT) ------------
+  timeframes: ["1h"]
+
+  # --- idade (item 2.2): FILTRO real na V1 (diferente do V0, onde so separa primario/diagnostico) ----------
+  age_window_days: [2.0, 7.0]
+
+  # --- janela de ouro (item 2.3): nunca filtra, so rotula/prioriza a fila (BRT fixo UTC-3) -------------------
+  janela_ouro_brt: ["08:30", "14:00"]
+
+  # --- anti-lixo (item 2.4) -----------------------------------------------------------------------------------
+  min_mc_usd: 100000            # MC atual abaixo disso = filtrado_mc_baixo (contado, nunca alerta)
+
+  # --- setup 1: range / bear trap (item 2.5) -------------------------------------------------------------------
+  runner_min_mc: 300000         # pico (filtro)
+  peak_attr_mc: 500000          # pico "atributo" citado no prompt (nunca filtro adicional)
+  drop_min: 0.80
+  drop_max: 0.90
+  zone_min_candles: 12
+  wicks_min: 1
+  wicks_max: 3
+  test_zone: 0.05               # zona do suporte p/ wick/reacao_suporte: S x (1 +- 5%)
+  recover_mult: 1.25
+
+  # --- gatilhos (item 2.6) -------------------------------------------------------------------------------------
+  atr_period: 20
+  power_atr_mult: 3.0           # power_candle_rompimento E power candle de exaustao (item 2.9)
+  vol_mult: 2.0                 # rompimento_volume: volume >= 2x a media da caixa
+
+  # --- saidas (item 2.9) ---------------------------------------------------------------------------------------
+  tp1_frac: 0.30                # 30% da posicao no TOPO (P_peak) diante de exaustao
+  exhaustion_wick_mult: 2.0     # pavio superior >= 2x o corpo = exaustao
+  exhaustion_doji_frac: 0.60    # corpo ~0: pavio superior >= 60% da amplitude = exaustao
+
+  # --- stop (item 2.8) -----------------------------------------------------------------------------------------
+  stop_below_wick_pct: 0.02     # stop = minima do menor wick x (1 - 2%)
+  risk_min: 0.15                # faixa de risco esperado (ATRIBUTO risco_fora_da_faixa, nunca descarta)
+  risk_max: 0.22
+
+  # --- dado_invalido ao vivo (item 3.6, piso/faixa suspeita revisados 2026-10-22, ver params_v1.py) --------------
+  candle_wick_ratio_max: 3.0
+  l_bc_floor_usd: 5000          # menor graduacao legitima medida (pump.fun, N=8) ~28k; 164 pools do operador entre US$14-1000 sao impossiveis
+  l_bc_suspeito_baixo_usd: 20000    # faixa suspeita (tag l_bc_suspeito, nunca bloqueia): abaixo disto
+  l_bc_suspeito_alto_usd: 500000    # ... ou acima disto (ate o teto de sanidade)
+  l_bc_ceiling_usd: 10000000   # teto de sanidade agnostico de launchpad (revisao 2026-10-22, ver params_v1.py)
+
+  # --- tamanho / banca (item 2.10) --------------------------------------------------------------------------------
+  banca_inicial_usd: 100
+  mao_fixa_usd: 10              # banca < banca_fixa_limite_usd
+  banca_fixa_limite_usd: 200
+  posicao_frac: 0.10            # banca >= banca_fixa_limite_usd
+  max_posicoes_abertas: 3
+  stop_diario_frac: 0.10
+  stop_diario_perdas_seguidas: 3
+  stop_semanal_frac: 0.20

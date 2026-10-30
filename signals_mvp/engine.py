@@ -108,6 +108,12 @@ class Engine:
         self.pos_runner = pos_runner      # POS-RUNNER-V0 ao vivo (Parte B), opcional
         self.started_at = clock()
         self.disabled_chains: set[str] = set()
+        self.disabled_chain_reasons: dict[str, str] = {}   # FASE 3, item 4: motivo real por chain desligada
+        # BUG PRIORITARIO (2026-10-22, item 3): motor legado (new_pools/OHLCV/token info desta classe) ligado
+        # por padrao; `worker.py` desliga quando o POS-RUNNER-V1 esta ligado (SEM_LEGADO implicito), a menos
+        # que o operador religue explicitamente com `SEM_LEGADO=0`. So afeta ORCAMENTO/prioridade no mesmo
+        # limitador -- nunca a config da V1.
+        self.legado_ligado: bool = True
         self._carry: set[tuple[str, str]] = set()   # candidatos adiados: sao os primeiros do proximo ciclo
         self._attempts: dict[tuple[str, str, str], int] = {}
         self._last_prune = 0.0
@@ -179,7 +185,14 @@ class Engine:
         4. POS-RUNNER (se ligado): a fatia reservada para ele (candles que fecharam, descoberta propria);
         5. acompanhamento (OHLCV) dos sinais vencidos.
         Reservas no orcamento garantem que descoberta/refresh nunca deixem o enriquecimento, o POS-RUNNER e o
-        acompanhamento sem chamadas. Candidato do v0 (alerta com prazo curto) vem antes do POS-RUNNER.
+        acompanhamento sem chamadas.
+
+        BUG PRIORITARIO (2026-10-22, item 3): a fatia do POS-RUNNER-V1 agora sai do orcamento TOTAL do ciclo
+        ANTES de qualquer reserva do motor legado -- antes era o inverso (`max(0, limit - 3 - keep_follow)`),
+        entao com o orcamento no piso (ex.: apos uma sequencia de 429 do legado, `_cycle_budget()` cai pra 3)
+        a reserva do POS-RUNNER colapsava pra 0 mesmo ele "querendo" muito mais, e o V1 ficava faminto no
+        MESMO limitador/token-bucket. `self.legado_ligado=False` (`SEM_LEGADO`, padrao com o V1 ligado) zera
+        o motor legado por completo: o orcamento inteiro e do POS-RUNNER, nenhuma chamada sai do legado.
         """
         self.cycle_count += 1
         started = self.clock()
@@ -187,27 +200,29 @@ class Engine:
         t0 = time.monotonic()
         limit = self._cycle_budget()
         budget = CallBudget(limit)
-        due = len(self.storage.signals_due(started, limit=5))
+        due = len(self.storage.signals_due(started, limit=5)) if self.legado_ligado else 0
         keep_follow = 1 if due else 0
-        # fatia do POS-RUNNER: nunca tira do v0 o essencial (3 chamadas: pagina 1 das chains + acompanhamento)
-        keep_pr = min(self._pos_runner_wanted(started), max(0, limit - 3 - keep_follow))
-        keep_early = keep_follow + keep_pr + min(4, limit // 3)
-        keep_v0 = keep_follow + min(1, keep_pr)      # candidato do v0 (prazo curto) usa a fatia do POS-RUNNER, menos 1
+        pr_wanted = self._pos_runner_wanted(started)
+        keep_pr = min(pr_wanted, limit) if self.legado_ligado else limit   # V1 primeiro, sempre
+        keep_early = keep_follow + keep_pr + (min(4, limit // 3) if self.legado_ligado else 0)
+        keep_v0 = keep_follow + (min(1, keep_pr) if self.legado_ligado else 0)
         seen: dict[tuple[str, str], PoolSnap] = {}
         decided: set[tuple[str, str]] = set()
         carry, self._carry = self._carry, set()
         try:
-            if carry:
-                self._refresh(started, budget, keep_v0, stats, seen, only=carry)
+            if self.legado_ligado:
+                if carry:
+                    self._refresh(started, budget, keep_v0, stats, seen, only=carry)
+                    self._decide(seen, decided, budget, keep_v0, stats)
+                self._discover(budget, keep_early, stats, seen, first_pages=True)
+                self._refresh(started, budget, keep_early, stats, seen)
+                self._discover(budget, keep_early, stats, seen, first_pages=False)
+                self._expire(self.clock(), stats)
                 self._decide(seen, decided, budget, keep_v0, stats)
-            self._discover(budget, keep_early, stats, seen, first_pages=True)
-            self._refresh(started, budget, keep_early, stats, seen)
-            self._discover(budget, keep_early, stats, seen, first_pages=False)
-            self._expire(self.clock(), stats)
-            self._decide(seen, decided, budget, keep_v0, stats)
             self._pos_runner_tick(seen, budget, keep_follow, stats)
-            self._followups(self.clock(), budget, stats)
-            self._late_security(self.clock(), stats)
+            if self.legado_ligado:
+                self._followups(self.clock(), budget, stats)
+                self._late_security(self.clock(), stats)
             self._maybe_prune(self.clock())
         except RateLimited:
             stats.rate_limited = True
@@ -785,17 +800,41 @@ class Engine:
             return False
         if self.pos_runner is not None:
             self.pos_runner.send_daily_bankroll_summary()   # _send ja trata falha do Telegram sem propagar
+            self.pos_runner.send_daily_summary_v1()
+            self.pos_runner.send_daily_summary_v2()   # PEDIDO ADICIONAL FASE 5: resumo diario tambem para a V2 (no-op se SEM_V2)
+            if local.weekday() == 6:   # domingo (FASE 3, item 3): relatorio semanal junto do resumo diario
+                self.pos_runner.send_relatorio_semanal_v1()
+                self.pos_runner.send_relatorio_semanal_v2()
         self.storage.set_meta("ultimo_resumo", today)
         return True
+
+    def chains_status_text(self) -> str:
+        """Chains ATIVAS de verdade (FASE 3, item 4): nunca lista uma chain como ativa so porque `ligada: true`
+        no config.yaml -- usa o resultado real de `validate_networks` (consulta ao GeckoTerminal /networks,
+        ja feita no startup) e tambem lista as desligadas COM o motivo (config ou rede ausente), nunca
+        silenciosamente."""
+        active = self.enabled_chains()
+        parts = [f"ativas: {', '.join(c['nome'] for c in active.values()) if active else 'nenhuma'}"]
+        disabled = []
+        for name, chain in self.c["chains"].items():
+            if name in active:
+                continue
+            if not chain.get("ligada"):
+                disabled.append(f"{chain['nome']} (desligada no config.yaml)")
+            else:
+                motivo = self.disabled_chain_reasons.get(name, "sem rede no GeckoTerminal")
+                disabled.append(f"{chain['nome']} ({motivo})")
+        if disabled:
+            parts.append(f"desligadas: {', '.join(disabled)}")
+        return " | ".join(parts)
 
     def status_text(self) -> str:
         counts = self.storage.counts()
         stats = self.last_stats
         p50 = sorted(self.latencies)[len(self.latencies) // 2] if self.latencies else None
-        chains = ", ".join(f"{c['nome']}" for c in self.enabled_chains().values())
         lines = [
             f"Bot de sinais v0 | config {self.cfg.version} | meta {self.meta.version}",
-            f"Chains: {chains}",
+            f"Chains: {self.chains_status_text()}",
             f"Ciclos: {self.cycle_count}" + (f" | ultimo: {stats.line(p50)}" if stats else ""),
             f"Pools vistos {counts['pools']} | sinais {counts['sinais']} (enviados {counts['enviados']}) | acompanhando {counts['acompanhando']} | cortes {counts['descartados']}",
         ]

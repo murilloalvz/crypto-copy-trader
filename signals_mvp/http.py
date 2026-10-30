@@ -17,6 +17,10 @@ import requests
 
 log = logging.getLogger("signals_mvp.http")
 
+# BUG PRIORITARIO (2026-10-22, item 4): WARNING pra qualquer chamada de rede que passar disto -- sinaliza
+# degradacao antes de virar travamento percebido pelo operador.
+SLOW_CALL_WARN_S = 20.0
+
 
 class ApiError(Exception):
     """Falha de API. `kind`: rate_limited | http | timeout | network | bad_json | not_found | budget."""
@@ -173,6 +177,7 @@ class HttpClient:
         self.limiter.acquire(max_wait_s)
         url = f"{self.base_url}/{path.lstrip('/')}"
         self.calls += 1
+        t0 = time.monotonic()
         try:
             response = self.session.get(url, params=params, headers=self.headers, timeout=self.timeout)
         except requests.Timeout as exc:
@@ -181,6 +186,10 @@ class HttpClient:
         except requests.RequestException as exc:
             self.errors += 1
             raise ApiError("network", f"{self.name}: {type(exc).__name__}") from None
+        finally:
+            elapsed = time.monotonic() - t0
+            if elapsed > SLOW_CALL_WARN_S:
+                log.warning("%s: chamada lenta (%.1fs) em %s", self.name, elapsed, path)
         status = response.status_code
         date_header = getattr(response, "headers", {}).get("Date") if getattr(response, "headers", None) is not None else None
         if date_header:
