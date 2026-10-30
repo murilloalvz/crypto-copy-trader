@@ -156,6 +156,11 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     if atrasados:
         # PEDIDO 2026-10-29, item 1: nome dos pools, nunca so a contagem.
         out.append("  pools atrasados (>2h): " + ", ".join(f"{sym} ({pool[:8]}...)" for sym, pool in atrasados))
+    # PEDIDO 2026-10-30 (item 5b): quantos pools DISTINTOS ficaram sem vaga (max_pools) nas ultimas
+    # 48h -- `_promote`/`_retire_estagnado` (live.py) liberam vaga de pool morto automaticamente;
+    # isto so mede se ainda sobra demanda sem atender.
+    vaga_negada_48h = storage.pr_vaga_descarte_count(now - 48 * 3600.0)
+    out.append(f"  candidatos novos sem vaga (max_pools, 48h): {vaga_negada_48h} pool(s) distinto(s)")
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])

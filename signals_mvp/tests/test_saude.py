@@ -111,6 +111,22 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_fila_section_counts_distinct_pools_blocked_by_lack_of_a_slot_in_48h(self) -> None:
+        """PEDIDO 2026-10-30 (item 5b): `pr_vaga_descartes` conta POOL DISTINTO, nunca linha crua.
+        `saude.py` usa o relogio REAL (`time.time()`), nunca o `FakeClock` do harness -- os registros
+        tem que ficar perto do relogio real pra entrar na janela de 48h do relatorio."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_vaga_descarte_insert(now, "POOLBLOQ1")
+            h.storage.pr_vaga_descarte_insert(now, "POOLBLOQ2")
+            h.storage.pr_vaga_descarte_insert(now, "POOLBLOQ1")   # mesmo pool -- nunca soma 2x
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("candidatos novos sem vaga (max_pools, 48h): 2 pool(s) distinto(s)", texto)
+        finally:
+            h.close()
+
     def test_dexpaprika_section_lists_up_to_15_recent_divergences_and_states_the_rule(self) -> None:
         """PEDIDO 2026-10-29, item 4: token/hora/campo/diff% das divergencias (24h), e a regra exata
         que decide a tag candle_divergente."""

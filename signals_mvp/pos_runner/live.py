@@ -69,6 +69,11 @@ log = logging.getLogger("signals_mvp.pos_runner.live")
 console = logging.getLogger("signals_mvp.console")
 
 TFS = ("5m", "1h", "4h")
+# PEDIDO 2026-10-30 (item 5b, contador/vagas): aposenta pool ATIVO que esta MORTO (nunca toca regra de
+# deteccao/entrada/saida/banca -- so decide QUEM fica sob observacao, liberando vaga de `max_pools`
+# pra descoberta). Nunca aposenta com posicao real aberta (V1 ou V2) -- mesma guarda de `_retire`.
+RETIRADA_SEM_CANDLE_H = 24.0
+RETIRADA_QUEDA_PCT = 99.5
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 # PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
@@ -852,7 +857,13 @@ class PosRunnerLive:
                 self.storage.pr_upsert_pool(row["pool"], status="encerrado", checked_ts=now, motivo="passou da idade maxima na fila")
                 continue
             if active >= self.settings.max_pools:
-                break
+                # PEDIDO 2026-10-30 (item 5b): registra o candidato bloqueado por falta de vaga
+                # (`max_pools`) -- nunca promove, mas CONTINUA conferindo os demais da fila (so pra
+                # registrar todos, nunca so o 1o) em vez de `break`; sao sempre os MESMOS enquanto a
+                # vaga nao abrir, entao `pr_vaga_descarte_insert` e idempotente por dia (nunca
+                # acumula 1 linha por tick).
+                self.storage.pr_vaga_descarte_insert(now, row["pool"])
+                continue
             self.storage.pr_upsert_pool(row["pool"], status="ativo", added_ts=now)
             active += 1
             console.info("POS-RUNNER: acompanhando $%s (%s)", row["symbol"], LAUNCHPAD_NAME.get(row["launchpad"], row["launchpad"]))
@@ -867,6 +878,40 @@ class PosRunnerLive:
             for tf in TFS:
                 self.dets.pop((row["pool"], tf), None)
                 self.sched.pop((row["pool"], tf), None)
+
+    def _retire_estagnado(self, now: float) -> None:
+        """PEDIDO 2026-10-30 (item 5b): libera vaga de `max_pools` pra pools MORTOS -- sem candle 1h
+        novo ha >=24h (`RETIRADA_SEM_CANDLE_H`) OU queda > 99,5% do pico (`RETIRADA_QUEDA_PCT`, V1 ou
+        V2, o que estiver acompanhando a onda) -- NUNCA toca regra de deteccao/entrada/saida/banca, so
+        decide QUEM fica sob observacao (item explicito do pedido). Nunca aposenta com posicao real
+        aberta (V1 ou V2) -- mesma guarda de `_retire`."""
+        for row in self.storage.pr_pools("ativo"):
+            pool = row["pool"]
+            if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+                continue
+            bars = self.storage.pr_bars(pool, "1h")
+            sem_candle_h = (now - bars[-1][0]) / 3600.0 if bars else None
+            quedas = [d.drop_pct() for d in (self.dets_v1.get((pool, "1h")), self.dets_v2.get((pool, "1h"))) if d is not None]
+            quedas = [q for q in quedas if q is not None]
+            queda_pct = max(quedas) if quedas else None
+            if sem_candle_h is not None and sem_candle_h >= RETIRADA_SEM_CANDLE_H:
+                motivo = f"estagnado: sem candle 1h novo ha {sem_candle_h:.0f}h"
+            elif queda_pct is not None and queda_pct > RETIRADA_QUEDA_PCT:
+                motivo = f"estagnado: queda {queda_pct:.1f}% do pico"
+            else:
+                continue
+            self.storage.pr_upsert_pool(pool, status="encerrado", checked_ts=now, motivo=motivo)
+            for tf in TFS:
+                self.dets.pop((pool, tf), None)
+                self.dets_fecham.pop((pool, tf), None)
+                self.dets_v1.pop((pool, tf), None)
+                self.dets_v2.pop((pool, tf), None)
+                self.dets_sombra_mc.pop((pool, tf), None)
+                self.dets_sombra_queda96.pop((pool, tf), None)
+                self.dets_sombra_base4.pop((pool, tf), None)
+                self.dets_radar.pop((pool, tf), None)
+                self.sched.pop((pool, tf), None)
+            console.info("POS-RUNNER: $%s aposentado (%s) -- vaga liberada", row["symbol"] or pool, motivo)
 
     # -- agenda ------------------------------------------------------------------------------------
     def _heat(self, pool: str, tf: str) -> int:
@@ -993,6 +1038,7 @@ class PosRunnerLive:
         finally:
             out["chamadas"] += self.http.disarm()
         self._retire(now)
+        self._retire_estagnado(now)
         if now - self.last_baselines >= 3600.0:
             self.last_baselines = now
             self._refresh_baselines(now)

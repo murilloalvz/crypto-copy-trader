@@ -161,7 +161,10 @@ acompanhar, o bot confere **on-chain** (RPC) que o pool nasceu da **migração**
 token e aquele pool, e busca a **data de criação** do token (a idade dos sinais conta dela) — sem essas duas provas o
 token não entra. No máximo `max_pools` (15) ao mesmo tempo; o resto espera na fila (maior MC primeiro). Cada token é
 acompanhado até 14 dias depois da graduação (`idade_max_dias`); como só a idade de 2–7 dias desde a criação gera sinal
-primário, baixar para 7 libera vagas do radar mais cedo.
+primário, baixar para 7 libera vagas do radar mais cedo. Além disso o bot **aposenta pools mortos** (sem posição V1/V2
+aberta) para liberar vaga: sem candle novo há ≥24h, ou queda > 99,5% do pico — isso só decide **quem fica sob
+observação**, nunca as regras de detecção/entrada/saída/banca da V1/V2. O `saude.py` mostra quantos pools distintos
+ficaram sem vaga (`max_pools`) nas últimas 48h.
 
 **O que chega no Telegram**
 

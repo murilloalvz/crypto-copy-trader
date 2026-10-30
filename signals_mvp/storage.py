@@ -369,6 +369,12 @@ CREATE INDEX IF NOT EXISTS pr_sombra_aberta ON pr_sombra (status);
 CREATE TABLE IF NOT EXISTS pr_sombra_descartes (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, motivo TEXT NOT NULL, pool TEXT, tf TEXT
 );
+-- PEDIDO 2026-10-30 (item 5a): 1 linha por pool verificado SEM VAGA pra promover (`max_pools`) --
+-- idempotente por dia UTC (`pr_vaga_descarte_insert`), pra saude.py/relatorio contarem quantos
+-- candidatos NOVOS foram bloqueados por falta de vaga, nunca o mesmo pool repetido tick apos tick.
+CREATE TABLE IF NOT EXISTS pr_vaga_descartes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL
+);
 -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- alerta de ESTUDO, NUNCA um sinal (nunca
 -- entra na banca/CSV/relatorio v1|v2, nunca convida a agir). Reusa a definicao de caixa da V1
 -- (zone_min_candles=4, sem teto de wicks, drop_max=0,995, idade sem teto -- `live.py:
@@ -1706,12 +1712,41 @@ class Storage:
         return self._all(sql, args)
 
     def pr_sombra_descarte_insert(self, ts: float, motivo: str, pool: Optional[str], tf: Optional[str]) -> None:
+        """PEDIDO 2026-10-30 (item 5a, auditoria do contador): idempotente por (pool,tf) por DIA UTC
+        -- sem isto, o MESMO (pool,tf) bloqueado pelo teto gravava 1 linha por TICK (o detector sombra
+        e chamado a cada ciclo), inflando a contagem muito alem do numero real de pools distintos
+        bloqueados (visto na VM: "130" descartes com so 1 pool sombra ativo)."""
+        if pool is not None and tf is not None:
+            inicio_do_dia = ts - (ts % 86_400.0)
+            if self._one("SELECT 1 AS x FROM pr_sombra_descartes WHERE pool=? AND tf=? AND ts>=? LIMIT 1",
+                         (pool, tf, inicio_do_dia)) is not None:
+                return
         with self._lock:
             self._db.execute("INSERT INTO pr_sombra_descartes (ts, motivo, pool, tf) VALUES (?,?,?,?)",
                              (ts, motivo, pool, tf))
 
     def pr_sombra_descarte_count(self, since_ts: float = 0.0) -> int:
-        row = self._one("SELECT COUNT(*) AS n FROM pr_sombra_descartes WHERE ts>=?", (since_ts,))
+        """PEDIDO 2026-10-30 (item 5a): conta POOL DISTINTO (nunca a linha crua) -- a metrica util pro
+        operador e "quantos pools diferentes o teto bloqueou", nao "quantos ciclos passaram enquanto
+        bloqueado"."""
+        row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_sombra_descartes WHERE ts>=? AND pool IS NOT NULL",
+                        (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-10-30 (item 5b): candidatos sem vaga em `max_pools` ------------------------------
+    def pr_vaga_descarte_insert(self, ts: float, pool: str) -> None:
+        """Idempotente por pool por DIA UTC (mesmo principio do item 5a) -- o mesmo pool verificado
+        continua sem vaga tick apos tick enquanto a vaga nao abre; 1 linha/dia basta pra contar
+        'quantos candidatos NOVOS foram bloqueados', nunca 'quantos ciclos'."""
+        inicio_do_dia = ts - (ts % 86_400.0)
+        if self._one("SELECT 1 AS x FROM pr_vaga_descartes WHERE pool=? AND ts>=? LIMIT 1",
+                     (pool, inicio_do_dia)) is not None:
+            return
+        with self._lock:
+            self._db.execute("INSERT INTO pr_vaga_descartes (ts, pool) VALUES (?,?)", (ts, pool))
+
+    def pr_vaga_descarte_count(self, since_ts: float = 0.0) -> int:
+        row = self._one("SELECT COUNT(DISTINCT pool) AS n FROM pr_vaga_descartes WHERE ts>=?", (since_ts,))
         return row["n"] if row else 0
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------

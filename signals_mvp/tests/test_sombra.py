@@ -244,6 +244,24 @@ class SombraTetoTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_blocked_pool_only_counts_once_per_utc_day_not_once_per_tick(self) -> None:
+        """PEDIDO 2026-10-30 (item 5a, auditoria do contador): o detector sombra e chamado todo
+        ciclo -- sem o dedup por dia, o MESMO (pool,tf) bloqueado grava 1 linha POR TICK, inflando o
+        contador bem alem do numero real de pools distintos (visto na VM: "130" descartes com so 1
+        pool sombra ativo)."""
+        h = LiveHarness(sombra_max_pools=1)
+        try:
+            h.live.dets_sombra_mc[("OUTRO_POOL", "1h")] = object()
+            for _ in range(10):   # 10 "ticks" bloqueando o MESMO (pool,tf), no mesmo dia UTC
+                self.assertFalse(h.live._sombra_abrir_slot(("POOL1", "1h")))   # noqa: SLF001
+                h.clock.advance(5.0)
+            self.assertEqual(h.storage.pr_sombra_descarte_count(), 1, "1 pool distinto, nunca 10 linhas")
+            # um 2o pool bloqueado no MESMO dia soma +1 (continua contando POOL DISTINTO)
+            self.assertFalse(h.live._sombra_abrir_slot(("POOL2", "1h")))   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sombra_descarte_count(), 2)
+        finally:
+            h.close()
+
     def test_a_pool_already_tracked_in_either_dict_never_double_counts_against_the_cap(self) -> None:
         h = LiveHarness(sombra_max_pools=1)
         try:
