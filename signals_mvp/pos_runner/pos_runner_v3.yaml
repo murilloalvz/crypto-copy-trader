@@ -1,0 +1,53 @@
+# POS-RUNNER-V3 — "ideia pura: segunda corrida pos-queda" (PEDIDO 2026-11-02, Passo 1). Hash PROPRIO
+# (`ParamsV3.version`, tag "V3" -- ver params_v1.py: POS_RUNNER_TAG), INDEPENDENTE dos hashes de V1
+# (pos_runner_v1.yaml) e V2 (pos_runner_v2.yaml) -- mudar este arquivo nunca muda os outros dois, e
+# mudar os outros dois nunca muda este. MESMO detector/simulador (`detector_v1.py`/`simulate_v1.py`,
+# sem codigo novo de deteccao) -- so os VALORES abaixo diferem da V1 em 3 linhas (comentadas),
+# cadeia: runner (pico >= runner_min_mc) -> queda (drop_min-drop_max) -> base -> pavios (wicks_min-
+# wicks_max) -> gatilho. Demais limiares IDENTICOS a pos_runner_v1.yaml.
+#
+# Diferencas da V1 (so estas 3 linhas; tudo o resto e IGUAL a pos_runner_v1.yaml):
+#   - zone_min_candles: 4 (V1: 12)      -- minimo ESTRUTURAL, mesma ideia de "sombra base_min4"
+#     (live.py: `_params_sombra_base4`), nunca um piso arbitrario novo.
+#   - age_window_days: [0.0, 36500.0] (V1: [2.0, 7.0]) -- SEM piso nem teto de idade (36500 dias =
+#     ~100 anos, MESMA convencao de "sem teto" que a V2 ja usa para o teto -- aqui tambem o piso
+#     vira 0).
+#   - drop_max: 0.96 (V1: 0.90) -- faixa de queda 80-96% pedida explicitamente no Passo 1 (MESMO
+#     valor que a V2 ja usa para o teto da queda).
+
+parametros:
+  timeframes: ["1h"]
+  age_window_days: [0.0, 36500.0]
+  janela_ouro_brt: ["08:30", "14:00"]
+  min_mc_usd: 100000
+  runner_min_mc: 300000
+  peak_attr_mc: 500000
+  drop_min: 0.80
+  drop_max: 0.96
+  zone_min_candles: 4
+  wicks_min: 1
+  wicks_max: 3
+  test_zone: 0.05
+  recover_mult: 1.25
+  atr_period: 20
+  power_atr_mult: 3.0
+  vol_mult: 2.0
+  tp1_frac: 0.30
+  exhaustion_wick_mult: 2.0
+  exhaustion_doji_frac: 0.60
+  stop_below_wick_pct: 0.02
+  risk_min: 0.15
+  risk_max: 0.22
+  candle_wick_ratio_max: 3.0
+  l_bc_floor_usd: 5000
+  l_bc_suspeito_baixo_usd: 20000
+  l_bc_suspeito_alto_usd: 500000
+  l_bc_ceiling_usd: 10000000
+  banca_inicial_usd: 100
+  mao_fixa_usd: 10
+  banca_fixa_limite_usd: 200
+  posicao_frac: 0.10
+  max_posicoes_abertas: 3
+  stop_diario_frac: 0.10
+  stop_diario_perdas_seguidas: 3
+  stop_semanal_frac: 0.20

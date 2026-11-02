@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Type
 
 import yaml
 
@@ -21,6 +21,15 @@ CONFIG_PATH = Path(__file__).with_name("pos_runner_v1.yaml")
 
 @dataclass(frozen=True)
 class ParamsV1:
+    # PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1): tag de identidade do CODIGO usado no hash (`version`
+    # abaixo) -- NUNCA um campo do dataclass (ClassVar, fora de `fields()`/`asdict()`/`__init__`), por
+    # isso NUNCA muda `as_dict()` nem o hash de uma instancia ja existente (V1="V1" e o literal que
+    # sempre esteve em `version` -- ver docstring da V2 em params_v2.py: MESMO codigo de detector,
+    # mesma tag, so o CONTEUDO dos parametros muda). `ParamsV3` (params_v3.py) e a UNICA subclasse que
+    # sobrescreve isto, porque e codigo/contrato realmente novo (zone_min_candles minimo estrutural,
+    # idade sem filtro, covariaveis novas) -- precisa de um hash "proprio" por construcao, nunca por
+    # coincidir com o conteudo dos parametros.
+    POS_RUNNER_TAG: ClassVar[str] = "V1"
     # timeframe principal (item 2.5: padrao so 1h, 5m/4h desligados para poupar orcamento do GeckoTerminal)
     timeframes: tuple = ("1h",)
     # idade (item 2.2): filtro REAL (nao so atributo como no V0 -- ver INTERPRETACOES.md #10a)
@@ -127,13 +136,16 @@ class ParamsV1:
 
     @property
     def version(self) -> str:
-        return short_hash({"pos_runner": "V1", "params": self.as_dict()})
+        return short_hash({"pos_runner": self.POS_RUNNER_TAG, "params": self.as_dict()})
 
 
-def params_v1_from_dict(raw: dict[str, Any]) -> ParamsV1:
-    """Valida nomes e normaliza tipos (300000 e 300000.0 precisam dar o MESMO hash)."""
-    defaults = ParamsV1()
-    known = {f.name for f in fields(ParamsV1)}
+def params_v1_from_dict(raw: dict[str, Any], cls: Type["ParamsV1"] = ParamsV1) -> "ParamsV1":
+    """Valida nomes e normaliza tipos (300000 e 300000.0 precisam dar o MESMO hash). `cls` (PEDIDO
+    2026-11-02, POS-RUNNER-V3): generaliza o builder pra qualquer subclasse com os MESMOS campos
+    (`ParamsV3`, por exemplo) -- `ParamsV1` e o padrao, comportamento IDENTICO a antes pra todo
+    chamador existente (V1/V2 nunca passam `cls`)."""
+    defaults = cls()
+    known = {f.name for f in fields(cls)}
     unknown = set(raw) - known
     if unknown:
         raise ValueError(f"parametros desconhecidos: {sorted(unknown)}")
@@ -152,9 +164,9 @@ def params_v1_from_dict(raw: dict[str, Any]) -> ParamsV1:
             clean[name] = tuple(value)
         else:
             clean[name] = value
-    return ParamsV1(**clean)
+    return cls(**clean)
 
 
-def load_params_v1(path: Path = CONFIG_PATH) -> ParamsV1:
+def load_params_v1(path: Path = CONFIG_PATH, cls: Type["ParamsV1"] = ParamsV1) -> "ParamsV1":
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    return params_v1_from_dict(raw.get("parametros") or {})
+    return params_v1_from_dict(raw.get("parametros") or {}, cls=cls)
