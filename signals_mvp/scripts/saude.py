@@ -138,12 +138,38 @@ def _secao_uptime_versoes(storage: Storage, now: float) -> list[str]:
     return out
 
 
+def _queda_do_pico_mc_ok(row: Any, bars_tup: list[tuple]) -> Optional[float]:
+    """PEDIDO 2026-11-02 (3a rodada, Fix C: pools ANT/CHICO citados pelo operador). Replay causal
+    leve, SO para quem ja cai no bucket "mc_ok" (nunca pra todo pool ativo -- caro pra um heartbeat,
+    ver docstring de `_motivo_rotacao_simples`) -- MESMO calculo de `diagnostico_vagas.py: secao_a`
+    (`DetectorV1.drop_pct()`, maior queda entre V1/V2, causal/zero lookahead)."""
+    if not bars_tup:
+        return None
+    try:
+        from ..pos_runner.candles import Bar
+        from ..pos_runner.params_v1 import load_params_v1
+        from ..pos_runner.params_v2 import load_params_v2
+        from .diagnostico_vagas import _replay_historico
+
+        bars = [Bar(t[0], t[1], t[2], t[3], t[4], t[5], bool(t[6])) for t in bars_tup]
+        created_ts = json.loads(row["info"] or "{}").get("criado_ts")
+        det_v1, _tl1 = _replay_historico(bars, load_params_v1(), row["l_bc"], row["grad_ts"], created_ts)
+        det_v2, _tl2 = _replay_historico(bars, load_params_v2(), row["l_bc"], row["grad_ts"], created_ts)
+        quedas = [d for d in (det_v1.drop_pct(), det_v2.drop_pct()) if d is not None]
+        return max(quedas) if quedas else None
+    except Exception:  # noqa: BLE001 - diagnostico nunca quebra o relatorio
+        return None
+
+
 def _motivo_rotacao_simples(storage: Storage, row: Any, now: float) -> str:
     """PEDIDO 2026-11-02 (diagnostico do caso OA): versao RAPIDA (sem replay do detector) do MESMO
     criterio de `live.py: _rotacionar_vagas` -- so dado JA persistido (fase_v1/fase_v2/
     sem_fase_desde, ultimo candle). "queda do pico" precisa de replay (caro pra um heartbeat) --
-    quando MC isolado nao basta pra concluir incapacidade, cai em "mc_ok" (rotulo indica a
-    limitacao); `scripts/diagnostico_vagas.py` tem a versao completa (replay, inclui queda)."""
+    quando MC isolado nao basta pra concluir incapacidade, cai em "mc_ok"; PATCH 2026-11-02 (3a
+    rodada, Fix C): agora calcula a queda MESMO ASSIM so para este bucket (`_queda_do_pico_mc_ok`,
+    replay leve, nunca pra todo pool ativo), e so cai no rotulo antigo ("queda nao avaliada") se o
+    replay falhar/nao tiver candle suficiente; `scripts/diagnostico_vagas.py` tem a versao completa
+    (secao inteira, nunca so o motivo)."""
     fase_v1, fase_v2 = row["fase_v1"] or "sem_fase", row["fase_v2"] or "sem_fase"
     if fase_v1 != "sem_fase" or fase_v2 != "sem_fase":
         return "fase_ativa"
@@ -158,6 +184,9 @@ def _motivo_rotacao_simples(storage: Storage, row: Any, now: float) -> str:
     except Exception:  # noqa: BLE001 - nunca quebra o relatorio
         piso = 100_000.0
     if mc_atual is None or mc_atual >= piso:
+        queda_pct = _queda_do_pico_mc_ok(row, bars)
+        if queda_pct is not None:
+            return f"mc_ok (queda={queda_pct:.1f}%)"
         return "mc_ok (queda nao avaliada aqui -- ver diagnostico_vagas.py)"
     pool = row["pool"]
     if storage.pr1_signals(status="aberto", pool=pool) or storage.pr2_signals(status="aberto", pool=pool):

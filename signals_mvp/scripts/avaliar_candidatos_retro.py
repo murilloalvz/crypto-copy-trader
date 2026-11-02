@@ -116,6 +116,26 @@ categoria `ok` persistida NUNCA e reprocessado (zero chamada de rede) a menos qu
 passado explicitamente. O orcamento SO entra em jogo pra candidatos que ainda precisam de uma chamada
 de rede nova; o relatorio em si e sempre montado a partir do que esta persistido (+ o que acabou de ser
 processado nesta execucao), nunca gasta orcamento so para IMPRIMIR.
+
+PATCH 2026-11-02 (3a rodada): dois problemas, nunca mudam detector/hashes/regras.
+
+1) Coorte retrospectiva x ao vivo -- um candidato CONGELADO pode, depois do congelamento, ganhar
+   vaga de verdade (`pr_pools.added_ts` passa a existir -- ex.: PAWCAT/CATBOT admitidos em
+   02/11 21:43Z). Sem tratamento, o replay retroativo continuaria rodando sobre TODO o historico em
+   cache, inclusive candles de DEPOIS da admissao -- que ja sao territorio do funil FORWARD
+   (`pr1_signals`/`pr2_signals`), gerando o MESMO sinal contado 2x (retro E forward). Fix: quando
+   `pr_pools.added_ts` existe pro pool, o replay usa `pr_bars` (tabela do bot ao vivo, SO LEITURA,
+   nunca escrita por este script) TRUNCADO em `decision_ts < added_ts` -- nenhum candle igual ou
+   posterior a admissao chega ao detector, pela construcao (`bar.ts + step < added_ts`), nunca por
+   um filtro a posteriori em cima do evento. Zero chamada de rede nesse caso (candle ja existe em
+   `pr_bars`, buscado pelo bot ao vivo). Candidato fica com `admitido_apos_congelamento=True` no
+   relatorio. A lista/hash congelados (`pr_retro_candidatos`) NUNCA mudam -- so a FORMA de processar
+   um candidato que ja esta na lista. Um resultado "ok" persistido ANTES da admissao e invalidado e
+   reprocessado (1 unica vez, sem rede) quando `added_ts` passa a existir -- ver `executar()`.
+2) `pr_api_uso` so cobria `poll_pool` -- as outras finalidades (baseline, trajetoria, carteiras,
+   verificacao_candidato, sombra, radar, coorte_retro, descoberta) nunca eram contadas. Ver
+   `live.py`/`worker.py` pelas novas chamadas `pr_api_uso_insert(..., finalidade="coorte_retro", ...)`
+   deste PROPRIO script (unica finalidade que um processo FORA do bot ao vivo grava).
 """
 
 from __future__ import annotations
@@ -171,6 +191,20 @@ CREATE TABLE IF NOT EXISTS pr_retro_resultados (
   versao_config_v1 TEXT, versao_config_v2 TEXT, ts_processado REAL NOT NULL
 );
 """
+# PATCH 2026-11-02 (3a rodada, Fix B): MESMO schema de `storage.py` (pr_api_uso) -- este script roda
+# FORA do processo do bot ao vivo, entao precisa da MESMA tabela pronta aqui tambem (idempotente;
+# se o bot ao vivo ja rodou nesta base, `CREATE TABLE IF NOT EXISTS` so confirma o schema existente).
+DDL_API_USO = """
+CREATE TABLE IF NOT EXISTS pr_api_uso (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, fonte TEXT NOT NULL, finalidade TEXT NOT NULL,
+  pool TEXT, http_status INTEGER, rate_limited INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS pr_api_uso_ts ON pr_api_uso (ts);
+"""
+# PATCH 2026-11-02 (3a rodada): True = resultado foi calculado com o replay TRUNCADO em
+# `pr_pools.added_ts` (ver docstring do modulo) -- um resultado "ok" persistido com um valor
+# DIFERENTE do estado atual (`added_ts is not None`) e invalidado/reprocessado em `executar()`.
+_COLUNAS_NOVAS_RESULTADOS = {"admitido_apos_congelamento": "INTEGER NOT NULL DEFAULT 0"}
 
 
 def _conectar_rw(db_path: Path) -> sqlite3.Connection:
@@ -181,10 +215,15 @@ def _conectar_rw(db_path: Path) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute(DDL_RETRO_CANDIDATOS)
     con.execute(DDL_RETRO_RESULTADOS)
+    con.executescript(DDL_API_USO)
     existentes = {r[1] for r in con.execute("PRAGMA table_info(pr_retro_candidatos)").fetchall()}
     for nome, tipo in _COLUNAS_NOVAS.items():
         if nome not in existentes:
             con.execute(f"ALTER TABLE pr_retro_candidatos ADD COLUMN {nome} {tipo}")
+    existentes_resultados = {r[1] for r in con.execute("PRAGMA table_info(pr_retro_resultados)").fetchall()}
+    for nome, tipo in _COLUNAS_NOVAS_RESULTADOS.items():
+        if nome not in existentes_resultados:
+            con.execute(f"ALTER TABLE pr_retro_resultados ADD COLUMN {nome} {tipo}")
     con.commit()
     return con
 
@@ -309,6 +348,19 @@ class OrcamentoHttpClient(HttpClient):
         return super().get_json(path, params, max_wait_s=max_wait_s)
 
 
+def _registrar_api_uso_retro(con: sqlite3.Connection, now: float, fonte: str, pool: str,
+                             http_status: Optional[int] = 200, rate_limited: bool = False) -> None:
+    """PATCH 2026-11-02 (3a rodada, Fix B): `pr_api_uso` so cobria `poll_pool` (ver docstring do
+    modulo) -- finalidade fixa `coorte_retro`, a UNICA gravada por um processo FORA do bot ao vivo.
+    MESMA convencao de `live.py: _refresh_core` (so conta chamada de rede DE VERDADE, nunca uma
+    janela ja coberta pelo cache local)."""
+    con.execute(
+        "INSERT INTO pr_api_uso (ts, fonte, finalidade, pool, http_status, rate_limited) VALUES (?,?,?,?,?,?)",
+        (now, fonte, "coorte_retro", pool, http_status, int(rate_limited)),
+    )
+    con.commit()
+
+
 def _simular_entrada(bars: list[Bar], ev: Any, params: ParamsV1, costs: CostModel, dex: str, l_bc: Optional[float]) -> dict[str, Any]:
     res = simulate_v1(bars, ev, params, costs, dex, l_bc, lambda _t: None)
     risco_pct = ev.data.get("risco_pct")
@@ -337,6 +389,9 @@ class ResultadoCandidato:
     chegou_runner: bool = False
     sinais_v1: list[dict[str, Any]] = None  # type: ignore[assignment]
     sinais_v2: list[dict[str, Any]] = None  # type: ignore[assignment]
+    # PATCH 2026-11-02 (3a rodada): True quando `pr_pools.added_ts` existia NO MOMENTO deste
+    # processamento -- replay veio truncado de `pr_bars` (ver docstring do modulo), nunca da rede.
+    admitido_apos_congelamento: bool = False
 
     def __post_init__(self) -> None:
         if self.sinais_v1 is None:
@@ -351,16 +406,19 @@ def _persistir_resultado(con: sqlite3.Connection, resultado: ResultadoCandidato,
     con.execute(
         "INSERT INTO pr_retro_resultados "
         "(pool, categoria, motivo_sem_historico, n_candles, pico_mc, chegou_runner, idade_desconhecida, "
-        " sinais_v1_json, sinais_v2_json, versao_config_v1, versao_config_v2, ts_processado) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+        " sinais_v1_json, sinais_v2_json, versao_config_v1, versao_config_v2, ts_processado, "
+        " admitido_apos_congelamento) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(pool) DO UPDATE SET categoria=excluded.categoria, motivo_sem_historico=excluded.motivo_sem_historico, "
         "n_candles=excluded.n_candles, pico_mc=excluded.pico_mc, chegou_runner=excluded.chegou_runner, "
         "idade_desconhecida=excluded.idade_desconhecida, sinais_v1_json=excluded.sinais_v1_json, "
         "sinais_v2_json=excluded.sinais_v2_json, versao_config_v1=excluded.versao_config_v1, "
-        "versao_config_v2=excluded.versao_config_v2, ts_processado=excluded.ts_processado",
+        "versao_config_v2=excluded.versao_config_v2, ts_processado=excluded.ts_processado, "
+        "admitido_apos_congelamento=excluded.admitido_apos_congelamento",
         (resultado.pool, resultado.categoria, resultado.motivo_sem_historico, resultado.n_candles, resultado.pico_mc,
          int(resultado.chegou_runner), int(resultado.idade_desconhecida),
-         json.dumps(resultado.sinais_v1), json.dumps(resultado.sinais_v2), versao_v1, versao_v2, now),
+         json.dumps(resultado.sinais_v1), json.dumps(resultado.sinais_v2), versao_v1, versao_v2, now,
+         int(resultado.admitido_apos_congelamento)),
     )
     con.commit()
 
@@ -377,18 +435,37 @@ def _resultado_de_linha(symbol: str, linha: sqlite3.Row) -> ResultadoCandidato:
         motivo_sem_historico=linha["motivo_sem_historico"], idade_desconhecida=bool(linha["idade_desconhecida"]),
         pico_mc=linha["pico_mc"], n_candles=linha["n_candles"], chegou_runner=bool(linha["chegou_runner"]),
         sinais_v1=json.loads(linha["sinais_v1_json"] or "[]"), sinais_v2=json.loads(linha["sinais_v2_json"] or "[]"),
+        admitido_apos_congelamento=bool(linha["admitido_apos_congelamento"]),
     )
 
 
+def _bars_truncados_de_pr_bars(con: sqlite3.Connection, pool: str, tf: str, step: int, added_ts: float) -> list[Bar]:
+    """SO LEITURA de `pr_bars` (tabela do bot ao vivo -- candles JA em MC/USD, mesma conversao de
+    `live.py: _refresh_core`, ja passados por `fill_gaps` antes de serem gravados ali -- nunca refeito
+    aqui). Corta em `bar.ts + step < added_ts` (MESMA comparacao que `live.py` usa para isolar
+    `decision_ts < added_ts` -- ver docstring do modulo, PATCH 2026-11-02 3a rodada): nenhum candle
+    igual ou posterior a admissao chega ao detector, pela construcao da lista, nunca por um filtro a
+    posteriori em cima do evento."""
+    rows = con.execute(
+        "SELECT ts, o, h, l, c, v, filled FROM pr_bars WHERE pool=? AND tf=? ORDER BY ts", (pool, tf)
+    ).fetchall()
+    return [Bar(r["ts"], r["o"], r["h"], r["l"], r["c"], r["v"], bool(r["filled"]))
+            for r in rows if r["ts"] + step < added_ts]
+
+
 def processar_candidato(
-    row: sqlite3.Row, ohlcv: OhlcvStore, dexpaprika: Any, params_v1: ParamsV1, params_v2: ParamsV1,
-    costs: CostModel, now: float,
+    con: sqlite3.Connection, row: sqlite3.Row, ohlcv: OhlcvStore, dexpaprika: Any, params_v1: ParamsV1,
+    params_v2: ParamsV1, costs: CostModel, now: float,
 ) -> ResultadoCandidato:
     """PATCH 2026-11-02: `l_bc` NAO e mais um pre-requisito (sempre None pra quem nunca foi 'ativo' --
     ver docstring do modulo) -- e CALCULADO aqui a partir do 1o candle em MC, exatamente a formula de
     `live.py: _refresh_core` (`l_bc = seq[0].open`, so que a cotacao USD vem do proprio GT --
     `currency="usd"` -- em vez da serie cacheada do bot ao vivo). `criado_ts` ausente so marca
-    `idade_desconhecida`, nunca bloqueia (o `DetectorV1` ja trata `created_ts=None` sem crash)."""
+    `idade_desconhecida`, nunca bloqueia (o `DetectorV1` ja trata `created_ts=None` sem crash).
+
+    PATCH 2026-11-02 (3a rodada): se `pr_pools.added_ts` existe (candidato ganhou vaga de verdade
+    DEPOIS do congelamento), o replay usa `pr_bars` truncado em vez da rede -- ver
+    `_bars_truncados_de_pr_bars` e a docstring do modulo. Zero chamada de rede nesse caso."""
     pool, symbol = row["pool"], row["symbol"] or row["pool"][:8]
     grad_ts, supply, criado_ts = row["grad_ts"], row["supply"], row["criado_ts"]
     if not pool or grad_ts is None or supply is None:
@@ -397,34 +474,61 @@ def processar_candidato(
     tf = params_v1.timeframes[0]
     step = tf_seconds(tf)
     side = row["side"] or "base"
-    try:
-        preco_usd = ohlcv.history(pool, tf, int(grad_ts), currency="usd", side=side)
-    except ApiError as exc:
-        if exc.kind == "budget":
-            raise
-        preco_usd = []
-        if dexpaprika is not None and dexpaprika.disponivel():
-            try:
-                # candles_fallback() ja devolve preco (nao MC) -- tratado aqui como USD por token,
-                # mesma suposicao do caminho GT (documentada no modulo, DexPaprika e so melhor-esforco).
-                preco_usd = dexpaprika.candles_fallback("solana", pool, tf, grad_ts, now)
-            except Exception:  # noqa: BLE001 - fallback e melhor-esforco, nunca derruba a execucao
-                log.warning("retro: fallback DexPaprika falhou em %s", symbol, exc_info=True)
-                preco_usd = []
-    if not preco_usd:
-        return ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="sem_historico",
-                                  motivo_sem_historico="sem_historico_na_fonte")
-    bars = fill_gaps([Bar(b.ts, b.open * supply, b.high * supply, b.low * supply, b.close * supply, b.volume, b.filled)
-                      for b in preco_usd], step)
+    pool_row = con.execute("SELECT added_ts, l_bc, launchpad FROM pr_pools WHERE pool=?", (pool,)).fetchone()
+    added_ts = pool_row["added_ts"] if pool_row is not None else None
+    admitido = added_ts is not None
+    if admitido:
+        bars = _bars_truncados_de_pr_bars(con, pool, tf, step, added_ts)
+        l_bc = pool_row["l_bc"]
+        launchpad = pool_row["launchpad"] or row["launchpad"]
+        if not bars or l_bc is None:
+            return ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="sem_historico",
+                                      motivo_sem_historico="sem_historico_pre_admissao",
+                                      admitido_apos_congelamento=True)
+    else:
+        http = getattr(ohlcv, "http", None)
+        chamadas_antes = getattr(http, "calls", 0) if http is not None else 0
+        limitadas_antes = getattr(http, "rate_limited", 0) if http is not None else 0
+        try:
+            preco_usd = ohlcv.history(pool, tf, int(grad_ts), currency="usd", side=side)
+        except ApiError as exc:
+            if http is not None and getattr(http, "calls", 0) > chamadas_antes:
+                _registrar_api_uso_retro(con, now, "gt", pool, http_status=exc.status,
+                                         rate_limited=getattr(http, "rate_limited", 0) > limitadas_antes)
+            if exc.kind == "budget":
+                raise
+            preco_usd = []
+            if dexpaprika is not None and dexpaprika.disponivel():
+                chamadas_dp_antes = getattr(dexpaprika, "chamadas_fallback", 0)
+                try:
+                    # candles_fallback() ja devolve preco (nao MC) -- tratado aqui como USD por token,
+                    # mesma suposicao do caminho GT (documentada no modulo, DexPaprika e so melhor-esforco).
+                    preco_usd = dexpaprika.candles_fallback("solana", pool, tf, grad_ts, now)
+                except Exception:  # noqa: BLE001 - fallback e melhor-esforco, nunca derruba a execucao
+                    log.warning("retro: fallback DexPaprika falhou em %s", symbol, exc_info=True)
+                    preco_usd = []
+                if getattr(dexpaprika, "chamadas_fallback", 0) > chamadas_dp_antes:
+                    _registrar_api_uso_retro(con, now, "dexpaprika", pool)
+        else:
+            if http is not None and getattr(http, "calls", 0) > chamadas_antes:
+                _registrar_api_uso_retro(con, now, "gt", pool, http_status=200,
+                                         rate_limited=getattr(http, "rate_limited", 0) > limitadas_antes)
+        if not preco_usd:
+            return ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="sem_historico",
+                                      motivo_sem_historico="sem_historico_na_fonte")
+        bars = fill_gaps([Bar(b.ts, b.open * supply, b.high * supply, b.low * supply, b.close * supply, b.volume, b.filled)
+                          for b in preco_usd], step)
+        l_bc = bars[0].open
+        launchpad = row["launchpad"]
     qual1, qual2 = avaliar_qualidade(bars, params_v1), avaliar_qualidade(bars, params_v2)
     if not qual1.valido and not qual2.valido:
         return ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="sem_historico",
-                                  motivo_sem_historico=f"dado_invalido: {qual1.motivo}")
-    l_bc = bars[0].open
-    launchpad = row["launchpad"]
+                                  motivo_sem_historico=f"dado_invalido: {qual1.motivo}",
+                                  admitido_apos_congelamento=admitido)
     dex = DEX_OF_LAUNCHPAD.get(launchpad, "desconhecido")
     res = ResultadoCandidato(pool, symbol, historico_suficiente=True, pico_mc=max(b.high for b in bars),
-                             n_candles=len(bars), idade_desconhecida=criado_ts is None)
+                             n_candles=len(bars), idade_desconhecida=criado_ts is None,
+                             admitido_apos_congelamento=admitido)
     det_v1 = DetectorV1(params_v1, tf, l_bc, grad_ts, criado_ts) if qual1.valido else None
     det_v2 = DetectorV1(params_v2, tf, l_bc, grad_ts, criado_ts) if qual2.valido else None
     for bar in bars:
@@ -530,18 +634,20 @@ def formatar(resultados: list[ResultadoCandidato], admitida: dict[str, Any], lis
                    f"% chegou a runner: {admitida['pct_runner']:.1f}%" if admitida["pct_runner"] is not None
                    else f"admitida: idade media (d): {admitida['idade_media_d']:.1f} | % chegou a runner: s/d")
     out += ["", "## Por candidato", "",
-           "| token | categoria | pico MC | runner? | idade s/d? | sinais V1 | sinais V2 |",
-           "|---|---|---|---|---|---|---|"]
+           "| token | categoria | pico MC | runner? | idade s/d? | sinais V1 | sinais V2 | pos-congelamento? |",
+           "|---|---|---|---|---|---|---|---|"]
     for r in sorted(resultados, key=lambda x: x.symbol):
+        # PATCH 2026-11-02 (3a rodada): tag `admitido_apos_congelamento` -- ver docstring do modulo.
+        pos_congelamento = "sim (replay truncado em added_ts)" if r.admitido_apos_congelamento else "nao"
         if not r.historico_suficiente:
-            out.append(f"| {r.symbol} | {r.categoria} ({r.motivo_sem_historico}) | s/d | s/d | s/d | s/d | s/d |")
+            out.append(f"| {r.symbol} | {r.categoria} ({r.motivo_sem_historico}) | s/d | s/d | s/d | s/d | s/d | {pos_congelamento} |")
             continue
         pico = f"{r.pico_mc:,.0f}" if r.pico_mc is not None else "s/d"
         runner = "sim" if r.chegou_runner else "nao"
         idade_sd = "sim" if r.idade_desconhecida else "nao"
         v1 = str(len(r.sinais_v1)) if r.sinais_v1 else "0"
         v2 = str(len(r.sinais_v2)) if r.sinais_v2 else "0"
-        out.append(f"| {r.symbol} | ok | {pico} | {runner} | {idade_sd} | {v1} | {v2} |")
+        out.append(f"| {r.symbol} | ok | {pico} | {runner} | {idade_sd} | {v1} | {v2} | {pos_congelamento} |")
     return "\n".join(out)
 
 
@@ -572,13 +678,25 @@ def executar(db_path: Path, cache_dir: Path, max_chamadas_hora: int, reprocessar
         for row in candidatos:
             pool, symbol = row["pool"], row["symbol"] or row["pool"][:8]
             linha = persistidos.get(pool)
+            pool_atual = con.execute("SELECT added_ts FROM pr_pools WHERE pool=?", (pool,)).fetchone()
+            admitido_agora = pool_atual is not None and pool_atual["added_ts"] is not None
             # "ok" persistido com o MESMO hash de ParamsV1/ParamsV2 congelado agora: NUNCA refeito
-            # (zero chamada de rede) a menos que --reprocessar seja passado explicitamente.
+            # (zero chamada de rede) a menos que --reprocessar seja passado explicitamente. PATCH
+            # 2026-11-02 (3a rodada): tambem forca 1 reprocessamento (sem rede, so troca a fonte dos
+            # candles -- ver `processar_candidato`) se `added_ts` passou a existir DEPOIS do "ok"
+            # persistido (`admitido_apos_congelamento` cacheado != estado atual).
             ja_resolvido = (linha is not None and linha["categoria"] == "ok" and not reprocessar
                            and linha["versao_config_v1"] == params_v1.version
-                           and linha["versao_config_v2"] == params_v2.version)
+                           and linha["versao_config_v2"] == params_v2.version
+                           and bool(linha["admitido_apos_congelamento"]) == admitido_agora)
             if ja_resolvido:
                 resultados.append(_resultado_de_linha(symbol, linha))
+                continue
+            if admitido_agora:
+                # truncado de `pr_bars` -- zero chamada de rede, nunca disputa o orcamento do GT.
+                resultado = processar_candidato(con, row, ohlcv, dexpaprika, params_v1, params_v2, costs, now)
+                _persistir_resultado(con, resultado, params_v1.version, params_v2.version, now)
+                resultados.append(resultado)
                 continue
             if orcamento_esgotado:
                 # mantem o ultimo resultado persistido (se houver, mesmo nao-"ok") -- nunca apaga
@@ -588,7 +706,7 @@ def executar(db_path: Path, cache_dir: Path, max_chamadas_hora: int, reprocessar
                                                      motivo_sem_historico="pendente (nunca tentado ou orcamento esgotado)"))
                 continue
             try:
-                resultado = processar_candidato(row, ohlcv, dexpaprika, params_v1, params_v2, costs, now)
+                resultado = processar_candidato(con, row, ohlcv, dexpaprika, params_v1, params_v2, costs, now)
                 _persistir_resultado(con, resultado, params_v1.version, params_v2.version, now)
                 resultados.append(resultado)
                 buscados_nesta_execucao += 1

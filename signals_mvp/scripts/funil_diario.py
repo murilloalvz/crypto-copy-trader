@@ -123,14 +123,22 @@ def pct_runner_7d(con: sqlite3.Connection, now: float) -> Optional[float]:
 
 
 def uso_api_24h(con: sqlite3.Connection, now: float) -> dict[str, Any]:
-    """PEDIDO 2026-11-02 (FASE 1c): chamadas/h por finalidade + 429/h, ultimas 24h."""
+    """PEDIDO 2026-11-02 (FASE 1c; 3a rodada Fix B: 429/h TAMBEM por finalidade, nao so agregado):
+    chamadas/h por finalidade + 429/h por finalidade, ultimas 24h."""
     desde = now - 24 * 3600.0
     por_finalidade: dict[str, int] = defaultdict(int)
     for r in con.execute("SELECT finalidade, COUNT(*) AS n FROM pr_api_uso WHERE ts>=? GROUP BY finalidade", (desde,)):
         por_finalidade[r["finalidade"]] = r["n"]
-    row = con.execute("SELECT COUNT(*) AS n FROM pr_api_uso WHERE ts>=? AND rate_limited=1", (desde,)).fetchone()
-    rate_limited = row["n"] if row else 0
-    return {"chamadas_h": {k: v / 24.0 for k, v in por_finalidade.items()}, "rate_limited_h": rate_limited / 24.0}
+    rate_limited_por_finalidade: dict[str, int] = defaultdict(int)
+    for r in con.execute(
+        "SELECT finalidade, COUNT(*) AS n FROM pr_api_uso WHERE ts>=? AND rate_limited=1 GROUP BY finalidade", (desde,)
+    ):
+        rate_limited_por_finalidade[r["finalidade"]] = r["n"]
+    return {
+        "chamadas_h": {k: v / 24.0 for k, v in por_finalidade.items()},
+        "rate_limited_h": sum(rate_limited_por_finalidade.values()) / 24.0,
+        "rate_limited_h_por_finalidade": {k: v / 24.0 for k, v in rate_limited_por_finalidade.items()},
+    }
 
 
 def latencia_candle_24h(con: sqlite3.Connection, now: float) -> dict[str, Any]:
@@ -218,7 +226,9 @@ def formatar(funil: dict[str, dict[str, int]], fase1_atrasadas: dict[str, int], 
     out += ["", "## Uso de API (24h)", "",
           "chamadas/h por finalidade: " +
           (", ".join(f"{k}={v:.2f}" for k, v in sorted(uso_api["chamadas_h"].items())) or "0 (sem chamada registrada)"),
-          f"429/h: {uso_api['rate_limited_h']:.2f}"]
+          f"429/h: {uso_api['rate_limited_h']:.2f}" +
+          (" (" + ", ".join(f"{k}={v:.2f}" for k, v in sorted(uso_api["rate_limited_h_por_finalidade"].items())) + ")"
+           if uso_api["rate_limited_h_por_finalidade"] else "")]
     out += ["", "## Latencia do candle (24h)", ""]
     if latencia["n"] == 0:
         out.append("s/d (sem candle processado ainda nesta janela)")

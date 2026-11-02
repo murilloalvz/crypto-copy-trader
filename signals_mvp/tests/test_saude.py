@@ -307,6 +307,32 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_fila_section_shows_queda_do_pico_for_an_mc_ok_pool(self) -> None:
+        """PEDIDO 2026-11-02 (3a rodada, Fix C: pools ANT/CHICO citados pelo operador) -- um pool
+        classificado 'mc_ok' (MC atual acima do piso, mas a queda do pico NUNCA era mostrada aqui --
+        so em diagnostico_vagas.py) agora mostra a queda tambem no heartbeat, sem furar o teto de 60
+        linhas (anexado ao MESMO motivo, nunca uma linha nova)."""
+        import re
+        import time as _time
+        from .test_pos_runner_v1 import CREATED, GRAD, L_BC, textbook_v1
+
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            bars = textbook_v1().bars   # pico ~1M (idx6), fecha flat em 400k (bem acima do piso de 100k)
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="QUEDA", l_bc=L_BC,
+                                     grad_ts=GRAD, fase_v1="sem_fase", fase_v2="sem_fase",
+                                     sem_fase_desde=now - 185 * H, info=json.dumps({"criado_ts": CREATED}))
+            rows = [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in bars]
+            h.storage.pr_append_bars("POOL1", "1h", rows)
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertLessEqual(len(texto.splitlines()), 60)
+            m = re.search(r"QUEDA=mc_ok \(queda=([\d.]+)%\)", texto)
+            self.assertIsNotNone(m, texto)
+            self.assertGreater(float(m.group(1)), 0.0)
+        finally:
+            h.close()
+
     def test_fila_section_reports_fase_ativa_for_a_pool_currently_in_runner_or_pullback(self) -> None:
         h = LiveHarness()
         try:

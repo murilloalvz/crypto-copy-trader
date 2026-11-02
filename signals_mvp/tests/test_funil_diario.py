@@ -135,6 +135,23 @@ class FunilDiarioTests(unittest.TestCase):
             con.close()
         self.assertAlmostEqual(uso["chamadas_h"]["poll_pool"], 25 / 24.0)
         self.assertAlmostEqual(uso["rate_limited_h"], 1 / 24.0)
+        # PATCH 2026-11-02 (3a rodada, Fix B): 429/h TAMBEM por finalidade, nao so agregado.
+        self.assertAlmostEqual(uso["rate_limited_h_por_finalidade"]["poll_pool"], 1 / 24.0)
+
+    def test_uso_api_24h_breaks_down_rate_limited_by_finalidade_when_more_than_one(self) -> None:
+        now = time.time()
+        self.storage.pr_api_uso_insert(now, "gt", "poll_pool", "POOL1", http_status=429, rate_limited=True)
+        self.storage.pr_api_uso_insert(now, "rpc", "carteiras", "POOL2", http_status=429, rate_limited=True)
+        self.storage.pr_api_uso_insert(now, "rpc", "verificacao_candidato", "POOL3")   # nao limitada -- nunca entra aqui
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            uso = fd.uso_api_24h(con, now)
+        finally:
+            con.close()
+        self.assertAlmostEqual(uso["rate_limited_h"], 2 / 24.0)
+        self.assertAlmostEqual(uso["rate_limited_h_por_finalidade"]["poll_pool"], 1 / 24.0)
+        self.assertAlmostEqual(uso["rate_limited_h_por_finalidade"]["carteiras"], 1 / 24.0)
+        self.assertNotIn("verificacao_candidato", uso["rate_limited_h_por_finalidade"])
 
     def test_latencia_candle_24h_computes_percentiles_and_near_limiar_count(self) -> None:
         now = time.time()

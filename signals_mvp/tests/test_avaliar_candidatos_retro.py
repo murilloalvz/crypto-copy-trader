@@ -204,6 +204,19 @@ class OrcamentoHttpClientTests(unittest.TestCase):
 
 
 class ProcessarCandidatoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="retro_proc_"))
+        self.storage = Storage(make_paths(self.tmp))
+        # PATCH 2026-11-02 (3a rodada): `processar_candidato` agora le `pr_pools.added_ts` -- precisa
+        # de uma conexao de verdade (so leitura aqui; "POOL1" nunca tem linha em `pr_pools`, entao a
+        # consulta devolve None = `admitido=False`, EXATAMENTE o caminho de rede de antes).
+        self.con = retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
+
+    def tearDown(self) -> None:
+        self.con.close()
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
     def _row(self, **over) -> dict:
         # supply=1.0: os fixtures de `test_pos_runner_v1.py` (`textbook_v1`) ja estao em escala de MC;
         # `l_bc` NUNCA e passado aqui de proposito -- PATCH 2026-11-02, e sempre CALCULADO, nunca lido.
@@ -227,7 +240,7 @@ class ProcessarCandidatoTests(unittest.TestCase):
                     n_entradas_esperado += 1
         self.assertGreaterEqual(n_entradas_esperado, 1, "textbook_v1 precisa gerar >=1 ENTRADA (ver test_pos_runner_v1.py)")
         ohlcv = _FakeOhlcv(bars)
-        resultado = retro.processar_candidato(self._row(), ohlcv, None, p1, p1, CostModel(), time.time())
+        resultado = retro.processar_candidato(self.con, self._row(), ohlcv, None, p1, p1, CostModel(), time.time())
         self.assertTrue(resultado.historico_suficiente)
         self.assertTrue(resultado.chegou_runner)
         self.assertFalse(resultado.idade_desconhecida)
@@ -244,7 +257,7 @@ class ProcessarCandidatoTests(unittest.TestCase):
         a propria chamada de rede devolve."""
         bars = textbook_v1().bars
         ohlcv = _FakeOhlcv(bars)
-        resultado = retro.processar_candidato(self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
+        resultado = retro.processar_candidato(self.con, self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
         self.assertEqual(ohlcv.chamadas_history, 1, "precisa de exatamente 1 chamada de historico -- nunca bloqueado antes dela")
         self.assertTrue(resultado.historico_suficiente, resultado.motivo_sem_historico)
         self.assertEqual(resultado.categoria, "ok")
@@ -253,7 +266,7 @@ class ProcessarCandidatoTests(unittest.TestCase):
     def test_marks_sem_dados_pool_when_grad_ts_or_supply_is_missing(self) -> None:
         ohlcv = _FakeOhlcv(textbook_v1().bars)
         for campo in ("grad_ts", "supply"):
-            resultado = retro.processar_candidato(self._row(**{campo: None}), ohlcv, None, params(), params(), CostModel(), time.time())
+            resultado = retro.processar_candidato(self.con, self._row(**{campo: None}), ohlcv, None, params(), params(), CostModel(), time.time())
             self.assertFalse(resultado.historico_suficiente, campo)
             self.assertEqual(resultado.categoria, "sem_dados_pool", campo)
             self.assertEqual(ohlcv.chamadas_history, 0, f"{campo} ausente nunca deve chamar a rede")
@@ -263,13 +276,13 @@ class ProcessarCandidatoTests(unittest.TestCase):
         mais (o `DetectorV1` ja aceita `created_ts=None`, ENTRADA cai em FORA_DA_IDADE la dentro)."""
         bars = textbook_v1().bars
         ohlcv = _FakeOhlcv(bars)
-        resultado = retro.processar_candidato(self._row(criado_ts=None), ohlcv, None, params(), params(), CostModel(), time.time())
+        resultado = retro.processar_candidato(self.con, self._row(criado_ts=None), ohlcv, None, params(), params(), CostModel(), time.time())
         self.assertTrue(resultado.historico_suficiente)
         self.assertTrue(resultado.idade_desconhecida)
 
     def test_marks_sem_historico_when_the_source_returns_no_candle(self) -> None:
         ohlcv = _FakeOhlcv([])
-        resultado = retro.processar_candidato(self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
+        resultado = retro.processar_candidato(self.con, self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
         self.assertFalse(resultado.historico_suficiente)
         self.assertEqual(resultado.categoria, "sem_historico")
         self.assertEqual(resultado.motivo_sem_historico, "sem_historico_na_fonte")
@@ -282,7 +295,7 @@ class ProcessarCandidatoTests(unittest.TestCase):
                 raise ApiError("budget", "esgotado")
 
         with self.assertRaises(ApiError) as ctx:
-            retro.processar_candidato(self._row(), _OhlcvOrcamentoEsgotado(), None, params(), params(), CostModel(), time.time())
+            retro.processar_candidato(self.con, self._row(), _OhlcvOrcamentoEsgotado(), None, params(), params(), CostModel(), time.time())
         self.assertEqual(ctx.exception.kind, "budget")
 
 
@@ -380,6 +393,110 @@ class ExecutarPersistenciaTests(unittest.TestCase):
         retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15, reprocessar=True,
                       ohlcv=fake2, dexpaprika=_FakeDexpaprikaIndisponivel())
         self.assertEqual(fake2.chamadas_history, 1)
+
+
+class TruncamentoPosAdmissaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (3a rodada): reproduz o caso real (PAWCAT/CATBOT admitidos em 02/11 21:43Z
+    DEPOIS do congelamento) -- um candidato CONGELADO que ganha vaga de verdade tem o replay
+    retroativo TRUNCADO em `added_ts` (so `decision_ts < added_ts` conta como retro); um resultado
+    "ok" ja persistido ANTES da admissao e invalidado e reprocessado (1 unica vez, SEM rede)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="retro_adm_trunc_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_cached_ok_result_is_reprocessed_truncated_exactly_once_when_added_ts_appears(self) -> None:
+        bars = textbook_v1().bars   # rompimento (ENTRADA) perto do fim da serie, idx 25 (ts = GRAD+25*H)
+        pool = "PAWCAT"
+        self.storage.pr_upsert_pool(pool, status="verificado", symbol=pool, mint="MPAW", launchpad="pumpfun",
+                                    grad_ts=GRAD, supply=1.0, info=json.dumps({"criado_ts": CREATED}))
+        now0 = time.time()
+        self.storage.pr_vaga_descarte_insert(now0, pool)
+
+        # 1a execucao: ainda NAO admitido -- busca de rede normal, resultado "ok" com a ENTRADA do rompimento.
+        fake1 = _FakeOhlcv(bars)
+        texto1 = retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15,
+                                ohlcv=fake1, dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertIn("ok=1", texto1)
+        self.assertEqual(fake1.chamadas_history, 1)
+        con = retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
+        try:
+            linha_antes = con.execute("SELECT * FROM pr_retro_resultados WHERE pool=?", (pool,)).fetchone()
+            lista_hash_antes = con.execute(
+                "SELECT lista_hash, congelado_em FROM pr_retro_candidatos WHERE pool=?", (pool,)).fetchone()
+        finally:
+            con.close()
+        self.assertEqual(linha_antes["categoria"], "ok")
+        self.assertFalse(bool(linha_antes["admitido_apos_congelamento"]))
+        sinais_antes = json.loads(linha_antes["sinais_v1_json"])
+        self.assertGreaterEqual(len(sinais_antes), 1, "pre-admissao precisa ter contado a ENTRADA do rompimento")
+
+        # Admissao de verdade DEPOIS do congelamento: added_ts corta a serie ANTES do rompimento
+        # (idx25) -- os MESMOS candles ja chegam em pr_bars (tabela do bot ao vivo).
+        added_ts = GRAD + 22 * H
+        self.storage.pr_upsert_pool(pool, status="ativo", added_ts=added_ts, l_bc=L_BC)
+        rows = [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in bars]
+        self.storage.pr_append_bars(pool, "1h", rows)
+
+        class _OhlcvNuncaDeveSerChamado:
+            def history(self, *a, **kw):
+                raise AssertionError("candidato admitido nunca deve pedir rede -- usa pr_bars truncado")
+
+        texto2 = retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15,
+                                ohlcv=_OhlcvNuncaDeveSerChamado(), dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertIn("ok=1", texto2)
+        self.assertIn("sim (replay truncado em added_ts)", texto2)
+
+        con = retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
+        try:
+            linha_depois = con.execute("SELECT * FROM pr_retro_resultados WHERE pool=?", (pool,)).fetchone()
+            lista_hash_depois = con.execute(
+                "SELECT lista_hash, congelado_em FROM pr_retro_candidatos WHERE pool=?", (pool,)).fetchone()
+        finally:
+            con.close()
+        self.assertTrue(bool(linha_depois["admitido_apos_congelamento"]))
+        self.assertEqual(json.loads(linha_depois["sinais_v1_json"]), [],
+                         "ENTRADA pos-admissao nunca conta como retro -- e territorio do funil forward")
+        self.assertEqual(json.loads(linha_depois["sinais_v2_json"]), [])
+        self.assertTrue(bool(linha_depois["chegou_runner"]), "RUNNER pre-admissao continua contando (antes do corte)")
+        # lista/hash congelados NUNCA mudam, mesmo com a admissao e o reprocessamento.
+        self.assertEqual(lista_hash_depois["lista_hash"], lista_hash_antes["lista_hash"])
+        self.assertEqual(lista_hash_depois["congelado_em"], lista_hash_antes["congelado_em"])
+
+    def test_processar_candidato_truncates_bars_directly_at_the_boundary(self) -> None:
+        """Mesmo cenario, mas direto em `processar_candidato` -- confere o corte exato (`bar.ts+step
+        < added_ts`, MESMA comparacao de `live.py` para `decision_ts < added_ts`)."""
+        bars = textbook_v1().bars
+        pool = "CATBOT"
+        self.storage.pr_upsert_pool(pool, status="verificado", symbol=pool, grad_ts=GRAD, supply=1.0,
+                                    info=json.dumps({"criado_ts": CREATED}))
+        added_ts = GRAD + 22 * H
+        self.storage.pr_upsert_pool(pool, status="ativo", added_ts=added_ts, l_bc=L_BC, launchpad="pumpfun")
+        rows = [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in bars]
+        self.storage.pr_append_bars(pool, "1h", rows)
+        p1 = params()
+        con = retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
+        try:
+            row = {"pool": pool, "symbol": pool, "launchpad": "pumpfun", "grad_ts": GRAD,
+                  "supply": 1.0, "side": "base", "criado_ts": CREATED}
+
+            class _OhlcvNuncaDeveSerChamado:
+                def history(self, *a, **kw):
+                    raise AssertionError("candidato admitido nunca deve pedir rede")
+
+            resultado = retro.processar_candidato(con, row, _OhlcvNuncaDeveSerChamado(), None, p1, p1,
+                                                  CostModel(), time.time())
+        finally:
+            con.close()
+        self.assertTrue(resultado.admitido_apos_congelamento)
+        self.assertTrue(resultado.historico_suficiente, resultado.motivo_sem_historico)
+        self.assertEqual(resultado.n_candles, sum(1 for b in bars if b.ts + H < added_ts))
+        self.assertEqual(resultado.sinais_v1, [])
+        self.assertTrue(resultado.chegou_runner)
 
 
 class ExecutarSemCandidatosTests(unittest.TestCase):

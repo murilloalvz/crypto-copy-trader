@@ -1004,6 +1004,70 @@ class ApiUsoInstrumentacaoTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_holders_instrumentado_logs_carteiras_only_when_a_real_rpc_call_happened(self) -> None:
+        """PEDIDO 2026-11-02 (3a rodada, Fix B): finalidade 'carteiras' (adapter.holders, RPC) --
+        so conta quando `SolanaRpc.calls` de verdade aumentou, MESMA convencao de 'poll_pool'."""
+        h = LiveHarness()
+        try:
+            class _StubRpc:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+            class _StubHolders:
+                tag = None
+
+            class _StubAdapter:
+                def __init__(self, rpc: Any) -> None:
+                    self.rpc = rpc
+
+                def holders(self, mint: str, excluded: Any) -> Any:
+                    self.rpc.calls += 1
+                    return _StubHolders()
+
+            h.live.adapter = _StubAdapter(_StubRpc())
+            h.live._holders_instrumentado("MINT1", set(), "POOL1", h.clock())  # noqa: SLF001
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("carteiras", 0), 1)
+        finally:
+            h.close()
+
+    def test_holders_instrumentado_never_logs_for_a_chain_without_rpc(self) -> None:
+        h = LiveHarness()
+        try:
+            self.assertIsNone(h.live.adapter.rpc)   # padrao do harness: sem RPC configurado
+            h.live._holders_instrumentado("MINT1", set(), "POOL1", h.clock())  # noqa: SLF001
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("carteiras", 0), 0)
+        finally:
+            h.close()
+
+    def test_lineage_verifier_step_logs_verificacao_candidato_only_on_a_real_rpc_call(self) -> None:
+        """MESMA convencao -- `LineageVerifier.step()` so grava quando `self.rpc.calls` de verdade
+        aumentou dentro de `verify`/`creation` (os fakes de teste normais nunca tocam `rpc`, entao
+        nunca logam por si -- aqui simulamos a chamada real explicitamente)."""
+        h = LiveHarness()
+        try:
+            class _StubRpc:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+            stub_rpc = _StubRpc()
+            h.verifier.rpc = stub_rpc
+
+            def verify_com_chamada(rpc, pool, mint, created, lp):
+                rpc.calls += 1
+                return Lineage("ok", "", "pumpfun", GRAD + 60, USDC, SUPPLY, "SIG", "MigrateV2")
+
+            h.verifier.verify = verify_com_chamada
+            h.verifier.creation = created_at()
+            h.list_pool()
+            h.tick()
+            self.assertTrue(h.verifier.step())
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("verificacao_candidato", 0), 1)
+        finally:
+            h.close()
+
 
 class RetentativaCurtaTests(unittest.TestCase):
     """PEDIDO 2026-11-02 (FASE 1f): pool quente/morno sem candle novo ainda retentar logo (+2/+5/

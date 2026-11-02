@@ -316,6 +316,10 @@ class LineageVerifier:
         row = min(ready, key=lambda r: (r["checked_ts"] or 0.0, -(r["mc_found"] or 0.0)))
         info = self._info(row)
         info["tentativas"] = info.get("tentativas", 0) + 1
+        # PEDIDO 2026-11-02 (3a rodada, Fix B): `pr_api_uso` finalidade 'verificacao_candidato' --
+        # MESMA convencao de `_refresh_core`/`_holders_instrumentado` (so conta chamada de rede DE
+        # VERDADE, via `SolanaRpc.calls`).
+        chamadas_antes = getattr(self.rpc, "calls", 0)
         if row["status"] == "pendente":
             res = self._lineage(row, info)
         else:                      # linhagem ja conferida por uma versao anterior do bot: falta so a data de criacao
@@ -323,6 +327,9 @@ class LineageVerifier:
                           (info.get("linhagem") or {}).get("signature"))
         if res.status == "ok":
             res = self._creation(row, res, info)
+        if getattr(self.rpc, "calls", 0) > chamadas_antes:
+            self.storage.pr_api_uso_insert(self.clock(), "rpc", "verificacao_candidato", row["pool"],
+                                           http_status=200, rate_limited=False)
         fields: dict[str, Any] = {"checked_ts": self.clock(), "info": json.dumps(info, ensure_ascii=False)}
         if res.status == "ok":
             fields.update(status="verificado", launchpad=res.launchpad, grad_ts=res.grad_ts, supply=res.supply, motivo="")
@@ -876,12 +883,19 @@ class PosRunnerLive:
             return
         name = fontes[self.source_idx % len(fontes)]
         path, query = SOURCES[name]
+        # PEDIDO 2026-11-02 (3a rodada, Fix B): pr_api_uso finalidade 'descoberta' -- MESMA convencao
+        # de `_refresh_core` (`BudgetedHttp.used` antes/depois, so chamada de rede DE VERDADE).
+        usadas_antes = self.http.used
         try:
             data = self.http.get_json(path, query, max_wait_s=15.0)
             snaps = parse_pools_response(data, self.ctx, now)
         except RateLimited:
+            if self.http.used > usadas_antes:
+                self.storage.pr_api_uso_insert(now, "gt", "descoberta", http_status=429, rate_limited=True)
             raise
         except ApiError as exc:
+            if self.http.used > usadas_antes:
+                self.storage.pr_api_uso_insert(now, "gt", "descoberta", http_status=exc.status, rate_limited=False)
             if exc.kind == "budget":
                 raise
             out["erros"] += 1
@@ -889,6 +903,8 @@ class PosRunnerLive:
             self.next_discovery = now + 60.0
             log.warning("POS-RUNNER: lista %s do GT falhou (%s)", name, exc)
             return
+        if self.http.used > usadas_antes:
+            self.storage.pr_api_uso_insert(now, "gt", "descoberta", http_status=200, rate_limited=False)
         self.source_idx += 1
         self.next_discovery = now + self.settings.descoberta_min * 60.0
         self.offer(snaps, now, fonte=name)
@@ -2361,6 +2377,18 @@ class PosRunnerLive:
             return None
         return res.gross_ret - 2.0 * (slip / 100.0)
 
+    def _holders_instrumentado(self, mint: str, excluded: Any, pool: str, now: float) -> Any:
+        """PEDIDO 2026-11-02 (3a rodada, Fix B): `pr_api_uso` so cobria `poll_pool` -- finalidade
+        'carteiras' (RPC, `adapter.holders`) faltava. MESMA convencao de `_refresh_core` (so conta
+        chamada de rede DE VERDADE, via `SolanaRpc.calls`; chain sem RPC -- Bsc/Robinhood -- nunca
+        grava, `rpc` fica None)."""
+        rpc = getattr(self.adapter, "rpc", None)
+        antes = getattr(rpc, "calls", 0)
+        holders = self.adapter.holders(mint, excluded)
+        if rpc is not None and getattr(rpc, "calls", 0) > antes:
+            self.storage.pr_api_uso_insert(now, "rpc", "carteiras", pool, http_status=200, rate_limited=False)
+        return holders
+
     def _entry_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
         ts_fechamento = int(ev.decision_ts)
@@ -2384,7 +2412,7 @@ class PosRunnerLive:
                 tags.append("base_ge_2d")
             if self._v1_suspeito.get((pool, tf)):
                 tags.append("l_bc_suspeito")
-            holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
+            holders = self._holders_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
             if holders.tag:
                 tags.append(holders.tag)
             # PEDIDO 2026-10-27 (H9): cruza os MESMOS holders resolvidos acima (sem chamada RPC
@@ -2623,7 +2651,7 @@ class PosRunnerLive:
                 tags.append("base_ge_2d")
             if self._v2_suspeito.get((pool, tf)):
                 tags.append("l_bc_suspeito")
-            holders = self.adapter.holders(mint, self._excluded_accounts_v1(row))
+            holders = self._holders_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
             if holders.tag:
                 tags.append(holders.tag)
             n_carteiras_pro = n_pessoas_pro = None
@@ -2805,7 +2833,7 @@ class PosRunnerLive:
         self._carteiras_horaria_ultima[pool] = bucket
         self._carteiras_ciclo["tentativas"] += 1
         self._carteiras_ultima_tentativa_ts = now
-        holders = self.adapter.holders(row["mint"], self._excluded_accounts_v1(row))
+        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now)
         if holders.tag == "holders_indisponivel":
             self._carteiras_ciclo["erros"] += 1
             motivo = (holders.detail or {}).get("motivo", "s/d")
@@ -3258,6 +3286,10 @@ class PosRunnerLive:
         det_fecham = None if self.sem_v0 else self._detector_fecham(row, tf, now)
         det_v1 = self._detector_v1(row, tf, now)
         det_v2 = None if self.sem_v2 else self._detector_v2(row, tf, now)
+        # PEDIDO 2026-11-02 (3a rodada, Fix B): sombra/radar/trajetoria/baseline NUNCA pedem rede
+        # propria -- todos reusam os MESMOS candles ja buscados por `fetch_fn` acima neste mesmo ciclo
+        # (via `pr_bars`/`det*.update`); nunca precisam de `pr_api_uso_insert` proprio, 0 por
+        # construcao (ver docstring de `scripts/avaliar_candidatos_retro.py`).
         det_sombra_mc = None if self.sem_sombra else self._sombra_safe(
             self._detector_sombra_mc, row, tf, now, contexto="filtrado_mc_baixo")
         det_sombra_q96 = None if self.sem_sombra else self._sombra_safe(
