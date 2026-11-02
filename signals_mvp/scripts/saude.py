@@ -138,6 +138,41 @@ def _secao_uptime_versoes(storage: Storage, now: float) -> list[str]:
     return out
 
 
+def _motivo_rotacao_simples(storage: Storage, row: Any, now: float) -> str:
+    """PEDIDO 2026-11-02 (diagnostico do caso OA): versao RAPIDA (sem replay do detector) do MESMO
+    criterio de `live.py: _rotacionar_vagas` -- so dado JA persistido (fase_v1/fase_v2/
+    sem_fase_desde, ultimo candle). "queda do pico" precisa de replay (caro pra um heartbeat) --
+    quando MC isolado nao basta pra concluir incapacidade, cai em "mc_ok" (rotulo indica a
+    limitacao); `scripts/diagnostico_vagas.py` tem a versao completa (replay, inclui queda)."""
+    fase_v1, fase_v2 = row["fase_v1"] or "sem_fase", row["fase_v2"] or "sem_fase"
+    if fase_v1 != "sem_fase" or fase_v2 != "sem_fase":
+        return "fase_ativa"
+    sem_fase_desde = row["sem_fase_desde"]
+    if sem_fase_desde is None or now - sem_fase_desde < 72 * 3600.0:
+        return "horas_insuficientes"
+    bars = storage.pr_bars(row["pool"], "1h")
+    mc_atual = bars[-1][4] if bars else None
+    try:
+        from ..pos_runner.params_v1 import ParamsV1
+        piso = ParamsV1().min_mc_usd
+    except Exception:  # noqa: BLE001 - nunca quebra o relatorio
+        piso = 100_000.0
+    if mc_atual is None or mc_atual >= piso:
+        return "mc_ok (queda nao avaliada aqui -- ver diagnostico_vagas.py)"
+    pool = row["pool"]
+    if storage.pr1_signals(status="aberto", pool=pool) or storage.pr2_signals(status="aberto", pool=pool):
+        return "posicao"
+    for versao, sinais in (("v1", storage.pr1_signals(pool=pool)), ("v2", storage.pr2_signals(pool=pool))):
+        for s in sinais:
+            traj = storage.pr_trajetoria_get(versao, s["id"])
+            if traj is not None and not traj["fechado"] and not traj["pre_instrumentacao"]:
+                return "trajetoria"
+            base = storage.pr_baseline_get(versao, s["id"])
+            if base is not None and base["dif_pareada"] is None and not base["pre_instrumentacao"]:
+                return "baseline"
+    return "elegivel_agora"
+
+
 def _secao_fila(storage: Storage, now: float) -> list[str]:
     pools = storage.pr_pools("ativo")
     sem_tentativa = 0
@@ -177,8 +212,22 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     readmitidos_24h = storage.pr_dormentes_readmitidos_count_desde(now - 24 * 3600.0)
     dormentes_agora = len(storage.pr_dormentes("dormente"))
     candidatos_esperando = sum(1 for r in storage.pr_pools("verificado") if "criado_ts" in json.loads(r["info"] or "{}"))
-    out.append(f"  rotacao: aposentados (24h)={aposentados_rotacao_24h} | readmitidos (24h)={readmitidos_24h} | "
-              f"dormentes agora={dormentes_agora} | candidatos esperando vaga={candidatos_esperando}")
+    # PEDIDO 2026-11-02 (diagnostico do caso OA -- 0 aposentados com 60 candidatos esperando):
+    # elegibilidade + motivo de bloqueio por pool ativo, versao rapida (sem replay, ver docstring
+    # de `_motivo_rotacao_simples`); a versao completa (com queda do pico) esta em
+    # diagnostico_vagas.py. Tudo numa linha so (nunca uma por pool) pra nao furar o teto de 60
+    # linhas do relatorio com muitos pools ativos.
+    motivos_por_pool = {row["pool"]: _motivo_rotacao_simples(storage, row, now) for row in pools}
+    barrados = Counter(m for m in motivos_por_pool.values() if m != "elegivel_agora")
+    elegiveis = [p for p, m in motivos_por_pool.items() if m == "elegivel_agora"]
+    simbolo_de = {row["pool"]: (row["symbol"] or row["pool"][:8]) for row in pools}
+    out.append(
+        f"  rotacao: aposentados (24h)={aposentados_rotacao_24h} | readmitidos (24h)={readmitidos_24h} | "
+        f"dormentes agora={dormentes_agora} | candidatos esperando vaga={candidatos_esperando} | "
+        f"elegiveis agora={len(elegiveis)} | barrados por motivo: " +
+        (", ".join(f"{k}={v}" for k, v in sorted(barrados.items())) or "nenhum") +
+        " | motivo por pool ativo: " +
+        (", ".join(f"{simbolo_de[p]}={m}" for p, m in sorted(motivos_por_pool.items())) or "nenhum pool ativo"))
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])

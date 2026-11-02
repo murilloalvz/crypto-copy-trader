@@ -235,6 +235,77 @@ class RecheckDormentesTests(unittest.TestCase):
             h.close()
 
 
+class OaRotacaoBugReproTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (diagnostico real: 0 aposentados com 60 candidatos esperando e pools como
+    OA -- 8,8d, MC 3,9k, >184h sem_fase, sem candle novo >2h -- aparentemente elegiveis).
+
+    DUAS causas, nao uma so:
+    (a) `sem_fase_desde` e coluna NOVA (09d578f) sem backfill retroativo -- com so ~1h desde o
+        deploy, o relogio de 72h NUNCA teria passado pra NENHUM pool ainda, mesmo sem bug algum
+        (184h reais de sem_fase nunca aparecem retroativamente -- "missingness stays explicit").
+        Isso sozinho ja explica aposentados=0 em 1h.
+    (b) BUG real: `_persistir_fases` (unico lugar que SETA `sem_fase_desde`) so rodava DENTRO de
+        `_refresh_core`, so quando um candle NOVO chegava. Um pool que NUNCA recebe NENHUM candle
+        desde a promocao (`pr_bars` vazio pra sempre) nunca teria `sem_fase_desde` setado -- e
+        `_retire_estagnado` TAMBEM nunca pegaria esse caso (precisa de ALGUM candle pra medir "ha
+        quanto tempo sem candle novo"). Esse pool ficaria PRESO em 'ativo' pra sempre, sem
+        mecanismo algum pra liberar a vaga. `_persistir_fases_todos` (todo ciclo, independente de
+        candle) corrige isso -- mas ainda precisa de 72h REAIS depois de setado, nunca instantaneo."""
+
+    def test_a_pool_stuck_without_a_fresh_candle_still_gets_sem_fase_desde_tracked(self) -> None:
+        """OA tem historico (idade/MC conhecidos) mas para de receber candle novo por um tempo --
+        isolado de `_retire_estagnado` (que so age em >=24h e teria precedencia -- ver docstring da
+        classe) ficando BEM abaixo desse teto (20h) enquanto ainda mostra o bug/fix isolado."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            now0 = GRAD + H
+            h.storage.pr_upsert_pool("OA", status="ativo", mint="MINT-OA", symbol="OA", grad_ts=GRAD,
+                                     added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
+                                     sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
+            h.storage.pr_append_bars("OA", "1h", [(int(now0), 3_900.0, 3_900.0, 3_900.0, 3_900.0, 1.0, True)])
+            # NUNCA chama `h.world.add_series` pra "OA" -- GT nunca devolve candle novo pra ele,
+            # exatamente como relatado ("sem candle novo"); so avanca o relogio, nunca tick a tick.
+            self.assertIsNone(h.storage.pr_pool("OA")["sem_fase_desde"], "estado inicial: nunca setado")
+            _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
+            # h.clock() JA comeca em GRAD+8h+120s (harness) -- avanca so o suficiente pra ficar BEM
+            # abaixo de 24h de gap desde o candle (now0=GRAD+1h), nunca acionando _retire_estagnado.
+            h.clock.advance(5 * H)
+            h.tick()
+            row = h.storage.pr_pool("OA")
+            self.assertIsNotNone(row["sem_fase_desde"], "bug: sem o sweep, isso ficaria None pra sempre")
+            self.assertEqual(row["status"], "ativo", "nem 24h (retire_estagnado) nem 72h (rotacao) ainda")
+        finally:
+            h.close()
+
+    def test_eventually_rotates_once_the_72h_clock_set_by_the_fix_actually_elapses(self) -> None:
+        """A correcao NAO retroage o relogio as 184h reais relatadas -- `sem_fase_desde` so comeca
+        a contar da 1a vez que o sweep roda. Precisa de 72h DEPOIS disso (nunca instantaneo) -- so
+        funciona se o candle nunca mais chegar (senao um novo candle resetaria `added_ts`/fase do
+        jeito usual); aqui fica sob o teto de 24h de `_retire_estagnado` so na 1a passada."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            now0 = GRAD + H
+            h.storage.pr_upsert_pool("OA", status="ativo", mint="MINT-OA", symbol="OA", grad_ts=GRAD,
+                                     added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
+                                     sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
+            h.storage.pr_append_bars("OA", "1h", [(int(now0), 3_900.0, 3_900.0, 3_900.0, 3_900.0, 1.0, True)])
+            _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
+            h.clock.advance(1 * H)
+            h.tick()   # sem_fase_desde setado = now (nao retroage as 184h reais)
+            sem_fase_desde = h.storage.pr_pool("OA")["sem_fase_desde"]
+            self.assertIsNotNone(sem_fase_desde)
+            # a PARTIR de sem_fase_desde, 72h+ depois -- so aqui a rotacao finalmente dispara.
+            h.clock.advance((POS_RUNNER_ROTACAO_HORAS + 1) * H - 1 * H)
+            # PEDIDO (teste isolado): zera `_rotacoes_recentes`/pula o 2o `_retire_estagnado` --
+            # chama direto a rotina de rotacao (ja testada em `_retire`/`_retire_estagnado` acima;
+            # aqui so confirma que o RELOGIO setado pelo fix de fato chega la).
+            self.assertEqual(h.clock() - sem_fase_desde, POS_RUNNER_ROTACAO_HORAS * H)
+            h.live._rotacionar_vagas(h.clock())   # noqa: SLF001
+            self.assertEqual(h.storage.pr_pool("OA")["status"], "dormente")
+        finally:
+            h.close()
+
+
 class RegimeAmostragemTests(unittest.TestCase):
     def test_a_new_signal_before_any_rotation_is_tagged_pre_rotacao(self) -> None:
         h = LiveHarness()

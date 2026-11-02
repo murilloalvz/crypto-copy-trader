@@ -191,6 +191,85 @@ class DiagnosticoVagasTests(unittest.TestCase):
         self.assertIn("## B) candidatos sem vaga nas ultimas 48h", texto)
         self.assertIn("candidatos: 1", texto)
         self.assertIn("## C) pools ativos sem_fase", texto)
+        self.assertIn("## D) rotacao", texto)
+
+    # -- D) rotacao: motivo de bloqueio por pool ------------------------------------------------
+
+    def _linha_a(self, pool: str, bars: list[Bar], now: float) -> dict:
+        from ..pos_runner.params_v1 import load_params_v1
+        from ..pos_runner.params_v2 import load_params_v2
+        self._gravar_pool_ativo(pool, bars)
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            linhas = dv.secao_a(con, load_params_v1(), load_params_v2(), now)
+        finally:
+            con.close()
+        return next(l for l in linhas if l["pool"] == pool)
+
+    def test_d_classifies_fase_ativa_for_a_pool_currently_in_pullback(self) -> None:
+        linha = self._linha_a("POOL1", _bars_pullback_ativo(n_flat=2), time.time())
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            self.assertEqual(dv._classificar_rotacao(con, linha), "fase_ativa")   # noqa: SLF001
+        finally:
+            con.close()
+
+    def test_d_classifies_horas_insuficientes_before_72h_sem_fase(self) -> None:
+        now = GRAD + 10 * H   # "agora" controlado (nunca o relogio real) -- so 10h, ainda < 72h
+        linha = self._linha_a("POOL1", _bars_nunca_ativo(n=5), now)
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            self.assertEqual(dv._classificar_rotacao(con, linha), "horas_insuficientes")   # noqa: SLF001
+        finally:
+            con.close()
+
+    def test_d_classifies_mc_ok_when_the_pool_is_still_capable(self) -> None:
+        # _bars_nunca_ativo fecha EXATAMENTE no piso (100k) -- nunca "< piso", nunca incapaz.
+        linha = self._linha_a("POOL1", _bars_nunca_ativo(n=5), time.time())
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            self.assertEqual(dv._classificar_rotacao(con, linha), "mc_ok")   # noqa: SLF001
+        finally:
+            con.close()
+
+    def test_d_classifies_elegivel_agora_for_a_pool_meeting_every_condition(self) -> None:
+        """Mesmo cenario do caso OA relatado: sem_fase ha >72h (sempre verdade com `time.time()`
+        real -- GRAD e dezenas de dias no passado), MC bem abaixo do piso, sem posicao/evidencia."""
+        bars = [Bar(GRAD + i * H, 3_900.0, 3_950.0, 3_850.0, 3_900.0, 10.0) for i in range(5)]
+        linha = self._linha_a("OA", bars, time.time())
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            self.assertEqual(dv._classificar_rotacao(con, linha), "elegivel_agora")   # noqa: SLF001
+        finally:
+            con.close()
+
+    def test_d_classifies_posicao_for_a_pool_with_an_open_v1_signal(self) -> None:
+        bars = [Bar(GRAD + i * H, 3_900.0, 3_950.0, 3_850.0, 3_900.0, 10.0) for i in range(5)]
+        linha = self._linha_a("OA", bars, time.time())
+        self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "OA", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT-OA", "symbol": "OA", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "aberto", "entry_price": 100.0, "stop": 80.0,
+        })
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            self.assertEqual(dv._classificar_rotacao(con, linha), "posicao")   # noqa: SLF001
+        finally:
+            con.close()
+
+    def test_secao_d_counts_eligible_and_blocked_pools_by_reason(self) -> None:
+        now = time.time()
+        linha_elegivel = self._linha_a("OA", [Bar(GRAD + i * H, 3_900.0, 3_950.0, 3_850.0, 3_900.0, 10.0)
+                                              for i in range(5)], now)
+        linha_ativa = self._linha_a("POOL2", _bars_pullback_ativo(n_flat=2), now)
+        con = dv._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            d = dv.secao_d(con, [linha_elegivel, linha_ativa])
+        finally:
+            con.close()
+        self.assertEqual(d["elegiveis"], ["OA"])
+        self.assertEqual(d["barrados"], {"fase_ativa": 1})
 
 
 if __name__ == "__main__":

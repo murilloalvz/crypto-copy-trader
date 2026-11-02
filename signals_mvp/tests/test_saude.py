@@ -9,6 +9,8 @@ import unittest
 from ..scripts import saude
 from .test_pos_runner_live import LiveHarness, start_tracking
 
+H = 3600.0
+
 
 class SaudeScriptTests(unittest.TestCase):
     def test_runs_without_exceptions_against_an_empty_database(self) -> None:
@@ -272,6 +274,46 @@ class SaudeScriptTests(unittest.TestCase):
             self.assertIn("entradas_atrasadas (24h, nunca abriram posicao): 1", texto)
             self.assertIn("ENTRADA=1", texto)
             self.assertIn("WATCHLIST=1", texto)
+        finally:
+            h.close()
+
+    def test_fila_section_reports_a_pool_meeting_every_rotation_condition_as_elegivel_agora(self) -> None:
+        """PEDIDO 2026-11-02 (caso OA relatado: 0 aposentados com 60 candidatos esperando e pools
+        aparentemente elegiveis): `_motivo_rotacao_simples` -- mesma ressalva de tempo real
+        (`time.time()`, nunca o FakeClock)."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_upsert_pool("OA", status="ativo", mint="MINT-OA", symbol="OA",
+                                     fase_v1="sem_fase", fase_v2="sem_fase", sem_fase_desde=now - 185 * H)
+            h.storage.pr_append_bars("OA", "1h", [(int(now) - 2 * H, 3_900.0, 3_950.0, 3_850.0, 3_900.0, 1.0, True)])
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("elegiveis agora=1", texto)
+            self.assertIn("OA=elegivel_agora", texto)
+        finally:
+            h.close()
+
+    def test_fila_section_reports_horas_insuficientes_before_72h_sem_fase(self) -> None:
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="CAT",
+                                     fase_v1="sem_fase", fase_v2="sem_fase", sem_fase_desde=now - 10 * H)
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("elegiveis agora=0", texto)
+            self.assertIn("CAT=horas_insuficientes", texto)
+        finally:
+            h.close()
+
+    def test_fila_section_reports_fase_ativa_for_a_pool_currently_in_runner_or_pullback(self) -> None:
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="CAT",
+                                     fase_v1="runner", fase_v2="sem_fase")
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("CAT=fase_ativa", texto)
         finally:
             h.close()
 

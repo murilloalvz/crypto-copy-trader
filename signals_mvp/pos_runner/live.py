@@ -1188,6 +1188,14 @@ class PosRunnerLive:
             out["chamadas"] += self.http.disarm()
         self._retire(now)
         self._retire_estagnado(now)
+        # PEDIDO 2026-11-02 (correcao do diagnostico de rotacao -- caso OA): `_persistir_fases`
+        # (dentro de `_refresh_core`) so roda quando candle NOVO chega -- pool que PAROU de receber
+        # candle (exatamente o tipo mais candidato a rotacao por incapacidade estrutural, ou
+        # qualquer pool sem volume algum) nunca tinha `sem_fase_desde` setado, entao
+        # `_rotacionar_vagas` nunca o considerava (`if sem_fase_desde is None: continue`). Roda 1x
+        # por ciclo pra TODO pool ativo, independente de candle novo -- zero chamada de rede, so
+        # leitura do estado ja em memoria.
+        self._persistir_fases_todos(now)
         self._rotacionar_vagas(now)
         # PEDIDO 2026-10-30 (FASE 2, item 3): orcamento PROPRIO (1 chamada, nunca soma a `cap_total`
         # do ciclo principal) -- mesmo `budget`/limitador compartilhado do GT, so uma permissao extra
@@ -1291,6 +1299,21 @@ class PosRunnerLive:
         if det.phase == PHASE_RUNNER:
             return "runner"
         return "sem_fase"
+
+    def _persistir_fases_todos(self, now: float) -> None:
+        """PEDIDO 2026-11-02 (correcao do diagnostico de rotacao -- caso OA): `_persistir_fases`
+        (chamada de dentro de `_refresh_core`) so roda quando um candle NOVO chega -- um pool que
+        parou de receber candle (exatamente o tipo mais candidato a `_rotacionar_vagas`, ou
+        qualquer pool sem volume algum) nunca tinha `sem_fase_desde` setado, e a rotacao nunca o
+        considerava (`if sem_fase_desde is None: continue`). Roda pra TODO pool ativo, TODO ciclo,
+        independente de candle novo -- zero chamada de rede, so leitura do estado ja em memoria."""
+        for row in self.storage.pr_pools("ativo"):
+            for tf in self.tfs():
+                try:
+                    self._persistir_fases(row["pool"], tf, now)
+                except Exception:  # noqa: BLE001 - medicao ao lado, nunca derruba o ciclo
+                    log.warning("POS-RUNNER fases: erro inesperado ao persistir %s %s, ignorado neste ciclo",
+                               row["symbol"], tf, exc_info=True)
 
     def _persistir_fases(self, pool: str, tf: str, now: float) -> None:
         """PEDIDO 2026-10-29: fase so existia na MEMORIA deste processo (so.saude.py tinha que ler do

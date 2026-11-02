@@ -24,6 +24,16 @@ B) candidatos sem vaga (pr_vaga_descartes, janela de 48h, POOL DISTINTO -- mesma
 
 C) dos pools ativos de A, quantos tem horas em sem_fase > 24h, > 48h, > 72h (buckets encaixados).
 
+D) rotacao (PEDIDO 2026-11-02, diagnostico do caso OA -- 0 aposentados com 60 candidatos esperando
+   e varios pools aparentemente elegiveis): reproduz os MESMOS criterios de
+   `live.py: _rotacionar_vagas` (nunca duplica a REGRA em espirito, so classifica, read-only) pra
+   cada pool ativo -- elegivel_agora ou o 1o motivo que bloqueia, nesta ordem: fase_ativa (V1 ou V2
+   em runner/pullback agora) -> horas_insuficientes (sem_fase_desde None/replay<72h) -> mc_ok (MC
+   acima do piso E queda <=96% -- pool ainda CAPAZ, nunca "incapaz") -> posicao (aberta, V1 ou V2)
+   -> trajetoria/baseline (evidencia ainda em coleta). "elegiveis agora" conta quantos PASSARIAM
+   nesta rodada, mas o bot so remove min(elegiveis, candidatos_esperando, rotacao_max_por_hora) por
+   ciclo -- este numero pode ser MAIOR que o que o heartbeat mostrar "aposentados" na mesma janela.
+
 Uso (na VM, dentro do diretorio do bot):
     python -m signals_mvp.scripts.diagnostico_vagas --db signals_mvp/dados/estado.sqlite
 """
@@ -177,17 +187,63 @@ def secao_c(linhas_a: list[dict[str, Any]]) -> dict[str, int]:
            ">72h": sum(1 for h in horas if h > 72.0)}
 
 
-def formatar(linhas_a: list[dict[str, Any]], b: dict[str, Any], c: dict[str, int]) -> str:
+ROTACAO_HORAS = 72.0
+
+
+def _motivo_posicao_ou_evidencia(con: sqlite3.Connection, pool: str) -> Optional[str]:
+    """MESMAS guardas de `live.py: _rotacionar_vagas`/`_evidencia_pendente` -- posicao aberta (V1 ou
+    V2) e trajetoria/baseline ainda em coleta (protege a ciencia, nunca uma regra de V1/V2)."""
+    if con.execute("SELECT 1 FROM pr1_signals WHERE pool=? AND status='aberto' LIMIT 1", (pool,)).fetchone():
+        return "posicao"
+    if con.execute("SELECT 1 FROM pr2_signals WHERE pool=? AND status='aberto' LIMIT 1", (pool,)).fetchone():
+        return "posicao"
+    for versao, tabela in (("v1", "pr1_signals"), ("v2", "pr2_signals")):
+        for (sid,) in con.execute(f"SELECT id FROM {tabela} WHERE pool=?", (pool,)):
+            traj = con.execute("SELECT fechado, pre_instrumentacao FROM pr_trajetoria WHERE versao=? AND entry_id=?",
+                               (versao, sid)).fetchone()
+            if traj is not None and not traj["fechado"] and not traj["pre_instrumentacao"]:
+                return "trajetoria"
+            base = con.execute("SELECT dif_pareada, pre_instrumentacao FROM pr_baseline WHERE versao=? AND entry_id=?",
+                               (versao, sid)).fetchone()
+            if base is not None and base["dif_pareada"] is None and not base["pre_instrumentacao"]:
+                return "baseline"
+    return None
+
+
+def _classificar_rotacao(con: sqlite3.Connection, linha: dict[str, Any]) -> str:
+    if linha["fase_v1"] != "sem_fase" or linha["fase_v2"] != "sem_fase":
+        return "fase_ativa"
+    if linha["horas_sem_fase"] is None or linha["horas_sem_fase"] < ROTACAO_HORAS:
+        return "horas_insuficientes"
+    mc_atual, queda_pct = linha["mc_atual"], linha["queda_pct"]
+    incapaz = (mc_atual is not None and mc_atual < MC_MIN_USD) or (queda_pct is not None and queda_pct > QUEDA_MAX_PCT)
+    if not incapaz:
+        return "mc_ok"
+    motivo = _motivo_posicao_ou_evidencia(con, linha["pool"])
+    return motivo if motivo is not None else "elegivel_agora"
+
+
+def secao_d(con: sqlite3.Connection, linhas_a: list[dict[str, Any]]) -> dict[str, Any]:
+    por_pool = {l["pool"]: _classificar_rotacao(con, l) for l in linhas_a}
+    barrados = Counter(m for m in por_pool.values() if m != "elegivel_agora")
+    elegiveis = [p for p, m in por_pool.items() if m == "elegivel_agora"]
+    return {"elegiveis": elegiveis, "barrados": dict(barrados), "motivo_por_pool": por_pool}
+
+
+def formatar(linhas_a: list[dict[str, Any]], b: dict[str, Any], c: dict[str, int], d: dict[str, Any]) -> str:
     out = ["# Diagnostico de vagas/rotacao -- POS-RUNNER", "",
           "## A) pools ativos hoje", "",
-          "| token | idade (d) | horas em sem_fase | fase V1 | fase V2 | queda do pico (%) | MC atual |",
-          "|---|---|---|---|---|---|---|"]
+          "| token | idade (d) | horas em sem_fase | fase V1 | fase V2 | queda do pico (%) | MC atual | "
+          "rotacao |",
+          "|---|---|---|---|---|---|---|---|"]
     for l in sorted(linhas_a, key=lambda x: x["horas_sem_fase"] or 0.0, reverse=True):
         idade = "s/d" if l["idade_d"] is None else f"{l['idade_d']:.1f}"
         horas = "s/d" if l["horas_sem_fase"] is None else f"{l['horas_sem_fase']:.1f}"
         queda = "s/d" if l["queda_pct"] is None else f"{l['queda_pct']:.1f}"
         mc = "s/d" if l["mc_atual"] is None else f"{l['mc_atual']:,.0f}"
-        out.append(f"| {l['symbol']} | {idade} | {horas} | {l['fase_v1']} | {l['fase_v2']} | {queda} | {mc} |")
+        motivo = d["motivo_por_pool"].get(l["pool"], "s/d")
+        out.append(f"| {l['symbol']} | {idade} | {horas} | {l['fase_v1']} | {l['fase_v2']} | {queda} | "
+                  f"{mc} | {motivo} |")
     out += ["", "## B) candidatos sem vaga nas ultimas 48h (pr_vaga_descartes, pool distinto)", "",
           f"candidatos: {b['n_candidatos']} | passam hoje nos filtros base (idade>=2d, MC>=100k, "
           f"queda 80-96%): {b['passam']} | nao passam: {b['reprovados']}"]
@@ -196,6 +252,11 @@ def formatar(linhas_a: list[dict[str, Any]], b: dict[str, Any], c: dict[str, int
         out.append(f"motivo mais comum de reprovacao: {motivo} ({n} de {b['reprovados']})")
     out += ["", "## C) pools ativos sem_fase (combinado V1/V2) ha mais de...", "",
           f">24h: {c['>24h']} | >48h: {c['>48h']} | >72h: {c['>72h']}"]
+    out += ["", "## D) rotacao -- elegibilidade agora (mesmos criterios de _rotacionar_vagas)", "",
+          f"elegiveis agora={len(d['elegiveis'])} | barrados por motivo: " +
+          (", ".join(f"{k}={v}" for k, v in sorted(d["barrados"].items())) or "nenhum")]
+    if d["elegiveis"]:
+        out.append("pools elegiveis agora: " + ", ".join(sorted(d["elegiveis"])))
     return "\n".join(out)
 
 
@@ -206,7 +267,8 @@ def executar(db_path: Path) -> str:
         linhas_a = secao_a(con, load_params_v1(), load_params_v2(), now)
         b = secao_b(con, now)
         c = secao_c(linhas_a)
-        return formatar(linhas_a, b, c)
+        d = secao_d(con, linhas_a)
+        return formatar(linhas_a, b, c, d)
     finally:
         con.close()
 
