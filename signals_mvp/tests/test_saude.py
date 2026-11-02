@@ -317,6 +317,20 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_fila_section_reports_how_many_clocks_were_filled_by_replay(self) -> None:
+        """PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): heartbeat mostra quantos
+        `sem_fase_desde` foram preenchidos por REPLAY causal (nunca `now`) nas ultimas 24h."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_sem_fase_desde_replay_insert(now, "OA")
+            h.storage.pr_sem_fase_desde_replay_insert(now - 40 * H, "FORA_DA_JANELA")   # >24h: nao conta
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("relogios preenchidos por replay (24h)=1", texto)
+        finally:
+            h.close()
+
 
 if __name__ == "__main__":
     unittest.main()

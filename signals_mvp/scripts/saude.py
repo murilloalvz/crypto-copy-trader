@@ -210,6 +210,10 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     # criado_ts conhecido).
     aposentados_rotacao_24h = storage.pr_dormentes_rotacionados_count_desde(now - 24 * 3600.0)
     readmitidos_24h = storage.pr_dormentes_readmitidos_count_desde(now - 24 * 3600.0)
+    # PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): quantos relogios (sem_fase_desde)
+    # foram preenchidos pela 1a vez por REPLAY causal (nunca `now`) nas ultimas 24h -- ver
+    # live.py: _sem_fase_desde_por_replay.
+    relogios_replay_24h = storage.pr_sem_fase_desde_replay_count_desde(now - 24 * 3600.0)
     dormentes_agora = len(storage.pr_dormentes("dormente"))
     candidatos_esperando = sum(1 for r in storage.pr_pools("verificado") if "criado_ts" in json.loads(r["info"] or "{}"))
     # PEDIDO 2026-11-02 (diagnostico do caso OA -- 0 aposentados com 60 candidatos esperando):
@@ -224,6 +228,7 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     out.append(
         f"  rotacao: aposentados (24h)={aposentados_rotacao_24h} | readmitidos (24h)={readmitidos_24h} | "
         f"dormentes agora={dormentes_agora} | candidatos esperando vaga={candidatos_esperando} | "
+        f"relogios preenchidos por replay (24h)={relogios_replay_24h} | "
         f"elegiveis agora={len(elegiveis)} | barrados por motivo: " +
         (", ".join(f"{k}={v}" for k, v in sorted(barrados.items())) or "nenhum") +
         " | motivo por pool ativo: " +

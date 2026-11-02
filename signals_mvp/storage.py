@@ -432,6 +432,12 @@ CREATE TABLE IF NOT EXISTS pr_dormentes (
   ts_recheck_ultimo REAL, mc_recheck_ultimo REAL, ts_readmitido REAL
 );
 CREATE INDEX IF NOT EXISTS pr_dormentes_status ON pr_dormentes (status);
+-- PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): quando `sem_fase_desde` e preenchido pela
+-- 1a vez por REPLAY causal de `pr_bars` (nunca `now`, que subestimava o tempo real so por a coluna
+-- ser nova) -- 1 linha por preenchimento, nunca atualizada (so para contar, saude.py le daqui).
+CREATE TABLE IF NOT EXISTS pr_sem_fase_desde_replay (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL
+);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -1890,6 +1896,16 @@ class Storage:
     def pr_dormentes_readmitidos_count_desde(self, since_ts: float) -> int:
         row = self._one("SELECT COUNT(*) AS n FROM pr_dormentes WHERE status='readmitido' AND ts_readmitido>=?",
                         (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): contador de relogios (sem_fase_desde)
+    # -- preenchidos pela 1a vez via REPLAY causal, nunca `now` -- ver live.py: _sem_fase_desde_por_replay.
+    def pr_sem_fase_desde_replay_insert(self, ts: float, pool: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO pr_sem_fase_desde_replay (ts, pool) VALUES (?,?)", (ts, pool))
+
+    def pr_sem_fase_desde_replay_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_sem_fase_desde_replay WHERE ts>=?", (since_ts,))
         return row["n"] if row else 0
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------

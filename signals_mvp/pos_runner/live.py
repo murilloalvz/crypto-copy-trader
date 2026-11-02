@@ -1323,15 +1323,58 @@ class PosRunnerLive:
         no detector -- nao ha fase "caixa".
 
         PEDIDO 2026-10-30 (FASE 2, item 2): tambem rastreia `sem_fase_desde` -- desde quando V1 E V2
-        estao sem_fase AO MESMO TEMPO (NULL se qualquer um dos dois esta ativo agora). Persistido
-        incrementalmente aqui (nunca recalculado por replay) -- so `_rotacionar_vagas` le."""
+        estao sem_fase AO MESMO TEMPO (NULL se qualquer um dos dois esta ativo agora).
+
+        PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): a 1a vez que o relogio e preenchido
+        (estava None) usa REPLAY causal de `pr_bars` (`_sem_fase_desde_por_replay`, zero chamada de
+        rede) em vez de `now` -- um pool que ja esta sem_fase ha 184h no historico fica elegivel no
+        1o tick, nunca precisa esperar mais 72h so porque `sem_fase_desde` e uma coluna nova. Depois
+        de preenchido (qualquer valor, por replay ou pelo fallback `now`), nunca mais recalculado --
+        so a leitura/gravacao incremental de antes."""
         fase_v1, fase_v2 = self._fase_label_v1(pool, tf), self._fase_label_v2(pool, tf)
         ambos_sem_fase = fase_v1 == "sem_fase" and fase_v2 == "sem_fase"
         sem_fase_desde = None
         if ambos_sem_fase:
             row = self.storage.pr_pool(pool)
-            sem_fase_desde = now if row is None or row["sem_fase_desde"] is None else row["sem_fase_desde"]
+            if row is not None and row["sem_fase_desde"] is not None:
+                sem_fase_desde = row["sem_fase_desde"]
+            else:
+                sem_fase_desde = self._sem_fase_desde_por_replay(pool, now)
         self.storage.pr_upsert_pool(pool, fase_v1=fase_v1, fase_v2=fase_v2, sem_fase_desde=sem_fase_desde)
+
+    def _sem_fase_desde_por_replay(self, pool: str, now: float) -> Optional[float]:
+        """PEDIDO 2026-11-02: preenche um relogio AINDA None pelo MESMO calculo causal de
+        `scripts/diagnostico_vagas.py: _horas_sem_fase_combinada` -- desde o ultimo candle em que V1
+        OU V2 esteve em runner/pullback, ou desde o 1o candle em cache se NUNCA teve fase. SEMPRE
+        sobre a tf da V1/V2 (`self.params_v1.timeframes[0]`), nunca a tf que disparou esta chamada --
+        `fase_v1`/`fase_v2`/`sem_fase_desde` sao conceitos exclusivos da V1/V2, e `_persistir_fases`
+        tambem roda (trivialmente) para outras tfs do V0. Zero chamada de rede, so `pr_bars` ja em
+        cache; nunca toca `self.dets_v1`/`self.dets_v2` (constroi detectores novos, SO PARA O
+        REPLAY, descartados ao final -- nunca o detector ao vivo). `None` = realmente ativo agora
+        (ultimo candle em runner/pullback) -- quem chama nunca grava um timestamp nesse caso. Sem
+        candle algum em cache (pool novo) ou `l_bc` ainda desconhecido: sem como reconstruir o
+        passado, cai em `now` (MESMO comportamento de antes desta emenda, nunca um numero
+        inventado)."""
+        row = self.storage.pr_pool(pool)
+        tf = self.params_v1.timeframes[0]
+        bars_raw = self.storage.pr_bars(pool, tf) if row is not None else []
+        if row is None or not bars_raw or row["l_bc"] is None:
+            return now
+        bars = [Bar(int(ts), o, h, l, c, v, bool(filled)) for ts, o, h, l, c, v, filled in bars_raw]
+        created = self._created(row)
+        det_v1 = DetectorV1(self.params_v1, tf, row["l_bc"], row["grad_ts"], created)
+        det_v2 = DetectorV1(self.params_v2, tf, row["l_bc"], row["grad_ts"], created)
+        ultimo_ativo_ts: Optional[int] = None
+        for bar in bars:
+            det_v1.update(bar)
+            det_v2.update(bar)
+            if det_v1.phase in (PHASE_RUNNER, PHASE_PULLBACK) or det_v2.phase in (PHASE_RUNNER, PHASE_PULLBACK):
+                ultimo_ativo_ts = bar.ts
+        if ultimo_ativo_ts is not None and ultimo_ativo_ts == bars[-1].ts:
+            return None   # ativo AGORA (ultimo candle) -- nunca um relogio
+        resultado = float(bars[0].ts) if ultimo_ativo_ts is None else float(ultimo_ativo_ts)
+        self.storage.pr_sem_fase_desde_replay_insert(now, pool)
+        return resultado
 
     def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
         """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao

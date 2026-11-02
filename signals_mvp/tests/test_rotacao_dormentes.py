@@ -250,7 +250,14 @@ class OaRotacaoBugReproTests(unittest.TestCase):
         `_retire_estagnado` TAMBEM nunca pegaria esse caso (precisa de ALGUM candle pra medir "ha
         quanto tempo sem candle novo"). Esse pool ficaria PRESO em 'ativo' pra sempre, sem
         mecanismo algum pra liberar a vaga. `_persistir_fases_todos` (todo ciclo, independente de
-        candle) corrige isso -- mas ainda precisa de 72h REAIS depois de setado, nunca instantaneo."""
+        candle) corrige isso.
+
+        EMENDA 2026-11-02 (antecipar rotacao sem mudar a regra): a 1a vez que o relogio e
+        preenchido, usa REPLAY causal de `pr_bars` (quando ha candle em cache) em vez de `now` --
+        um pool que ja esta sem_fase ha 184h de verdade no historico fica elegivel no 1o tick,
+        nunca precisa esperar mais 72h reais so porque a coluna e nova (ver
+        `test_a_pool_with_a_long_sem_fase_history_becomes_eligible_on_the_first_tick`). So cai de
+        volta em `now` quando NAO ha candle algum pra reconstruir o passado (caso (b) acima)."""
 
     def test_a_pool_stuck_without_a_fresh_candle_still_gets_sem_fase_desde_tracked(self) -> None:
         """OA tem historico (idade/MC conhecidos) mas para de receber candle novo por um tempo --
@@ -277,31 +284,89 @@ class OaRotacaoBugReproTests(unittest.TestCase):
         finally:
             h.close()
 
-    def test_eventually_rotates_once_the_72h_clock_set_by_the_fix_actually_elapses(self) -> None:
-        """A correcao NAO retroage o relogio as 184h reais relatadas -- `sem_fase_desde` so comeca
-        a contar da 1a vez que o sweep roda. Precisa de 72h DEPOIS disso (nunca instantaneo) -- so
-        funciona se o candle nunca mais chegar (senao um novo candle resetaria `added_ts`/fase do
-        jeito usual); aqui fica sob o teto de 24h de `_retire_estagnado` so na 1a passada."""
+    def test_a_pool_with_a_long_sem_fase_history_becomes_eligible_on_the_first_tick(self) -> None:
+        """PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra -- segue o fix anterior): o
+        relogio AINDA vazio agora e preenchido por REPLAY causal de `pr_bars` (MESMO calculo de
+        `scripts/diagnostico_vagas.py: _horas_sem_fase_combinada` -- desde o 1o candle em cache,
+        que nunca teve fase) em vez de `now` -- um pool com 184h de historico sem_fase fica
+        elegivel (>72h) no 1o tick, nunca precisa esperar mais 72h reais so porque a coluna e
+        nova. Candles HORARIOS continuos (nunca so 1) ate perto de "agora" -- isola de
+        `_retire_estagnado` (24h sem candle NOVO), que senao venceria a corrida e marcaria
+        'encerrado' antes da rotacao rodar."""
         h = LiveHarness(settings=SETTINGS_MAX1)
         try:
-            now0 = GRAD + H
+            now0 = h.clock()
+            primeiro_candle_ts = now0 - 184 * H
             h.storage.pr_upsert_pool("OA", status="ativo", mint="MINT-OA", symbol="OA", grad_ts=GRAD,
                                      added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
                                      sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
-            h.storage.pr_append_bars("OA", "1h", [(int(now0), 3_900.0, 3_900.0, 3_900.0, 3_900.0, 1.0, True)])
+            bars = []
+            t = primeiro_candle_ts
+            while t <= now0 - H:   # ultimo candle ha so 1h -- bem abaixo do teto de 24h de _retire_estagnado
+                bars.append((int(t), 3_900.0, 3_900.0, 3_900.0, 3_900.0, 1.0, True))
+                t += H
+            h.storage.pr_append_bars("OA", "1h", bars)
             _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
-            h.clock.advance(1 * H)
-            h.tick()   # sem_fase_desde setado = now (nao retroage as 184h reais)
-            sem_fase_desde = h.storage.pr_pool("OA")["sem_fase_desde"]
-            self.assertIsNotNone(sem_fase_desde)
-            # a PARTIR de sem_fase_desde, 72h+ depois -- so aqui a rotacao finalmente dispara.
-            h.clock.advance((POS_RUNNER_ROTACAO_HORAS + 1) * H - 1 * H)
-            # PEDIDO (teste isolado): zera `_rotacoes_recentes`/pula o 2o `_retire_estagnado` --
-            # chama direto a rotina de rotacao (ja testada em `_retire`/`_retire_estagnado` acima;
-            # aqui so confirma que o RELOGIO setado pelo fix de fato chega la).
-            self.assertEqual(h.clock() - sem_fase_desde, POS_RUNNER_ROTACAO_HORAS * H)
-            h.live._rotacionar_vagas(h.clock())   # noqa: SLF001
-            self.assertEqual(h.storage.pr_pool("OA")["status"], "dormente")
+            h.tick()
+            row = h.storage.pr_pool("OA")
+            self.assertAlmostEqual(row["sem_fase_desde"], primeiro_candle_ts, delta=1.0,
+                                   msg="relogio devia comecar no 1o candle em cache (replay), nunca em `now`")
+            self.assertEqual(row["status"], "dormente", "184h de replay > 72h -- elegivel e rotacionado no 1o tick")
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 1)
+        finally:
+            h.close()
+
+
+class SemFaseDesdeReplayTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): testes diretos de
+    `_sem_fase_desde_por_replay` (zero rede, zero toque no detector ao vivo -- so `pr_bars` ja em
+    cache)."""
+
+    def _pool(self, h: LiveHarness, pool: str, bars: list) -> None:
+        h.storage.pr_upsert_pool(pool, status="ativo", mint=f"MINT-{pool}", symbol=pool, grad_ts=GRAD,
+                                 added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
+                                 sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
+        h.storage.pr_append_bars(pool, "1h", [(b.ts, b.open, b.high, b.low, b.close, b.volume, b.filled) for b in bars])
+
+    def test_returns_the_first_cached_candle_when_the_pool_never_had_a_fase(self) -> None:
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            bars = [Bar(GRAD + i * H, 3_900.0, 3_950.0, 3_850.0, 3_900.0, 1.0) for i in range(5)]
+            self._pool(h, "POOL1", bars)
+            resultado = h.live._sem_fase_desde_por_replay("POOL1", GRAD + 100 * H)   # noqa: SLF001
+            self.assertEqual(resultado, float(GRAD))
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 1)
+        finally:
+            h.close()
+
+    def test_returns_none_when_the_pool_is_really_active_right_now(self) -> None:
+        """Pico (1M) -> queda 85% -> ultimo candle ainda em pullback: NUNCA grava um relogio (None),
+        mesmo chamado de dentro do ramo "ambos_sem_fase" trivial de uma tf que a V1/V2 nunca usa."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            bars = [
+                Bar(GRAD, 100_000.0, 100_000.0, 95_000.0, 100_000.0, 1_000.0),
+                Bar(GRAD + H, 100_000.0, 1_000_000.0, 950_000.0, 950_000.0, 1_000.0),           # pico
+                Bar(GRAD + 2 * H, 950_000.0, 960_000.0, 150_000.0, 150_000.0, 1_000.0),         # queda 85%
+                Bar(GRAD + 3 * H, 155_000.0, 158_000.0, 152_000.0, 155_000.0, 1_000.0),         # pullback ativo
+            ]
+            self._pool(h, "POOL1", bars)
+            resultado = h.live._sem_fase_desde_por_replay("POOL1", GRAD + 3 * H + 10.0)   # noqa: SLF001
+            self.assertIsNone(resultado)
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 0, "nunca conta quando fica None")
+        finally:
+            h.close()
+
+    def test_falls_back_to_now_when_there_is_no_cached_candle_at_all(self) -> None:
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT-POOL1", symbol="POOL1", grad_ts=GRAD,
+                                     added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
+                                     sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
+            now = GRAD + 100 * H
+            resultado = h.live._sem_fase_desde_por_replay("POOL1", now)   # noqa: SLF001
+            self.assertEqual(resultado, now)
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 0, "sem candle: nunca conta como replay")
         finally:
             h.close()
 
