@@ -22,12 +22,17 @@ from .test_pos_runner_v1 import CREATED, GRAD, H, L_BC, params, textbook_v1
 
 
 class _FakeOhlcv:
-    """Duck-type de `OhlcvStore`: so o metodo que `processar_candidato` realmente chama."""
+    """Duck-type de `OhlcvStore`: so o metodo que `processar_candidato` realmente chama. `self.bars`
+    aqui representa PRECO POR TOKEN em USD (o que `currency="usd"` devolve de verdade) -- com
+    `supply=1.0` no row de teste, o preco "e" o MC, reaproveitando os fixtures de MC existentes de
+    `test_pos_runner_v1.py` sem precisar reescala-los."""
 
     def __init__(self, bars: list[Bar]):
         self.bars = bars
+        self.chamadas_history = 0
 
-    def history(self, pool: str, tf: str, start_ts: int) -> list[Bar]:
+    def history(self, pool: str, tf: str, start_ts: int, currency: str = "usd", side: str = "base") -> list[Bar]:
+        self.chamadas_history += 1
         return self.bars
 
 
@@ -44,9 +49,12 @@ class CongelamentoTests(unittest.TestCase):
         return retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
 
     def test_includes_a_verificado_pool_that_was_discarded_and_never_promoted(self) -> None:
+        """PATCH 2026-11-02: `l_bc` NUNCA e passado aqui de proposito -- um pool 'verificado' nunca
+        tem `pr_pools.l_bc` de verdade (so `_refresh_core` grava isso, e so pra pool 'ativo'); o
+        congelamento guarda `supply` (necessario pro script calcular MC depois), nunca exige `l_bc`."""
         now = time.time()
         self.storage.pr_upsert_pool("NUNCAATIVO", status="verificado", symbol="NUNCA", mint="M1",
-                                    launchpad="pumpfun", l_bc=L_BC, grad_ts=GRAD,
+                                    launchpad="pumpfun", grad_ts=GRAD, supply=1_000_000_000.0,
                                     info=json.dumps({"criado_ts": CREATED}))
         self.storage.pr_vaga_descarte_insert(now, "NUNCAATIVO")
         con = self._con()
@@ -57,6 +65,29 @@ class CongelamentoTests(unittest.TestCase):
         self.assertEqual([c["pool"] for c in candidatos], ["NUNCAATIVO"])
         self.assertEqual(candidatos[0]["launchpad"], "pumpfun")
         self.assertEqual(candidatos[0]["criado_ts"], CREATED)
+        self.assertIsNone(candidatos[0]["l_bc"])
+        self.assertEqual(candidatos[0]["supply"], 1_000_000_000.0)
+        self.assertEqual(candidatos[0]["side"], "base")
+
+    def test_backfills_supply_and_side_for_a_pool_frozen_before_the_patch_without_changing_the_hash(self) -> None:
+        """Simula uma lista congelada pela VERSAO ANTERIOR do script (supply/side ainda nao existiam
+        como coluna) -- `congelar_candidatos` precisa preencher as colunas novas a partir de
+        `pr_pools` SEM re-congelar (hash/ts intactos)."""
+        now = time.time()
+        self.storage.pr_upsert_pool("ANTIGO", status="verificado", symbol="ANTIGO", supply=42.0,
+                                    info=json.dumps({"criado_ts": CREATED, "side": "token"}))
+        con = self._con()
+        try:
+            con.execute("INSERT INTO pr_retro_candidatos (pool, lista_hash, congelado_em) VALUES ('ANTIGO','HASHANTIGO',123.0)")
+            con.commit()
+            candidatos = retro.congelar_candidatos(con, now)
+        finally:
+            con.close()
+        self.assertEqual(len(candidatos), 1)
+        self.assertEqual(candidatos[0]["lista_hash"], "HASHANTIGO")
+        self.assertEqual(candidatos[0]["congelado_em"], 123.0)
+        self.assertEqual(candidatos[0]["supply"], 42.0)
+        self.assertEqual(candidatos[0]["side"], "token")
 
     def test_excludes_a_pool_currently_ativo(self) -> None:
         now = time.time()
@@ -174,8 +205,10 @@ class OrcamentoHttpClientTests(unittest.TestCase):
 
 class ProcessarCandidatoTests(unittest.TestCase):
     def _row(self, **over) -> dict:
-        base = {"pool": "POOL1", "symbol": "POOL1", "launchpad": "pumpfun", "l_bc": L_BC,
-               "grad_ts": GRAD, "criado_ts": CREATED}
+        # supply=1.0: os fixtures de `test_pos_runner_v1.py` (`textbook_v1`) ja estao em escala de MC;
+        # `l_bc` NUNCA e passado aqui de proposito -- PATCH 2026-11-02, e sempre CALCULADO, nunca lido.
+        base = {"pool": "POOL1", "symbol": "POOL1", "launchpad": "pumpfun", "grad_ts": GRAD,
+               "supply": 1.0, "side": "base", "criado_ts": CREATED}
         base.update(over)
         return base
 
@@ -197,28 +230,55 @@ class ProcessarCandidatoTests(unittest.TestCase):
         resultado = retro.processar_candidato(self._row(), ohlcv, None, p1, p1, CostModel(), time.time())
         self.assertTrue(resultado.historico_suficiente)
         self.assertTrue(resultado.chegou_runner)
+        self.assertFalse(resultado.idade_desconhecida)
         self.assertEqual(len(resultado.sinais_v1), n_entradas_esperado)
         self.assertEqual(len(resultado.sinais_v2), n_entradas_esperado)
         for sinal in resultado.sinais_v1:
             self.assertTrue(sinal["retroativo"])
 
-    def test_marks_sem_dados_pool_when_l_bc_or_criado_ts_is_missing(self) -> None:
+    def test_repro_caso_oa_never_promoted_pool_has_no_stored_l_bc_but_now_succeeds(self) -> None:
+        """PATCH 2026-11-02: reproduz o relato (60/60 `sem_dados_pool`, zero chamada de rede). Um
+        candidato 'verificado' JAMAIS tem `pr_pools.l_bc` (so `_refresh_core`, que so roda pra pool
+        'ativo', grava isso) -- a versao anterior deste script EXIGIA `l_bc` ja pronto e bloqueava
+        antes de qualquer `ohlcv.history()`. Agora `l_bc` e calculado a partir do 1o candle (MC) que
+        a propria chamada de rede devolve."""
+        bars = textbook_v1().bars
+        ohlcv = _FakeOhlcv(bars)
+        resultado = retro.processar_candidato(self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
+        self.assertEqual(ohlcv.chamadas_history, 1, "precisa de exatamente 1 chamada de historico -- nunca bloqueado antes dela")
+        self.assertTrue(resultado.historico_suficiente, resultado.motivo_sem_historico)
+        self.assertEqual(resultado.categoria, "ok")
+        self.assertGreaterEqual(len(resultado.sinais_v1), 1)
+
+    def test_marks_sem_dados_pool_when_grad_ts_or_supply_is_missing(self) -> None:
         ohlcv = _FakeOhlcv(textbook_v1().bars)
-        resultado = retro.processar_candidato(self._row(l_bc=None), ohlcv, None, params(), params(), CostModel(), time.time())
-        self.assertFalse(resultado.historico_suficiente)
-        self.assertEqual(resultado.motivo_sem_historico, "sem_dados_pool")
+        for campo in ("grad_ts", "supply"):
+            resultado = retro.processar_candidato(self._row(**{campo: None}), ohlcv, None, params(), params(), CostModel(), time.time())
+            self.assertFalse(resultado.historico_suficiente, campo)
+            self.assertEqual(resultado.categoria, "sem_dados_pool", campo)
+            self.assertEqual(ohlcv.chamadas_history, 0, f"{campo} ausente nunca deve chamar a rede")
+
+    def test_marks_idade_desconhecida_but_still_succeeds_when_criado_ts_is_missing(self) -> None:
+        """`criado_ts` ausente so e um atributo do resultado (idade desconhecida) -- nunca bloqueia
+        mais (o `DetectorV1` ja aceita `created_ts=None`, ENTRADA cai em FORA_DA_IDADE la dentro)."""
+        bars = textbook_v1().bars
+        ohlcv = _FakeOhlcv(bars)
+        resultado = retro.processar_candidato(self._row(criado_ts=None), ohlcv, None, params(), params(), CostModel(), time.time())
+        self.assertTrue(resultado.historico_suficiente)
+        self.assertTrue(resultado.idade_desconhecida)
 
     def test_marks_sem_historico_when_the_source_returns_no_candle(self) -> None:
         ohlcv = _FakeOhlcv([])
         resultado = retro.processar_candidato(self._row(), ohlcv, None, params(), params(), CostModel(), time.time())
         self.assertFalse(resultado.historico_suficiente)
+        self.assertEqual(resultado.categoria, "sem_historico")
         self.assertEqual(resultado.motivo_sem_historico, "sem_historico_na_fonte")
 
     def test_propagates_a_budget_error_instead_of_swallowing_it(self) -> None:
         from ..http import ApiError
 
         class _OhlcvOrcamentoEsgotado:
-            def history(self, pool, tf, start_ts):
+            def history(self, pool, tf, start_ts, currency="usd", side="base"):
                 raise ApiError("budget", "esgotado")
 
         with self.assertRaises(ApiError) as ctx:
