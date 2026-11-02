@@ -328,6 +328,60 @@ class PopulacaoAdmitidaTests(unittest.TestCase):
         self.assertAlmostEqual(admitida["mc_found_medio"], 250_000.0)
 
 
+class _FakeDexpaprikaIndisponivel:
+    def disponivel(self) -> bool:
+        return False
+
+
+class ExecutarPersistenciaTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (2a rodada): um candidato 'ok' numa execucao nunca pode ser refeito (nem
+    pedir rede) numa execucao seguinte, mesmo com o orcamento zerado."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="retro_exec_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _congelar(self, pools: list[str]) -> None:
+        now = time.time()
+        for p in pools:
+            self.storage.pr_upsert_pool(p, status="verificado", symbol=p, grad_ts=GRAD, supply=1.0,
+                                        info=json.dumps({"criado_ts": CREATED}))
+            self.storage.pr_vaga_descarte_insert(now, p)
+
+    def test_candidates_resolved_on_the_first_run_are_never_refetched_and_still_appear_on_the_second(self) -> None:
+        self._congelar(["POOL1", "POOL2", "POOL3"])
+        fake1 = _FakeOhlcv(textbook_v1().bars)
+        texto1 = retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15,
+                                ohlcv=fake1, dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertIn("ok=3", texto1)
+        self.assertIn("buscados=3", texto1)
+        self.assertEqual(fake1.chamadas_history, 3)
+
+        class _OhlcvNuncaDeveSerChamado:
+            def history(self, *a, **kw):
+                raise AssertionError("candidato ja 'ok' persistido nunca deve pedir historico de novo")
+
+        texto2 = retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=0,
+                                ohlcv=_OhlcvNuncaDeveSerChamado(), dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertIn("ok=3", texto2)
+        self.assertIn("buscados=0", texto2)
+
+    def test_reprocessar_forces_a_refetch_even_for_an_already_ok_candidate(self) -> None:
+        self._congelar(["POOL1"])
+        fake1 = _FakeOhlcv(textbook_v1().bars)
+        retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15,
+                      ohlcv=fake1, dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertEqual(fake1.chamadas_history, 1)
+        fake2 = _FakeOhlcv(textbook_v1().bars)
+        retro.executar(self.storage.paths.db, self.tmp / "cache", max_chamadas_hora=15, reprocessar=True,
+                      ohlcv=fake2, dexpaprika=_FakeDexpaprikaIndisponivel())
+        self.assertEqual(fake2.chamadas_history, 1)
+
+
 class ExecutarSemCandidatosTests(unittest.TestCase):
     """Fim a fim SEM rede: nenhum candidato congelado -- o laco de download nunca roda, so a
     mecanica de congelamento/relatorio e exercida."""

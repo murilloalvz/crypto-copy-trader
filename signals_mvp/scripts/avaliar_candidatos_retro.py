@@ -98,6 +98,24 @@ a partir de `pr_pools` na mesma conexao. `sem_dados_pool` agora e reservado ao c
 endereco de pool, ou `grad_ts`/`supply` da linhagem ainda incompletos -- raro/defensivo, nunca o caso
 comum); `pendente` (orcamento esgotado nesta execucao, ainda nao buscado) e `sem_historico` (buscado,
 GT/DexPaprika sem candle, ou `dado_invalido`) sao as 2 categorias que agora realmente se populam.
+
+PATCH 2026-11-02 (2a rodada -- relato do operador: uma execucao mostrou 5 candidatos "ok", a SEGUINTE
+(orcamento esgotado) relatou 0/60 com historico): `executar()` nunca persistia o resultado de um
+candidato ja processado -- cada execucao recomecava do zero em memoria, e so o cache de CANDLE em
+disco (`OhlcvStore`) sobrevivia entre execucoes. Pior: mesmo um candidato "ok" numa execucao anterior
+disparava uma chamada de rede NOVA na execucao seguinte (`OhlcvStore.history()` sempre confere "cauda
+nova" ate `now`), e se o orcamento JA estivesse zerado por outro candidato antes dele na lista, essa
+chamada levantava `ApiError("budget")` e o candidato "ok" virava "pendente" de novo -- nunca refeito de
+verdade, so NUNCA MOSTRADO.
+
+Fix: `pr_retro_resultados` (nova tabela, 1 linha por pool) guarda o resultado completo -- categoria,
+`n_candles`, `pico_mc`, `chegou_runner`, `idade_desconhecida`, sinais V1/V2 (JSON, com R por sinal),
+`versao_config_v1`/`versao_config_v2` (hash do `ParamsV1`/`ParamsV2` usado -- um resultado "ok" so e
+reaproveitado se os hashes ainda baterem com os congelados agora) e `ts_processado`. Um candidato com
+categoria `ok` persistida NUNCA e reprocessado (zero chamada de rede) a menos que `--reprocessar` seja
+passado explicitamente. O orcamento SO entra em jogo pra candidatos que ainda precisam de uma chamada
+de rede nova; o relatorio em si e sempre montado a partir do que esta persistido (+ o que acabou de ser
+processado nesta execucao), nunca gasta orcamento so para IMPRIMIR.
 """
 
 from __future__ import annotations
@@ -142,14 +160,27 @@ CREATE TABLE IF NOT EXISTS pr_retro_candidatos (
 # bancos que ja rodaram a versao anterior deste script (a lista/hash/congelado_em NUNCA mudam).
 _COLUNAS_NOVAS = {"supply": "REAL", "side": "TEXT"}
 
+# PATCH 2026-11-02 (2a rodada): resultado persistido por candidato -- um candidato "ok" nunca e
+# reprocessado (ver docstring do modulo); nenhuma ligacao com `pr1_signals`/`pr2_signals` (sinais
+# retroativos nunca entram ali).
+DDL_RETRO_RESULTADOS = """
+CREATE TABLE IF NOT EXISTS pr_retro_resultados (
+  pool TEXT PRIMARY KEY, categoria TEXT NOT NULL, motivo_sem_historico TEXT, n_candles INTEGER,
+  pico_mc REAL, chegou_runner INTEGER NOT NULL DEFAULT 0, idade_desconhecida INTEGER NOT NULL DEFAULT 0,
+  sinais_v1_json TEXT NOT NULL DEFAULT '[]', sinais_v2_json TEXT NOT NULL DEFAULT '[]',
+  versao_config_v1 TEXT, versao_config_v2 TEXT, ts_processado REAL NOT NULL
+);
+"""
+
 
 def _conectar_rw(db_path: Path) -> sqlite3.Connection:
-    """Read-write (precisa gravar `pr_retro_candidatos`), mas NUNCA passa por `Storage` (que roda a
-    migracao completa no `__init__`) -- so a tabela nova desta tabela e criada/migrada aqui, nada
-    mais."""
+    """Read-write (precisa gravar `pr_retro_candidatos`/`pr_retro_resultados`), mas NUNCA passa por
+    `Storage` (que roda a migracao completa no `__init__`) -- so as tabelas desta propria ferramenta
+    sao criadas/migradas aqui, nada mais."""
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     con.execute(DDL_RETRO_CANDIDATOS)
+    con.execute(DDL_RETRO_RESULTADOS)
     existentes = {r[1] for r in con.execute("PRAGMA table_info(pr_retro_candidatos)").fetchall()}
     for nome, tipo in _COLUNAS_NOVAS.items():
         if nome not in existentes:
@@ -302,6 +333,7 @@ class ResultadoCandidato:
     motivo_sem_historico: Optional[str] = None
     idade_desconhecida: bool = False
     pico_mc: Optional[float] = None
+    n_candles: Optional[int] = None
     chegou_runner: bool = False
     sinais_v1: list[dict[str, Any]] = None  # type: ignore[assignment]
     sinais_v2: list[dict[str, Any]] = None  # type: ignore[assignment]
@@ -311,6 +343,41 @@ class ResultadoCandidato:
             self.sinais_v1 = []
         if self.sinais_v2 is None:
             self.sinais_v2 = []
+
+
+def _persistir_resultado(con: sqlite3.Connection, resultado: ResultadoCandidato, versao_v1: str, versao_v2: str, now: float) -> None:
+    """Grava/substitui o resultado deste pool -- 1 linha por pool, sempre o MAIS RECENTE. Nunca toca
+    `pr1_signals`/`pr2_signals`/`pr_pools` (sinais retroativos nunca entram ali -- ver docstring)."""
+    con.execute(
+        "INSERT INTO pr_retro_resultados "
+        "(pool, categoria, motivo_sem_historico, n_candles, pico_mc, chegou_runner, idade_desconhecida, "
+        " sinais_v1_json, sinais_v2_json, versao_config_v1, versao_config_v2, ts_processado) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(pool) DO UPDATE SET categoria=excluded.categoria, motivo_sem_historico=excluded.motivo_sem_historico, "
+        "n_candles=excluded.n_candles, pico_mc=excluded.pico_mc, chegou_runner=excluded.chegou_runner, "
+        "idade_desconhecida=excluded.idade_desconhecida, sinais_v1_json=excluded.sinais_v1_json, "
+        "sinais_v2_json=excluded.sinais_v2_json, versao_config_v1=excluded.versao_config_v1, "
+        "versao_config_v2=excluded.versao_config_v2, ts_processado=excluded.ts_processado",
+        (resultado.pool, resultado.categoria, resultado.motivo_sem_historico, resultado.n_candles, resultado.pico_mc,
+         int(resultado.chegou_runner), int(resultado.idade_desconhecida),
+         json.dumps(resultado.sinais_v1), json.dumps(resultado.sinais_v2), versao_v1, versao_v2, now),
+    )
+    con.commit()
+
+
+def _ler_resultados(con: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    return {r["pool"]: r for r in con.execute("SELECT * FROM pr_retro_resultados").fetchall()}
+
+
+def _resultado_de_linha(symbol: str, linha: sqlite3.Row) -> ResultadoCandidato:
+    """Reconstroi um `ResultadoCandidato` a partir do que foi persistido -- usado pelo relatorio pra
+    nunca recalcular (zero chamada de rede) um candidato ja resolvido."""
+    return ResultadoCandidato(
+        linha["pool"], symbol, historico_suficiente=linha["categoria"] == "ok", categoria=linha["categoria"],
+        motivo_sem_historico=linha["motivo_sem_historico"], idade_desconhecida=bool(linha["idade_desconhecida"]),
+        pico_mc=linha["pico_mc"], n_candles=linha["n_candles"], chegou_runner=bool(linha["chegou_runner"]),
+        sinais_v1=json.loads(linha["sinais_v1_json"] or "[]"), sinais_v2=json.loads(linha["sinais_v2_json"] or "[]"),
+    )
 
 
 def processar_candidato(
@@ -357,7 +424,7 @@ def processar_candidato(
     launchpad = row["launchpad"]
     dex = DEX_OF_LAUNCHPAD.get(launchpad, "desconhecido")
     res = ResultadoCandidato(pool, symbol, historico_suficiente=True, pico_mc=max(b.high for b in bars),
-                             idade_desconhecida=criado_ts is None)
+                             n_candles=len(bars), idade_desconhecida=criado_ts is None)
     det_v1 = DetectorV1(params_v1, tf, l_bc, grad_ts, criado_ts) if qual1.valido else None
     det_v2 = DetectorV1(params_v2, tf, l_bc, grad_ts, criado_ts) if qual2.valido else None
     for bar in bars:
@@ -406,7 +473,8 @@ def _r_stats(sinais: list[dict[str, Any]]) -> dict[str, Any]:
 
 def formatar(resultados: list[ResultadoCandidato], admitida: dict[str, Any], lista_hash: str, congelado_em: float,
             buscados_nesta_execucao: int = 0, chamadas_usadas: int = 0, max_chamadas_hora: int = DEFAULT_MAX_CHAMADAS_HORA) -> str:
-    pendentes = [r for r in resultados if r.categoria == "pendente"]
+    ok = [r for r in resultados if r.categoria == "ok"]
+    pendentes = [r for r in resultados if r.categoria != "ok"]   # inclui sem_historico/sem_dados_pool/pendente -- ainda "em aberto"
     sem_historico_cat = [r for r in resultados if r.categoria == "sem_historico"]
     sem_dados_pool_cat = [r for r in resultados if r.categoria == "sem_dados_pool"]
     if buscados_nesta_execucao > 0 and chamadas_usadas > 0 and pendentes:
@@ -422,9 +490,9 @@ def formatar(resultados: list[ResultadoCandidato], admitida: dict[str, Any], lis
         "",
         f"congelamento: {len(resultados)} candidatos | lista_hash={lista_hash} | "
         f"congelado em {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(congelado_em))}",
-        f"nesta execucao: buscados={buscados_nesta_execucao} ({chamadas_usadas} chamadas GT) | "
-        f"restam (pendente)={len(pendentes)} | estimativa p/ terminar: {horas_estimadas} | "
-        f"sem_historico={len(sem_historico_cat)} | sem_dados_pool={len(sem_dados_pool_cat)}",
+        f"ok={len(ok)} | pendente={len(pendentes)} (sem_historico={len(sem_historico_cat)}, "
+        f"sem_dados_pool={len(sem_dados_pool_cat)}) | nesta execucao: buscados={buscados_nesta_execucao} "
+        f"({chamadas_usadas} chamadas GT) | estimativa p/ terminar: {horas_estimadas}",
         "",
     ]
     com_historico = [r for r in resultados if r.historico_suficiente]
@@ -477,41 +545,61 @@ def formatar(resultados: list[ResultadoCandidato], admitida: dict[str, Any], lis
     return "\n".join(out)
 
 
-def executar(db_path: Path, cache_dir: Path, max_chamadas_hora: int) -> str:
+def executar(db_path: Path, cache_dir: Path, max_chamadas_hora: int, reprocessar: bool = False,
+            ohlcv: Optional[Any] = None, dexpaprika: Optional[Any] = None) -> str:
+    """`ohlcv`/`dexpaprika`: injetaveis so pra teste (offline, sem rede real) -- `main()`/uso normal
+    nunca os passa, e `executar()` constroi os de verdade (GeckoTerminal + `OrcamentoHttpClient`)."""
     con = _conectar_rw(db_path)
     try:
         now = time.time()
         candidatos = congelar_candidatos(con, now)
         congelado_em = candidatos[0]["congelado_em"] if candidatos else now
         lista_hash = candidatos[0]["lista_hash"] if candidatos else hashlib.sha256(b"").hexdigest()
-        orcamento = OrcamentoHorario(cache_dir / "retro_orcamento.json", max_chamadas_hora)
-        http = OrcamentoHttpClient(GT_BASE, RateLimiter(26, 2, pause_s=30, pause_max_s=240, jitter_s=1.5),
-                                   30, name="GeckoTerminal-retro", orcamento=orcamento)
-        ohlcv = OhlcvStore(http, cache_dir / "ohlcv")
-        dexpaprika = make_dexpaprika_provider()
         params_v1, params_v2 = load_params_v1(), load_params_v2()
+        persistidos = _ler_resultados(con)
+        orcamento = OrcamentoHorario(cache_dir / "retro_orcamento.json", max_chamadas_hora)
+        if ohlcv is None:
+            http = OrcamentoHttpClient(GT_BASE, RateLimiter(26, 2, pause_s=30, pause_max_s=240, jitter_s=1.5),
+                                       30, name="GeckoTerminal-retro", orcamento=orcamento)
+            ohlcv = OhlcvStore(http, cache_dir / "ohlcv")
+        if dexpaprika is None:
+            dexpaprika = make_dexpaprika_provider()
         costs = CostModel()
         chamadas_antes = int((orcamento._carregar() or {}).get("chamadas") or 0)   # noqa: SLF001
         resultados: list[ResultadoCandidato] = []
         buscados_nesta_execucao = 0
         orcamento_esgotado = False
         for row in candidatos:
+            pool, symbol = row["pool"], row["symbol"] or row["pool"][:8]
+            linha = persistidos.get(pool)
+            # "ok" persistido com o MESMO hash de ParamsV1/ParamsV2 congelado agora: NUNCA refeito
+            # (zero chamada de rede) a menos que --reprocessar seja passado explicitamente.
+            ja_resolvido = (linha is not None and linha["categoria"] == "ok" and not reprocessar
+                           and linha["versao_config_v1"] == params_v1.version
+                           and linha["versao_config_v2"] == params_v2.version)
+            if ja_resolvido:
+                resultados.append(_resultado_de_linha(symbol, linha))
+                continue
             if orcamento_esgotado:
-                resultados.append(ResultadoCandidato(row["pool"], row["symbol"] or row["pool"][:8],
-                                                      historico_suficiente=False, categoria="pendente",
-                                                      motivo_sem_historico="pendente (orcamento horario esgotado nesta execucao)"))
+                # mantem o ultimo resultado persistido (se houver, mesmo nao-"ok") -- nunca apaga
+                # progresso de uma execucao anterior so porque esta parou mais cedo.
+                resultados.append(_resultado_de_linha(symbol, linha) if linha is not None else
+                                  ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="pendente",
+                                                     motivo_sem_historico="pendente (nunca tentado ou orcamento esgotado)"))
                 continue
             try:
-                resultados.append(processar_candidato(row, ohlcv, dexpaprika, params_v1, params_v2, costs, now))
+                resultado = processar_candidato(row, ohlcv, dexpaprika, params_v1, params_v2, costs, now)
+                _persistir_resultado(con, resultado, params_v1.version, params_v2.version, now)
+                resultados.append(resultado)
                 buscados_nesta_execucao += 1
             except ApiError as exc:
                 if exc.kind != "budget":
                     raise
                 log.info("retro: %s -- parando esta execucao, retomando na proxima", exc)
                 orcamento_esgotado = True
-                resultados.append(ResultadoCandidato(row["pool"], row["symbol"] or row["pool"][:8],
-                                                      historico_suficiente=False, categoria="pendente",
-                                                      motivo_sem_historico="pendente (orcamento horario esgotado nesta execucao)"))
+                resultados.append(_resultado_de_linha(symbol, linha) if linha is not None else
+                                  ResultadoCandidato(pool, symbol, historico_suficiente=False, categoria="pendente",
+                                                     motivo_sem_historico="pendente (nunca tentado ou orcamento esgotado)"))
         chamadas_depois = int((orcamento._carregar() or {}).get("chamadas") or 0)   # noqa: SLF001
         chamadas_usadas = max(0, chamadas_depois - chamadas_antes)
         admitida = _populacao_admitida(con)
@@ -525,10 +613,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--cache-dir", type=Path, default=None, help="padrao: dados/pos_runner_retro ao lado do --db")
     parser.add_argument("--max-chamadas-hora", type=int, default=DEFAULT_MAX_CHAMADAS_HORA)
+    parser.add_argument("--reprocessar", action="store_true",
+                        help="forca reprocessar candidatos JA 'ok' persistidos (por padrao, nunca sao refeitos)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     cache_dir = args.cache_dir or (args.db.parent / "pos_runner_retro")
-    print(executar(args.db, cache_dir, args.max_chamadas_hora))
+    print(executar(args.db, cache_dir, args.max_chamadas_hora, reprocessar=args.reprocessar))
     return 0
 
 
