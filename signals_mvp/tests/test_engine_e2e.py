@@ -456,6 +456,10 @@ class _FakePosRunnerForReport:
         self.summary_v2_calls = 0
         self.relatorio_calls = 0
         self.relatorio_v2_calls = 0
+        self.marcos_funil_calls = 0
+
+    def checar_e_alertar_marcos_funil(self, now: float) -> None:
+        self.marcos_funil_calls += 1
 
     def send_daily_bankroll_summary(self) -> None:
         self.bankroll_calls += 1

@@ -331,6 +331,23 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_fila_section_reports_how_many_clocks_were_corrected_and_the_per_pool_clock(self) -> None:
+        """PEDIDO 2026-11-02 (FASE 1a): contador de relogios ADIANTADOS + sem_fase_desde efetivo
+        (UTC)/horas por pool ativo, anexado ao motivo (sem furar o teto de 60 linhas)."""
+        import time as _time
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            h.storage.pr_sem_fase_desde_corrigido_insert(now, "OA")
+            h.storage.pr_sem_fase_desde_corrigido_insert(now - 40 * H, "FORA_DA_JANELA")   # >24h: nao conta
+            h.storage.pr_upsert_pool("OA", status="ativo", mint="MINT-OA", symbol="OA",
+                                     fase_v1="sem_fase", fase_v2="sem_fase", sem_fase_desde=now - 100 * H)
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("relogios corrigidos (24h)=1", texto)
+            self.assertIn("[100h desde", texto)
+        finally:
+            h.close()
+
 
 if __name__ == "__main__":
     unittest.main()

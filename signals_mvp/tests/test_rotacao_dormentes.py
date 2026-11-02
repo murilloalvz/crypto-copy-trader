@@ -5,7 +5,9 @@ prioridade) e tag `regime_amostragem`. Sem rede."""
 from __future__ import annotations
 
 import json
+import os
 import unittest
+from unittest import mock
 
 from ..http import CallBudget
 from ..pos_runner.candles import Bar
@@ -37,12 +39,12 @@ def _seed_verificado(h: LiveHarness, pool: str, mc_found: float, grad_ts: float 
 
 
 def _seed_ativo_incapaz(h: LiveHarness, pool: str, now: float, sem_fase_desde: float,
-                        mc_atual: float = 50_000.0) -> None:
-    """Pool ativo, sem_fase ha mais de `POS_RUNNER_ROTACAO_HORAS`, MC abaixo do piso -- so falta
-    "candidato esperando vaga" pra ser rotacionado."""
+                        mc_atual: float = 50_000.0, criado_ts: float = CREATED) -> None:
+    """Pool ativo, sem_fase ha mais do limiar (72h padrao, 24h se idade>=2d -- PEDIDO 2026-11-02
+    FASE 1b), MC abaixo do piso -- so falta "candidato esperando vaga" pra ser rotacionado."""
     h.storage.pr_upsert_pool(pool, status="ativo", mint=f"MINT-{pool}", symbol=pool, grad_ts=GRAD,
                              added_ts=GRAD, l_bc=1_000.0, sem_fase_desde=sem_fase_desde,
-                             info=json.dumps({"criado_ts": CREATED}))
+                             info=json.dumps({"criado_ts": criado_ts}))
     h.storage.pr_append_bars(pool, "1h", [(int(now), mc_atual, mc_atual, mc_atual, mc_atual, 1.0, True)])
 
 
@@ -74,13 +76,54 @@ class RotacaoVagasTests(unittest.TestCase):
             h.close()
 
     def test_never_rotates_before_the_sem_fase_threshold(self) -> None:
+        """Idade < 2d (PEDIDO 2026-11-02 FASE 1b: limiar reduzido so entra a partir de 2d) --
+        continua o limiar PADRAO de 72h; 71h ainda nao basta."""
         h = LiveHarness(settings=SETTINGS_MAX1)
         try:
             now = GRAD + 100 * H
-            _seed_ativo_incapaz(h, "POOL1", now, sem_fase_desde=now - (POS_RUNNER_ROTACAO_HORAS - 1) * H)
+            _seed_ativo_incapaz(h, "POOL1", now, sem_fase_desde=now - (POS_RUNNER_ROTACAO_HORAS - 1) * H,
+                               criado_ts=now - 1 * 86400.0)   # 1 dia de idade: < 2d, limiar fica 72h
             _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
             h.live._rotacionar_vagas(now)   # noqa: SLF001
             self.assertEqual(h.storage.pr_pool("POOL1")["status"], "ativo")
+        finally:
+            h.close()
+
+    def test_a_young_pool_under_2_days_old_with_30h_sem_fase_is_never_rotated(self) -> None:
+        """PEDIDO 2026-11-02 (FASE 1b, teste obrigatorio): pool de 1,5d com 30h de sem_fase NAO e
+        aposentado -- idade < 2d, limiar continua 72h (30h < 72h)."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            now = GRAD + 100 * H
+            _seed_ativo_incapaz(h, "POOL1", now, sem_fase_desde=now - 30 * H, criado_ts=now - 1.5 * 86400.0)
+            _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
+            h.live._rotacionar_vagas(now)   # noqa: SLF001
+            self.assertEqual(h.storage.pr_pool("POOL1")["status"], "ativo")
+        finally:
+            h.close()
+
+    def test_rotacao_thresholds_are_env_overridable(self) -> None:
+        """PEDIDO 2026-11-02 (FASE 1b): nada hardcoded -- os 3 limiares sao lidos de env a cada
+        chamada (mesmo padrao de `_fallback_dexpaprika_min_pendente`)."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            with mock.patch.dict(os.environ, {"POS_RUNNER_ROTACAO_HORAS_REDUZIDO": "5",
+                                              "POS_RUNNER_ROTACAO_IDADE_MIN_DIAS": "1"}):
+                self.assertEqual(h.live._rotacao_limiar_horas(1.5), 5.0)   # noqa: SLF001
+            self.assertEqual(h.live._rotacao_limiar_horas(1.5), POS_RUNNER_ROTACAO_HORAS, "env restaurada: padrao de volta")
+        finally:
+            h.close()
+
+    def test_a_pool_3_days_old_with_25h_sem_fase_and_low_mc_is_rotated(self) -> None:
+        """PEDIDO 2026-11-02 (FASE 1b, teste obrigatorio): pool de 3d com 25h de sem_fase e MC<min_mc
+        E' aposentado -- idade >= 2d, limiar cai pra 24h (25h > 24h)."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            now = GRAD + 100 * H
+            _seed_ativo_incapaz(h, "POOL1", now, sem_fase_desde=now - 25 * H, criado_ts=now - 3 * 86400.0)
+            _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)
+            h.live._rotacionar_vagas(now)   # noqa: SLF001
+            self.assertEqual(h.storage.pr_pool("POOL1")["status"], "dormente")
         finally:
             h.close()
 
@@ -319,8 +362,10 @@ class OaRotacaoBugReproTests(unittest.TestCase):
 
 class SemFaseDesdeReplayTests(unittest.TestCase):
     """PEDIDO 2026-11-02 (antecipar rotacao sem mudar a regra): testes diretos de
-    `_sem_fase_desde_por_replay` (zero rede, zero toque no detector ao vivo -- so `pr_bars` ja em
-    cache)."""
+    `_sem_fase_desde_por_replay` -- funcao PURA (zero rede, zero toque no detector ao vivo, zero
+    grava/conta -- isso e responsabilidade de quem chama: `_persistir_fases`, que conta o
+    preenchimento inicial em `pr_sem_fase_desde_replay`, ver `OaRotacaoBugReproTests`/
+    `FASE1aRelogioCorrigidoTests`)."""
 
     def _pool(self, h: LiveHarness, pool: str, bars: list) -> None:
         h.storage.pr_upsert_pool(pool, status="ativo", mint=f"MINT-{pool}", symbol=pool, grad_ts=GRAD,
@@ -335,7 +380,7 @@ class SemFaseDesdeReplayTests(unittest.TestCase):
             self._pool(h, "POOL1", bars)
             resultado = h.live._sem_fase_desde_por_replay("POOL1", GRAD + 100 * H)   # noqa: SLF001
             self.assertEqual(resultado, float(GRAD))
-            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 1)
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 0, "funcao pura: nunca conta por si")
         finally:
             h.close()
 
@@ -367,6 +412,99 @@ class SemFaseDesdeReplayTests(unittest.TestCase):
             resultado = h.live._sem_fase_desde_por_replay("POOL1", now)   # noqa: SLF001
             self.assertEqual(resultado, now)
             self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 0, "sem candle: nunca conta como replay")
+        finally:
+            h.close()
+
+
+class FASE1aRelogioCorrigidoTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1a): `_persistir_fases` conta o preenchimento inicial
+    (`pr_sem_fase_desde_replay`); `_corrigir_relogios_por_replay`/`_corrigir_relogios_periodico`
+    ADIANTAM um relogio JA gravado (nunca o preenchem do zero) e contam em
+    `pr_sem_fase_desde_corrigido`."""
+
+    def _pool_sem_fase_longa(self, h: LiveHarness, pool: str = "POOL1") -> int:
+        """184 candles horarios continuos, MC sempre abaixo de runner_min_mc -- `primeiro_candle_ts`
+        e o valor que o replay deveria encontrar."""
+        now0 = h.clock()
+        primeiro_candle_ts = now0 - 184 * H
+        h.storage.pr_upsert_pool(pool, status="ativo", mint=f"MINT-{pool}", symbol=pool, grad_ts=GRAD,
+                                 added_ts=GRAD, l_bc=1_000.0, quote=USDC, supply=SUPPLY,
+                                 sem_fase_desde=None, info=json.dumps({"criado_ts": CREATED}))
+        bars = []
+        t = primeiro_candle_ts
+        while t <= now0 - H:
+            bars.append((int(t), 3_900.0, 3_900.0, 3_900.0, 3_900.0, 1.0, True))
+            t += H
+        h.storage.pr_append_bars(pool, "1h", bars)
+        return int(primeiro_candle_ts)
+
+    def test_persistir_fases_counts_the_initial_fill(self) -> None:
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            primeiro = self._pool_sem_fase_longa(h)
+            h.live._persistir_fases("POOL1", h.live.params_v1.timeframes[0], h.clock())   # noqa: SLF001
+            row = h.storage.pr_pool("POOL1")
+            self.assertAlmostEqual(row["sem_fase_desde"], float(primeiro), delta=1.0)
+            self.assertEqual(h.storage.pr_sem_fase_desde_replay_count_desde(0.0), 1)
+            self.assertEqual(h.storage.pr_sem_fase_desde_corrigido_count_desde(0.0), 0, "preenchimento, nunca correcao")
+        finally:
+            h.close()
+
+    def test_correction_advances_a_clock_stamped_as_now_before_this_fix_existed(self) -> None:
+        """Simula o caso real (restart de 02/11 16:11Z): `sem_fase_desde` gravado como `now` de um
+        tick antigo, bem mais recente que o 1o candle real em cache."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            primeiro = self._pool_sem_fase_longa(h)
+            gravado_errado = h.clock() - 2 * H   # bem depois do 1o candle real (184h atras)
+            h.storage.pr_upsert_pool("POOL1", sem_fase_desde=gravado_errado)
+            corrigidos = h.live._corrigir_relogios_por_replay(h.clock())   # noqa: SLF001
+            self.assertEqual(corrigidos, 1)
+            row = h.storage.pr_pool("POOL1")
+            self.assertAlmostEqual(row["sem_fase_desde"], float(primeiro), delta=1.0)
+            self.assertEqual(h.storage.pr_sem_fase_desde_corrigido_count_desde(0.0), 1)
+        finally:
+            h.close()
+
+    def test_correction_never_makes_a_clock_worse(self) -> None:
+        """Relogio ja gravado MAIS antigo que o replay encontraria (ex.: alguem gravou na mao, ou
+        um candle antigo saiu do cache) -- nunca atrasa, so adianta."""
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            primeiro = self._pool_sem_fase_longa(h)
+            gravado_ja_melhor = float(primeiro) - 1000.0
+            h.storage.pr_upsert_pool("POOL1", sem_fase_desde=gravado_ja_melhor)
+            corrigidos = h.live._corrigir_relogios_por_replay(h.clock())   # noqa: SLF001
+            self.assertEqual(corrigidos, 0)
+            self.assertEqual(h.storage.pr_pool("POOL1")["sem_fase_desde"], gravado_ja_melhor)
+        finally:
+            h.close()
+
+    def test_correction_skips_a_pool_currently_in_pullback_or_with_an_open_position(self) -> None:
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="POOL1", grad_ts=GRAD,
+                                     l_bc=1_000.0, quote=USDC, supply=SUPPLY, sem_fase_desde=h.clock() - H,
+                                     fase_v1="pullback", info=json.dumps({"criado_ts": CREATED}))
+            corrigidos = h.live._corrigir_relogios_por_replay(h.clock())   # noqa: SLF001
+            self.assertEqual(corrigidos, 0)
+        finally:
+            h.close()
+
+    def test_periodico_runs_at_startup_and_then_waits_6h(self) -> None:
+        h = LiveHarness(settings=SETTINGS_MAX1)
+        try:
+            self._pool_sem_fase_longa(h)
+            gravado_errado = h.clock() - 2 * H
+            h.storage.pr_upsert_pool("POOL1", sem_fase_desde=gravado_errado)
+            h.live._corrigir_relogios_periodico(h.clock())   # 1a chamada: corrige   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sem_fase_desde_corrigido_count_desde(0.0), 1)
+            # regrava errado de proposito e chama de novo logo depois -- dentro das 6h, nunca corrige
+            h.storage.pr_upsert_pool("POOL1", sem_fase_desde=gravado_errado)
+            h.live._corrigir_relogios_periodico(h.clock() + H)   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sem_fase_desde_corrigido_count_desde(0.0), 1, "ainda dentro de 6h")
+            h.live._corrigir_relogios_periodico(h.clock() + 7 * H)   # noqa: SLF001
+            self.assertEqual(h.storage.pr_sem_fase_desde_corrigido_count_desde(0.0), 2, "passou de 6h")
         finally:
             h.close()
 

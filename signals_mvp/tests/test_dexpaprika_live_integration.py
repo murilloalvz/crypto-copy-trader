@@ -123,6 +123,11 @@ class PendenciaFallbackTests(unittest.TestCase):
         try:
             start_tracking(h)
             h.run_hours(5)
+            # PEDIDO 2026-11-02 (FASE 1f): limiar de pendencia agora e MENOR (5min) pra pool quente/
+            # morno -- este teste cobre o limiar PADRAO (20min, pool fria/sem detector), nunca o
+            # reduzido (ja coberto em `RetentativaCurtaTests`); forca heat=-1 (sem carga).
+            for dets in (h.live.dets, h.live.dets_v1, h.live.dets_v2):
+                dets.pop(("POOL1", "1h"), None)
             stub = _StubDexPaprikaProvider(fallback_bars=[])
             h.live.dexpaprika = stub
             row = h.storage.pr_pool("POOL1")

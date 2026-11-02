@@ -802,6 +802,7 @@ class Engine:
             self.pos_runner.send_daily_bankroll_summary()   # _send ja trata falha do Telegram sem propagar
             self.pos_runner.send_daily_summary_v1()
             self.pos_runner.send_daily_summary_v2()   # PEDIDO ADICIONAL FASE 5: resumo diario tambem para a V2 (no-op se SEM_V2)
+            self.pos_runner.checar_e_alertar_marcos_funil(now)   # PEDIDO 2026-11-02 (FASE 1e): N=15/N=30, idempotente
             if local.weekday() == 6:   # domingo (FASE 3, item 3): relatorio semanal junto do resumo diario
                 self.pos_runner.send_relatorio_semanal_v1()
                 self.pos_runner.send_relatorio_semanal_v2()

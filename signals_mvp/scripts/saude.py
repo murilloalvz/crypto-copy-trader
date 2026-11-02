@@ -214,6 +214,9 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     # foram preenchidos pela 1a vez por REPLAY causal (nunca `now`) nas ultimas 24h -- ver
     # live.py: _sem_fase_desde_por_replay.
     relogios_replay_24h = storage.pr_sem_fase_desde_replay_count_desde(now - 24 * 3600.0)
+    # PEDIDO 2026-11-02 (FASE 1a): quantos relogios JA gravados foram ADIANTADOS pela correcao
+    # periodica (live.py: _corrigir_relogios_por_replay) -- distinto do preenchimento inicial acima.
+    relogios_corrigidos_24h = storage.pr_sem_fase_desde_corrigido_count_desde(now - 24 * 3600.0)
     dormentes_agora = len(storage.pr_dormentes("dormente"))
     candidatos_esperando = sum(1 for r in storage.pr_pools("verificado") if "criado_ts" in json.loads(r["info"] or "{}"))
     # PEDIDO 2026-11-02 (diagnostico do caso OA -- 0 aposentados com 60 candidatos esperando):
@@ -225,14 +228,22 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     barrados = Counter(m for m in motivos_por_pool.values() if m != "elegivel_agora")
     elegiveis = [p for p, m in motivos_por_pool.items() if m == "elegivel_agora"]
     simbolo_de = {row["pool"]: (row["symbol"] or row["pool"][:8]) for row in pools}
+    # PEDIDO 2026-11-02 (FASE 1a): sem_fase_desde efetivo (UTC) + horas em sem_fase, por pool ativo --
+    # anexado ao MESMO motivo (nunca uma linha nova por pool, pra nao furar o teto de 60 linhas).
+    relogio_de: dict[str, str] = {}
+    for row in pools:
+        sfd = row["sem_fase_desde"]
+        relogio_de[row["pool"]] = "" if sfd is None else (
+            f"[{(now - sfd) / 3600.0:.0f}h desde {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(sfd))}]")
     out.append(
         f"  rotacao: aposentados (24h)={aposentados_rotacao_24h} | readmitidos (24h)={readmitidos_24h} | "
         f"dormentes agora={dormentes_agora} | candidatos esperando vaga={candidatos_esperando} | "
         f"relogios preenchidos por replay (24h)={relogios_replay_24h} | "
+        f"relogios corrigidos (24h)={relogios_corrigidos_24h} | "
         f"elegiveis agora={len(elegiveis)} | barrados por motivo: " +
         (", ".join(f"{k}={v}" for k, v in sorted(barrados.items())) or "nenhum") +
         " | motivo por pool ativo: " +
-        (", ".join(f"{simbolo_de[p]}={m}" for p, m in sorted(motivos_por_pool.items())) or "nenhum pool ativo"))
+        (", ".join(f"{simbolo_de[p]}={m}{relogio_de[p]}" for p, m in sorted(motivos_por_pool.items())) or "nenhum pool ativo"))
     out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])

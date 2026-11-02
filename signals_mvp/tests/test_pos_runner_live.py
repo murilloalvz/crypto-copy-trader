@@ -17,6 +17,7 @@ from ..http import ApiError, CallBudget, RateLimited
 from ..models import ChainCtx
 from ..pos_runner import charts
 from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.detector_v1 import PHASE_PULLBACK
 from ..pos_runner.live import (
     LAG_S,
     VERIFY_MAX_ATTEMPTS,
@@ -985,6 +986,116 @@ class EngineHookTest(unittest.TestCase):
         finally:
             quiet.close()
             busy.close()
+
+
+class ApiUsoInstrumentacaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1c): instrumentacao de uso de API -- so medicao, nunca decide nada."""
+
+    def test_a_real_gt_poll_is_logged_as_poll_pool_and_the_candle_latency_is_recorded(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(3)
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertGreater(uso.get("poll_pool", 0), 0)
+            latencias = h.storage.pr_candle_latencias_desde(0.0)
+            self.assertTrue(latencias)
+            self.assertTrue(all(lat >= 0 for lat in latencias), "latencia nunca negativa (candle ja fechado)")
+        finally:
+            h.close()
+
+
+class RetentativaCurtaTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1f): pool quente/morno sem candle novo ainda retentar logo (+2/+5/
+    +10min), nunca esperar o fechamento inteiro seguinte."""
+
+    def test_schedule_ou_retentativa_curta_uses_the_short_ladder_then_falls_back_to_normal(self) -> None:
+        h = LiveHarness()
+        try:
+            hora_boundary = (h.clock() // 3600) * 3600
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 1 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 2 * 60.0)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 3 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 5 * 60.0)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 7 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 10 * 60.0)
+            # esgotou a ladder (>=10min pendente): cai no agendamento NORMAL (proximo fechamento)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 11 * 60.0)   # noqa: SLF001
+            self.assertGreater(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 3600.0 - 1.0)
+        finally:
+            h.close()
+
+    def test_fallback_dexpaprika_min_pendente_is_shorter_for_a_hot_pool(self) -> None:
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="POOL1")
+            padrao = h.live._fallback_dexpaprika_min_pendente("POOL1", "1h")   # noqa: SLF001 -- sem detector: heat -1
+            self.assertEqual(padrao, 20.0)
+            h.live.dets_v1[("POOL1", "1h")] = _FakeDetPhase(PHASE_PULLBACK)
+            quente = h.live._fallback_dexpaprika_min_pendente("POOL1", "1h")   # noqa: SLF001
+            self.assertEqual(quente, 5.0)
+        finally:
+            h.close()
+
+
+class _FakeDetPhase:
+    def __init__(self, phase: int) -> None:
+        self.phase = phase
+
+
+class RssAmostraTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1d): amostra RSS a cada 15min, nunca altera max_pools."""
+
+    def test_amostra_once_then_waits_15_minutes(self) -> None:
+        h = LiveHarness()
+        try:
+            now = h.clock()
+            h.live._amostrar_rss_periodico(now)   # noqa: SLF001
+            amostras1 = h.storage.pr_rss_amostras_desde(0.0)
+            self.assertEqual(len(amostras1), 1)
+            h.live._amostrar_rss_periodico(now + 60.0)   # noqa: SLF001
+            self.assertEqual(len(h.storage.pr_rss_amostras_desde(0.0)), 1, "menos de 15min: nao amostra de novo")
+            h.live._amostrar_rss_periodico(now + 16 * 60.0)   # noqa: SLF001
+            self.assertEqual(len(h.storage.pr_rss_amostras_desde(0.0)), 2)
+        finally:
+            h.close()
+
+
+class MarcosFunilTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1e): alerta idempotente (pr_alert_once) quando tokens distintos
+    fechados cruza 15/30."""
+
+    def _fechar_n_tokens(self, h: LiveHarness, n: int) -> None:
+        for i in range(n):
+            h.storage.pr1_insert_signal({
+                "chain": "solana", "pool": f"POOL{i}", "tf": "1h", "ts_fechamento": i,
+                "versao_config_v1": h.live.version_v1, "status": "fechado",
+            })
+
+    def test_fires_once_at_15_and_once_at_30(self) -> None:
+        h = LiveHarness()
+        try:
+            self._fechar_n_tokens(h, 15)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 1)
+            self.assertIn("15 tokens", h.tg.sent[-1][0])
+            h.live.checar_e_alertar_marcos_funil(h.clock())   # mesma contagem: nunca repete
+            self.assertEqual(len(h.tg.sent), 1)
+            self._fechar_n_tokens(h, 30)   # ja tinha 15 distintos (POOL0..14); agora soma 30 novos (POOL0..29)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 2)
+            self.assertIn("30 tokens", h.tg.sent[-1][0])
+        finally:
+            h.close()
+
+    def test_never_fires_below_15(self) -> None:
+        h = LiveHarness()
+        try:
+            self._fechar_n_tokens(h, 14)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 0)
+        finally:
+            h.close()
 
 
 if __name__ == "__main__":

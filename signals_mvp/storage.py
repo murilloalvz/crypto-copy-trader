@@ -438,6 +438,33 @@ CREATE INDEX IF NOT EXISTS pr_dormentes_status ON pr_dormentes (status);
 CREATE TABLE IF NOT EXISTS pr_sem_fase_desde_replay (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL
 );
+-- PEDIDO 2026-11-02 (FASE 1a): 1 linha cada vez que a correcao periodica (`_corrigir_relogios_por_
+-- replay`) ADIANTA um `sem_fase_desde` JA gravado (nunca o preenchimento inicial de um None, que
+-- fica em `pr_sem_fase_desde_replay` acima).
+CREATE TABLE IF NOT EXISTS pr_sem_fase_desde_corrigido (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL
+);
+-- PEDIDO 2026-11-02 (FASE 1c): instrumentacao de uso de API -- SO medicao, nunca decide nada.
+-- finalidade: poll_pool|baseline|trajetoria|sombra|radar|verificacao_candidato|carteiras|coorte_retro
+-- (sombra/radar reusam candle JA buscado por poll_pool -- nunca geram linha propria, por design).
+CREATE TABLE IF NOT EXISTS pr_api_uso (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, fonte TEXT NOT NULL, finalidade TEXT NOT NULL,
+  pool TEXT, http_status INTEGER, rate_limited INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS pr_api_uso_ts ON pr_api_uso (ts);
+-- PEDIDO 2026-11-02 (FASE 1c): segundos entre o fechamento do candle de 1h e o processamento pelo
+-- detector (V1) -- SO medicao, nunca decide nada.
+CREATE TABLE IF NOT EXISTS pr_candle_latencia (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  latencia_s REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_candle_latencia_ts ON pr_candle_latencia (ts);
+-- PEDIDO 2026-11-02 (FASE 1d): amostra periodica de RSS do processo + quantos pools ativos naquele
+-- instante -- SO medicao, NUNCA altera `max_pools`.
+CREATE TABLE IF NOT EXISTS pr_rss_amostra (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, rss_kb INTEGER NOT NULL, n_pools_ativos INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_rss_amostra_ts ON pr_rss_amostra (ts);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -1907,6 +1934,49 @@ class Storage:
     def pr_sem_fase_desde_replay_count_desde(self, since_ts: float) -> int:
         row = self._one("SELECT COUNT(*) AS n FROM pr_sem_fase_desde_replay WHERE ts>=?", (since_ts,))
         return row["n"] if row else 0
+
+    # -- PEDIDO 2026-11-02 (FASE 1a): contador de relogios JA gravados que a correcao periodica
+    # -- ADIANTOU (nunca o preenchimento inicial, ver pr_sem_fase_desde_replay acima).
+    def pr_sem_fase_desde_corrigido_insert(self, ts: float, pool: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO pr_sem_fase_desde_corrigido (ts, pool) VALUES (?,?)", (ts, pool))
+
+    def pr_sem_fase_desde_corrigido_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_sem_fase_desde_corrigido WHERE ts>=?", (since_ts,))
+        return row["n"] if row else 0
+
+    # -- PEDIDO 2026-11-02 (FASE 1c): instrumentacao de uso de API (so medicao, nunca decide nada).
+    def pr_api_uso_insert(self, ts: float, fonte: str, finalidade: str, pool: Optional[str] = None,
+                          http_status: Optional[int] = None, rate_limited: bool = False) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_api_uso (ts, fonte, finalidade, pool, http_status, rate_limited) VALUES (?,?,?,?,?,?)",
+                (ts, fonte, finalidade, pool, http_status, int(rate_limited)))
+
+    def pr_api_uso_count_por_finalidade_desde(self, since_ts: float) -> dict[str, int]:
+        rows = self._all("SELECT finalidade, COUNT(*) AS n FROM pr_api_uso WHERE ts>=? GROUP BY finalidade", (since_ts,))
+        return {r["finalidade"]: r["n"] for r in rows}
+
+    def pr_api_uso_rate_limited_count_desde(self, since_ts: float) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM pr_api_uso WHERE ts>=? AND rate_limited=1", (since_ts,))
+        return row["n"] if row else 0
+
+    def pr_candle_latencia_insert(self, ts: float, pool: str, tf: str, latencia_s: float) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO pr_candle_latencia (ts, pool, tf, latencia_s) VALUES (?,?,?,?)",
+                             (ts, pool, tf, latencia_s))
+
+    def pr_candle_latencias_desde(self, since_ts: float) -> list[float]:
+        return [r["latencia_s"] for r in self._all("SELECT latencia_s FROM pr_candle_latencia WHERE ts>=?", (since_ts,))]
+
+    # -- PEDIDO 2026-11-02 (FASE 1d): capacidade -- RSS por pool, nunca altera max_pools.
+    def pr_rss_amostra_insert(self, ts: float, rss_kb: int, n_pools_ativos: int) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO pr_rss_amostra (ts, rss_kb, n_pools_ativos) VALUES (?,?,?)",
+                             (ts, rss_kb, n_pools_ativos))
+
+    def pr_rss_amostras_desde(self, since_ts: float) -> list[sqlite3.Row]:
+        return self._all("SELECT rss_kb, n_pools_ativos FROM pr_rss_amostra WHERE ts>=?", (since_ts,))
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:

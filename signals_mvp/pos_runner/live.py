@@ -68,6 +68,26 @@ from .solana_rpc import SIGNATURES_PAGE_SIZE, RpcError, anchor_at_or_after
 log = logging.getLogger("signals_mvp.pos_runner.live")
 console = logging.getLogger("signals_mvp.console")
 
+
+def _rss_atual_kb() -> Optional[int]:
+    """PEDIDO 2026-11-02 (FASE 1d): RSS ATUAL (nao o pico) do processo -- `/proc/self/status`
+    (Linux, VmRSS em KB), com fallback pro pico de `resource.getrusage` (ainda em KB no Linux) se
+    `/proc` nao existir (ex.: dev fora de Linux) -- `None` se nenhum dos dois funcionar, nunca um
+    numero inventado."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except Exception:  # noqa: BLE001 - instrumentacao nunca pode derrubar o ciclo
+        pass
+    try:
+        import resource
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 TFS = ("5m", "1h", "4h")
 # PEDIDO 2026-10-30 (item 5b, contador/vagas): aposenta pool ATIVO que esta MORTO (nunca toca regra de
 # deteccao/entrada/saida/banca -- so decide QUEM fica sob observacao, liberando vaga de `max_pools`
@@ -78,6 +98,11 @@ RETIRADA_QUEDA_PCT = 99.5
 # que `_retire_estagnado` (sem_fase ha mais tempo, queda alem da faixa mais LARGA que existe -- V2,
 # 96% -- em vez de 99,5%): nunca remove runner/pullback/posicao/trajetoria/baseline pendente, so
 # libera vaga quando NENHUMA versao congelada (V1 ou V2) jamais aceitaria mais um sinal desta onda.
+# PEDIDO 2026-11-02 (FASE 1b): valores PADRAO, lidos via env por `_rotacao_horas_padrao`/
+# `_rotacao_horas_reduzido`/`_rotacao_idade_min_dias_reduzido` abaixo -- AMOSTRAGEM pura (decide so
+# QUEM fica observado), nunca uma regra de deteccao; por isso fica FORA de `ParamsV1`/`ParamsV2`
+# (nunca muda o hash `279b79ffa3f0`/`d57b4331d51d`), mesma convencao ja em vigor de
+# `rotacao_max_por_hora`/`QUEDA_ROTACAO_PCT`/`SEM_ROTACAO`.
 POS_RUNNER_ROTACAO_HORAS = 72.0
 QUEDA_ROTACAO_PCT = 96.0
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
@@ -568,6 +593,8 @@ class PosRunnerLive:
         self.source_idx = 0
         self.last_prune = 0.0
         self.last_baselines = 0.0
+        self._ultima_correcao_relogios: Optional[float] = None   # PEDIDO 2026-11-02 (FASE 1a): a cada 6h
+        self._ultima_amostra_rss: Optional[float] = None   # PEDIDO 2026-11-02 (FASE 1d): a cada 15min
         self.last_tick: dict[str, Any] = {}
         self.version = params.version
         self.version_start: Optional[float] = None     # 1o ciclo desta versao_config (decisao anterior nao vira sinal)
@@ -724,6 +751,10 @@ class PosRunnerLive:
         sinal dela); paper aberto de outra versao vira `descontinuado` (outra regra; fica fora de qualquer avaliacao);
         pool ativo sem a data de criacao (verificado por uma versao anterior do bot) volta para a fila ate a thread de
         linhagem buscar a criacao."""
+        # PEDIDO 2026-11-02 (FASE 1a): corrige logo no startup -- os relogios atuais podem ter sido
+        # gravados como `now` num restart anterior a esta correcao existir (ver docstring de
+        # `_corrigir_relogios_por_replay`); nunca espera 6h pra corrigir o que ja deveria estar certo.
+        self._corrigir_relogios_periodico(now, forcar=True)
         self.version_start = self.storage.pr_version_start(self.version, now)
         for signal in self.storage.pr_signals(status="aberto"):
             if signal["versao_config"] != self.version:
@@ -959,17 +990,41 @@ class PosRunnerLive:
                     return True
         return False
 
+    @staticmethod
+    def _rotacao_horas_padrao() -> float:
+        return float(os.environ.get("POS_RUNNER_ROTACAO_HORAS", str(POS_RUNNER_ROTACAO_HORAS)))
+
+    @staticmethod
+    def _rotacao_horas_reduzido() -> float:
+        return float(os.environ.get("POS_RUNNER_ROTACAO_HORAS_REDUZIDO", "24"))
+
+    @staticmethod
+    def _rotacao_idade_min_dias_reduzido() -> float:
+        return float(os.environ.get("POS_RUNNER_ROTACAO_IDADE_MIN_DIAS", "2.0"))
+
+    def _rotacao_limiar_horas(self, idade_dias: Optional[float]) -> float:
+        """PEDIDO 2026-11-02 (FASE 1b): limiar de sem_fase cai de 72h (padrao) pra 24h quando a
+        idade do TOKEN (desde a criacao, nao desde a graduacao) ja passou de 2 dias -- um token
+        velho que nunca formou caixa tem muito menos chance de formar uma daqui pra frente do que
+        um recem-chegado; amostragem pura (decide so quando um pool incapaz libera vaga), a regra
+        de deteccao continua intocada. Idade desconhecida (sem `criado_ts`) usa o limiar PADRAO,
+        nunca o reduzido -- conservador, nunca acelera a rotacao sem saber a idade real."""
+        if idade_dias is not None and idade_dias >= self._rotacao_idade_min_dias_reduzido():
+            return self._rotacao_horas_reduzido()
+        return self._rotacao_horas_padrao()
+
     def _rotacionar_vagas(self, now: float) -> None:
         """PEDIDO 2026-10-30 (FASE 2, item 2): libera vaga de `max_pools` por incapacidade
-        ESTRUTURAL -- TODAS as condicoes: sem_fase em V1 E V2 ha mais de `POS_RUNNER_ROTACAO_HORAS`
-        (`_persistir_fases` rastreia `sem_fase_desde`); MC atual < piso OU queda do pico >
-        `QUEDA_ROTACAO_PCT` (a faixa MAIS LARGA que existe -- V2 -- nenhuma versao congelada
-        aceitaria mais um sinal desta onda); sem posicao aberta nem evidencia pendente
-        (`_evidencia_pendente`); NUNCA runner/pullback (so entra na lista se `sem_fase_desde` nao e
-        None). Max `rotacao_max_por_hora` (pacing em memoria, nunca um invariante cientifico), so
-        SE houver candidato esperando vaga. `SEM_ROTACAO=1` desliga por completo. Nunca toca
-        detector/regra de V1/V2 -- so decide QUEM fica sob observacao; pool vai pra 'dormente'
-        (pode ser readmitido, `_recheck_dormentes`), NUNCA 'encerrado' como `_retire_estagnado`."""
+        ESTRUTURAL -- TODAS as condicoes: sem_fase em V1 E V2 ha mais do limiar (`_rotacao_limiar_
+        horas` -- 72h padrao, 24h se idade>=2d, PEDIDO 2026-11-02 FASE 1b; `_persistir_fases`
+        rastreia `sem_fase_desde`); MC atual < piso OU queda do pico > `QUEDA_ROTACAO_PCT` (a faixa
+        MAIS LARGA que existe -- V2 -- nenhuma versao congelada aceitaria mais um sinal desta
+        onda); sem posicao aberta nem evidencia pendente (`_evidencia_pendente`); NUNCA runner/
+        pullback (so entra na lista se `sem_fase_desde` nao e None). Max `rotacao_max_por_hora`
+        (pacing em memoria, nunca um invariante cientifico), so SE houver candidato esperando
+        vaga. `SEM_ROTACAO=1` desliga por completo. Nunca toca detector/regra de V1/V2 -- so
+        decide QUEM fica sob observacao; pool vai pra 'dormente' (pode ser readmitido,
+        `_recheck_dormentes`), NUNCA 'encerrado' como `_retire_estagnado`."""
         if self.sem_rotacao:
             return
         self._rotacoes_recentes = [t for t in self._rotacoes_recentes if now - t < 3600.0]
@@ -979,10 +1034,15 @@ class PosRunnerLive:
         esperando = [r for r in self.storage.pr_pools("verificado") if "criado_ts" in LineageVerifier._info(r)]
         if not esperando:
             return
-        candidatos: list[tuple[float, Any, Optional[float]]] = []
+        candidatos: list[tuple[float, Any, Optional[float], float]] = []
         for row in self.storage.pr_pools("ativo"):
             pool = row["pool"]
-            if row["sem_fase_desde"] is None or now - row["sem_fase_desde"] < POS_RUNNER_ROTACAO_HORAS * 3600.0:
+            if row["sem_fase_desde"] is None:
+                continue
+            criado_ts = self._created(row)
+            idade_dias = None if criado_ts is None else (now - criado_ts) / 86400.0
+            limiar_horas = self._rotacao_limiar_horas(idade_dias)
+            if now - row["sem_fase_desde"] < limiar_horas * 3600.0:
                 continue
             if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
                 continue
@@ -996,11 +1056,11 @@ class PosRunnerLive:
             incapaz = (mc_atual is not None and mc_atual < self.params_v1.min_mc_usd) or \
                       (queda_pct is not None and queda_pct > QUEDA_ROTACAO_PCT)
             if incapaz:
-                candidatos.append((row["sem_fase_desde"], row, mc_atual))
+                candidatos.append((row["sem_fase_desde"], row, mc_atual, limiar_horas))
         candidatos.sort(key=lambda x: x[0])   # sem_fase ha mais tempo primeiro
-        for _, row, mc_atual in candidatos[:min(vagas, len(esperando))]:
+        for _, row, mc_atual, limiar_horas in candidatos[:min(vagas, len(esperando))]:
             pool = row["pool"]
-            motivo = f"rotacao: incapacidade estrutural (sem_fase > {POS_RUNNER_ROTACAO_HORAS:.0f}h, V1 e V2)"
+            motivo = f"rotacao: incapacidade estrutural (sem_fase > {limiar_horas:.0f}h, V1 e V2)"
             self.storage.pr_upsert_pool(pool, status="dormente", checked_ts=now, motivo=motivo)
             self.storage.pr_dormente_insert(pool, row["mint"], row["symbol"], motivo, mc_atual, now)
             self.storage.pr_rotacao_ativacao_ts(now)
@@ -1196,6 +1256,11 @@ class PosRunnerLive:
         # por ciclo pra TODO pool ativo, independente de candle novo -- zero chamada de rede, so
         # leitura do estado ja em memoria.
         self._persistir_fases_todos(now)
+        # PEDIDO 2026-11-02 (FASE 1a): corrige relogios ja gravados (nunca so os None) a cada 6h --
+        # ver docstring de `_corrigir_relogios_por_replay`. Depois de `_persistir_fases_todos` (que
+        # ja preenche os None nesta mesma passada) e antes de `_rotacionar_vagas` (que le o relogio).
+        self._corrigir_relogios_periodico(now)
+        self._amostrar_rss_periodico(now)   # PEDIDO 2026-11-02 (FASE 1d): capacidade, nunca altera max_pools
         self._rotacionar_vagas(now)
         # PEDIDO 2026-10-30 (FASE 2, item 3): orcamento PROPRIO (1 chamada, nunca soma a `cap_total`
         # do ciclo principal) -- mesmo `budget`/limitador compartilhado do GT, so uma permissao extra
@@ -1340,6 +1405,8 @@ class PosRunnerLive:
                 sem_fase_desde = row["sem_fase_desde"]
             else:
                 sem_fase_desde = self._sem_fase_desde_por_replay(pool, now)
+                if sem_fase_desde is not None:
+                    self.storage.pr_sem_fase_desde_replay_insert(now, pool)
         self.storage.pr_upsert_pool(pool, fase_v1=fase_v1, fase_v2=fase_v2, sem_fase_desde=sem_fase_desde)
 
     def _sem_fase_desde_por_replay(self, pool: str, now: float) -> Optional[float]:
@@ -1372,9 +1439,63 @@ class PosRunnerLive:
                 ultimo_ativo_ts = bar.ts
         if ultimo_ativo_ts is not None and ultimo_ativo_ts == bars[-1].ts:
             return None   # ativo AGORA (ultimo candle) -- nunca um relogio
-        resultado = float(bars[0].ts) if ultimo_ativo_ts is None else float(ultimo_ativo_ts)
-        self.storage.pr_sem_fase_desde_replay_insert(now, pool)
-        return resultado
+        return float(bars[0].ts) if ultimo_ativo_ts is None else float(ultimo_ativo_ts)
+
+    def _corrigir_relogios_por_replay(self, now: float) -> int:
+        """PEDIDO 2026-11-02 (FASE 1a -- relogios atuais foram gravados como `now` no restart de
+        02/11 16:11Z, antes do preenchimento por replay existir): roda no `_startup` e a cada 6h
+        (`tick()`), recalcula `sem_fase_desde` de TODO pool ativo por REPLAY causal e grava o MENOR
+        entre o valor ja gravado e o do replay -- nunca PIOR (um relogio ja correto ou mais antigo
+        nunca e adiantado). Pula pool em runner/pullback agora OU com posicao aberta (V1 ou V2) --
+        o relogio desses e None por definicao, fora do escopo desta correcao. Zero chamada de rede
+        (so `pr_bars` ja em cache); devolve quantos relogios foram efetivamente ADIANTADOS (para
+        `pr_sem_fase_desde_corrigido`, que `saude.py` conta)."""
+        corrigidos = 0
+        for row in self.storage.pr_pools("ativo"):
+            pool = row["pool"]
+            fase_v1 = self._fase_label_v1(pool, self.params_v1.timeframes[0])
+            fase_v2 = self._fase_label_v2(pool, self.params_v2.timeframes[0])
+            if fase_v1 != "sem_fase" or fase_v2 != "sem_fase":
+                continue
+            if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+                continue
+            gravado = row["sem_fase_desde"]
+            if gravado is None:
+                continue   # ainda vazio: `_persistir_fases`/`_persistir_fases_todos` preenchem (e contam la, nao aqui)
+            replay = self._sem_fase_desde_por_replay(pool, now)
+            if replay is None:
+                continue   # replay diz "ativo agora": discrepancia transitoria, nunca sobrescreve pra None aqui
+            if replay < gravado:
+                self.storage.pr_upsert_pool(pool, sem_fase_desde=replay)
+                self.storage.pr_sem_fase_desde_corrigido_insert(now, pool)
+                corrigidos += 1
+        return corrigidos
+
+    CORRECAO_RELOGIOS_INTERVALO_S = 6 * 3600.0   # PEDIDO 2026-11-02 (FASE 1a): a cada 6h, nunca mais
+
+    def _corrigir_relogios_periodico(self, now: float, forcar: bool = False) -> None:
+        """`forcar=True` so no `_startup` (corrige de cara, nunca espera 6h); `tick()` chama sem
+        `forcar`, respeitando o intervalo de `CORRECAO_RELOGIOS_INTERVALO_S`."""
+        if not forcar and (self._ultima_correcao_relogios is not None
+                           and now - self._ultima_correcao_relogios < self.CORRECAO_RELOGIOS_INTERVALO_S):
+            return
+        self._corrigir_relogios_por_replay(now)
+        self._ultima_correcao_relogios = now
+
+    RSS_AMOSTRA_INTERVALO_S = 15 * 60.0   # PEDIDO 2026-11-02 (FASE 1d): a cada 15min
+
+    def _amostrar_rss_periodico(self, now: float) -> None:
+        """PEDIDO 2026-11-02 (FASE 1d): amostra RSS atual + pools ativos agora -- so medicao, NUNCA
+        altera `max_pools`. RSS indisponivel (`_rss_atual_kb() is None`, ambiente sem `/proc` nem
+        `resource`): nunca grava, nunca inventa um numero."""
+        if (self._ultima_amostra_rss is not None
+                and now - self._ultima_amostra_rss < self.RSS_AMOSTRA_INTERVALO_S):
+            return
+        self._ultima_amostra_rss = now
+        rss_kb = _rss_atual_kb()
+        if rss_kb is None:
+            return
+        self.storage.pr_rss_amostra_insert(now, rss_kb, len(self.storage.pr_pools("ativo")))
 
     def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
         """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao
@@ -1608,8 +1729,14 @@ class PosRunnerLive:
         if not fallback_ja_tentado:
             self._tentar_fallback_por_pendencia(row, tf, now)
 
-    @staticmethod
-    def _fallback_dexpaprika_min_pendente() -> float:
+    def _fallback_dexpaprika_min_pendente(self, pool: Optional[str] = None, tf: Optional[str] = None) -> float:
+        """PEDIDO 2026-11-02 (FASE 1f): limiar REDUZIDO (padrao 5min) pra pool QUENTE/MORNO
+        (`_heat` 0/1 -- runner/pullback/posicao aberta), em vez do padrao de 20min -- um sinal
+        possivel nunca deveria esperar tanto so por falta de captura. Sem `pool`/`tf` (chamador
+        generico) ou pool frio/sem carga: continua o padrao de 20min, comportamento IDENTICO a
+        antes desta emenda."""
+        if pool is not None and tf is not None and self._heat(pool, tf) in (0, 1):
+            return float(os.environ.get("POS_RUNNER_FALLBACK_DP_MIN_QUENTE", "5"))
         return float(os.environ.get("POS_RUNNER_FALLBACK_DP_MIN", "20"))
 
     def _tentar_fallback_por_pendencia(self, row: Any, tf: str, now: float) -> None:
@@ -1626,7 +1753,7 @@ class PosRunnerLive:
             return
         hora_boundary = (now // 3600) * 3600
         minutos = (now - hora_boundary) / 60.0
-        if minutos < self._fallback_dexpaprika_min_pendente():
+        if minutos < self._fallback_dexpaprika_min_pendente(row["pool"], tf):
             return
         key = (row["pool"], tf)
         st = self.sched.setdefault(key, {"next": 0.0, "erros": 0.0})
@@ -1645,7 +1772,7 @@ class PosRunnerLive:
             st["ultimo_erro"] = None if cobriu else "dexpaprika_sem_candle_novo"
             if cobriu:
                 log.info("POS-RUNNER: fallback DexPaprika (>=%.0fmin pendente) cobriu %s %s",
-                         self._fallback_dexpaprika_min_pendente(), row["symbol"], tf)
+                         self._fallback_dexpaprika_min_pendente(row["pool"], tf), row["symbol"], tf)
         except Exception:  # noqa: BLE001 - o fallback e so um extra, nunca pode piorar o ciclo
             st["ultima_tentativa"] = now
             st["fonte"] = "dexpaprika_fallback"
@@ -3078,6 +3205,23 @@ class PosRunnerLive:
         nxt = (int((now - LAG_S) // interval) + 1) * interval + LAG_S
         self.sched[(pool, tf)] = {"next": nxt, "erros": 0.0}
 
+    RETENTATIVA_CURTA_MIN = (2.0, 5.0, 10.0)   # PEDIDO 2026-11-02 (FASE 1f): minutos desde o fechamento da hora
+
+    def _schedule_ou_retentativa_curta(self, pool: str, tf: str, now: float) -> None:
+        """PEDIDO 2026-11-02 (FASE 1f): so chamado pra pool QUENTE/MORNO (`_heat` 0/1) sem candle
+        novo ainda nesta hora -- tenta de novo em +2, +5 ou +10min (desde o fechamento da hora,
+        nunca desde `now`) em vez de esperar o fechamento INTEIRO seguinte (~1h). Esgotada a
+        ladder (>=10min pendente), cai no agendamento NORMAL (`_schedule`) -- nunca martela pra
+        sempre; a partir dai, `_tentar_fallback_por_pendencia` (limiar reduzido pra pool quente/
+        morno) e o `_late()` da ENTRADA continuam cobrindo o resto, como hoje."""
+        hora_boundary = (now // 3600) * 3600
+        minutos_passados = (now - hora_boundary) / 60.0
+        for passo in self.RETENTATIVA_CURTA_MIN:
+            if minutos_passados < passo:
+                self.sched[(pool, tf)] = {"next": hora_boundary + passo * 60.0, "erros": 0.0}
+                return
+        self._schedule(pool, tf, now)
+
     def _refresh(self, row: Any, tf: str, now: float) -> None:
         self._refresh_core(row, tf, now, self._fetch_gt, fonte="gt")
 
@@ -3133,7 +3277,23 @@ class PosRunnerLive:
             elif fonte == "gt":
                 self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}
             return
-        raw = fetch_fn(pool, tf, row["grad_ts"], now, info.get("side", "base"))
+        # PEDIDO 2026-11-02 (FASE 1c): instrumentacao de uso de API -- so medicao, nunca decide
+        # nada. Confere o contador de chamadas DE VERDADE (`BudgetedHttp.used` pro GT,
+        # `DexPaprikaProvider.chamadas_fallback` pro DexPaprika) antes/depois -- uma janela ja
+        # totalmente coberta pelo cache em disco do `OhlcvStore` nunca gera linha aqui (nao seria
+        # uma "chamada", so leitura local).
+        usadas_antes = self.http.used if fonte == "gt" else getattr(self.dexpaprika, "chamadas_fallback", 0)
+        try:
+            raw = fetch_fn(pool, tf, row["grad_ts"], now, info.get("side", "base"))
+        except RateLimited:
+            self.storage.pr_api_uso_insert(now, fonte, "poll_pool", pool, http_status=429, rate_limited=True)
+            raise
+        except ApiError as exc:
+            self.storage.pr_api_uso_insert(now, fonte, "poll_pool", pool, http_status=exc.status, rate_limited=False)
+            raise
+        usadas_depois = self.http.used if fonte == "gt" else getattr(self.dexpaprika, "chamadas_fallback", 0)
+        if usadas_depois > usadas_antes:
+            self.storage.pr_api_uso_insert(now, fonte, "poll_pool", pool, http_status=200, rate_limited=False)
         first_load = last is None
         fresh = [b for b in raw if b.ts + step <= now - LAG_S and (last is None or b.ts > last.ts)]
         ok = self._usd_prefix(fresh, tf, usd)
@@ -3172,6 +3332,11 @@ class PosRunnerLive:
                     self._update_paper(row, f"{tf}_fecham", det_fecham, now, alerts=False)
             if det_v1 is not None:
                 for b in seq:
+                    # PEDIDO 2026-11-02 (FASE 1c): latencia = segundos entre o FECHAMENTO do candle
+                    # (b.ts + step) e o instante em que o detector o processa agora -- so medicao,
+                    # nunca influencia a decisao (V1/V2 compartilham o MESMO candle; medido so 1x
+                    # aqui, representativo das duas).
+                    self.storage.pr_candle_latencia_insert(now, pool, tf, now - (b.ts + step))
                     for ev in det_v1.update(b):
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)
@@ -3227,6 +3392,12 @@ class PosRunnerLive:
         # Reagendar primeiro garante que a coleta "ao lado" nunca atrasa a cadencia oficial de candles/alerta.
         if len(ok) < len(fresh):
             self.sched[(pool, tf)] = {"next": now + 60.0, "erros": 0.0}     # faltou cotacao no fim: tenta logo
+        elif not mc and tf == "1h" and self._heat(pool, tf) in (0, 1):
+            # PEDIDO 2026-11-02 (FASE 1f): pool QUENTE/MORNO (runner/pullback/posicao aberta --
+            # `_heat` 0 ou 1) cujo candle da hora ainda nao chegou -- retentativa CURTA em vez de
+            # esperar o proximo fechamento inteiro (~1h). Nunca muda o detector/regra, so a
+            # CADENCIA de busca -- um sinal real nunca e perdido so por falta de captura.
+            self._schedule_ou_retentativa_curta(pool, tf, now)
         else:
             self._schedule(pool, tf, now)
         if not self.sem_carteiras:
@@ -3597,6 +3768,30 @@ class PosRunnerLive:
 
     def send_daily_bankroll_summary(self) -> None:
         self._send(self.daily_bankroll_summary())
+
+    MARCOS_FUNIL = (15, 30)   # PEDIDO 2026-11-02 (FASE 1e): N=15 checagem de futilidade, N=30 /analise
+
+    def checar_e_alertar_marcos_funil(self, now: float) -> None:
+        """PEDIDO 2026-11-02 (FASE 1e): avisa 1 UNICA vez (idempotente, `pr_alert_once` -- nunca
+        repete) quando o numero de tokens DISTINTOS fechados (V1 ou V2) cruza 15 (checagem de
+        futilidade do plano, nunca um p-valor de decisao antes disso) e 30 (roda `/analise`).
+        Chamado na MESMA cadencia do resumo diario (`engine.maybe_send_daily_summary`)."""
+        pools = {r["pool"] for r in self.storage.pr1_signals(status="fechado")} | \
+                {r["pool"] for r in self.storage.pr2_signals(status="fechado")}
+        n = len(pools)
+        for marco in self.MARCOS_FUNIL:
+            if n < marco:
+                continue
+            if not self.storage.pr_alert_once(f"funil:n{marco}", now):
+                continue
+            if marco == 15:
+                texto = (f"📊 POS-RUNNER: {n} tokens distintos fechados (marco {marco}) -- hora de "
+                        f"uma checagem de FUTILIDADE do plano (o ritmo atual ainda chega a 30 num "
+                        f"tempo razoavel? `funil_diario.py` tem o ETA). Ainda SEM p-valor de decisao.")
+            else:
+                texto = (f"📊 POS-RUNNER: {n} tokens distintos fechados (marco {marco}) -- amostra "
+                        f"pronta para `/analise` (confirmatoria, conforme o protocolo).")
+            self._send(texto)
 
     # -- status ----------------------------------------------------------------------------------------
     def status_line(self) -> str:
