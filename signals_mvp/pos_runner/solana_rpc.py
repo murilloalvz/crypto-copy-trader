@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from ..http import RateLimiter
+from ..http import SLOW_CALL_WARN_S, RateLimiter
 
 log = logging.getLogger("signals_mvp.pos_runner.rpc")
 
@@ -82,11 +82,19 @@ class SolanaRpc:
         burst: int = 4,
         timeout_s: float = 40.0,
         max_attempts: int = 8,
+        max_wait_s: float = 20.0,
+        max_total_wait_s: float = 30.0,
         session: Optional[requests.Session] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         post: Optional[Callable[[str, dict], Any]] = None,
     ):
+        """`max_wait_s`: teto por TENTATIVA de espera no limitador local (BUG PRIORITARIO 2026-10-22: antes
+        era 300.0 fixo em `call_raw`, deixando o chamador -- o ciclo principal ao vivo, no caso de
+        `SolanaAdapter.holders()` -- bloqueado minutos por 1 unica chamada). `max_total_wait_s`: teto de
+        PAREDE sobre a chamada INTEIRA (todas as `max_attempts` tentativas somadas); esgotado isso,
+        `call_raw` desiste na hora (RpcError('exhausted', ...)) em vez de continuar tentando -- e o
+        circuit-breaker que falta o item 2 do bug pedir ("teto maximo para Retry-After e backoff")."""
         if not endpoints:
             raise ValueError("sem endpoint RPC")
         self.endpoints = list(endpoints)
@@ -96,6 +104,8 @@ class SolanaRpc:
         }
         self.timeout = (10.0, timeout_s)
         self.max_attempts = max_attempts
+        self.max_wait_s = max_wait_s
+        self.max_total_wait_s = max_total_wait_s
         self.session = session or requests.Session()
         self._clock = clock
         self._sleep = sleep
@@ -107,9 +117,15 @@ class SolanaRpc:
         self.daily_limited: dict[str, float] = {}   # endpoint -> ate quando fica de fora do rodizio
 
     def _send(self, url: str, payload: dict) -> Any:
-        if self._post is not None:
-            return self._post(url, payload)
-        response = self.session.post(url, json=payload, timeout=self.timeout)
+        t0 = self._clock()
+        try:
+            if self._post is not None:
+                return self._post(url, payload)
+            response = self.session.post(url, json=payload, timeout=self.timeout)
+        finally:
+            elapsed = self._clock() - t0
+            if elapsed > SLOW_CALL_WARN_S:
+                log.warning("rpc: chamada lenta (%.1fs) em %s (%s)", elapsed, host_of(url), payload.get("method"))
         if response.status_code == 429:
             code = None
             try:
@@ -132,9 +148,19 @@ class SolanaRpc:
                     host_of(url), DAILY_LIMIT_PAUSE_S / 60.0)
 
     def call_raw(self, method: str, params: list) -> dict:
-        """Resposta JSON-RPC inteira ({result} ou {error}). Erro de transporte -> rodizio e nova tentativa."""
+        """Resposta JSON-RPC inteira ({result} ou {error}). Erro de transporte -> rodizio e nova tentativa.
+
+        BUG PRIORITARIO (2026-10-22): `start` + o teto `max_total_wait_s` sao o circuit-breaker que faltava --
+        antes cada tentativa podia esperar ate 300s no limitador (`max_wait_s` fixo), e com `max_attempts`
+        tentativas isso deixava uma UNICA chamada (ex.: `SolanaAdapter.holders()`, que roda no ciclo principal,
+        nao numa thread separada) bloqueada por minutos. Agora cada tentativa espera no maximo `self.max_wait_s`
+        e a chamada INTEIRA desiste depois de `self.max_total_wait_s` de parede, mesmo com tentativas sobrando."""
         last: Optional[Exception] = None
+        start = self._clock()
         for attempt in range(self.max_attempts):
+            if self._clock() - start > self.max_total_wait_s:
+                raise RpcError("exhausted", f"{method}: {self.max_total_wait_s:.0f}s de parede sem resposta "
+                                            f"({type(last).__name__ if last else '-'})")
             now = self._clock()
             live = [u for u in self.endpoints if u not in self.pruned and self.daily_limited.get(u, 0.0) <= now]
             if not live:
@@ -145,12 +171,12 @@ class SolanaRpc:
             url = live[(self._next + attempt) % len(live)]
             limiter = self.limiters[url]
             try:
-                limiter.acquire(max_wait_s=300.0)
+                limiter.acquire(max_wait_s=self.max_wait_s)
             except Exception as exc:  # em pausa de 429: tenta outro endpoint
                 last = exc
                 wait = limiter.blocked_for()
                 if attempt + 1 >= len(self.endpoints):
-                    self._sleep(min(wait, 30.0) if wait > 0 else 1.0)
+                    self._sleep(min(wait, self.max_wait_s) if wait > 0 else 1.0)
                 continue
             self.calls += 1
             try:

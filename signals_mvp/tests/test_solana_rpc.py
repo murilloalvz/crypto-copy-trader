@@ -113,5 +113,49 @@ class DailyLimitTests(unittest.TestCase):
         self.assertEqual(rpc.daily_limited, {})
 
 
+class CircuitBreakerTests(unittest.TestCase):
+    """BUG PRIORITARIO (2026-10-22): antes, cada tentativa de `call_raw` podia esperar até 300s fixos no
+    limitador local (`max_wait_s`), e com `max_attempts` tentativas isso deixava uma Única chamada de RPC
+    -- `SolanaAdapter.holders()`, que roda no ciclo PRINCIPAL, nunca numa thread separada -- bloqueada por
+    minutos (o suficiente pra disparar o watchdog de stall). Agora cada tentativa tem um teto bem menor
+    (`max_wait_s`, padrão 20s) e a chamada INTEIRA desiste após `max_total_wait_s` de parede (padrão 30s),
+    mesmo com tentativas de sobra."""
+
+    def test_call_raw_gives_up_on_the_wall_clock_budget_before_exhausting_every_attempt(self) -> None:
+        calls = {"n": 0}
+
+        def post(url, payload):
+            calls["n"] += 1
+            return {"error": {"code": 429, "message": "slow down"}}   # 429 pra sempre: nunca se recupera
+
+        clock = FakeClock()
+        rpc = SolanaRpc([QN], per_min=600, clock=clock, sleep=clock.advance, post=post,
+                        max_attempts=20, max_wait_s=20.0, max_total_wait_s=30.0)
+        with self.assertRaises(RpcError) as ctx:
+            rpc.call_raw("getSlot", [])
+        self.assertEqual(ctx.exception.kind, "exhausted")
+        self.assertLess(calls["n"], 20, "tinha que desistir pelo teto de parede, nao por esgotar as tentativas")
+        self.assertLess(clock.t, 60.0, f"tempo simulado nao pode disparar muito alem do teto (30s), ficou em {clock.t}")
+
+    def test_default_max_wait_s_is_small_not_the_old_300s(self) -> None:
+        rpc = SolanaRpc([QN])
+        self.assertLessEqual(rpc.max_wait_s, 30.0)
+        self.assertLessEqual(rpc.max_total_wait_s, 60.0)
+
+    def test_slow_call_logs_a_warning(self) -> None:
+        calls = {"n": 0}
+
+        def post(url, payload):
+            calls["n"] += 1
+            clock.advance(25.0)   # mais que SLOW_CALL_WARN_S (20s)
+            return {"result": "ok"}
+
+        clock = FakeClock()
+        rpc = SolanaRpc([QN], per_min=600, clock=clock, sleep=clock.advance, post=post)
+        with self.assertLogs("signals_mvp.pos_runner.rpc", level="WARNING") as ctx:
+            self.assertEqual(rpc.call("getSlot", []), "ok")
+        self.assertTrue(any("lenta" in msg for msg in ctx.output))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,12 +10,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Optional
+from unittest import mock
 
 from ..config import ConfigError, build_config, make_paths
 from ..http import ApiError, CallBudget, RateLimited
 from ..models import ChainCtx
 from ..pos_runner import charts
 from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.detector_v1 import PHASE_PULLBACK
 from ..pos_runner.live import (
     LAG_S,
     VERIFY_MAX_ATTEMPTS,
@@ -121,7 +123,8 @@ def created_at(ts: Optional[float] = CREATED, seen: int = 1234):
 
 
 class LiveHarness:
-    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True):
+    def __init__(self, settings: Optional[LiveSettings] = None, start: float = GRAD + 8 * H + 120, telegram: bool = True,
+                **live_kwargs: Any):
         self.tmp = Path(tempfile.mkdtemp(prefix="pr_live_"))
         self.paths = make_paths(self.tmp)
         self.storage = Storage(self.paths)
@@ -131,12 +134,12 @@ class LiveHarness:
         self.settings = settings or LiveSettings(ligado=True, timeframes=("1h",), max_pools=5, chamadas_por_ciclo=3,
                                                  descoberta_min=3, fontes=("pumpswap",), grafico=False)
         self.params = params()
-        self.live = self.new_live()
+        self.live = self.new_live(**live_kwargs)
         self.verifier = LineageVerifier(self.storage, None, clock=self.clock, verify=ok_lineage(), creation=created_at())
 
-    def new_live(self, telegram: Any = None) -> PosRunnerLive:
+    def new_live(self, telegram: Any = None, **kwargs: Any) -> PosRunnerLive:
         return PosRunnerLive(self.settings, self.params, self.storage, self.world, CTX, telegram or self.tg, LINKS, "solana",
-                             self.paths.dados / "pos_runner", clock=self.clock)
+                             self.paths.dados / "pos_runner", clock=self.clock, **kwargs)
 
     def list_pool(self, pool: str = "POOL1", mint: str = "MINT1", symbol: str = "CAT", mc: float = 1_000_000.0,
                   created: float = GRAD + 60, dex: str = "pumpswap") -> None:
@@ -408,10 +411,13 @@ class LiveFlowTest(unittest.TestCase):
         row = h.storage.pr_pool("POOL1")
         self.assertEqual(row["status"], "ativo")
         self.assertAlmostEqual(row["l_bc"], textbook().bars[0].open)
+        # "👀 WATCHLIST POS-RUNNER" e o prefixo exato do V0 (`watch_text`); a V1 roda em paralelo sobre os
+        # mesmos candles e tem seu proprio alerta de watchlist ("👀 [POS_RUNNER] WATCHLIST") -- o filtro aqui
+        # pega so o do V0, que e o que este teste verifica.
         h.run_hours(15)                                      # candle 22: zona com teste, mas ainda sem 12 candles
-        self.assertEqual([t for t in h.texts() if t.startswith("👀")], [])
+        self.assertEqual([t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")], [])
         h.run_hours(1)                                       # candle 23: zona madura (12 candles desde o fundo + 1 teste)
-        watch = [t for t in h.texts() if t.startswith("👀")]
+        watch = [t for t in h.texts() if t.startswith("👀 WATCHLIST POS-RUNNER")]
         self.assertEqual(len(watch), 1, h.texts())
         self.assertIn("Zona S 150k – R 260k", watch[0])            # R inclui o 1o repique
         self.assertIn("morre se fechar abaixo de 152k", watch[0])  # minima do teste (155k) - 2%
@@ -688,7 +694,10 @@ class CreationAndVersionTest(unittest.TestCase):
         signals = h.storage.pr_signals()
         self.assertEqual(len(signals), 2)                     # a mesma entrada refeita dos candles NAO vira sinal da v2
         self.assertEqual({s["status"] for s in signals}, {"descontinuado"})
-        self.assertEqual(len(h.texts()), sent)                # nenhum alerta novo
+        # +2: o heartbeat da V1 E da V2 (PEDIDO 2026-10-29) saem ja no 1o tick de QUALQUER instancia
+        # nova (revisao FASE 1.1) -- nao e um alerta novo do V0 (o que este teste verifica), e sim o
+        # heartbeat do live2 recem-criado.
+        self.assertEqual(len(h.texts()), sent + 2)
         self.assertEqual(len(live2.dets[("POOL1", "1h")].bars), len(h.storage.pr_bars("POOL1", "1h")))
 
     def test_switching_back_to_an_old_version_does_not_adopt_what_another_version_decided(self) -> None:
@@ -814,6 +823,160 @@ class BudgetTest(unittest.TestCase):
             h.close()
 
 
+class CapacidadeRotacaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): espalhamento da hora cheia
+    (so pools frios/sem carga) + teto suave de chamadas GT/min na 2a passada de `tick()`."""
+
+    def test_jitter_e_deterministico_e_fica_dentro_da_janela(self) -> None:
+        h = LiveHarness()
+        try:
+            j1 = h.live._jitter_espalhar_s("POOLX", "1h", 1800.0)   # noqa: SLF001
+            j2 = h.live._jitter_espalhar_s("POOLX", "1h", 1800.0)   # noqa: SLF001
+            self.assertEqual(j1, j2, "MESMO pool/tf sempre cai no MESMO offset")
+            self.assertGreaterEqual(j1, 0.0)
+            self.assertLess(j1, 300.0)   # JANELA_ESPALHAMENTO_S
+            j_outro = h.live._jitter_espalhar_s("POOLY", "1h", 1800.0)   # noqa: SLF001
+            self.assertNotEqual(j1, j_outro, "pools diferentes tendem a cair em offsets diferentes")
+        finally:
+            h.close()
+
+    def test_schedule_nunca_espalha_pool_em_fase_ativa_so_frio_ou_sem_carga(self) -> None:
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOLFRIO", status="ativo")   # sem detector -> heat == -1
+            now = h.clock()
+            h.live._schedule("POOLFRIO", "1h", now)   # noqa: SLF001
+            nxt_frio_puro = (int((now - LAG_S) // 1800.0) + 1) * 1800.0 + LAG_S
+            self.assertGreaterEqual(h.live.sched[("POOLFRIO", "1h")]["next"], nxt_frio_puro)
+        finally:
+            h.close()
+
+    def test_orcamento_por_minuto_esgota_e_se_recupera_apos_60s(self) -> None:
+        h = LiveHarness()
+        try:
+            now = h.clock()
+            h.live._registrar_chamadas_gt(now, 25)   # noqa: SLF001 -- acima do teto padrao (20)
+            self.assertEqual(h.live._orcamento_disponivel_este_minuto(now), 0)   # noqa: SLF001
+            self.assertEqual(h.live._orcamento_disponivel_este_minuto(now + 61.0), 20)   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_max_chamadas_por_min_e_configuravel_via_env(self) -> None:
+        h = LiveHarness()
+        try:
+            with mock.patch.dict("os.environ", {"POS_RUNNER_MAX_CHAMADAS_POR_MIN": "5"}):
+                self.assertEqual(h.live._max_chamadas_por_min(), 5)   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_tick_nunca_throttla_a_1a_passada_rank_0_mesmo_com_orcamento_do_minuto_esgotado(self) -> None:
+        """Posicao aberta (rank==0) tem prioridade ABSOLUTA -- o teto de chamadas/min so se aplica
+        na 2a passada (descoberta + rank>0), nunca pode atrasar uma fase ativa."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(22)   # abre 1 posicao V1 (mesmo cenario de outros testes desta suite)
+            h.live._chamadas_gt_recentes = [h.clock()] * 25   # noqa: SLF001 -- orcamento do minuto esgotado
+            bars_antes = len(h.storage.pr_bars("POOL1", "1h"))
+            h.clock.advance(H)
+            h.tick()
+            self.assertGreater(len(h.storage.pr_bars("POOL1", "1h")), bars_antes,
+                              "posicao aberta (rank 0) continua sendo atualizada mesmo com o teto/min esgotado")
+        finally:
+            h.close()
+
+
+class PriorityAndStarvationTests(unittest.TestCase):
+    """PEDIDO 2026-10-29 (ELON, fase runner, "ultima tentativa: nunca desde que o bot subiu"): (1)
+    posicao ABERTA (rank 0 em `_due_list`) tem prioridade ABSOLUTA sobre watchlist/runner (rank>0);
+    (2) mesmo assim, rank>0 nao pode ficar com ZERO chance pra sempre so porque rank==0 consome o
+    orcamento inteiro (`chamadas_por_ciclo`, padrao 3) todo ciclo -- sintoma real: logo depois de um
+    restart `self.sched` zera e TODO pool ativo fica "devido" ao mesmo tempo."""
+
+    @staticmethod
+    def _stub_pipeline(h: LiveHarness, due_rows: list) -> tuple[list[str], dict[str, int]]:
+        """Substitui promocao/descoberta/fila por dublês controlados e deixa `_refresh_safe` consumir
+        1 chamada REAL do orcamento armado (`self.http`, o mesmo `BudgetedHttp` que `tick()` usa) --
+        testa a alocacao de orcamento de verdade, sem precisar simular candles/GT."""
+        ordem: list[str] = []
+        chamadas: dict[str, int] = {row["pool"]: 0 for _rank, _next, row, _tf in due_rows}
+
+        def fake_refresh_safe(row: Any, tf: str, now: float, out: dict) -> None:
+            h.live.http.get_json("fake", {})   # levanta ApiError("budget") se nao houver ficha armada
+            ordem.append(row["pool"])
+            chamadas[row["pool"]] += 1
+
+        h.live._promote = lambda now: None
+        h.live._discover = lambda now, out: None
+        h.live._due_list = lambda now: due_rows
+        h.live._refresh_safe = fake_refresh_safe
+        h.live.http.http.get_json = lambda *a, **kw: {}   # chamada "real" sem rede, sempre sucesso
+        return ordem, chamadas
+
+    def test_open_positions_are_always_serviced_before_watchlist_runner_pools(self) -> None:
+        h = LiveHarness()
+        try:
+            due_rows = [
+                (3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"),
+                (0, 0.0, {"pool": "ABERTO1", "symbol": "OPEN"}, "1h"),
+            ]
+            # a lista ja vem com o rank>0 ANTES do rank 0 de proposito -- a ordem de atendimento tem
+            # que vir da estrutura em 2 passadas do `tick()`, nunca da ordem do `due`.
+            ordem, _ = self._stub_pipeline(h, due_rows)
+            h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertEqual(ordem[0], "ABERTO1", "posicao aberta tem prioridade absoluta, mesmo vindo depois na lista")
+        finally:
+            h.close()
+
+    def test_watchlist_pools_still_get_a_chance_even_when_open_positions_alone_would_spend_the_whole_budget(self) -> None:
+        """Com `chamadas_por_ciclo=3` (padrao) e 3 posicoes abertas disputando o MESMO ciclo, a 1a
+        passada (rank 0) fica limitada a `3 - reserva` (padrao reserva=1) -- 2 das 3 sao atendidas
+        AGORA, a 3a fica para o proximo tick (nunca perdida); o restante do orcamento (>= 1) vai pra
+        descoberta/rank>0, garantindo que ELON seja tentado neste MESMO ciclo."""
+        h = LiveHarness()
+        try:
+            due_rows = [(0, 0.0, {"pool": f"ABERTO{i}", "symbol": f"OPEN{i}"}, "1h") for i in range(3)]
+            due_rows.append((3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"))
+            ordem, chamadas = self._stub_pipeline(h, due_rows)
+            h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertIn("RUNNER1", ordem, "ELON precisa ser tentado mesmo com 3 posicoes abertas no mesmo ciclo")
+            self.assertEqual(sum(chamadas[f"ABERTO{i}"] for i in range(3)), 2,
+                             "rank==0 fica limitado a cap_total-reserva (3-1=2) neste ciclo, nunca gasta o orcamento inteiro")
+        finally:
+            h.close()
+
+    def test_the_reserve_is_configurable_via_env(self) -> None:
+        h = LiveHarness()
+        try:
+            due_rows = [(0, 0.0, {"pool": f"ABERTO{i}", "symbol": f"OPEN{i}"}, "1h") for i in range(3)]
+            due_rows.append((3, 0.0, {"pool": "RUNNER1", "symbol": "ELON"}, "1h"))
+            ordem, _ = self._stub_pipeline(h, due_rows)
+            with mock.patch.dict("os.environ", {"POS_RUNNER_RESERVA_RANK_MAIOR": "0"}):
+                h.live.tick(h.clock(), CallBudget(10), keep=0)
+            self.assertNotIn("RUNNER1", ordem, "reserva=0 volta ao comportamento antigo (sem garantia)")
+        finally:
+            h.close()
+
+    def test_a_never_attempted_pool_is_sorted_before_a_same_rank_pool_already_tried_before(self) -> None:
+        """PEDIDO 2026-10-29: dentro do MESMO rank (aqui, heat=-1/rank 1 -- nenhum detector carregado
+        ainda, o caso tipico logo depois de um restart), o pool que NUNCA recebeu tentativa alguma
+        (sem entrada em `self.sched`) vem ANTES do que ja foi tentado ao menos 1x (mesmo que ha muito
+        tempo) -- `_due_list` real, sem dublê."""
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("JATENTADO", status="ativo")
+            h.storage.pr_upsert_pool("NUNCATENTADO", status="ativo")
+            h.live.sched[("JATENTADO", "1h")] = {
+                "next": 0.0, "erros": 0.0, "ultimo_erro": None, "ultima_tentativa": h.clock() - 7200.0, "fonte": "gt",
+            }
+            due = h.live._due_list(h.clock())  # noqa: SLF001
+            pools_na_ordem = [row["pool"] for _rank, _next, row, _tf in due]
+            self.assertLess(pools_na_ordem.index("NUNCATENTADO"), pools_na_ordem.index("JATENTADO"),
+                            "nunca tentado tem que vir antes do que ja foi tentado, dentro do MESMO rank")
+        finally:
+            h.close()
+
+
 class ConfigSectionTest(unittest.TestCase):
     def test_shipped_section_is_valid_and_parsed(self) -> None:
         cfg = shipped_config()
@@ -822,6 +985,14 @@ class ConfigSectionTest(unittest.TestCase):
         self.assertEqual(s.timeframes, ("5m", "1h", "4h"))
         self.assertTrue(s.so_primario)
         self.assertFalse(LiveSettings.from_config(None).ligado)
+
+    def test_max_pools_env_override_wins_over_the_config_yaml_value(self) -> None:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 1): POS_RUNNER_MAX_POOLS
+        sobrescreve o `max_pools` do yaml -- padrao (sem env) continua sendo o valor do yaml."""
+        cfg = shipped_config()
+        self.assertEqual(LiveSettings.from_config(cfg.raw["pos_runner"]).max_pools, cfg.raw["pos_runner"]["max_pools"])
+        with mock.patch.dict("os.environ", {"POS_RUNNER_MAX_POOLS": "30"}):
+            self.assertEqual(LiveSettings.from_config(cfg.raw["pos_runner"]).max_pools, 30)
 
     def test_invalid_values_are_reported(self) -> None:
         for patch in ({"timeframes": ["2h"]}, {"fontes": ["dexscreener"]}, {"max_pools": 0}, {"alertas": {"saida": "sim"}}):
@@ -886,6 +1057,284 @@ class EngineHookTest(unittest.TestCase):
         finally:
             quiet.close()
             busy.close()
+
+
+class ApiUsoInstrumentacaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1c): instrumentacao de uso de API -- so medicao, nunca decide nada."""
+
+    def test_a_real_gt_poll_is_logged_as_poll_pool_and_the_candle_latency_is_recorded(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(3)
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertGreater(uso.get("poll_pool", 0), 0)
+            latencias = h.storage.pr_candle_latencias_desde(0.0)
+            self.assertTrue(latencias)
+            self.assertTrue(all(lat >= 0 for lat in latencias), "latencia nunca negativa (candle ja fechado)")
+        finally:
+            h.close()
+
+    def test_candle_latency_records_only_the_most_recent_candle_of_each_poll_never_the_backfill(self) -> None:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 3): BUG da versao anterior --
+        `start_tracking` ja faz a 1a carga (`start = GRAD + 8*H + 120`, ~8 candles de backfill num so
+        poll); a versao anterior gravava 1 linha de latencia POR CANDLE de `seq` (inclusive os
+        antigos), inflando p95/max. Agora grava SO 1 linha por poll (a do candle mais recente), com o
+        `tier` (`_heat`) daquele instante."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)   # ja inclui a carga inicial com varios candles de backfill num so poll
+            linhas = h.storage.pr_candle_latencias_detalhe_desde(0.0)
+            self.assertEqual(len(linhas), 1, "1 poll = 1 linha de latencia, nunca 1 por candle de backfill")
+            self.assertIsNotNone(linhas[0]["tier"])
+        finally:
+            h.close()
+
+    def test_holders_instrumentado_logs_carteiras_only_when_a_real_rpc_call_happened(self) -> None:
+        """PEDIDO 2026-11-02 (3a rodada, Fix B): finalidade 'carteiras' (adapter.holders, RPC) --
+        so conta quando `SolanaRpc.calls` de verdade aumentou, MESMA convencao de 'poll_pool'."""
+        h = LiveHarness()
+        try:
+            class _StubRpc:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+            class _StubHolders:
+                tag = None
+
+            class _StubAdapter:
+                def __init__(self, rpc: Any) -> None:
+                    self.rpc = rpc
+
+                def holders(self, mint: str, excluded: Any) -> Any:
+                    self.rpc.calls += 1
+                    return _StubHolders()
+
+            h.live.adapter = _StubAdapter(_StubRpc())
+            h.live._holders_instrumentado("MINT1", set(), "POOL1", h.clock())  # noqa: SLF001
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("carteiras", 0), 1)
+        finally:
+            h.close()
+
+    def test_holders_instrumentado_never_logs_for_a_chain_without_rpc(self) -> None:
+        h = LiveHarness()
+        try:
+            self.assertIsNone(h.live.adapter.rpc)   # padrao do harness: sem RPC configurado
+            h.live._holders_instrumentado("MINT1", set(), "POOL1", h.clock())  # noqa: SLF001
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("carteiras", 0), 0)
+        finally:
+            h.close()
+
+    def test_lineage_verifier_step_logs_verificacao_candidato_only_on_a_real_rpc_call(self) -> None:
+        """MESMA convencao -- `LineageVerifier.step()` so grava quando `self.rpc.calls` de verdade
+        aumentou dentro de `verify`/`creation` (os fakes de teste normais nunca tocam `rpc`, entao
+        nunca logam por si -- aqui simulamos a chamada real explicitamente)."""
+        h = LiveHarness()
+        try:
+            class _StubRpc:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+            stub_rpc = _StubRpc()
+            h.verifier.rpc = stub_rpc
+
+            def verify_com_chamada(rpc, pool, mint, created, lp):
+                rpc.calls += 1
+                return Lineage("ok", "", "pumpfun", GRAD + 60, USDC, SUPPLY, "SIG", "MigrateV2")
+
+            h.verifier.verify = verify_com_chamada
+            h.verifier.creation = created_at()
+            h.list_pool()
+            h.tick()
+            self.assertTrue(h.verifier.step())
+            uso = h.storage.pr_api_uso_count_por_finalidade_desde(0.0)
+            self.assertEqual(uso.get("verificacao_candidato", 0), 1)
+        finally:
+            h.close()
+
+
+class PosRunnerV3LiveTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): integracao ao vivo -- MESMO
+    detector/simulador da V1/V2, so ParamsV3 (zone_min_candles=4, idade sem piso/teto, drop_max=
+    0.96). Silenciosa por padrao (SEM_V3/V3_ALERTAS sao flags do worker.py, aqui testados via
+    `sem_v3`/`v3_alertas` direto no construtor, mesmo padrao de `sem_v2`)."""
+
+    def test_v3_persists_an_entrada_with_covariates_on_the_same_scenario_that_produces_v1(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)   # mesmo cenario que ja produz ENTRADA na V1/V2 (test_pos_runner_v1.py)
+            v1_entradas = [s for s in h.storage.pr1_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v1_entradas), 1, "pre-condicao: a V1 precisa ter entrado aqui")
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1, "V3 (zone_min_candles=4, mais permissiva) deveria ter entrado tambem")
+            sinal = v3_entradas[0]
+            self.assertEqual(sinal["versao_config_v3"], h.live.version_v3)
+            self.assertIsNotNone(sinal["caixa_candles"])
+            self.assertIsNotNone(sinal["mc_pico"])
+            self.assertIsNotNone(sinal["mc_base"])
+            self.assertIsNone(sinal["tg_message_id"], "silenciosa por padrao -- nunca alerta sem V3_ALERTAS")
+        finally:
+            h.close()
+
+    def test_sem_v3_disables_the_detector_entirely(self) -> None:
+        h = LiveHarness(sem_v3=True)
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            self.assertEqual(h.storage.pr3_signals(), [])
+        finally:
+            h.close()
+
+    def test_v3_alertas_true_sends_a_telegram_message_for_entrada(self) -> None:
+        h = LiveHarness(v3_alertas=True)
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1)
+            self.assertTrue(any("POS-RUNNER-V3" in t for t in h.texts()))
+            sinal = h.storage.pr3_signal(v3_entradas[0]["id"])
+            self.assertIsNotNone(sinal["tg_message_id"])
+        finally:
+            h.close()
+
+    def test_evidencia_v3_trajetoria_e_baseline_populam_reusando_as_tabelas_genericas(self) -> None:
+        """`pr_trajetoria`/`pr_baseline` sao genericas por (versao, entry_id) -- zero schema novo
+        precisou existir pra V3 (so `versao='v3'`)."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1)
+            traj = h.storage.pr_trajetoria_get("v3", v3_entradas[0]["id"])
+            self.assertIsNotNone(traj, "trajetoria da V3 deveria existir (evidencia.py e generica por versao)")
+        finally:
+            h.close()
+
+    def test_daily_summary_v3_is_a_separate_block_and_a_noop_when_sem_v3(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            texto = h.live.daily_summary_v3()
+            self.assertIn("POS-RUNNER-V3", texto)
+            h2 = LiveHarness(sem_v3=True)
+            try:
+                h2.live.send_daily_summary_v3()
+                self.assertEqual(h2.texts(), [])
+            finally:
+                h2.close()
+        finally:
+            h.close()
+
+    def test_zone_min_candles_minimo_reflects_v3_unless_disabled(self) -> None:
+        h = LiveHarness()
+        try:
+            self.assertEqual(h.live._zone_min_candles_minimo(), 4)  # noqa: SLF001
+        finally:
+            h.close()
+        h2 = LiveHarness(sem_v3=True)
+        try:
+            self.assertEqual(h2.live._zone_min_candles_minimo(), 12)  # noqa: SLF001
+        finally:
+            h2.close()
+
+
+class RetentativaCurtaTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1f): pool quente/morno sem candle novo ainda retentar logo (+2/+5/
+    +10min), nunca esperar o fechamento inteiro seguinte."""
+
+    def test_schedule_ou_retentativa_curta_uses_the_short_ladder_then_falls_back_to_normal(self) -> None:
+        h = LiveHarness()
+        try:
+            hora_boundary = (h.clock() // 3600) * 3600
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 1 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 2 * 60.0)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 3 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 5 * 60.0)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 7 * 60.0)   # noqa: SLF001
+            self.assertAlmostEqual(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 10 * 60.0)
+            # esgotou a ladder (>=10min pendente): cai no agendamento NORMAL (proximo fechamento)
+            h.live._schedule_ou_retentativa_curta("POOL1", "1h", hora_boundary + 11 * 60.0)   # noqa: SLF001
+            self.assertGreater(h.live.sched[("POOL1", "1h")]["next"], hora_boundary + 3600.0 - 1.0)
+        finally:
+            h.close()
+
+    def test_fallback_dexpaprika_min_pendente_is_shorter_for_a_hot_pool(self) -> None:
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="POOL1")
+            padrao = h.live._fallback_dexpaprika_min_pendente("POOL1", "1h")   # noqa: SLF001 -- sem detector: heat -1
+            self.assertEqual(padrao, 20.0)
+            h.live.dets_v1[("POOL1", "1h")] = _FakeDetPhase(PHASE_PULLBACK)
+            quente = h.live._fallback_dexpaprika_min_pendente("POOL1", "1h")   # noqa: SLF001
+            self.assertEqual(quente, 5.0)
+        finally:
+            h.close()
+
+
+class _FakeDetPhase:
+    def __init__(self, phase: int) -> None:
+        self.phase = phase
+
+
+class RssAmostraTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1d): amostra RSS a cada 15min, nunca altera max_pools."""
+
+    def test_amostra_once_then_waits_15_minutes(self) -> None:
+        h = LiveHarness()
+        try:
+            now = h.clock()
+            h.live._amostrar_rss_periodico(now)   # noqa: SLF001
+            amostras1 = h.storage.pr_rss_amostras_desde(0.0)
+            self.assertEqual(len(amostras1), 1)
+            h.live._amostrar_rss_periodico(now + 60.0)   # noqa: SLF001
+            self.assertEqual(len(h.storage.pr_rss_amostras_desde(0.0)), 1, "menos de 15min: nao amostra de novo")
+            h.live._amostrar_rss_periodico(now + 16 * 60.0)   # noqa: SLF001
+            self.assertEqual(len(h.storage.pr_rss_amostras_desde(0.0)), 2)
+        finally:
+            h.close()
+
+
+class MarcosFunilTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (FASE 1e): alerta idempotente (pr_alert_once) quando tokens distintos
+    fechados cruza 15/30."""
+
+    def _fechar_n_tokens(self, h: LiveHarness, n: int) -> None:
+        for i in range(n):
+            h.storage.pr1_insert_signal({
+                "chain": "solana", "pool": f"POOL{i}", "tf": "1h", "ts_fechamento": i,
+                "versao_config_v1": h.live.version_v1, "status": "fechado",
+            })
+
+    def test_fires_once_at_15_and_once_at_30(self) -> None:
+        h = LiveHarness()
+        try:
+            self._fechar_n_tokens(h, 15)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 1)
+            self.assertIn("15 tokens", h.tg.sent[-1][0])
+            h.live.checar_e_alertar_marcos_funil(h.clock())   # mesma contagem: nunca repete
+            self.assertEqual(len(h.tg.sent), 1)
+            self._fechar_n_tokens(h, 30)   # ja tinha 15 distintos (POOL0..14); agora soma 30 novos (POOL0..29)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 2)
+            self.assertIn("30 tokens", h.tg.sent[-1][0])
+        finally:
+            h.close()
+
+    def test_never_fires_below_15(self) -> None:
+        h = LiveHarness()
+        try:
+            self._fechar_n_tokens(h, 14)
+            h.live.checar_e_alertar_marcos_funil(h.clock())
+            self.assertEqual(len(h.tg.sent), 0)
+        finally:
+            h.close()
 
 
 if __name__ == "__main__":

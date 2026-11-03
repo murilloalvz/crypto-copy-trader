@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest import mock
 
 import requests
 
@@ -254,6 +255,16 @@ class HttpClientTest(unittest.TestCase):
         with self.assertRaises(RateLimited):  # segunda chamada nem sai: limitador em pausa
             http.get_json("p")
         self.assertEqual(http.calls, 1)
+
+    def test_slow_call_logs_a_warning(self) -> None:
+        """BUG PRIORITARIO (2026-10-22, item 4): WARNING pra qualquer chamada de rede > 20s, GT incluso (o
+        mesmo HttpClient que o POS-RUNNER-V1 usa via BudgetedHttp) -- sinaliza degradacao antes de virar
+        travamento percebido pelo operador."""
+        http, _ = self.client([("/p", FakeResponse(200, {"ok": True}))])
+        with mock.patch("signals_mvp.http.time.monotonic", side_effect=[0.0, 25.0]):
+            with self.assertLogs("signals_mvp.http", level="WARNING") as ctx:
+                http.get_json("p")
+        self.assertTrue(any("lenta" in msg for msg in ctx.output))
 
 
 class ClockSkewTest(unittest.TestCase):

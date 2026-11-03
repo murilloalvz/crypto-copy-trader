@@ -2,5 +2,6 @@
 .env
 dados/
 logs/
+backups/
 __pycache__/
 *.py[cod]

@@ -1,0 +1,48 @@
+# systemd unit do bot de sinais (PAPER / somente leitura) -- Oracle Linux 9 / qualquer systemd.
+#
+# Instalacao (ver docs/DEPLOY_VPS_LINUX.md para o passo a passo completo):
+#   1. Ajuste User=, WorkingDirectory= e ExecStart= abaixo para o caminho real do clone e do venv.
+#   2. sudo cp signals_mvp/scripts/linux/signals-mvp.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now signals-mvp
+#
+# NUNCA rode como root: crie um usuario de sistema so para o bot (ex.: "signalsbot"), sem
+# privilegio nenhum alem de ler/escrever a propria pasta do repositorio.
+
+[Unit]
+Description=Bot de sinais de memecoins (PAPER / somente leitura)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# TROQUE para o usuario de sistema dedicado (nunca root, nunca "opc" direto se puder evitar).
+User=signalsbot
+Group=signalsbot
+# TROQUE para o caminho real do clone na VM.
+WorkingDirectory=/opt/crypto-copy-trader
+# O .env fica em signals_mvp/.env (fora do git); o mesmo arquivo serve tanto para o
+# systemd (EnvironmentFile) quanto para o bot (load_env) -- formato KEY=valor, uma por linha.
+EnvironmentFile=/opt/crypto-copy-trader/signals_mvp/.env
+Environment=PYTHONIOENCODING=utf-8
+# TROQUE para o python do venv (criado conforme docs/DEPLOY_VPS_LINUX.md).
+ExecStart=/opt/crypto-copy-trader/.venv/bin/python -m signals_mvp iniciar
+
+# Reinicia sempre, com folga para nao martelar a API em caso de queda repetida.
+Restart=always
+RestartSec=10
+
+# Desligamento limpo: systemd manda SIGTERM (o supervisor/worker ja tratam isso -- grava os
+# CSVs e sai) e so manda SIGKILL se nao sair dentro do tempo abaixo.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Reforco de sandboxing (nao depende de nenhuma chave/rede alem do que o bot ja usa: so leitura).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/crypto-copy-trader/signals_mvp/dados /opt/crypto-copy-trader/signals_mvp/logs /opt/crypto-copy-trader/signals_mvp/backups
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+# POS-RUNNER-V2 — mesma estrategia da V1 ("regras do professor"), SO 2 parametros diferentes (PEDIDO
+# CONSOLIDADO FASE 2). NENHUM codigo novo de detector: `params_v2.py` reaproveita a MESMA classe
+# `ParamsV1` (mesmos campos, mesma validacao, mesmo calculo de hash) — so o CONTEUDO deste arquivo
+# muda. Hash proprio (`versao_config_v2`), INDEPENDENTE do hash da V1 (pos_runner_v1.yaml) — mudar um
+# nunca muda o hash do outro. Congelado ANTES do primeiro alerta (ver docs/pos-runner-v2/CHANGELOG_V2.md).
+#
+# Diferencas da V1 (so estas 2 linhas; tudo o resto e IGUAL a pos_runner_v1.yaml):
+#   - drop_max: 0.96 (V1: 0.90)              -- aceita uma queda maior antes de considerar a onda invalida
+#   - age_window_days: [2.0, 36500.0] (V1: [2.0, 7.0]) -- idade minima de 2 dias, SEM teto (36500 dias
+#     = ~100 anos, equivalente a "sem teto" dentro da vida util de qualquer token real)
+
+parametros:
+  timeframes: ["1h"]
+  age_window_days: [2.0, 36500.0]
+  janela_ouro_brt: ["08:30", "14:00"]
+  min_mc_usd: 100000
+  runner_min_mc: 300000
+  peak_attr_mc: 500000
+  drop_min: 0.80
+  drop_max: 0.96
+  zone_min_candles: 12
+  wicks_min: 1
+  wicks_max: 3
+  test_zone: 0.05
+  recover_mult: 1.25
+  atr_period: 20
+  power_atr_mult: 3.0
+  vol_mult: 2.0
+  tp1_frac: 0.30
+  exhaustion_wick_mult: 2.0
+  exhaustion_doji_frac: 0.60
+  stop_below_wick_pct: 0.02
+  risk_min: 0.15
+  risk_max: 0.22
+  candle_wick_ratio_max: 3.0
+  l_bc_floor_usd: 5000
+  l_bc_suspeito_baixo_usd: 20000
+  l_bc_suspeito_alto_usd: 500000
+  l_bc_ceiling_usd: 10000000
+  banca_inicial_usd: 100
+  mao_fixa_usd: 10
+  banca_fixa_limite_usd: 200
+  posicao_frac: 0.10
+  max_posicoes_abertas: 3
+  stop_diario_frac: 0.10
+  stop_diario_perdas_seguidas: 3
+  stop_semanal_frac: 0.20

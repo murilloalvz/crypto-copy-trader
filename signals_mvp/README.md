@@ -161,7 +161,10 @@ acompanhar, o bot confere **on-chain** (RPC) que o pool nasceu da **migração**
 token e aquele pool, e busca a **data de criação** do token (a idade dos sinais conta dela) — sem essas duas provas o
 token não entra. No máximo `max_pools` (15) ao mesmo tempo; o resto espera na fila (maior MC primeiro). Cada token é
 acompanhado até 14 dias depois da graduação (`idade_max_dias`); como só a idade de 2–7 dias desde a criação gera sinal
-primário, baixar para 7 libera vagas do radar mais cedo.
+primário, baixar para 7 libera vagas do radar mais cedo. Além disso o bot **aposenta pools mortos** (sem posição V1/V2
+aberta) para liberar vaga: sem candle novo há ≥24h, ou queda > 99,5% do pico — isso só decide **quem fica sob
+observação**, nunca as regras de detecção/entrada/saída/banca da V1/V2. O `saude.py` mostra quantos pools distintos
+ficaram sem vaga (`max_pools`) nas últimas 48h.
 
 **O que chega no Telegram**
 
@@ -222,6 +225,96 @@ os sinais reais. Resumo diário por ajuste sai no Telegram no mesmo horário do 
   fase 2 o 5m pode atrasar um ciclo;
 - custos: fee do PumpSwap por faixa de MC; Raydium CPMM e Meteora DAMM v2 com fee **ainda não confirmada** (usa 1%
   conservador), terminal 1%/perna, rede 0,0003 SOL, slippage estimado para 0,15 SOL.
+
+---
+
+## POS-RUNNER-V1/V2 ("regras do professor") e análise condicional
+
+Estratégia separada (congelada, hash próprio por versão) rodando em paralelo ao v0/V0 acima — comandos,
+alertas e CSVs completos em `docs/pos-runner-v1/` (`INTERPRETACOES.md`, `PROTOCOLO_VALIDACAO.md`). Só o
+que é novo nesta revisão (trajetória pós-entrada + linha de base pareada, PAPER/leitura, zero chamada
+nova de API — usa só candles já em cache):
+
+- `SEM_EVIDENCIA=1` no `.env` desliga essa medição por completo (a V1/V2 continuam normais);
+- `/analise [v1|v2]` no Telegram roda a análise condicional pré-registrada
+  (`docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md`) — com menos de 30 sinais fechados distintos só
+  responde "amostra insuficiente (n/30)";
+- **o plano pré-registrado não pode ser editado depois que a 1ª análise rodar** — o bot trava o hash do
+  arquivo (`meta.plano_analise_hash`) e recusa rodar de novo se o texto mudar; uma interpretação nova
+  precisa de uma seção/versão nova, nunca reescrever a que já foi julgada.
+
+**PATCH 2026-10-27 (diagnóstico McRib/ヤギ, hashes V1/V2 intactos — ver `INTERPRETACOES.md` #13/#13b):**
+
+- candle suspeito (OHLC incoerente, divergência DexPaprika confirmada, ou salto isolado vs. o pico/os
+  candles vizinhos) nunca dispara um gatilho de entrada, e nunca decide TP1/EXIT até confirmar (pelo
+  DexPaprika ou pelo candle seguinte) — `pos_runner/qualidade_candle.py`;
+- ao fill real da entrada, o bot responde ao alerta original com "✅ ENTRADA CONFIRMADA" (fill/stop/risco
+  reais); risco real < 3% grava a tag `risco_irrealista` (nunca cancela o sinal, só registra e exclui da
+  análise condicional);
+- `python -m signals_mvp.scripts.auditar_trades --db dados/estado.sqlite [--versao v1|v2] [--simbolo X]`
+  — auditoria SOMENTE LEITURA (não escreve no banco) dos candles de cada trade, com veredito
+  LIMPO/SUSPEITO por candle;
+- `python -m signals_mvp.scripts.marcar_contaminados --db dados/estado.sqlite --trade v1:6 --trade v2:2`
+  — marca retroativamente (idempotente, com backup antes) trades confirmados contaminados pela
+  auditoria; a tag `contaminado_candle` exclui o trade da análise condicional;
+- um sinal "atrasado" num pool ainda `ativo` nunca fecha mais de cara como `perdido_offline` — o
+  ciclo normal de atualização busca os candles perdidos e retoma o acompanhamento com os preços
+  reais; só fica `perdido_offline` quando o pool não vai mais ser atualizado.
+
+**PEDIDO 2026-10-27 (H8/H9, carteiras "pro"):**
+
+- `signals_mvp/dados/carteiras_pro_papodefi.json` (fornecido pelo operador, nunca baixado) +
+  `python -m signals_mvp.scripts.carregar_carteiras_pro --db dados/estado.sqlite` — valida/registra
+  a lista (sha256 + `lista_versao`) e gera `carteiras_grupos.csv` (agrupamento por pessoa);
+- a cada ENTRADA, e a cada hora para pools com posição aberta OU na fase runner/pullback (V1 ou V2
+  — PEDIDO 2026-10-29; orçado em SNAPSHOTS/dia por `CARTEIRAS_MAX_CHAMADAS_DIA`, padrão 600/dia,
+  ~22 chamadas RPC por snapshot), o bot cruza os top-20 holders do token contra a lista —
+  `pr1_signals.carteiras_pro_presentes`/`n_pessoas_pro` e `pr_carteiras_snapshot`.
+  `SEM_CARTEIRAS=1` desliga por completo.
+
+**PEDIDO (PARTE 2A, FASE 3/4): sombra dos filtros + contexto/execução:**
+
+- Candidatos que `filtrado_mc_baixo`/`filtrado_idade` barraram, ou que a V1/V2 matariam como
+  `ONDA_INVALIDA` entre 96% e 99,5% de queda (a V2 já cobre 90–96%), mas que TERIAM gerado gatilho,
+  viram sinais sombra (`pr_sombra`) — medição ao lado, nunca entram na banca/CSV oficiais nem em
+  `/relatorio v1|v2`; aparecem só em `/analise [v1|v2]` (R médio com vs sem o filtro) e, só para a
+  queda extrema, um aviso curto no Telegram sem botões. `SOMBRA_MAX_POOLS` (padrão 10) limita
+  detectores sombra simultâneos; `SEM_SOMBRA=1` desliga tudo.
+- `pr1_signals`/`pr2_signals`/`pr_sombra` ganharam colunas nullable de contexto/execução na ENTRADA
+  (dia da semana, idade em dias, MC na entrada, volume/transações/ticket médio em 24h, tamanho da
+  caixa, % do maior holder, slippage estimado de uma mão de US$10 pela liquidez do pool e o R líquido
+  com esse modelo simples) — tudo com dado que o GT já tinha devolvido, zero chamada nova; nunca
+  usadas por regra/filtro/tamanho/saída (o R oficial não muda). Aparecem nos CSVs
+  `pos_runner_v1.csv`/`pos_runner_v2.csv` (colunas no fim).
+
+**PEDIDO 2026-10-29 (auditoria + sensibilidade + sombra `base_min4` + Radar):**
+
+- `docs/pos-runner-v1/AUDITORIA_PARAMETROS.md` lista todos os limiares de gatilho/entrada/stop/saída
+  de V1/V2 (arquivo:linha + se o número foi confirmado pelo operador, é literal do prompt, herdado do
+  V0 ou foi o Claude que escolheu sem confirmação — ex.: `HOLDER_CONCENTRADO_PCT`/`VAMP_RISK`).
+- `python -m signals_mvp.scripts.sensibilidade_parametros --db dados/estado.sqlite --versao v1|v2` —
+  somente leitura, zero chamada nova (replay dos candles já em `pr_bars`); relaxa um parâmetro por
+  vez e mede quantos sinais a mais/menos apareceriam e quantos candidatos "quase" dispararam
+  (near-miss) só por aquele parâmetro.
+- Terceira sombra, `sombra:base_min4`: mesmas regras da V1, só `zone_min_candles=4` (em vez de 12) —
+  mede candidatos cuja caixa é mais curta do que a V1/V2 reais jamais aceitariam. Alimenta a `H13`
+  (tamanho da base vs R realizado, `/analise`). Conta para o mesmo `SOMBRA_MAX_POOLS`.
+- **Radar "👀 caixa em formação"**: alerta de ESTUDO, **não é um sinal** — nunca convida a agir, nunca
+  entra na banca/CSV/`/relatorio v1|v2`. Dispara quando a caixa da V1 (mínimo 4 candles, sem limite de
+  wicks) arma com queda de 80–99,5% do pico, MC atual ≥ 100k e idade ≥ 2 dias (sem teto). Mensagem com
+  token/queda %/MC/liquidez/tamanho da base/idade/tags + botões de link + 👀 acompanhando/❌ ignorar
+  (idempotentes, só gravam o horário da decisão — nunca os botões 👍/👎/📝 de feedback existentes).
+  Teto diário `RADAR_MAX_DIA` (padrão 8, só sobre os enviados — acima do teto o candidato ainda é
+  gravado, nunca descartado em silêncio). Trajetória mecânica de 72h alimenta a `H14`
+  (acompanhando vs ignorar, `/analise`). `SEM_RADAR=1` desliga por completo.
+- **Rotação de vagas por incapacidade estrutural** (`max_pools`): aposenta pool sem_fase em V1 **e**
+  V2 há mais de 72h, incapaz de sinalizar (MC atual < piso OU queda do pico > 96%), sem posição nem
+  evidência (trajetória/baseline) pendente, máx. 2/hora e só se houver candidato esperando vaga.
+  Nunca toca detector/regra de V1/V2 — só decide quem fica sob observação. Pool vai pra **dormente**
+  (nunca encerrado): MC rechecado ~1x/dia, readmitido com prioridade se recuperar o piso. Todo sinal
+  grava `regime_amostragem` (pré/pós-rotação); `/analise` reporta a homogeneidade entre os dois
+  antes de juntá-los no mesmo teste. `SEM_ROTACAO=1` desliga por completo — ver
+  `docs/pos-runner-v1/EMENDA_2026-10-30_AMOSTRAGEM_ROTACAO_VAGAS.md`.
 
 ---
 
