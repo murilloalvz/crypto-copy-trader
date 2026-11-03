@@ -1,654 +1,124 @@
-# Solana CopyTrader
-
-MVP local para monitorar wallets públicas na Solana, guardar transações em SQLite,
-confirmar swaps on-chain, calcular performance e criar sinais de paper trading.
-**A aplicação não possui chave privada e não envia ordens reais.**
-Laboratório local de **dados on-chain e automação** para monitorar wallets públicas na Solana, persistir atividade em SQLite, identificar swaps e avaliar estratégias por meio de **paper trading**.
-
-## Direção atual: Opportunity Intelligence / Signal-First
-
-O produto evoluiu de uma descrição wallet-first para um **Opportunity Intelligence Engine**:
-
-```text
-oportunidade -> research signal -> validated signal -> decisão humana TAKE/SKIP
-             -> execução manual -> outcome automático -> shadow execution
-             -> assisted/selective automation -> eventual full automation
-```
-
-O valor inicial é encontrar, explicar e avaliar oportunidades antes de operar. Full automation
-não é requisito para provar valor, mas execution realism continua obrigatório: cotação executável,
-liquidez, slippage, latência, geometria de entrada, saída, disponibilidade de rota e economia
-líquida.
-
-Wallet discovery e paper copy permanecem funcionalidades e infraestrutura de pesquisa histórica;
-wallet não é whitelist primária de aquisição no Market Opportunity Radar. A aplicação continua
-em `PAPER / RESEARCH / READ ONLY`: não possui chave privada, não envia ordens e não autoriza
-dinheiro real.
-
-Signals futuros devem ser prospectivos, versionados e limitados por `decision_as_of`. Informação
-posterior gera update/nova versão, nunca reescrita silenciosa. Até existir metodologia calibrada,
-`confidence` deve permanecer `NOT_AVAILABLE`.
-
-O roadmap formal está em
-[`docs/signal-first-human-execution-roadmap-2026-09-08.md`](docs/signal-first-human-execution-roadmap-2026-09-08.md).
-
-As seções abaixo documentam funcionalidades já existentes e trilhas históricas; não alteram essa
-direção atual.
-
-## O que já funciona
-
-- cadastro e remoção lógica de wallets públicas;
-- sincronização de atividade via JSON-RPC da Solana;
-- persistência idempotente em SQLite;
-- confirmação de swaps por program ID e fluxo de saldos;
-- suporte inicial a Jupiter v4-v6, Raydium AMM/CPMM/CLMM/LaunchLab/Router,
-  Pump.fun/PumpSwap, Orca Whirlpool e Meteora DLMM/DAMM/DBC;
-- separação entre swaps, atividade em DEX e transferências comuns;
-- diagnóstico dos programas encontrados quando uma wallet fica sem swaps confirmados;
-- Wallet Score financeiro apenas quando existe amostra mínima;
-- detecção inicial de swaps, transferências de SOL e transferências de tokens;
-- métricas de atividade e Wallet Score preliminar;
-- paper trades com tamanho, slippage e atraso configuráveis;
-- preços históricos por minuto via GeckoTerminal, com cache local;
-- reconstrução de posições FIFO e P&L realizado;
-- win rate, retorno e drawdown realizado;
-- importação paginada de lotes anteriores do histórico;
-- dashboard Streamlit.
-- discovery automático de wallets candidatas, separado do tracker;
-- filtros contra arbitragem, HFT, inatividade, amostra pequena e one-hit winners;
-- Candidate Score explicável com consistência, ROI, drawdown e penalizações básicas.
-- filtro de liquidez atual ponderado pelo capital da wallet;
-- Copyability Score separado, com liquidez, ritmo, posição média e proxy de impacto.
-- watchlist em três níveis: aprovada, observação e reprovada;
-- detector inicial de convergência entre compras de wallets independentes.
-- Wave Radar executável que encontra tokens com volume recente e aplica barreiras de risco.
-- laboratório versionado com checkpoints paper de 5, 15 e 60 minutos;
-- avaliação estatística por estratégia e coletor automático de duração limitada.
-
-## Wallet discovery
-
-O comando abaixo consulta apenas dados públicos e não grava transações nem adiciona
-automaticamente nenhuma wallet ao tracker:
-
-```powershell
-python discover.py
-```
-
-A fonte principal é o [Solana Tracker PnL V2](https://docs.solanatracker.io/data-api/pnl-v2/leaderboard/solana-traders-leaderboard).
-O plano gratuito informa 10.000 requisições mensais. Crie uma API key no painel do
-Solana Tracker e adicione ao `.env`:
-
-```text
-SOLANA_TRACKER_API_KEY=cole_sua_chave_aqui
-SOLANA_TRACKER_TIMEOUT_SECONDS=12
-SOLANA_TRACKER_MAX_ATTEMPTS=3
-```
-
-Não envie essa chave para o GitHub nem para outra pessoa. O `.env.example` contém apenas
-o nome da variável. Timeout e tentativas limitam quanto uma consulta instável pode
-segurar a rodada; falhas no histórico de uma wallet são registradas e as demais continuam.
-O terminal mostra `[source] 1/5` até `[source] 5/5` enquanto combina os cinco
-leaderboards, antes das etapas `liquid-seed`, `history` e `liquidity`.
-Para um teste menor e mais rápido:
-
-```powershell
-python discover.py --wallets 50 --top 10
-```
-
-O funil é independente do dashboard:
-
-```text
-discover.py -> fonte -> filtros -> Candidate Score -> liquidez -> Copyability Score -> watchlist
-app.py      -> monitoramento manual da wallet escolhida
-```
-
-O Solana Tracker foi escolhido porque entrega endereço público real, janelas recentes,
-PnL/ROI, trades, tokens, dias positivos/negativos, último trade e histórico diário. A
-requisição ativa `excludeArbitrage=true`, `pnlMode=strict`,
-`maxSingleTokenPct=30`, no mínimo 50 trades, 10 dias ativos e US$ 500 investidos.
-O lote combina leaderboards ordenados por PnL, ROI, win rate, dias ativos e também por
-menor quantidade de trades permitida, removendo duplicatas. Isso reduz o viés do topo
-dominado por bots sem relaxar os filtros locais. Além disso, 25 endereços da amostra são
-obtidos, por padrão, a partir da [busca de tokens](https://docs.solanatracker.io/data-api/search/token-search)
-com pelo menos US$ 250 mil de liquidez e US$ 100 mil de volume em 24 horas. O endpoint
-oficial de [traders do token](https://docs.solanatracker.io/data-api/pnl-v2/token/get-token-traders)
-fornece as wallets públicas; carteiras marcadas como desenvolvedor são descartadas. Essas
-wallets não ganham pontos por essa origem: histórico, filtros, Candidate Score e
-Copyability Score continuam iguais. Para reduzir o viés de selecionar apenas grandes
-vencedores, cada mercado intercala traders por PnL realizado, ROI, último trade e menor
-capital investido. Posições já encerradas também participam da descoberta; o funil de 30
-dias elimina depois amostras fracas, inativas ou excessivamente rápidas. Birdeye ficou
-preparado como fallback técnico. Dune permite
-consultas personalizadas, mas exige manter SQL e execução; DexScreener é excelente para
-tokens/pools, mas sua API pública não oferece um leaderboard geral de wallets.
-
-### Fórmula do Candidate Score
-
-O score de 0 a 100 serve somente para ordenar candidatas:
-
-- 25 pontos: consistência em 7/30/90 dias e proporção de dias positivos;
-- 15 pontos: ROI 30d com escala logarítmica e teto em 100%;
-- 15 pontos: drawdown realizado relativo ao valor investido;
-- 15 pontos: tamanho da amostra, favorecendo 50 a 300 trades;
-- 10 pontos: win rate, sem tratá-lo isoladamente;
-- 10 pontos: recência do último trade;
-- 5 pontos: diversidade de tokens;
-- 5 pontos: percentil de PnL dentro do lote, limitando o peso do valor nominal.
-
-Depois são descontadas penalizações por frequência difícil de copiar, concentração do
-lucro em um único dia, poucos resultados realizados e tempo médio de posição muito curto.
-O filtro da fonte também exclui wallets marcadas como arbitragem e aquelas em que um único
-token representa mais de 30% do PnL. Como a classificação de arbitragem da fonte não é
-infalível, o filtro local também elimina capital investido inferior a US$ 500 e posição
-média observada abaixo de 60 segundos. Hold time ausente continua como desconhecido, não
-como zero.
-
-Não entram no Candidate Score: liquidez por token, slippage real da wallet e distribuição
-por trade. A separação é intencional: qualidade financeira e viabilidade de execução são
-problemas diferentes. O drawdown atual é
-calculado sobre o PnL realizado diário e dividido pelo capital investido no período; ele não
-é um drawdown patrimonial completo. As janelas 7/30/90 dias são sobrepostas e representam
-consistência em horizontes diferentes, não três períodos independentes.
-
-### Filtro de liquidez e Copyability Score
-
-Somente as melhores candidatas do primeiro funil são enriquecidas pelo endpoint read-only
-de [posições da wallet](https://docs.solanatracker.io/data-api/pnl-v2/wallet/get-wallet-positions).
-Por padrão são consultadas até 50 posições recentes, com atividade em 30 dias e PnL
-`strict`. O endpoint informa a liquidez atual do mercado principal de cada token. Nada é
-gravado no banco do tracker.
-
-As barreiras conservadoras desta versão são:
-
-- pelo menos 5 posições na amostra;
-- liquidez conhecida em pelo menos 60% dos tokens amostrados;
-- pelo menos 50% dos tokens conhecidos com US$ 50 mil ou mais de liquidez;
-- pelo menos 60% do capital amostrado nesses tokens líquidos;
-- posição média de pelo menos 5 minutos;
-- no máximo 20 trades por dia em 30 dias;
-- Copyability Score mínimo de 60/100.
-
-O Copyability Score de 0 a 100 não usa PnL, ROI ou win rate:
-
-- 30 pontos: parcela do capital amostrado em tokens com ao menos US$ 50 mil de liquidez;
-- 15 pontos: liquidez mediana atual, normalizada em escala logarítmica entre US$ 10 mil e
-  US$ 500 mil;
-- 15 pontos: proxy de impacto, usando compra média da wallet / liquidez atual do token;
-- 20 pontos: tempo médio de posição, com pontuação máxima a partir de 30 minutos;
-- 15 pontos: frequência, com pontuação máxima até 5 trades por dia e queda progressiva;
-- 5 pontos: cobertura dos dados de liquidez na amostra.
-
-A ponderação por capital evita que uma wallet passe apenas por negociar muitos tokens
-líquidos com valores pequenos enquanto concentra o dinheiro em tokens rasos. Liquidez zero
-é tratada como ilíquida; campo ausente é tratado como desconhecido e reduz a cobertura.
-Uma wallet pode ter Candidate Score alto e ser reprovada para cópia.
-
-### Watchlist e convergência de wallets
-
-O resultado deixou de ser apenas binário, sem reduzir as barreiras de segurança:
-
-- `APROVADA`: passou por todas as barreiras e pode avançar ao laboratório de paper copy;
-- `OBSERVAÇÃO`: tem Candidate Score mínimo de 75 e Copyability Score mínimo de 55,
-  mas falhou somente por participação de tokens ou capital líquido. Pode contribuir com
-  sinais coletivos, porém nunca autoriza cópia individual;
-- `REPROVADA`: possui dados insuficientes, estratégia rápida/HFT, baixa qualidade ou outra
-  barreira operacional e não participa da watchlist.
-
-O módulo puro `src/waves.py` é a primeira fundação do futuro Wave Detector. Ele normaliza
-compras públicas e procura convergência no mesmo token dentro de cinco minutos. Uma única
-wallet nunca cria um candidato. Por padrão, uma wallet aprovada pesa 1,0 e uma wallet em
-observação pesa 0,5; são exigidas ao menos duas wallets independentes e peso total de 1,5.
-Eventos repetidos da mesma wallet, vendas, wallets reprovadas e sinais fora da janela são
-ignorados.
-
-O resultado ainda se chama `WaveCandidate`, não `Wave Score`: convergência sozinha não
-autoriza nem mesmo uma entrada fictícia. Antes do paper trading, a próxima etapa deverá
-consultar liquidez e impacto no momento do sinal, concentração de holders, autoridades de
-mint/freeze, idade do token e aceleração de preço/volume. O módulo atual não monitora a
-rede em tempo real e não executa transações.
-
-### Wave Radar funcional
-
-O radar não depende de encontrar primeiro uma wallet aprovada. Ele consulta os tokens com
-maior volume nos últimos cinco minutos e usa somente campos documentados da fonte:
-
-```powershell
-python radar.py
-```
-
-Para uma rodada menor:
-
-```powershell
-python radar.py --tokens 25 --top 10
-```
-
-As barreiras padrão exigem pelo menos US$ 50 mil de liquidez, US$ 5 mil de volume em cinco
-minutos, aceleração mínima de 1,2x contra a média de cinco minutos da última hora, Wave
-Score mínimo 55, 50 holders confirmados, 50 transações, Risk Score máximo 6/10, Top 10
-abaixo de 40%, dev abaixo de 10%, insiders e snipers abaixo de 20%, nenhuma mint/freeze
-authority ativa e ausência de desequilíbrio extremo entre compras e vendas. Isso separa
-um token apenas líquido/seguro de uma atividade que está realmente acelerando no momento.
-`lpBurn` abaixo de 90% vira atenção contextual em vez de reprovação universal: pools de
-liquidez concentrada podem retornar zero mesmo quando esse mecanismo não se aplica da mesma
-forma. O Risk Score da fonte continua sendo a barreira agregada de segurança. Um holder
-count zero junto de atividade real é tratado como dado indisponível, não como zero confiável.
-Como as três janelas são cumulativas, a versão ativa também exige
-`volume 5m <= volume 1h <= volume 24h`. Uma violação zera a aceleração e reprova o sinal
-como `volume_windows_inconsistent`, em vez de transformar um dado impossível em momentum.
-
-O Wave Score inicial ordena atividade atual em 100 pontos: liquidez (20), volume 5m (25),
-aceleração contra a média de cinco minutos da última hora (20), pressão compradora
-equilibrada (10), Risk Score da fonte (15) e distribuição do Top 10 (10). Pressão compradora
-extrema perde pontos e pode reprovar o sinal, pois também pode representar manipulação.
-O score não prevê preço futuro.
-
-### Laboratório paper do radar
-
-Cada execução do comando padrão salva os tokens `APTOS` em `wave_signals` no SQLite. O
-mesmo token não cria outro sinal por seis horas. Para cada sinal são criados checkpoints de
-5, 15 e 60 minutos; nas execuções seguintes, os checkpoints vencidos consultam o candle do
-minuto-alvo e calculam retorno e P&L fictícios. Por isso, mesmo que o comando seja executado
-depois de uma hora, ele ainda busca os três horários corretos em vez de usar um único preço
-atrasado.
-
-A entrada e cada saída aplicam o `SLIPPAGE_BPS` configurado e usam `COPY_SIZE_USD` como
-tamanho fictício. Ainda é um proxy: não existe cotação de rota, assinatura ou transação.
-Para apenas consultar o radar sem salvar/atualizar o laboratório:
-
-```powershell
-python radar.py --tokens 25 --top 10 --no-paper
-```
-
-Os sinais novos recebem a versão `wave_v3_volume_integrity`. Os resultados anteriores
-continuam preservados como `wave_v2_momentum` ou `wave_v1_baseline`; nenhuma linha antiga é
-reescrita para a v3. Isso impede que a nova barreira seja avaliada usando resultados da
-regra anterior. Para consultar todas as versões históricas, use
-`python evaluate.py --all-strategies --cohorts`.
-
-Para formar amostra sem executar o comando manualmente, use o coletor limitado. O exemplo
-abaixo roda 12 fotografias, uma a cada cinco minutos, e termina sozinho:
-
-```powershell
-python collect.py --cycles 12 --interval-minutes 5 --tokens 25 --top 3
-```
-
-O intervalo mínimo é 30 segundos e o máximo são 288 ciclos. Uma falha temporária fica
-registrada e a próxima rodada continua; erro de configuração encerra imediatamente.
-`Ctrl+C` é seguro porque cada ciclo confirmado já foi persistido no SQLite.
-
-### Monitor híbrido econômico
-
-Para acompanhamento prolongado, prefira o monitor híbrido. Ele atualiza checkpoints pelo
-GeckoTerminal a cada cinco minutos, mas procura tokens novos no Solana Tracker somente a
-cada 30 minutos:
-
-No Windows, a forma recomendada é o inicializador abaixo. Ele usa o Python da `.venv` sem
-exigir ativação manual, salva toda a sessão em `logs/` e gera a avaliação ao final:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1
-```
-
-Para mudar a duração, por exemplo para 24 horas:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start-monitor.ps1 -Hours 24
-```
-
-Alternativamente, execute o monitor diretamente:
-
-```powershell
-python monitor.py --hours 12 --price-interval-minutes 1 --discovery-interval-minutes 30 --tokens 25 --top 3
-```
-
-### Exit Engine v1 (forward-only)
-
-Ao iniciar o monitor, o sistema registra uma fronteira de coorte antes de criar novos
-sinais. Somente sinais `wave_v3_volume_integrity` posteriores a essa fronteira recebem,
-em paralelo, as políticas pré-registradas `fixed_15m_v1`, `fixed_60m_v1`,
-`stop_loss_10_v1`, `take_profit_20_v1` e `trailing_stop_10_v1`. Os parâmetros são
-hipóteses forward e não foram escolhidos a partir dos sinais históricos.
-
-```powershell
-python evaluate_exits.py
-```
-
-Os benchmarks fixos consultam o candle exato de 15m/60m. As políticas dinâmicas reagem
-somente às observações feitas pelo monitor. Desde a primeira coorte oficial, o intervalo
-padrão é de um minuto. Um cruzamento intraminuto ainda pode ser perdido; se o preço saltar o threshold, a saída usa o
-primeiro preço observado, com slippage, e não um preenchimento artificial no threshold.
-As observações originais por minuto são persistidas e podem ser subamostradas futuramente
-para comparação com 5m, sem reescrever a coorte.
-
-O provedor aplica um intervalo mínimo de 2,1 segundos entre requisições. Cada sinal aberto
-faz uma consulta dinâmica por ciclo, compartilhada pelas cinco políticas, e não cinco
-consultas. O monitor mostra a duração e a utilização teórica estimadas dessa carga; a partir
-de 80% imprime um alerta. Consultas de benchmarks vencidos e a primeira resolução de pool
-podem adicionar chamadas, e o limite público efetivo do provedor ainda pode ser menor que a
-capacidade teórica imposta pelo cliente.
-
-Cada discovery paper também grava um funil auditável: limite solicitado à fonte, tokens
-retornados, validade dos dados, rejeições por barreira, candidatos v3, cooldown/duplicados
-e sinais efetivamente persistidos. Essa instrumentação não altera filtros ou ranking.
-
-O comando mostra antes de iniciar o número planejado de rodadas no Solana Tracker. Com os
-valores acima, são 24 rodadas em aproximadamente 12 horas; retentativas de rede ainda podem
-gerar requisições adicionais. As atualizações intermediárias de preço não usam essa fonte.
-Se um discovery falhar temporariamente, o monitor continua tentando concluir os
-checkpoints existentes.
-
-O processo fica no PowerShell e exige que o computador permaneça ligado e sem suspensão.
-Ele termina sozinho depois de `--hours` ou pode ser encerrado com `Ctrl+C`; os dados já
-salvos não são apagados. A duração aceita fica entre 30 minutos e 72 horas, evitando um
-processo acidentalmente ilimitado. Quando a duração termina normalmente, o monitor atualiza
-os checkpoints vencidos e imprime automaticamente a avaliação com coortes. Use
-`--skip-final-evaluation` somente se quiser omitir essa etapa.
-
-Depois, avalie somente a estratégia atual:
-
-```powershell
-python evaluate.py
-```
-
-Para auditar também sinais da regra anterior:
-
-```powershell
-python evaluate.py --all-strategies
-```
-
-O relatório separa 5, 15 e 60 minutos e mostra win rate com intervalo de confiança de
-95%, retorno líquido médio e mediano, P&L paper, profit factor, drawdown e melhor/pior
-retorno. Cada horizonte também é recalculado com slippage de 0,5%, 1%, 2% e 3% por lado.
-Esse stress test usa os preços de mercado já armazenados e mostra quando uma aparente
-vantagem desaparece com custos mais conservadores.
-
-Além do resultado observado, a avaliação audita a cobertura de cada horizonte. Ela mostra
-quantos checkpoints foram concluídos, falharam ou continuam pendentes, agrupa as falhas por
-causa e recalcula o experimento atribuindo aos resultados sem preço retornos hipotéticos de
-0%, -25%, -50% e -100%. Esse segundo stress inclui falhos e pendentes e existe para revelar
-viés de sobrevivência; não afirma que esses retornos realmente aconteceram.
-
-O relatório também compara, quando os dados permitem, o pool do snapshot de entrada com o
-pool usado pelo provedor no candle de saída. Divergências ficam explícitas e devem ser
-investigadas antes de interpretar o P&L como executável. Snapshots com pool ausente ou com
-janelas de volume não monotônicas (`5m > 1h` ou `1h > 24h`) recebem alerta de integridade.
-O sistema preserva os valores brutos e não corrige silenciosamente respostas da fonte.
-
-O stress de slippage continua usando apenas observações que possuem preço. Por isso ele
-deve ser lido junto do stress de resultados sem preço, nunca isoladamente.
-
-O relatório calcula ainda o pico de posições simultâneas e de capital fictício empregado
-em cada horizonte. Se os sinais exigirem mais que `STARTING_BALANCE_USD`, o resultado mostra
-`EXCEDEU O SALDO` em vez de pressupor capital infinito.
-
-Para reduzir falsos positivos causados por poucos outliers, cada horizonte também mostra:
-
-- um intervalo de confiança de 95% aproximado para o retorno médio, usando Student t nas
-  amostras pequenas;
-- a média depois de remover o melhor sinal;
-- a parcela do lucro bruto concentrada no maior vencedor;
-- um alerta quando a média positiva desaparece sem o melhor sinal.
-
-Esses diagnósticos não provam independência entre sinais e não transformam uma amostra
-pequena em evidência. Eles servem para impedir que um único acerto esconda uma regra sem
-vantagem consistente.
-
-Menos de 30 observações é sempre exibido como `INCONCLUSIVA`; de 30 a 99 é `PRELIMINAR`.
-Nem 100 observações garantem lucro futuro: elas apenas dão base melhor para decidir se a
-regra merece nova validação. Para abrir as coortes exploratórias predefinidas de Wave Score
-e aceleração de volume:
-
-```powershell
-python evaluate.py --cohorts
-```
-
-Para atualizar somente checkpoints vencidos, sem gastar chamadas do Solana Tracker:
-
-```powershell
-python evaluate.py --update-prices --cohorts
-```
-
-Essa opção consulta apenas os candles históricos do GeckoTerminal e depois recalcula o
-relatório local. Ela não procura tokens novos; serve para concluir sinais já salvos.
-Executar `python evaluate.py` sem `--update-prices` é totalmente local e não consome cota
-de nenhuma API.
-
-Para simular uma banca sequencial usando os retornos líquidos individuais já armazenados,
-sem substituir a série pela média, use:
-
-```powershell
-python simulate_bankroll.py --starting-balance 100 --allocation-pct 30 --horizon-minutes 5 --expected-trades 64
-```
-
-O comando mostra banca final, lucro, retorno acumulado, maior drawdown, maior sequência de
-perdas e a evolução trade a trade. Ele é totalmente offline. A hipótese é sequencial: cada
-posição é encerrada antes do reinvestimento; posições que se sobrepuseram no monitor exigem
-uma simulação de capital concorrente separada.
-
-Para modelar capital bloqueado, sinais simultâneos e limites reais de exposição nos quatro
-perfis predefinidos, execute:
-
-```powershell
-python backtest_concurrent.py --expected-trades 64 --output backtest-concurrent.txt
-```
-
-O backtest prioriza sinais simultâneos por maior Wave Score e usa o ID apenas como desempate.
-Ele fecha cada posição no `target_at` do checkpoint de cinco minutos, libera o principal e
-o P&L somente nesse instante e nunca usa capital inexistente. São comparadas posições de
-10%/20%/30% e exposição de 40%/60%/70%, além de bancas iniciais de US$ 100, US$ 500 e
-US$ 1.000. O retorno armazenado já contém o slippage configurado. Entrada/liquidez é exibida
-como diagnóstico, mas fees ou impacto histórico não são inventados quando ausentes.
-
-O drawdown desse backtest usa a equity contábil nos eventos de fechamento. Como não há
-snapshots contínuos de todas as posições entre a entrada e a saída, posições abertas não são
-marcadas a mercado; o drawdown intratrade pode ter sido maior que o reportado.
-
-O relatório também aplica um stress transparente de 0, 25, 50, 100 e 200 bps de custo
-adicional de ida e volta aos perfis moderado e muito agressivo. Esse desconto é uma análise
-de sensibilidade além do slippage já armazenado, não uma afirmação de que essas foram as
-fees reais. `--output` grava o texto diretamente em UTF-8 e evita caracteres quebrados no
-Windows PowerShell.
-
-As faixas são fixas e não mudam a estratégia. Elas servem para formular uma hipótese para
-um experimento futuro; grupos com menos de 30 resultados não devem ser usados para alterar
-os filtros atuais.
-
-Use `--copyability-limit` para controlar quantas candidatas do primeiro funil recebem a
-consulta adicional. O padrão é 25:
-
-```powershell
-python discover.py --wallets 250 --top 10 --copyability-limit 25
-```
-
-Use `--liquid-seeds` para controlar quantas das wallets analisadas partem desses mercados.
-O valor deve ser menor ou igual a `--wallets` e o máximo é 200:
-
-```powershell
-python discover.py --wallets 250 --top 10 --copyability-limit 25 --liquid-seeds 50
-```
-
-Limitações honestas: a liquidez é atual, não histórica; a compra média/liquidez é um proxy,
-não uma simulação de rota; volume 24h, profundidade por faixa de preço, slippage histórico e
-latência real ainda não entram no score.
-
-## Modo demonstração offline
-
-Se a rede bloquear os RPCs da Solana, ative `Modo demonstração offline` na barra
-lateral. O app cria automaticamente uma wallet de demonstração e não faz nenhuma
-requisição externa.
-
-1. Clique em `Carregar dados offline` para importar 10 transações sintéticas.
-2. Clique em `Simular novas cópias` para criar os paper trades.
-3. Abra `Paper trading` e clique em `Aplicar preços sintéticos e calcular`.
-
-Esse fluxo passa pelo mesmo parser, banco SQLite, posições FIFO, P&L e Wallet Score do
-modo normal. As cinco compras e cinco vendas, os tokens e os preços são inteiramente
-sintéticos e aparecem identificados no dashboard. Eles servem para validar o software,
-não para avaliar uma wallet ou estratégia real.
+# crypto-copy-trader
+
+Pesquisa de sinais em memecoins da Solana, em modo **PAPER**: o bot só observa, decide e alerta —
+nunca executa ordem, nunca assina transação, nunca guarda chave privada. Nenhum dinheiro real
+passa por aqui.
+
+> Projeto pessoal para portfólio, feito por [**Murillo Lourenço**](https://github.com/murilloalvz)
+> — estudante de Análise e Desenvolvimento de Sistemas (FATEC Sorocaba), buscando estágio ou
+> posição júnior em análise de dados/quant.
+
+## ⚠️ Aviso de risco
+
+Isto é um instrumento de **coleta e pesquisa**, não uma recomendação de investimento e não uma
+prova de que qualquer estratégia aqui dá lucro. Nenhum número deste repositório — passado,
+presente ou simulado — é uma promessa de retorno. Criptoativos, e memecoins em particular, são
+extremamente arriscados; nada aqui deve ser copiado para operar dinheiro real sem validação
+própria.
+
+## O que tem aqui
+
+O produto é `signals_mvp/`: um bot que acompanha pools recém-graduadas na Solana, filtra por
+segurança (GoPlus) e qualidade de dado, aplica um detector de regras (duas versões, V0 e V1, cada
+uma com sua config própria e seu próprio hash) e manda o alerta no Telegram — o operador decide e
+executa manualmente no simulador. O bot também registra, para TODO sinal avaliado (enviado ou
+não), o que teria acontecido depois, para medir com dado se a regra separa sinal bom de ruído.
+
+## Honestidade metodológica (o diferencial deste projeto)
+
+A parte que mais importa aqui não é o detector — é a disciplina em volta dele, porque é fácil
+"descobrir" uma estratégia que só funcionou no passado por acaso:
+
+- **Hipóteses pré-registradas**: antes de qualquer coleta que vai julgar uma regra, a regra fica
+  **congelada por hash** e a decisão de validação é escrita ANTES de ver o resultado (ver
+  `docs/pos-runner-v1/PROTOCOLO_VALIDACAO.md` e `docs/research-hypothesis-registry-v1-2026-10-04.md`).
+- **Holdout selado**: a amostra que julga a hipótese do V0 foi fechada (hash do universo de pools)
+  antes da descoberta rodar, para não vazar informação do futuro para o passado.
+- **Config congelada com hash**: `versao_config`/`versao_config_v1` é um hash do YAML de regras.
+  Mudar um parâmetro — mesmo um só — gera uma versão nova; estatísticas de versões diferentes
+  nunca se misturam.
+- **Versionamento sem misturar estatística**: cada linha gravada carrega a versão da config que a
+  gerou; nenhum número é recalculado com uma regra que não existia quando o sinal saiu.
+- **Resultados negativos documentados**: quando uma hipótese falha (ou um backtest é pausado por
+  falta de amostra), isso fica registrado — não é escondido do histórico.
 
 ## Arquitetura
 
-```text
-Solana JSON-RPC
-      ↓
-Coleta e parsing
-      ↓
-SQLite
-      ↓
-Métricas / Wallet Score
-      ↓
-Paper Trading
-      ↓
-Dashboard Streamlit
+```
+   Feeder                Scheduler              Detector             Notifier        Store
+(GeckoTerminal/   -->   (ciclo, budget    -->   (regras V0/V1,  -->  (Telegram:  -->  (SQLite WAL
+ GoPlus, com         de chamadas, backoff        gatilhos,            alerta +         + CSV de
+ rate limit)         adaptativo)                 stop/TP)             botões +         formato
+                                                                        resumo)         estável)
+                                  ^
+                                  |
+                            ChainAdapter
+                      (Solana ao vivo; BSC e
+                       Robinhood Chain com
+                      detecção de capacidade)
 ```
 
-## Stack
+- **Feeder**: `geckoterminal.py`/`goplus.py` — clientes HTTP com limitador adaptativo (AIMD) e
+  parsers testados contra respostas reais de API (não respostas inventadas à mão).
+- **Scheduler**: `engine.py`/`worker.py`/`supervisor.py` — um ciclo por vez, com orçamento de
+  chamadas por minuto e reinício automático se o processo cair.
+- **Detector**: `triggers.py`/`scoring.py` + `pos_runner/` (as duas versões da estratégia
+  "pos-runner", cada uma com sua config/hash próprios).
+- **Notifier**: `telegram.py`/`alerts.py` — alerta, botões de feedback, resumo diário; nunca
+  derruba o processo se o Telegram falhar.
+- **Store**: `storage.py` — SQLite é a fonte da verdade (modo WAL); os CSVs são regenerados do
+  banco de forma atômica, nunca escritos direto.
+- **ChainAdapter**: `pos_runner/chain_adapter.py` — mesma lógica de regra em qualquer chain; cada
+  chain declara sua própria capacidade (ex.: BSC/Robinhood Chain começam desligadas até terem
+  dado real suficiente).
 
-**Python • SQLite • Solana JSON-RPC • APIs • Streamlit • Análise de Dados • Testes Automatizados**
+## Como rodar (Windows)
 
-## Instalação no Windows
+Passo a passo completo, copia-e-cola, em `signals_mvp/README.md`. Para a estratégia V1 ao vivo
+("Parte B"), ver `docs/pos-runner-v0/RUNBOOK_PARTE_B_WINDOWS.md`. Resumo:
 
-Requer Python 3.11 ou 3.12.
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-streamlit run app.py
+```
+git clone <este repositório>
+cd crypto-copy-trader
+py -3 -m pip install -r signals_mvp\requirements.txt
+copy signals_mvp\.env.example signals_mvp\.env   REM preencher TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID
+py -3 -m signals_mvp selfcheck                   REM testa tudo com dados falsos, sem rede
+py -3 -m signals_mvp teste-rede                  REM confirma as APIs reais, só leitura
+signals_mvp\iniciar.bat                          REM liga o bot (supervisor + worker)
 ```
 
-Abra o endereço exibido pelo Streamlit no terminal.
+## Stack e o que este projeto demonstra
 
-Para executar os testes locais:
+- **Python** puro na parte que importa (biblioteca padrão + `requests`/`PyYAML`; sem framework
+  pesado no bot).
+- **SQLite em modo WAL** como fonte da verdade, com migração de esquema (`ALTER TABLE`
+  idempotente) para não perder o banco do operador quando um campo novo é adicionado.
+- **Cliente HTTP com rate limit adaptativo e backoff** contra uma API pública real (GeckoTerminal).
+- **Mais de 440 testes automatizados** (`python -m unittest discover -s signals_mvp/tests`),
+  incluindo testes de não-lookahead, idempotência em reinício, e um teste de equivalência que prova
+  que uma mudança de instrumentação não altera nenhum sinal já gerado.
+- **CI** (`.github/workflows/tests.yml`) rodando essa suíte a cada push/PR.
+- **Estatística aplicada**: bootstrap em blocos, incerteza de edge via distribuição Beta,
+  frequência via Poisson/binomial negativa — `signals_mvp/analise/simulacao_bloco.py` (ver
+  `docs/pos-runner-v1/ANALISE_MONTE_CARLO.md`).
 
-```powershell
-python -m unittest discover -s tests -v
+## Status atual e roadmap
+
+- **V1 ("regras do professor")** está **ao vivo em modo paper**, config congelada no hash
+  `279b79ffa3f0`. A validação formal (n=30, limite inferior de 90% da expectativa em R) está em
+  coleta — ver `docs/pos-runner-v1/PROTOCOLO_VALIDACAO.md`.
+- **V0** teve seu backtest (Parte A) pausado por falta de amostra numa das 24 combinações
+  testadas; a combinação principal segue o rito de validação do registro de hipóteses.
+- **Próximo passo**: Fase 2b (BSC) depois de confirmar capacidade real de dado na chain; nenhuma
+  conclusão de edge antes de reunir as 30+ operações fechadas que o protocolo exige.
+
+Nenhum destes itens é uma previsão de quando (ou se) uma estratégia vai "funcionar" — é só o que
+está em andamento.
+
+## Organização do repositório
+
 ```
-
-## Configuração
-
-Edite `.env`. O endpoint público atual é `https://api.mainnet.solana.com`; a aplicação
-migra automaticamente a configuração antiga `api.mainnet-beta.solana.com`. O RPC público
-funciona para testes, mas pode limitar requisições. Em falhas de rede ou TLS, o cliente
-tenta automaticamente o endpoint público alternativo definido em
-`SOLANA_RPC_FALLBACK_URLS`. Para uso contínuo, troque `SOLANA_RPC_URL` por um endpoint
-próprio. Nunca coloque seed phrase ou chave privada neste projeto.
-
-## Como calcular a performance
-
-1. Sincronize a wallet.
-2. Use `Importar histórico anterior` algumas vezes para obter compras e vendas.
-3. Clique em `Simular novas cópias`.
-4. Na aba `Paper trading`, clique em `Buscar preços e calcular performance`.
-
-Antes de consultar o candle, cada sinal passa por uma barreira individual de mercado. O
-padrão exige ao menos US$ 50 mil de liquidez e US$ 10 mil de volume em 24 horas no pool
-selecionado. Um sinal reprovado continua registrado para auditoria como
-`skipped_illiquid` ou `skipped_low_volume`, com a explicação em `price_error`, mas não
-entra no P&L. Os limites podem ser alterados no `.env` sem mudar o código:
-
-```text
-MIN_SIGNAL_LIQUIDITY_USD=50000
-MIN_SIGNAL_VOLUME_24H_USD=10000
-MAX_PRICE_RETRY_ATTEMPTS=3
+signals_mvp/     o bot (único código ativo deste repositório)
+docs/            documentação ativa (V0/V1, protocolo de validação, registro de hipóteses)
+archive/         pesquisa anterior, pausada — ver archive/README.md e docs/LIMPEZA_MANIFESTO.md
 ```
-
-Falhas de preço são classificadas para evitar consultas inúteis:
-
-- `price_retryable`: rede, limite temporário ou indisponibilidade;
-- `price_retry_exhausted`: atingiu o máximo configurado de tentativas;
-- `price_no_pool`: nenhum pool disponível para o token;
-- `price_no_historical_candle`: o pool não possui candle para aquele minuto;
-- `price_distant_historical_candle`: o candle está distante demais do sinal;
-- `price_permanent_error`: outra resposta definitiva que não deve ser repetida.
-
-O provedor faz backoff exponencial para erros temporários, incluindo HTTP 429. Falhas
-permanentes e sinais já bloqueados por mercado não são consultados novamente a cada clique.
-O dashboard mostra a cobertura total (`swaps precificados / swaps confirmados`) e a
-cobertura entre sinais não bloqueados. P&L, retorno, win rate e drawdown usam somente
-compras e vendas elegíveis e precificadas; essa limitação fica explícita na interface.
-
-Os candles são consultados por minuto no pool ativo selecionado por volume e liquidez e
-ficam em cache no SQLite. A API pública do GeckoTerminal possui limite de requisições,
-então a primeira precificação pode levar alguns segundos.
-
-Ao abrir uma versão nova do app, as transações já armazenadas são reprocessadas. Paper
-trades originados de falsos positivos antigos são marcados como ignorados, sem apagar o
-histórico bruto da blockchain.
-
-## Limites honestos desta versão
-
-- O parser exige duas evidências: um programa de DEX suportado precisa ter sido invocado e
-  o fluxo de saldos precisa ter formato de troca. Rotas muito complexas podem ser ignoradas
-  de forma conservadora em vez de virarem falsos swaps.
-- O Wallet Score fica como `Dados insuficientes` até existirem pelo menos 5 trades fechados.
-  Depois considera retorno, win rate, drawdown, tamanho da amostra, atividade e frequência.
-- Os preços usam o fechamento do candle de um minuto e o pool priorizado por volume 24h.
-- Liquidez e volume são fotografias atuais; a barreira evita sinais claramente rasos, mas
-  não substitui uma cotação de rota nem mede a liquidez histórica do instante do trade.
-- O P&L atual é realizado e usa FIFO. Posições ainda abertas não são marcadas a mercado.
-- Vendas sem uma compra anterior importada são ignoradas, pois o simulador não vende ativos
-  que a carteira de paper trading não possui.
-
-## Próximo marco recomendado
-
-1. Formalizar o Signal Layer prospectivo e seus reason codes/missingness.
-2. Registrar, antes do outcome, a decisão humana `TAKE` ou `SKIP` e a versão do sinal observada.
-3. Comparar futuramente `ALL SIGNALS`, `HUMAN SELECTED` e `SHADOW AUTO` sem seleção retrospectiva.
-4. Validar execução, liquidez, slippage, saída e shadow antes de qualquer automação assistida.
-
-V68 permanece congelado e `NOT_EVALUATED`; esta documentação não altera feature, bins, horizonte,
-detector ou protocolo econômico. Execução com dinheiro real permanece bloqueada.
-
-## Estrutura
-
-```text
-app.py                 dashboard
-discover.py            CLI de discovery, filtros e Top 10
-radar.py               CLI de tokens ativos e Wave Score inicial
-collect.py             polling limitado para formar amostra paper
-monitor.py             preços frequentes com discovery econômico e independente
-evaluate.py            estatísticas por versão e horizonte
-evaluate_exits.py      comparação da coorte forward de políticas de saída
-src/demo.py            transações e preços sintéticos do modo offline
-src/discovery/          fontes, métricas, filtros e ranking de candidatas
-src/wave_radar.py      filtros e ranking de tokens ativos
-src/wave_paper.py      sinais paper e checkpoints históricos
-src/wave_metrics.py    métricas agregadas e proteção de amostra pequena
-src/exit_engine.py     políticas pareadas, trajetória observada e persistência
-src/exit_metrics.py    métricas comparativas do experimento de saída
-src/wave_funnel.py     observabilidade discovery → filtros → sinal
-src/solana.py          cliente RPC e parser
-src/database.py        schema e acesso SQLite
-src/services.py        sincronização e paper trading
-src/analytics.py       métricas e score
-src/prices.py          preços históricos e cache
-tests/test_parser.py   teste do parser
-```
-
-Dados de mercado on-chain: GeckoTerminal. Powered by CoinGecko.
-tests/test_parser.py   testes do parser
-```
-
-## Limitações atuais
-
-- O parser inicial usa diferenças de saldo e seleciona o token com maior variação; transações complexas com múltiplos tokens exigem parsing específico.
-- O Wallet Score atual mede comportamento e não deve ser interpretado como previsão de rentabilidade.
-- Métricas financeiras dependem de preços históricos confiáveis no instante de cada operação.
-- O paper trading é uma simulação e não representa execução real ou garantia de performance.
-
-## Próximos passos
-
-- Evoluir o parser de transações e swaps
-- Integrar preços históricos por timestamp
-- Reconstruir posições e P&L
-- Expandir métricas de risco e performance
-- Aumentar cobertura de testes
-
-## Autor
-
-**Murillo Lourenço**  
-Estudante de Análise e Desenvolvimento de Sistemas na FATEC Sorocaba.
-
-Interesses: Dados, Inteligência Artificial, Automação e aplicações quantitativas.
