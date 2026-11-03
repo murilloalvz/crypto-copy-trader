@@ -373,6 +373,10 @@ def _simular_entrada(bars: list[Bar], ev: Any, params: ParamsV1, costs: CostMode
         "zona": ev.data.get("zona"), "decision_ts": ev.decision_ts, "status": res.status,
         "net_ret": res.net_ret, "risco_pct": risco_pct, "r_mult": r_mult,
         "r_excluido_motivo": r_excluido_motivo, "retroativo": True,
+        # PEDIDO 2026-11-03 (continuacao -- pendente 3, avaliar_v3_retro): campo aditivo, nunca muda
+        # nenhum valor ja existente (so leitura das legs que `simulate_v1` ja simulou acima) -- "tocou
+        # o topo anterior" = TP1 disparou (`bar.high>=TOPO` com exaustao, ver simulate_v1.py).
+        "tocou_topo": any(leg.reason == "tp1" for leg in res.legs),
     }
 
 

@@ -50,12 +50,33 @@ from typing import Any, Optional
 from ..analise.condicional import RISCO_IRREALISTA_MIN_PCT, _contaminado_candle, _risco_irrealista
 from ..config import make_paths
 from ..storage import Storage
+from ..util import iso_utc
 
 JANELA_FECHAMENTO_H = 72.0   # evidencia.py: JANELA_FECHAMENTO_H -- mesma constante, nunca duplicada com valor diferente
 
 
 def _signals_de(storage: Storage, versao: str) -> list[Any]:
     return {"v1": storage.pr1_signals, "v2": storage.pr2_signals, "v3": storage.pr3_signals}[versao]()
+
+
+def listar_perdido_offline(storage: Storage, versao: str) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-03 (continuacao -- pendente 2): lista, com data e causa, cada sinal que ficou
+    `perdido_offline` -- SO acontece em `live.py: _startup()` (reinicio), quando o candle ja esta
+    atrasado (`_late`) E o pool JA NAO esta mais 'ativo' (encerrado/removido -- nunca por um restart
+    comum: enquanto o pool continua 'ativo', `_refresh`/`_refresh_safe` fecha a lacuna sozinho e a
+    posicao RETOMA com precos reais, ver docstring de `_startup`). Causa = `pr_pools.motivo` do pool
+    NAQUELE momento, se a linha ainda existir; "pool removido/nao encontrado" se nao existir mais
+    (nunca inventado)."""
+    out: list[dict[str, Any]] = []
+    for s in _signals_de(storage, versao):
+        if s["status"] != "perdido_offline":
+            continue
+        pool_row = storage.pr_pool(s["pool"])
+        causa = (pool_row["motivo"] or "s/d (sem motivo registrado em pr_pools)") if pool_row is not None \
+            else "pool removido/nao encontrado"
+        out.append({"token": s["symbol"] or (s["mint"] or "")[:8], "versao": versao, "pool": s["pool"],
+                    "tf": s["tf"], "data": iso_utc(s["closed_ts"]), "causa": causa})
+    return out
 
 
 def _resumo(vs: list[float]) -> Optional[dict[str, float]]:
@@ -123,6 +144,7 @@ def medir_versao(storage: Storage, versao: str) -> dict[str, Any]:
         "nunca_tocou_topo_em_72h": nunca_tocou_topo_72h,
         "nunca_tocou_topo_em_72h_pct": (100.0 * nunca_tocou_topo_72h / len(limpos)) if limpos else None,
         "linhas_limpas": linhas_limpas, "linhas_risco_baixo": linhas_risco_baixo,
+        "perdido_offline": listar_perdido_offline(storage, versao),
     }
 
 
@@ -188,6 +210,23 @@ def formatar(resultados: list[dict[str, Any]]) -> str:
         out.append("|---|---|---|---|---|---|---|---|---|")
         for l in linhas_risco:
             out.append(_fmt_linha(l))
+    perdidos = [p for r in resultados for p in r["perdido_offline"]]
+    out.append("")
+    out.append(f"## perdido_offline ({len(perdidos)} caso(s), com data e causa)")
+    out.append("")
+    if perdidos:
+        out.append("| token | versão | pool | tf | data | causa |")
+        out.append("|---|---|---|---|---|---|")
+        for p in perdidos:
+            out.append(f"| {p['token']} | {p['versao']} | {p['pool'][:8]}... | {p['tf']} | {p['data']} | {p['causa']} |")
+    else:
+        out.append("nenhum (ou banco sem este status ainda).")
+    out.append("")
+    out.append("Confirmação (leitura de `live.py: _startup`, linhas ~795-859): a retomada de posição "
+              "JÁ COBRE reinício com posição aberta -- enquanto o pool continuar 'ativo', o ciclo normal "
+              "(`_refresh`/`_refresh_safe`, GT depois DexPaprika) fecha a lacuna sozinho e a posição "
+              "retoma com preços reais, nunca inventados. `perdido_offline` só acontece quando o PRÓPRIO "
+              "pool já não está mais 'ativo' (encerrado/removido) -- aí não há dado real pra retomar.")
     out.append("")
     out.append("Limitação: coorte retrospectiva (avaliar_candidatos_retro.py) não grava tp1_ts/mfe_h "
               "por sinal -- fora deste relatório (ver docstring do módulo).")

@@ -127,5 +127,49 @@ class Passo0eExclusaoFixTests(unittest.TestCase):
         self.assertEqual(linha["motivo_saida"], "EXIT FULL")
 
 
+class ListarPerdidoOfflineTests(unittest.TestCase):
+    """PEDIDO 2026-11-03 (continuacao -- pendente 2): lista com data e causa."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="perdido_offline_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _sinal_perdido(self, pool: str, closed_ts: float) -> None:
+        self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": pool, "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 0,
+            "mint": f"MINT_{pool}", "symbol": pool, "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]",
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "perdido_offline",
+            "entry_price": 100.0, "stop": 80.0, "closed_ts": closed_ts,
+        })
+
+    def test_pool_ainda_existente_mostra_o_motivo_registrado(self) -> None:
+        self._sinal_perdido("POOL1", 1_700_000_000.0)
+        self.storage.pr_upsert_pool("POOL1", status="encerrado", motivo="idade maxima")
+        linhas = passo0e.listar_perdido_offline(self.storage, "v1")
+        self.assertEqual(len(linhas), 1)
+        self.assertEqual(linhas[0]["causa"], "idade maxima")
+        self.assertTrue(linhas[0]["data"])
+
+    def test_pool_removido_nunca_inventa_causa(self) -> None:
+        self._sinal_perdido("POOLSUMIU", 1_700_000_000.0)
+        linhas = passo0e.listar_perdido_offline(self.storage, "v1")
+        self.assertEqual(linhas[0]["causa"], "pool removido/nao encontrado")
+
+    def test_sinal_aberto_nunca_entra_na_lista(self) -> None:
+        self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "ABERTO", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 0,
+            "mint": "MINT_ABERTO", "symbol": "ABERTO", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]",
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "aberto",
+            "entry_price": 100.0, "stop": 80.0,
+        })
+        self.assertEqual(passo0e.listar_perdido_offline(self.storage, "v1"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

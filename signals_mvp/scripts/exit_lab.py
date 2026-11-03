@@ -35,11 +35,18 @@ alternativa), para R ficar comparavel entre elas. risco<3% exclui o R das 4 (mes
 Coorte retrospectiva: SO o subconjunto "admitido_apos_congelamento" do lote 1 ja congelado
 (`pr_retro_candidatos`) -- e o UNICO com candles em `pr_bars` sem precisar de rede (ver docstring de
 `avaliar_candidatos_retro.py: _bars_truncados_de_pr_bars`). Reexecuta `DetectorV1` com `ParamsV1`/
-`ParamsV2` (MESMOS parametros congelados, leitura de `load_params_v1`/`load_params_v2`, nunca um valor
-novo) sobre esses candles truncados para reobter os eventos ENTRADA (determinismo: mesma entrada,
-mesmo candle -> mesmo evento que `avaliar_candidatos_retro.py` ja persistiu em `pr_retro_resultados`,
-nunca recalculado com regra diferente). Candidatos NAO admitidos (sem `pr_bars` cacheado) ficam fora --
-mesma limitacao documentada do Passo 0e para a coorte retro, nunca escondida.
+`ParamsV2`/`ParamsV3` (PEDIDO 2026-11-03, continuacao -- pendente 5: V3 entrou no MESMO loop, MESMOS
+candles truncados, so troca o conjunto de parametros, nunca uma regra nova) sobre esses candles
+truncados para reobter os eventos ENTRADA (determinismo: mesma entrada, mesmo candle -> mesmo evento
+que `avaliar_candidatos_retro.py`/`avaliar_v3_retro.py` ja persistem/reportam, nunca recalculado com
+regra diferente). Candidatos NAO admitidos (sem `pr_bars` cacheado) ficam fora -- mesma limitacao
+documentada do Passo 0e para a coorte retro, nunca escondida.
+
+PEDIDO 2026-11-03 (continuacao -- pendente 5, complemento): tambem cobre o REPLAY completo de
+`ParamsV3` sobre pools admitidos hoje (`avaliar_v3_retro.py: parte_a_pools_admitidos`, Parte A --
+reusa o evento bruto exposto la, `eventos_raw`, nunca duplica o replay) e agrega TUDO (v1/v2/v3 ao
+vivo, coorte retro, replay V3) por TOKEN (`resumo_por_token`) -- media de %/R por variante, nunca uma
+selecao do melhor.
 
 Uso (na VM):
     python -m signals_mvp.scripts.exit_lab --db dados/estado.sqlite
@@ -64,6 +71,7 @@ from ..pos_runner.params_v2 import load_params_v2
 from ..pos_runner.params_v3 import load_params_v3
 from ..pos_runner.simulate_v1 import simulate_v1
 from ..storage import Storage
+from .avaliar_v3_retro import _conectar_ro, parte_a_pools_admitidos
 
 AVISO = "exploratorio, nao escolhe saida; N pequeno; sem selecao do melhor"
 VARIANTES = ("A_atual", "B_breakeven_1x_caixa", "C_fechamento_1h_sob_teto", "D_30pct_topo_trailing")
@@ -277,7 +285,9 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
             if pool_row is None or pool_row["added_ts"] is None or pool_row["l_bc"] is None:
                 n_fora_do_alcance += 1
                 continue
-            for versao, params in (("v1", load_params_v1()), ("v2", load_params_v2())):
+            # PEDIDO 2026-11-03 (continuacao -- pendente 5): V3 entra no MESMO loop da coorte --
+            # mesmos candles truncados, so troca o conjunto de parametros (nunca uma regra nova).
+            for versao, params in (("v1", load_params_v1()), ("v2", load_params_v2()), ("v3", load_params_v3())):
                 tf = params.timeframes[0]
                 step = tf_seconds(tf)
                 bars = _bars_truncados(con, row["pool"], tf, step, pool_row["added_ts"])
@@ -312,8 +322,59 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
         con.close()
 
 
+def linhas_v3_replay_pools_admitidos(db_path: Path) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-03 (continuacao -- pendente 5): sinais do REPLAY completo de `ParamsV3` sobre
+    pools admitidos hoje (`avaliar_v3_retro.py: parte_a_pools_admitidos`, Parte A) -- reusa o MESMO
+    evento bruto (`eventos_raw`, campo aditivo de `parte_a_pools_admitidos`) em vez de reexecutar o
+    detector de novo (nunca duplica o replay)."""
+    con = _conectar_ro(db_path)
+    try:
+        params_v3 = load_params_v3()
+        linhas_pool = parte_a_pools_admitidos(con, params_v3)
+    finally:
+        con.close()
+    costs = CostModel()
+    linhas: list[dict[str, Any]] = []
+    for lp in linhas_pool:
+        for bars, ev, dex, l_bc in lp["eventos_raw"]:
+            j0 = ev.idx + 1
+            if j0 >= len(bars):
+                continue
+            entry = bars[j0].open
+            stop, topo, s_val, r_val = ev.data["stop"], ev.data["TOPO"], ev.data["S"], ev.data["R"]
+            risco_pct = ev.data.get("risco_pct")
+            risk_frac = (entry - stop) / entry if entry else None
+            resultado = simular_sinal(bars, j0, entry, stop, topo, s_val, r_val, params_v3, costs, dex, l_bc)
+            linha = {"token": lp["symbol"], "versao": "v3", "origem": "v3_replay", "risco_pct": risco_pct}
+            for nome, r_res in resultado.items():
+                pct = (r_res.net_ret * 100.0) if r_res.net_ret is not None else None
+                r_mult = (r_res.net_ret / risk_frac) if (r_res.net_ret is not None and risk_frac
+                                                         and risco_pct is not None
+                                                         and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
+                linha[nome] = {"status": r_res.status, "pct": pct, "r": r_mult, "motivo": r_res.reason}
+            linhas.append(linha)
+    return linhas
+
+
 def _media(valores: list[float]) -> Optional[float]:
     return statistics.fmean(valores) if valores else None
+
+
+def resumo_por_token(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-03 (continuacao -- pendente 5): agrega TODAS as origens (v1/v2/v3 ao vivo,
+    retro lote1, replay V3) por token -- media de %/R por variante."""
+    por_token: dict[str, list[dict[str, Any]]] = {}
+    for l in linhas:
+        por_token.setdefault(l["token"], []).append(l)
+    out: list[dict[str, Any]] = []
+    for token, ls in sorted(por_token.items()):
+        linha: dict[str, Any] = {"token": token, "n": len(ls)}
+        for nome in VARIANTES:
+            pcts = [l[nome]["pct"] for l in ls if l[nome]["pct"] is not None]
+            rs = [l[nome]["r"] for l in ls if l[nome]["r"] is not None]
+            linha[nome] = {"pct_medio": _media(pcts), "r_medio": _media(rs), "n": len(pcts)}
+        out.append(linha)
+    return out
 
 
 def formatar(linhas: list[dict[str, Any]], sem_dado_box: dict[str, int], sem_bar_entrada: dict[str, int],
@@ -338,6 +399,30 @@ def formatar(linhas: list[dict[str, Any]], sem_dado_box: dict[str, int], sem_bar
         pcts = [l[nome]["pct"] for l in retro if l[nome]["pct"] is not None]
         rs = [l[nome]["r"] for l in retro if l[nome]["r"] is not None]
         out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
+    out.append("")
+    v3_replay = [l for l in linhas if l["origem"] == "v3_replay"]
+    out.append(f"## V3 replay (pools admitidos hoje, historico completo; n={len(v3_replay)})")
+    for nome in VARIANTES:
+        pcts = [l[nome]["pct"] for l in v3_replay if l[nome]["pct"] is not None]
+        rs = [l[nome]["r"] for l in v3_replay if l[nome]["r"] is not None]
+        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
+    out.append("")
+    resumo_tokens = resumo_por_token(linhas)
+    out.append(f"## Por token ({len(resumo_tokens)} distinto(s), todas as origens)")
+    out.append("")
+    if resumo_tokens:
+        out.append("| token | n | " + " | ".join(f"{n} (%/R médios)" for n in VARIANTES) + " |")
+        out.append("|---|---|" + "---|" * len(VARIANTES))
+        for rt in resumo_tokens:
+            celulas = []
+            for nome in VARIANTES:
+                v = rt[nome]
+                pct = f"{v['pct_medio']:+.1f}%" if v["pct_medio"] is not None else "s/d"
+                r = f"{v['r_medio']:+.2f}R" if v["r_medio"] is not None else "-"
+                celulas.append(f"{pct}/{r} (n={v['n']})")
+            out.append(f"| {rt['token']} | {rt['n']} | " + " | ".join(celulas) + " |")
+    else:
+        out.append("nenhum sinal.")
     out.append("")
     out.append("Por sinal:")
     out.append("")
@@ -370,6 +455,7 @@ def executar(db_path: Path) -> str:
             sem_dado_box[versao], sem_bar_entrada[versao] = sb, se
         retro, n_fora = linhas_retro_admitido(db_path)
         linhas.extend(retro)
+        linhas.extend(linhas_v3_replay_pools_admitidos(db_path))
         return formatar(linhas, sem_dado_box, sem_bar_entrada, n_fora)
     finally:
         storage.close()

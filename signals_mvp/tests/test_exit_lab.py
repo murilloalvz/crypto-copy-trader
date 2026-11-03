@@ -5,6 +5,7 @@ execucao, pernas parciais, ratchet causal do stop), nunca a precisao fina do cus
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import tempfile
@@ -17,6 +18,7 @@ from ..pos_runner.costs import CostModel
 from ..pos_runner.params_v1 import load_params_v1
 from ..storage import Storage
 from ..scripts import exit_lab
+from .test_pos_runner_v1 import CREATED, GRAD, L_BC, textbook_v1
 
 
 def _bars(spec: list[tuple[float, float, float, float]], ts0: int = 1_000, step: int = 3_600) -> list[Bar]:
@@ -182,6 +184,79 @@ class LinhasRetroAdmitidoTests(unittest.TestCase):
         linhas, n_fora = exit_lab.linhas_retro_admitido(self.db_path)
         self.assertEqual(linhas, [])
         self.assertEqual(n_fora, 1)
+
+
+class ResumoPorTokenTests(unittest.TestCase):
+    def test_agrega_media_de_pct_e_r_por_token_entre_origens_diferentes(self) -> None:
+        linhas = [
+            {"token": "CAT", "versao": "v1", "origem": "v1v2v3", "risco_pct": 20.0,
+             "A_atual": {"status": "fechado", "pct": 10.0, "r": 0.5, "motivo": "stop"},
+             "B_breakeven_1x_caixa": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"},
+             "C_fechamento_1h_sob_teto": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"},
+             "D_30pct_topo_trailing": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"}},
+            {"token": "CAT", "versao": "v3", "origem": "v3_replay", "risco_pct": 20.0,
+             "A_atual": {"status": "fechado", "pct": 30.0, "r": 1.5, "motivo": "stop"},
+             "B_breakeven_1x_caixa": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"},
+             "C_fechamento_1h_sob_teto": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"},
+             "D_30pct_topo_trailing": {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"}},
+        ]
+        resumo = exit_lab.resumo_por_token(linhas)
+        self.assertEqual(len(resumo), 1)
+        self.assertEqual(resumo[0]["token"], "CAT")
+        self.assertEqual(resumo[0]["n"], 2)
+        self.assertAlmostEqual(resumo[0]["A_atual"]["pct_medio"], 20.0)
+        self.assertAlmostEqual(resumo[0]["A_atual"]["r_medio"], 1.0)
+        self.assertEqual(resumo[0]["A_atual"]["n"], 2)
+
+
+class LinhasV3ReplayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="exit_lab_v3replay_"))
+        storage = Storage(make_paths(self.tmp))
+        self.db_path = storage.paths.db
+        storage.close()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_replay_v3_sobre_pool_admitido_real_gera_linhas_com_as_4_variantes(self) -> None:
+        con = sqlite3.connect(str(self.db_path))
+        con.execute(
+            "INSERT INTO pr_pools (pool, symbol, status, l_bc, grad_ts, info) VALUES (?,?,?,?,?,?)",
+            ("POOL1", "CAT", "ativo", L_BC, GRAD, json.dumps({"criado_ts": CREATED})),
+        )
+        bars = textbook_v1().bars
+        con.executemany(
+            "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOL1','1h',?,?,?,?,?,?,?)",
+            [(b.ts, b.open, b.high, b.low, b.close, b.volume, int(b.filled)) for b in bars],
+        )
+        con.commit()
+        con.close()
+        linhas = exit_lab.linhas_v3_replay_pools_admitidos(self.db_path)
+        self.assertGreaterEqual(len(linhas), 1)
+        for l in linhas:
+            self.assertEqual(l["versao"], "v3")
+            self.assertEqual(l["origem"], "v3_replay")
+            for nome in exit_lab.VARIANTES:
+                self.assertIn(nome, l)
+
+    def test_integrado_no_relatorio_final(self) -> None:
+        con = sqlite3.connect(str(self.db_path))
+        con.execute(
+            "INSERT INTO pr_pools (pool, symbol, status, l_bc, grad_ts, info) VALUES (?,?,?,?,?,?)",
+            ("POOL1", "CAT", "ativo", L_BC, GRAD, json.dumps({"criado_ts": CREATED})),
+        )
+        bars = textbook_v1().bars
+        con.executemany(
+            "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOL1','1h',?,?,?,?,?,?,?)",
+            [(b.ts, b.open, b.high, b.low, b.close, b.volume, int(b.filled)) for b in bars],
+        )
+        con.commit()
+        con.close()
+        texto = exit_lab.executar(self.db_path)
+        self.assertIn("## V3 replay", texto)
+        self.assertIn("## Por token", texto)
+        self.assertIn("CAT", texto)
 
 
 if __name__ == "__main__":

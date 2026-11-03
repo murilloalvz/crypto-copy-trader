@@ -273,7 +273,14 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
         (", ".join(f"{k}={v}" for k, v in sorted(barrados.items())) or "nenhum") +
         " | motivo por pool ativo: " +
         (", ".join(f"{simbolo_de[p]}={m}{relogio_de[p]}" for p, m in sorted(motivos_por_pool.items())) or "nenhum pool ativo"))
-    out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}")
+    # PEDIDO 2026-11-03 (continuacao -- pendente 2): aviso anexado na MESMA linha (nunca uma nova,
+    # pra nao furar o teto de 60 linhas) -- a retomada de posicao JA cobre reinicio com posicao
+    # aberta ENQUANTO o pool continuar 'ativo' (`_refresh`/`_refresh_safe` fecha a lacuna com precos
+    # reais, ver live.py: _startup); so vira `perdido_offline` se o PROPRIO pool ja nao estiver mais
+    # 'ativo' no momento do restart -- aviso conservador mesmo assim, nunca custa confirmar antes.
+    aviso = (" | AVISO: não reiniciar sem checar pool 'ativo' (retomada cobre reinício normal; só "
+            "perde -> perdido_offline se o pool já saiu de 'ativo')") if (abertos_v1 or abertos_v2) else ""
+    out.append(f"POSICOES ABERTAS: V1={len(abertos_v1)} V2={len(abertos_v2)}{aviso}")
     for s in (abertos_v1 + abertos_v2)[:5]:
         bars = storage.pr_bars(s["pool"], s["tf"])
         ultimo = f"{(now - bars[-1][0]) / 60.0:.0f}min atras" if bars else "sem candle"

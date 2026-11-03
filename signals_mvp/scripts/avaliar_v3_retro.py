@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import statistics
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -64,21 +65,26 @@ def parte_a_pools_admitidos(con: sqlite3.Connection, params_v3: Any) -> list[dic
         bars = _bars_do_pool(con, row["pool"], tf)
         if not bars:
             linhas.append({"pool": row["pool"], "symbol": row["symbol"] or row["pool"],
-                          "categoria": "sem_historico", "chegou_runner": False, "sinais": []})
+                          "categoria": "sem_historico", "chegou_runner": False, "sinais": [], "eventos_raw": []})
             continue
         created_ts = _created_ts(row["info"])
         det = DetectorV1(params_v3, tf, row["l_bc"], row["grad_ts"], created_ts)
         dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
         chegou_runner = False
         sinais: list[dict[str, Any]] = []
+        # PEDIDO 2026-11-03 (continuacao -- pendente 5, scripts/exit_lab.py): guarda o evento BRUTO
+        # (bars, ev, dex, l_bc) ao lado do resultado ja simulado -- nunca muda `sinais`/`_simular_entrada`,
+        # so evita que exit_lab.py precise REPLICAR este mesmo replay so pra obter stop/TOPO/S/R.
+        eventos_raw: list[tuple[list[Any], Any, str, Optional[float]]] = []
         for bar in bars:
             for ev in det.update(bar):
                 if ev.kind == "RUNNER":
                     chegou_runner = True
                 elif ev.kind == "ENTRADA":
                     sinais.append(_simular_entrada(bars, ev, params_v3, costs, dex, row["l_bc"]))
+                    eventos_raw.append((bars, ev, dex, row["l_bc"]))
         linhas.append({"pool": row["pool"], "symbol": row["symbol"] or row["pool"], "categoria": "ok",
-                      "chegou_runner": chegou_runner, "sinais": sinais})
+                      "chegou_runner": chegou_runner, "sinais": sinais, "eventos_raw": eventos_raw})
     return linhas
 
 
@@ -100,6 +106,27 @@ def parte_b_coorte_lote1(con: sqlite3.Connection, params_v3: Any, now: float) ->
                       "motivo_sem_historico": resultado.motivo_sem_historico,
                       "chegou_runner": resultado.chegou_runner, "sinais": resultado.sinais_v1})
     return linhas, n_fora_do_alcance
+
+
+def resumo_por_token(linhas: list[dict[str, Any]], origem: str) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-03 (continuacao -- pendente 3): agrega por token (symbol) -- quantos sinais,
+    quantos fechados, R medio/mediano (so validos, mesma exclusao risco<3%) e quantos tocaram o topo
+    anterior (`tocou_topo`, campo aditivo de `_simular_entrada`)."""
+    por_token: dict[str, list[dict[str, Any]]] = {}
+    for l in linhas:
+        for s in l["sinais"]:
+            por_token.setdefault(l["symbol"] or l["pool"], []).append(s)
+    out: list[dict[str, Any]] = []
+    for token, sinais in sorted(por_token.items()):
+        com_r = [s["r_mult"] for s in sinais if s.get("r_mult") is not None]
+        out.append({
+            "token": token, "origem": origem, "n_sinais": len(sinais),
+            "n_fechados": sum(1 for s in sinais if s["status"] == "fechado"),
+            "r_medio": statistics.fmean(com_r) if com_r else None,
+            "r_mediano": statistics.median(com_r) if com_r else None,
+            "n_tocou_topo": sum(1 for s in sinais if s.get("tocou_topo")),
+        })
+    return out
 
 
 def formatar(linhas_a: list[dict[str, Any]], linhas_b: list[dict[str, Any]], n_fora_do_alcance_b: int,
@@ -133,6 +160,21 @@ def formatar(linhas_a: list[dict[str, Any]], linhas_b: list[dict[str, Any]], n_f
         out.append(f"sinais: {stats_b['n_sinais']} | fechados: {stats_b['n_fechados']} | R valido: 0 | R medio: s/d")
     out.append("")
     out.append("Pendente (nao feito aqui, por pedido explicito): congelamento do lote 2 da coorte retro.")
+    out.append("")
+    resumo_tokens = resumo_por_token(linhas_a, "A") + resumo_por_token(linhas_b, "B")
+    tokens_distintos = {r["token"] for r in resumo_tokens}
+    out.append(f"## Por token ({len(tokens_distintos)} distinto(s) nos {len(sinais_a) + len(sinais_b)} sinais)")
+    out.append("")
+    if resumo_tokens:
+        out.append("| token | origem | sinais | fechados | R médio | R mediano | tocaram o topo |")
+        out.append("|---|---|---|---|---|---|---|")
+        for r in resumo_tokens:
+            rm = f"{r['r_medio']:+.2f}" if r["r_medio"] is not None else "s/d"
+            rmed = f"{r['r_mediano']:+.2f}" if r["r_mediano"] is not None else "s/d"
+            out.append(f"| {r['token']} | {r['origem']} | {r['n_sinais']} | {r['n_fechados']} | {rm} | {rmed} | "
+                      f"{r['n_tocou_topo']} |")
+    else:
+        out.append("nenhum sinal.")
     out.append("")
     out.append(f"({AVISO})")
     return "\n".join(out)
