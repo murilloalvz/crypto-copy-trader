@@ -628,6 +628,13 @@ class Storage:
                 "mc_atual": "REAL", "idade_dias": "REAL", "pico": "REAL", "queda_pct": "REAL",
                 "liquidez_usd": "REAL",
             })
+            # PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 3): corrige o BUG da latencia
+            # de candle (contava TODO candle de backfill/historico, nao so o mais recente de cada
+            # poll -- inflava p95/max e disparava o falso alerta "perto do limiar" em funil_diario.py)
+            # -- `tier` (calor do pool no momento do poll, `_heat()`: 0 quente/1 morno/2 frio/-1 sem
+            # carga) permite quebrar p50/p95/max POR TIER e por pool. NULL em linhas anteriores a esta
+            # entrega (nunca inventado retroativamente).
+            self._ensure_columns("pr_candle_latencia", {"tier": "INTEGER"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -2063,6 +2070,14 @@ class Storage:
                 "INSERT INTO pr_api_uso (ts, fonte, finalidade, pool, http_status, rate_limited) VALUES (?,?,?,?,?,?)",
                 (ts, fonte, finalidade, pool, http_status, int(rate_limited)))
 
+    def pr_api_uso_ultima_tentativa_poll_pool(self, pool: str, since_ts: float = 0.0) -> Optional[sqlite3.Row]:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 4): a tentativa `poll_pool` MAIS
+        RECENTE deste pool (qualquer fonte, gt/dexpaprika) -- usado pra explicar o MOTIVO de um pool
+        atrasado (429/500/sem tentativa/respondeu sem candle novo)."""
+        return self._one(
+            "SELECT * FROM pr_api_uso WHERE pool=? AND finalidade='poll_pool' AND ts>=? ORDER BY ts DESC LIMIT 1",
+            (pool, since_ts))
+
     def pr_api_uso_count_por_finalidade_desde(self, since_ts: float) -> dict[str, int]:
         rows = self._all("SELECT finalidade, COUNT(*) AS n FROM pr_api_uso WHERE ts>=? GROUP BY finalidade", (since_ts,))
         return {r["finalidade"]: r["n"] for r in rows}
@@ -2071,10 +2086,17 @@ class Storage:
         row = self._one("SELECT COUNT(*) AS n FROM pr_api_uso WHERE ts>=? AND rate_limited=1", (since_ts,))
         return row["n"] if row else 0
 
-    def pr_candle_latencia_insert(self, ts: float, pool: str, tf: str, latencia_s: float) -> None:
+    def pr_candle_latencia_insert(self, ts: float, pool: str, tf: str, latencia_s: float,
+                                  tier: Optional[int] = None) -> None:
         with self._lock:
-            self._db.execute("INSERT INTO pr_candle_latencia (ts, pool, tf, latencia_s) VALUES (?,?,?,?)",
-                             (ts, pool, tf, latencia_s))
+            self._db.execute("INSERT INTO pr_candle_latencia (ts, pool, tf, latencia_s, tier) VALUES (?,?,?,?,?)",
+                             (ts, pool, tf, latencia_s, tier))
+
+    def pr_candle_latencias_detalhe_desde(self, since_ts: float) -> list[sqlite3.Row]:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 3): linhas completas (pool/tf/
+        tier/latencia_s) -- permite quebrar p50/p95/max por tier e por pool, em vez de so o agregado
+        de `pr_candle_latencias_desde`."""
+        return self._all("SELECT pool, tf, tier, latencia_s FROM pr_candle_latencia WHERE ts>=?", (since_ts,))
 
     def pr_candle_latencias_desde(self, since_ts: float) -> list[float]:
         return [r["latencia_s"] for r in self._all("SELECT latencia_s FROM pr_candle_latencia WHERE ts>=?", (since_ts,))]

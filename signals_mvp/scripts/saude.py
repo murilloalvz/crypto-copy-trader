@@ -202,24 +202,50 @@ def _motivo_rotacao_simples(storage: Storage, row: Any, now: float) -> str:
     return "elegivel_agora"
 
 
+def _motivo_atraso_candle(storage: Storage, pool: str, ultimo_candle_ts: Optional[float]) -> str:
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 4): motivo do atraso, so a partir
+    de dado JA persistido (`pr_api_uso`, finalidade='poll_pool') -- nunca um numero/causa inventada.
+    A tentativa MAIS RECENTE desde o ultimo candle conhecido decide: 429 (rate limit) / Nxx (erro do
+    servidor) / sem_negociacao_na_hora (o poll respondeu 200 mas o GT nao tinha candle novo -- GT
+    OMITE horas sem trade, ver docstring de candles.py) / sem_tentativa_registrada (fila/orcamento --
+    nenhum poll aconteceu nesta janela; "backfill em andamento" tambem cairia aqui, ja que este script
+    so le o SQLite, nunca o cache de disco do `OhlcvStore` onde uma caminhada interrompida ficaria
+    visivel -- limitacao documentada, nunca escondida)."""
+    tentativa = storage.pr_api_uso_ultima_tentativa_poll_pool(pool, since_ts=(ultimo_candle_ts or 0.0))
+    if tentativa is None:
+        return "sem_tentativa_registrada (fila/orcamento ou backfill -- ver docstring)"
+    status = tentativa["http_status"]
+    if tentativa["rate_limited"] or status == 429:
+        return "429 (rate limit)"
+    if status is not None and status >= 500:
+        return f"{status} (erro do servidor)"
+    if status == 200:
+        return "sem_negociacao_na_hora (poll OK, GT sem candle novo)"
+    return "s/d"
+
+
 def _secao_fila(storage: Storage, now: float) -> list[str]:
     pools = storage.pr_pools("ativo")
     sem_tentativa = 0
-    atrasados: list[tuple[str, str]] = []
+    atrasados: list[tuple[str, str, float]] = []
     for row in pools:
         bars_1h = storage.pr_bars(row["pool"], "1h")
         if not bars_1h:
             sem_tentativa += 1
             continue
         if now - bars_1h[-1][0] > 2 * 3600.0:
-            atrasados.append((row["symbol"] or row["pool"], row["pool"]))
+            atrasados.append((row["symbol"] or row["pool"], row["pool"], bars_1h[-1][0]))
     abertos_v1 = storage.pr1_signals(status="aberto")
     abertos_v2 = storage.pr2_signals(status="aberto")
     out = [f"FILA: {len(pools)} pool(s) ativo(s) | sem nenhum candle 1h ainda: {sem_tentativa} | "
           f"sem candle 1h novo ha >2h: {len(atrasados)}"]
     if atrasados:
-        # PEDIDO 2026-10-29, item 1: nome dos pools, nunca so a contagem.
-        out.append("  pools atrasados (>2h): " + ", ".join(f"{sym} ({pool[:8]}...)" for sym, pool in atrasados))
+        # PEDIDO 2026-10-29, item 1 (nome dos pools, nunca so a contagem) + PEDIDO 2026-11-03
+        # (continuacao -- item 4: motivo + ts do ultimo candle, tudo numa linha so por pool).
+        out.append("  pools atrasados (>2h): " + ", ".join(
+            f"{sym} ({pool[:8]}..., ultimo candle {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(ultimo))}, "
+            f"motivo={_motivo_atraso_candle(storage, pool, ultimo)})"
+            for sym, pool, ultimo in atrasados))
     # PEDIDO 2026-10-30 (item 5b): quantos pools DISTINTOS ficaram sem vaga (max_pools) nas ultimas
     # 48h -- `_promote`/`_retire_estagnado` (live.py) liberam vaga de pool morto automaticamente;
     # isto so mede se ainda sobra demanda sem atender.

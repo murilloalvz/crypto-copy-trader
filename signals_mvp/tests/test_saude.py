@@ -4,6 +4,7 @@ compacto (<=60 linhas impressas)."""
 from __future__ import annotations
 
 import json
+import time
 import unittest
 
 from ..scripts import saude
@@ -110,6 +111,31 @@ class SaudeScriptTests(unittest.TestCase):
             self.assertIn("sem candle 1h novo ha >2h: 1", texto)
             self.assertIn("LENTO", texto)
             self.assertIn("POOLATRA", texto)
+        finally:
+            h.close()
+
+    def test_fila_section_shows_the_delay_reason_and_last_candle_timestamp(self) -> None:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 4): motivo (429/500/sem
+        negociacao/sem tentativa) + ts do ultimo candle, so a partir de `pr_api_uso` ja persistido."""
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOL429", status="ativo", symbol="RATELIM")
+            ultimo = int(h.clock()) - 4 * 3600
+            h.storage.pr_append_bars("POOL429", "1h", [(ultimo, 1.0, 1.0, 1.0, 1.0, 0.0, 0)])
+            h.storage.pr_api_uso_insert(ultimo + 1800.0, "gt", "poll_pool", "POOL429", http_status=429, rate_limited=True)
+
+            h.storage.pr_upsert_pool("POOL200", status="ativo", symbol="QUIETO")
+            h.storage.pr_append_bars("POOL200", "1h", [(ultimo, 1.0, 1.0, 1.0, 1.0, 0.0, 0)])
+            h.storage.pr_api_uso_insert(ultimo + 1800.0, "gt", "poll_pool", "POOL200", http_status=200, rate_limited=False)
+
+            h.storage.pr_upsert_pool("POOLSOZINHO", status="ativo", symbol="SOZINHO")
+            h.storage.pr_append_bars("POOLSOZINHO", "1h", [(ultimo, 1.0, 1.0, 1.0, 1.0, 0.0, 0)])
+
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("motivo=429 (rate limit)", texto)
+            self.assertIn("motivo=sem_negociacao_na_hora", texto)
+            self.assertIn("motivo=sem_tentativa_registrada", texto)
+            self.assertIn(time.strftime("%Y-%m-%d", time.gmtime(ultimo)), texto)
         finally:
             h.close()
 

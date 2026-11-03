@@ -823,6 +823,69 @@ class BudgetTest(unittest.TestCase):
             h.close()
 
 
+class CapacidadeRotacaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): espalhamento da hora cheia
+    (so pools frios/sem carga) + teto suave de chamadas GT/min na 2a passada de `tick()`."""
+
+    def test_jitter_e_deterministico_e_fica_dentro_da_janela(self) -> None:
+        h = LiveHarness()
+        try:
+            j1 = h.live._jitter_espalhar_s("POOLX", "1h", 1800.0)   # noqa: SLF001
+            j2 = h.live._jitter_espalhar_s("POOLX", "1h", 1800.0)   # noqa: SLF001
+            self.assertEqual(j1, j2, "MESMO pool/tf sempre cai no MESMO offset")
+            self.assertGreaterEqual(j1, 0.0)
+            self.assertLess(j1, 300.0)   # JANELA_ESPALHAMENTO_S
+            j_outro = h.live._jitter_espalhar_s("POOLY", "1h", 1800.0)   # noqa: SLF001
+            self.assertNotEqual(j1, j_outro, "pools diferentes tendem a cair em offsets diferentes")
+        finally:
+            h.close()
+
+    def test_schedule_nunca_espalha_pool_em_fase_ativa_so_frio_ou_sem_carga(self) -> None:
+        h = LiveHarness()
+        try:
+            h.storage.pr_upsert_pool("POOLFRIO", status="ativo")   # sem detector -> heat == -1
+            now = h.clock()
+            h.live._schedule("POOLFRIO", "1h", now)   # noqa: SLF001
+            nxt_frio_puro = (int((now - LAG_S) // 1800.0) + 1) * 1800.0 + LAG_S
+            self.assertGreaterEqual(h.live.sched[("POOLFRIO", "1h")]["next"], nxt_frio_puro)
+        finally:
+            h.close()
+
+    def test_orcamento_por_minuto_esgota_e_se_recupera_apos_60s(self) -> None:
+        h = LiveHarness()
+        try:
+            now = h.clock()
+            h.live._registrar_chamadas_gt(now, 25)   # noqa: SLF001 -- acima do teto padrao (20)
+            self.assertEqual(h.live._orcamento_disponivel_este_minuto(now), 0)   # noqa: SLF001
+            self.assertEqual(h.live._orcamento_disponivel_este_minuto(now + 61.0), 20)   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_max_chamadas_por_min_e_configuravel_via_env(self) -> None:
+        h = LiveHarness()
+        try:
+            with mock.patch.dict("os.environ", {"POS_RUNNER_MAX_CHAMADAS_POR_MIN": "5"}):
+                self.assertEqual(h.live._max_chamadas_por_min(), 5)   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_tick_nunca_throttla_a_1a_passada_rank_0_mesmo_com_orcamento_do_minuto_esgotado(self) -> None:
+        """Posicao aberta (rank==0) tem prioridade ABSOLUTA -- o teto de chamadas/min so se aplica
+        na 2a passada (descoberta + rank>0), nunca pode atrasar uma fase ativa."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(22)   # abre 1 posicao V1 (mesmo cenario de outros testes desta suite)
+            h.live._chamadas_gt_recentes = [h.clock()] * 25   # noqa: SLF001 -- orcamento do minuto esgotado
+            bars_antes = len(h.storage.pr_bars("POOL1", "1h"))
+            h.clock.advance(H)
+            h.tick()
+            self.assertGreater(len(h.storage.pr_bars("POOL1", "1h")), bars_antes,
+                              "posicao aberta (rank 0) continua sendo atualizada mesmo com o teto/min esgotado")
+        finally:
+            h.close()
+
+
 class PriorityAndStarvationTests(unittest.TestCase):
     """PEDIDO 2026-10-29 (ELON, fase runner, "ultima tentativa: nunca desde que o bot subiu"): (1)
     posicao ABERTA (rank 0 em `_due_list`) tem prioridade ABSOLUTA sobre watchlist/runner (rank>0);
@@ -923,6 +986,14 @@ class ConfigSectionTest(unittest.TestCase):
         self.assertTrue(s.so_primario)
         self.assertFalse(LiveSettings.from_config(None).ligado)
 
+    def test_max_pools_env_override_wins_over_the_config_yaml_value(self) -> None:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 1): POS_RUNNER_MAX_POOLS
+        sobrescreve o `max_pools` do yaml -- padrao (sem env) continua sendo o valor do yaml."""
+        cfg = shipped_config()
+        self.assertEqual(LiveSettings.from_config(cfg.raw["pos_runner"]).max_pools, cfg.raw["pos_runner"]["max_pools"])
+        with mock.patch.dict("os.environ", {"POS_RUNNER_MAX_POOLS": "30"}):
+            self.assertEqual(LiveSettings.from_config(cfg.raw["pos_runner"]).max_pools, 30)
+
     def test_invalid_values_are_reported(self) -> None:
         for patch in ({"timeframes": ["2h"]}, {"fontes": ["dexscreener"]}, {"max_pools": 0}, {"alertas": {"saida": "sim"}}):
             raw = copy.deepcopy(shipped_config().raw)
@@ -1001,6 +1072,21 @@ class ApiUsoInstrumentacaoTests(unittest.TestCase):
             latencias = h.storage.pr_candle_latencias_desde(0.0)
             self.assertTrue(latencias)
             self.assertTrue(all(lat >= 0 for lat in latencias), "latencia nunca negativa (candle ja fechado)")
+        finally:
+            h.close()
+
+    def test_candle_latency_records_only_the_most_recent_candle_of_each_poll_never_the_backfill(self) -> None:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 3): BUG da versao anterior --
+        `start_tracking` ja faz a 1a carga (`start = GRAD + 8*H + 120`, ~8 candles de backfill num so
+        poll); a versao anterior gravava 1 linha de latencia POR CANDLE de `seq` (inclusive os
+        antigos), inflando p95/max. Agora grava SO 1 linha por poll (a do candle mais recente), com o
+        `tier` (`_heat`) daquele instante."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)   # ja inclui a carga inicial com varios candles de backfill num so poll
+            linhas = h.storage.pr_candle_latencias_detalhe_desde(0.0)
+            self.assertEqual(len(linhas), 1, "1 poll = 1 linha de latencia, nunca 1 por candle de backfill")
+            self.assertIsNotNone(linhas[0]["tier"])
         finally:
             h.close()
 

@@ -87,6 +87,73 @@ class FunilDiarioTests(unittest.TestCase):
         self.assertIsNotNone(eta)
         self.assertAlmostEqual(eta, 20.0, delta=1.0)
 
+    def test_eta_3d_usa_so_os_fechamentos_recentes_nunca_a_media_desde_sempre(self) -> None:
+        now = time.time()
+        # 1 fechamento antigo (ha 20 dias, fora da janela de 3d) + 3 fechamentos nos ultimos 3 dias
+        # (1/dia) -- a media desde sempre daria uma taxa bem mais baixa que a taxa recente.
+        self.storage.pr1_insert_signal({
+            "chain": "solana", "pool": "ANTIGO", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 0,
+            "mint": "MINTX", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "fechado", "entry_price": 100.0, "stop": 80.0,
+            "closed_ts": now - 20 * DIA,
+        })
+        for i in range(3):
+            self.storage.pr1_insert_signal({
+                "chain": "solana", "pool": f"RECENTE{i}", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": i,
+                "mint": f"MINTR{i}", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+                "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+                "hora_brt": "09:00", "status": "fechado", "entry_price": 100.0, "stop": 80.0,
+                "closed_ts": now - (2 - i) * DIA,
+            })
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            eta_acumulado = fd.eta_dias_30_fechados(con, now)
+            eta_3d = fd.eta_dias_30_fechados_recente(con, now, ja_fechados=4)
+        finally:
+            con.close()
+        self.assertIsNotNone(eta_3d)
+        self.assertLess(eta_3d, eta_acumulado, "taxa recente (3/dia) chega mais rapido que a media desde sempre")
+
+    def test_eta_3d_e_zero_quando_o_alvo_ja_foi_alcancado(self) -> None:
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            eta_3d = fd.eta_dias_30_fechados_recente(con, time.time(), ja_fechados=30)
+        finally:
+            con.close()
+        self.assertEqual(eta_3d, 0.0)
+
+    def test_eventos_pre_admissao_7d_abre_por_tipo_e_por_token_e_destaca_entrada_perdida(self) -> None:
+        now = time.time()
+        self.storage.pr_upsert_pool("POOLANT", status="verificado", symbol="ANT")
+        self.storage.pr_upsert_pool("POOLCHICO", status="verificado", symbol="CHICO")
+        self.storage.pr_evento_pre_admissao_insert(now - 1 * DIA, "v1", "POOLANT", "1h", "ENTRADA", now - 1 * DIA)
+        self.storage.pr_evento_pre_admissao_insert(now - 2 * DIA, "v1", "POOLANT", "1h", "WATCHLIST", now - 2 * DIA)
+        self.storage.pr_evento_pre_admissao_insert(now - 1 * DIA, "v1", "POOLCHICO", "1h", "WATCHLIST", now - 1 * DIA)
+        self.storage.pr_evento_pre_admissao_insert(now - 10 * DIA, "v1", "POOLANT", "1h", "ENTRADA", now - 10 * DIA)   # fora de 7d
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            det = fd.eventos_pre_admissao_7d(con, now)
+        finally:
+            con.close()
+        self.assertEqual(det["por_tipo"]["ENTRADA"], 1)   # so a dentro da janela de 7d
+        self.assertEqual(det["por_tipo"]["WATCHLIST"], 2)
+        self.assertEqual(det["por_token"]["ANT"]["ENTRADA"], 1)
+        self.assertNotIn("ENTRADA", det["por_token"].get("CHICO", {}))
+
+    def test_contagem_ativos_admitidos_conta_status_atual_e_historico(self) -> None:
+        self.storage.pr_upsert_pool("ATIVO1", status="ativo", added_ts=1.0)
+        self.storage.pr_upsert_pool("ATIVO2", status="ativo", added_ts=2.0)
+        self.storage.pr_upsert_pool("ENCERRADO1", status="encerrado", added_ts=3.0)
+        self.storage.pr_upsert_pool("VERIFICADO1", status="verificado")   # nunca admitido
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            contagem = fd.contagem_ativos_admitidos(con)
+        finally:
+            con.close()
+        self.assertEqual(contagem["ativos"], 2)
+        self.assertEqual(contagem["admitidos_total"], 3)
+
     def test_montar_funil_counts_aposentados_and_readmitidos_per_day(self) -> None:
         """PEDIDO 2026-11-02 (FASE 1e)."""
         base = 1_000.0 * DIA
@@ -165,6 +232,21 @@ class FunilDiarioTests(unittest.TestCase):
         self.assertEqual(lat_stats["n"], 4)
         self.assertEqual(lat_stats["max"], 3000.0)
         self.assertEqual(lat_stats["n_perto_do_limiar"], 1)
+
+    def test_latencia_candle_24h_breaks_down_by_tier_and_by_pool(self) -> None:
+        now = time.time()
+        self.storage.pr_candle_latencia_insert(now, "QUENTE1", "1h", 5.0, tier=0)
+        self.storage.pr_candle_latencia_insert(now, "FRIO1", "1h", 50.0, tier=2)
+        self.storage.pr_candle_latencia_insert(now, "FRIO1", "1h", 60.0, tier=2)
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            lat_stats = fd.latencia_candle_24h(con, now)
+        finally:
+            con.close()
+        self.assertEqual(lat_stats["por_tier"]["quente"]["n"], 1)
+        self.assertEqual(lat_stats["por_tier"]["frio"]["n"], 2)
+        self.assertEqual(lat_stats["por_pool"]["FRIO1"]["max"], 60.0)
+        self.assertEqual(lat_stats["por_pool"]["QUENTE1"]["max"], 5.0)
 
     def test_latencia_candle_24h_is_sd_with_no_candle_processed(self) -> None:
         con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001

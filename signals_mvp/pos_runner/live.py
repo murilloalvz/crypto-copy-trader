@@ -20,6 +20,7 @@ Somente leitura: nenhuma chave, nenhuma assinatura, nenhuma ordem.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -107,6 +108,18 @@ RETIRADA_QUEDA_PCT = 99.5
 # `rotacao_max_por_hora`/`QUEDA_ROTACAO_PCT`/`SEM_ROTACAO`.
 POS_RUNNER_ROTACAO_HORAS = 72.0
 QUEDA_ROTACAO_PCT = 96.0
+# PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): hoje a hora cheia dispara TODOS os
+# pools frios/sem carga de uma vez (mesmo `nxt` exato para todos, ver `_schedule`) -- com mais pools
+# (`POS_RUNNER_MAX_POOLS`), isso pode estourar um ritmo razoavel de chamadas/min por um instante.
+# AMOSTRAGEM pura (so decide QUANDO um poll acontece, nunca altera deteccao/entrada/saida/banca):
+# espalha so pools FRIOS/sem carga (heat>=2 ou -1) nos primeiros `JANELA_ESPALHAMENTO_S` segundos da
+# hora, com um offset deterministico por (pool,tf) (nunca aleatorio a cada chamada -- reproduzivel);
+# pools em fase ativa (heat 0/1) NUNCA sao espalhados, mantem o `nxt` exato de sempre (nunca atrasa
+# alem do limiar de `_late()`). `MAX_CHAMADAS_POR_MIN_PADRAO` (so a 2a passada de `tick()` -- rank>0 e
+# descoberta; posicao aberta, rank==0, nunca e throttled) e um teto SUAVE, pacing em memoria, nunca
+# um invariante cientifico (mesma categoria de `rotacao_max_por_hora`).
+JANELA_ESPALHAMENTO_S = 300.0
+MAX_CHAMADAS_POR_MIN_PADRAO = 20
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 # PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
@@ -153,6 +166,15 @@ class LiveSettings:
     so_primario: bool = True
     grafico: bool = True
 
+    @staticmethod
+    def _max_pools_padrao(default: int) -> int:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 1): `POS_RUNNER_MAX_POOLS`
+        sobrescreve `max_pools` do config.yaml (padrao 15, nunca mudado aqui -- so permite ligar com
+        30 sem editar o yaml). AMOSTRAGEM pura (so decide quantos pools ficam sob observacao, nunca
+        regra de deteccao/entrada/saida/banca) -- mesma convencao de `POS_RUNNER_ROTACAO_HORAS`/
+        `POS_RUNNER_RESERVA_RANK_MAIOR`."""
+        return int(os.environ.get("POS_RUNNER_MAX_POOLS", str(default)))
+
     @classmethod
     def from_config(cls, raw: Optional[dict]) -> "LiveSettings":
         """Sem a secao no config.yaml o POS-RUNNER fica desligado (a validacao do formato e do config.py)."""
@@ -164,7 +186,7 @@ class LiveSettings:
             ligado=bool(raw.get("ligado", d.ligado)),
             parametros=str(raw.get("parametros", d.parametros)),
             timeframes=tuple(tf for tf in TFS if tf in (raw.get("timeframes") or d.timeframes)),
-            max_pools=int(raw.get("max_pools", d.max_pools)),
+            max_pools=cls._max_pools_padrao(int(raw.get("max_pools", d.max_pools))),
             chamadas_por_ciclo=int(raw.get("chamadas_por_ciclo", d.chamadas_por_ciclo)),
             descoberta_min=float(raw.get("descoberta_min", d.descoberta_min)),
             fontes=tuple(raw.get("fontes", d.fontes)),
@@ -600,6 +622,11 @@ class PosRunnerLive:
         # "sem_cotacao_no_fim" | "sem_candle_novo" | "erro_inesperado"), "ultima_tentativa" (ts) e
         # "fonte" ("gt" | "dexpaprika_fallback").
         self.sched: dict[tuple[str, str], dict[str, Any]] = {}
+        # PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): janela deslizante (60s) de
+        # timestamps de chamadas GT atribuidas a POS-RUNNER -- so pra calcular quanto sobra do teto
+        # `MAX_CHAMADAS_POR_MIN_PADRAO`/`POS_RUNNER_MAX_CHAMADAS_POR_MIN` na 2a passada de `tick()`
+        # (nunca na 1a, posicao aberta rank==0 nunca e throttled).
+        self._chamadas_gt_recentes: list[float] = []
         self.next_discovery = 0.0
         self.source_idx = 0
         self.last_prune = 0.0
@@ -1254,6 +1281,21 @@ class PosRunnerLive:
     def _reserva_rank_maior() -> int:
         return int(os.environ.get("POS_RUNNER_RESERVA_RANK_MAIOR", "1"))
 
+    @staticmethod
+    def _max_chamadas_por_min() -> int:
+        """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): teto SUAVE (nunca um
+        invariante cientifico, mesma categoria de `rotacao_max_por_hora`) de chamadas GT/min
+        atribuidas ao POS-RUNNER -- so a 2a passada de `tick()` (rank>0 + descoberta)."""
+        return int(os.environ.get("POS_RUNNER_MAX_CHAMADAS_POR_MIN", str(MAX_CHAMADAS_POR_MIN_PADRAO)))
+
+    def _orcamento_disponivel_este_minuto(self, now: float) -> int:
+        self._chamadas_gt_recentes = [t for t in self._chamadas_gt_recentes if now - t < 60.0]
+        return max(0, self._max_chamadas_por_min() - len(self._chamadas_gt_recentes))
+
+    def _registrar_chamadas_gt(self, now: float, n: int) -> None:
+        if n > 0:
+            self._chamadas_gt_recentes.extend([now] * n)
+
     # -- ciclo -------------------------------------------------------------------------------------
     def tick(self, now: float, budget: CallBudget, keep: int) -> dict[str, Any]:
         out: dict[str, Any] = {"chamadas": 0, "erros": 0, "rate_limited": False}
@@ -1294,8 +1336,15 @@ class PosRunnerLive:
                 out["erros"] += 1
                 log.warning("POS-RUNNER: GeckoTerminal falhou: %s", exc)
         finally:
-            out["chamadas"] += self.http.disarm()
-        self.http.arm(budget, keep, max(0, cap_total - out["chamadas"]))
+            novas_1a_passada = self.http.disarm()
+            out["chamadas"] += novas_1a_passada
+            self._registrar_chamadas_gt(now, novas_1a_passada)
+        # PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): teto ~20/min SO aqui (2a
+        # passada -- descoberta + rank>0, nunca posicao aberta) -- com mais pools (POS_RUNNER_MAX_
+        # POOLS), a rajada da hora cheia nunca estoura o ritmo desejado de chamadas/min. `_schedule`
+        # (item 2, espalhamento) ja reduz a chance de precisar deste teto; ele e so a 2a camada.
+        cap_2a_passada = min(max(0, cap_total - out["chamadas"]), self._orcamento_disponivel_este_minuto(now))
+        self.http.arm(budget, keep, cap_2a_passada)
         try:
             self._discover(now, out)
             for rank, _next, row, tf in due:
@@ -1309,7 +1358,9 @@ class PosRunnerLive:
                 out["erros"] += 1
                 log.warning("POS-RUNNER: GeckoTerminal falhou: %s", exc)
         finally:
-            out["chamadas"] += self.http.disarm()
+            novas_2a_passada = self.http.disarm()
+            out["chamadas"] += novas_2a_passada
+            self._registrar_chamadas_gt(now, novas_2a_passada)
         self._retire(now)
         self._retire_estagnado(now)
         # PEDIDO 2026-11-02 (correcao do diagnostico de rotacao -- caso OA): `_persistir_fases`
@@ -3494,10 +3545,27 @@ class PosRunnerLive:
         return out
 
     def _schedule(self, pool: str, tf: str, now: float) -> None:
-        """Proxima busca: no proximo fechamento de candle (+ folga) se quente; a cada 15/30 min se morno/frio."""
-        interval = self._interval(tf, self._heat(pool, tf))
+        """Proxima busca: no proximo fechamento de candle (+ folga) se quente; a cada 15/30 min se
+        morno/frio. PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 2): pools FRIOS/sem
+        carga (heat>=2 ou -1) ganham um offset deterministico por (pool,tf) (`_jitter_espalhar_s`,
+        ate `JANELA_ESPALHAMENTO_S`=5min) -- espalha a rajada da hora cheia entre eles. Pools em fase
+        ativa (heat 0/1) NUNCA sao espalhados (offset=0): o `nxt` exato de sempre, pra nunca arriscar
+        empurrar o poll pra depois do PROXIMO tick esperado (o motivo de nao espalhar TODO tier)."""
+        heat = self._heat(pool, tf)
+        interval = self._interval(tf, heat)
         nxt = (int((now - LAG_S) // interval) + 1) * interval + LAG_S
+        if heat >= 2 or heat == -1:
+            nxt += self._jitter_espalhar_s(pool, tf, interval)
         self.sched[(pool, tf)] = {"next": nxt, "erros": 0.0}
+
+    @staticmethod
+    def _jitter_espalhar_s(pool: str, tf: str, interval: float) -> float:
+        """Offset [0, min(interval, JANELA_ESPALHAMENTO_S)) deterministico por (pool,tf) -- MESMO
+        pool sempre cai no MESMO offset (nunca aleatorio a cada chamada), espalhando o conjunto de
+        pools ao longo da janela em vez de todos no mesmo instante."""
+        limite = min(interval, JANELA_ESPALHAMENTO_S)
+        digest = int(hashlib.sha256(f"{pool}:{tf}".encode("utf-8")).hexdigest(), 16)
+        return (digest % 10_000) / 10_000.0 * limite
 
     RETENTATIVA_CURTA_MIN = (2.0, 5.0, 10.0)   # PEDIDO 2026-11-02 (FASE 1f): minutos desde o fechamento da hora
 
@@ -3632,12 +3700,18 @@ class PosRunnerLive:
                 if det_fecham is not None:
                     self._update_paper(row, f"{tf}_fecham", det_fecham, now, alerts=False)
             if det_v1 is not None:
+                # PEDIDO 2026-11-02 (FASE 1c)/CORRECAO 2026-11-03 (continuacao -- rotacao/capacidade,
+                # item 3): latencia = segundos entre o FECHAMENTO do candle MAIS RECENTE deste poll
+                # (b.ts + step) e o instante em que o detector o processa agora -- so medicao, nunca
+                # influencia a decisao (V1/V2 compartilham o MESMO candle; medido so 1x aqui,
+                # representativo das duas). BUG da versao anterior: gravava 1 linha por candle de
+                # `seq`, inclusive os de BACKFILL/historico (1a carga ou retomada apos lacuna) -- um
+                # candle de dias atras inflava p95/max artificialmente (disparava o falso alerta
+                # "perto do limiar" em funil_diario.py). Corrigido: so o ULTIMO candle de `seq`
+                # (o mais recente fechado neste poll) grava latencia, com o tier (`_heat`) no momento.
+                self.storage.pr_candle_latencia_insert(now, pool, tf, now - (seq[-1].ts + step),
+                                                       tier=self._heat(pool, tf))
                 for b in seq:
-                    # PEDIDO 2026-11-02 (FASE 1c): latencia = segundos entre o FECHAMENTO do candle
-                    # (b.ts + step) e o instante em que o detector o processa agora -- so medicao,
-                    # nunca influencia a decisao (V1/V2 compartilham o MESMO candle; medido so 1x
-                    # aqui, representativo das duas).
-                    self.storage.pr_candle_latencia_insert(now, pool, tf, now - (b.ts + step))
                     for ev in det_v1.update(b):
                         self._on_event_v1(row, tf, det_v1, ev, now)
                 self._update_paper_v1(row, tf, det_v1, now)

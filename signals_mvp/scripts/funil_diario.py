@@ -141,18 +141,41 @@ def uso_api_24h(con: sqlite3.Connection, now: float) -> dict[str, Any]:
     }
 
 
-def latencia_candle_24h(con: sqlite3.Connection, now: float) -> dict[str, Any]:
-    """PEDIDO 2026-11-02 (FASE 1c): p50/p95/max da latencia do candle (24h) + quantas ficaram perto
-    (>=80%) do limiar de `_late()` (1h)."""
-    desde = now - 24 * 3600.0
-    valores = sorted(r["latencia_s"] for r in con.execute("SELECT latencia_s FROM pr_candle_latencia WHERE ts>=?", (desde,)))
+TIER_LABEL = {0: "quente", 1: "morno", 2: "frio", -1: "sem_carga", None: "s/d (antes da correcao)"}
+
+
+def _percentis(valores: list[float]) -> dict[str, Any]:
     if not valores:
-        return {"p50": None, "p95": None, "max": None, "n_perto_do_limiar": 0, "n": 0}
-    quantis = statistics.quantiles(valores, n=100, method="inclusive") if len(valores) >= 2 else [valores[0]] * 99
-    p50 = quantis[49] if len(valores) >= 2 else valores[0]
-    p95 = quantis[94] if len(valores) >= 2 else valores[0]
+        return {"p50": None, "p95": None, "max": None, "n": 0}
+    valores_ord = sorted(valores)
+    n = len(valores_ord)
+    quantis = statistics.quantiles(valores_ord, n=100, method="inclusive") if n >= 2 else [valores_ord[0]] * 99
+    p50 = quantis[49] if n >= 2 else valores_ord[0]
+    p95 = quantis[94] if n >= 2 else valores_ord[0]
+    return {"p50": p50, "p95": p95, "max": valores_ord[-1], "n": n}
+
+
+def latencia_candle_24h(con: sqlite3.Connection, now: float) -> dict[str, Any]:
+    """PEDIDO 2026-11-02 (FASE 1c)/CORRECAO 2026-11-03 (continuacao -- rotacao/capacidade, item 3):
+    p50/p95/max da latencia do candle (24h) + quantas ficaram perto (>=80%) do limiar de `_late()`
+    (1h), GERAL e por TIER/por POOL (`pr_candle_latencia.tier`/`.pool`). O bug que inflava p95/max
+    (contava candle de BACKFILL, nunca so o mais recente de cada poll -- `live.py: _refresh_core`)
+    foi corrigido na gravacao; `tier=NULL` so aparece em linhas gravadas ANTES dessa correcao."""
+    desde = now - 24 * 3600.0
+    rows = con.execute("SELECT pool, tier, latencia_s FROM pr_candle_latencia WHERE ts>=?", (desde,)).fetchall()
+    valores = [r["latencia_s"] for r in rows]
+    geral = _percentis(valores)
     perto = sum(1 for v in valores if v >= LATE_PROXIMO_FRACAO * LATE_LIMIAR_S)
-    return {"p50": p50, "p95": p95, "max": valores[-1], "n_perto_do_limiar": perto, "n": len(valores)}
+    por_tier: dict[Any, list[float]] = defaultdict(list)
+    por_pool: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        por_tier[r["tier"]].append(r["latencia_s"])
+        por_pool[r["pool"]].append(r["latencia_s"])
+    return {
+        **geral, "n_perto_do_limiar": perto,
+        "por_tier": {TIER_LABEL.get(k, f"tier={k}"): _percentis(v) for k, v in por_tier.items()},
+        "por_pool": {k: _percentis(v) for k, v in por_pool.items()},
+    }
 
 
 FOLGA_RSS_KB = 200 * 1024   # PEDIDO 2026-11-02 (FASE 1d): 200MB de folga ALEM do uso atual
@@ -184,6 +207,24 @@ def _fase1_por_dia(con: sqlite3.Connection) -> tuple[dict[str, int], dict[str, i
     return dict(entradas_atrasadas), dict(eventos_pre_admissao)
 
 
+def eventos_pre_admissao_7d(con: sqlite3.Connection, now: float) -> dict[str, Any]:
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 5): `pr_eventos_pre_admissao`
+    (WATCHLIST/ENTRADA/ONDA_INVALIDA, setup real enquanto o pool esperava vaga) dos ultimos 7 dias,
+    abertos por TIPO e por TOKEN (join com `pr_pools.symbol`, so leitura -- a tabela so guarda `pool`,
+    nunca o symbol) -- "ver se perdemos ENTRADAs" precisa saber QUAL token, nao so a contagem
+    agregada que ja existia (`_fase1_por_dia`)."""
+    desde = now - 7 * 86_400.0
+    rows = con.execute(
+        "SELECT e.kind AS kind, COALESCE(p.symbol, e.pool) AS token FROM pr_eventos_pre_admissao e "
+        "LEFT JOIN pr_pools p ON p.pool = e.pool WHERE e.ts>=?", (desde,)).fetchall()
+    por_tipo: dict[str, int] = defaultdict(int)
+    por_token: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in rows:
+        por_tipo[r["kind"]] += 1
+        por_token[r["token"]][r["kind"]] += 1
+    return {"por_tipo": dict(por_tipo), "por_token": {k: dict(v) for k, v in por_token.items()}}
+
+
 def eta_dias_30_fechados(con: sqlite3.Connection, now: float, alvo: int = ALVO_TOKENS_FECHADOS) -> Optional[float]:
     """Dias restantes (projecao linear, taxa media desde o 1o fechamento) at `alvo` tokens
     distintos fechados -- `None` ("s/d") sem nenhum fechamento ainda ou taxa 0 (nunca chegaria)."""
@@ -204,14 +245,49 @@ def eta_dias_30_fechados(con: sqlite3.Connection, now: float, alvo: int = ALVO_T
     return (alvo - ja_fechados) / taxa_por_dia
 
 
+def eta_dias_30_fechados_recente(con: sqlite3.Connection, now: float, ja_fechados: int,
+                                 alvo: int = ALVO_TOKENS_FECHADOS, janela_dias: float = 3.0) -> Optional[float]:
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 6): MESMO alvo/formula do ETA
+    acumulado (`eta_dias_30_fechados`), so que a taxa usa SO os fechamentos dos ultimos `janela_dias`
+    (3d por padrao) -- reage mais rapido a uma mudanca de ritmo (ex.: depois de `max_pools` subir) do
+    que a media desde o 1o fechamento de sempre."""
+    if ja_fechados >= alvo:
+        return 0.0
+    desde = now - janela_dias * 86_400.0
+    rows = con.execute(
+        "SELECT pool FROM pr1_signals WHERE status='fechado' AND closed_ts>=? "
+        "UNION SELECT pool FROM pr2_signals WHERE status='fechado' AND closed_ts>=?", (desde, desde)).fetchall()
+    taxa_por_dia = len({r["pool"] for r in rows}) / janela_dias
+    if taxa_por_dia <= 0:
+        return None
+    return (alvo - ja_fechados) / taxa_por_dia
+
+
+def contagem_ativos_admitidos(con: sqlite3.Connection) -> dict[str, int]:
+    """PEDIDO 2026-11-03 (continuacao -- rotacao/capacidade, item 6): quantos pools estao 'ativo'
+    AGORA e quantos JA foram admitidos (added_ts IS NOT NULL) em qualquer momento -- contexto direto
+    pra interpretar o ETA/funil."""
+    ativos = con.execute("SELECT COUNT(*) AS n FROM pr_pools WHERE status='ativo'").fetchone()["n"]
+    admitidos_total = con.execute("SELECT COUNT(*) AS n FROM pr_pools WHERE added_ts IS NOT NULL").fetchone()["n"]
+    return {"ativos": ativos, "admitidos_total": admitidos_total}
+
+
 def formatar(funil: dict[str, dict[str, int]], fase1_atrasadas: dict[str, int], fase1_pre_admissao: dict[str, int],
             ja_fechados: int, eta: Optional[float], pct_runner: Optional[float], uso_api: dict[str, Any],
-            latencia: dict[str, Any], capacidade: dict[str, Any]) -> str:
-    out = ["# Funil diario -- POS-RUNNER (descoberta -> admissao -> runner -> caixa -> sinal -> fechado)", "",
+            latencia: dict[str, Any], capacidade: dict[str, Any], eta_3d: Optional[float] = None,
+            contagem: Optional[dict[str, int]] = None, pre_admissao_7d: Optional[dict[str, Any]] = None) -> str:
+    out = ["# Funil diario -- POS-RUNNER (descoberta -> admissao -> runner -> caixa -> sinal -> fechado)", ""]
+    if contagem is not None:
+        out.append(f"pools ativos agora: {contagem['ativos']} | admitidos (total, qualquer status): "
+                   f"{contagem['admitidos_total']}")
+    out += [
           f"tokens distintos fechados (total): {ja_fechados}/{ALVO_TOKENS_FECHADOS}",
           f"ETA at {ALVO_TOKENS_FECHADOS} tokens distintos fechados: " +
           ("s/d (sem fechamento ainda ou taxa 0 -- nunca chegaria no ritmo atual)" if eta is None
-           else f"{eta:.1f} dia(s) (projecao linear pela taxa media)"),
+           else f"{eta:.1f} dia(s) (projecao linear pela taxa media desde o 1o fechamento)"),
+          "ETA (taxa dos ultimos 3d, reage mais rapido a mudanca de ritmo): " +
+          ("s/d (sem fechamento nos ultimos 3d)" if eta_3d is None
+           else f"{eta_3d:.1f} dia(s)"),
           f"% runner (admitidos nos ultimos 7d): " + ("s/d (nenhum admitido na janela)" if pct_runner is None
                                                        else f"{pct_runner:.1f}%"), "",
           "| dia (UTC) | descobertos | admitidos | runner | caixa | sinal | fechado | aposentados | "
@@ -234,9 +310,33 @@ def formatar(funil: dict[str, dict[str, int]], fase1_atrasadas: dict[str, int], 
         out.append("s/d (sem candle processado ainda nesta janela)")
     else:
         destaque = " <<< PERTO DO LIMIAR DE _late() (1h)" if latencia["p95"] >= LATE_PROXIMO_FRACAO * LATE_LIMIAR_S else ""
-        out.append(f"n={latencia['n']} | p50={latencia['p50']:.0f}s | p95={latencia['p95']:.0f}s{destaque} | "
+        out.append(f"geral: n={latencia['n']} | p50={latencia['p50']:.0f}s | p95={latencia['p95']:.0f}s{destaque} | "
                   f"max={latencia['max']:.0f}s | perto do limiar (>={LATE_PROXIMO_FRACAO*100:.0f}% de "
                   f"{LATE_LIMIAR_S:.0f}s): {latencia['n_perto_do_limiar']}")
+        # CORRECAO 2026-11-03 (continuacao -- rotacao/capacidade, item 3): por tier (so o candle MAIS
+        # RECENTE de cada poll conta -- backfill nunca mais infla isto, ver live.py: _refresh_core).
+        for rotulo, stats in sorted(latencia["por_tier"].items()):
+            out.append(f"  por tier -- {rotulo}: n={stats['n']} | p50={stats['p50']:.0f}s | "
+                      f"p95={stats['p95']:.0f}s | max={stats['max']:.0f}s")
+        piores_pools = sorted(latencia["por_pool"].items(), key=lambda kv: kv[1]["p95"] or 0.0, reverse=True)[:5]
+        if piores_pools:
+            out.append("  piores 5 pools por p95: " +
+                      ", ".join(f"{pool}(p95={stats['p95']:.0f}s,n={stats['n']})" for pool, stats in piores_pools))
+    if pre_admissao_7d is not None:
+        out += ["", "## eventos_pre_admissao (7d, por tipo e por token)", ""]
+        if pre_admissao_7d["por_tipo"]:
+            out.append("por tipo: " + ", ".join(f"{k}={v}" for k, v in sorted(pre_admissao_7d["por_tipo"].items())))
+            # PEDIDO 2026-11-03 (item 5): "ver se perdemos ENTRADAs" -- destaca so os tokens com
+            # ENTRADA>0 (o caso que importa), nunca todo token com qualquer evento (poluiria a linha).
+            com_entrada = {t: c for t, c in pre_admissao_7d["por_token"].items() if c.get("ENTRADA", 0) > 0}
+            if com_entrada:
+                out.append("tokens com ENTRADA perdida (esperando vaga): " + ", ".join(
+                    f"{t}(ENTRADA={c.get('ENTRADA', 0)}, WATCHLIST={c.get('WATCHLIST', 0)}, "
+                    f"ONDA_INVALIDA={c.get('ONDA_INVALIDA', 0)})" for t, c in sorted(com_entrada.items())))
+            else:
+                out.append("tokens com ENTRADA perdida: nenhum nesta janela")
+        else:
+            out.append("s/d (sem evento nesta janela)")
     out += ["", "## Capacidade (RSS)", ""]
     if capacidade["n"] == 0:
         out.append("s/d (sem amostra ainda nesta janela)")
@@ -259,11 +359,15 @@ def executar(db_path: Path) -> str:
             "UNION SELECT pool FROM pr2_signals WHERE status='fechado'").fetchall()
         ja_fechados = len({r["pool"] for r in rows})
         eta = eta_dias_30_fechados(con, now)
+        eta_3d = eta_dias_30_fechados_recente(con, now, ja_fechados)
+        contagem = contagem_ativos_admitidos(con)
         pct_runner = pct_runner_7d(con, now)
         uso_api = uso_api_24h(con, now)
         latencia = latencia_candle_24h(con, now)
         capacidade = capacidade_rss_24h(con, now)
-        return formatar(funil, atrasadas, pre_admissao, ja_fechados, eta, pct_runner, uso_api, latencia, capacidade)
+        pre_admissao_7d = eventos_pre_admissao_7d(con, now)
+        return formatar(funil, atrasadas, pre_admissao, ja_fechados, eta, pct_runner, uso_api, latencia, capacidade,
+                        eta_3d=eta_3d, contagem=contagem, pre_admissao_7d=pre_admissao_7d)
     finally:
         con.close()
 
