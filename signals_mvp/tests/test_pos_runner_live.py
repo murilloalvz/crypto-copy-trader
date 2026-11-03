@@ -1069,6 +1069,95 @@ class ApiUsoInstrumentacaoTests(unittest.TestCase):
             h.close()
 
 
+class PosRunnerV3LiveTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): integracao ao vivo -- MESMO
+    detector/simulador da V1/V2, so ParamsV3 (zone_min_candles=4, idade sem piso/teto, drop_max=
+    0.96). Silenciosa por padrao (SEM_V3/V3_ALERTAS sao flags do worker.py, aqui testados via
+    `sem_v3`/`v3_alertas` direto no construtor, mesmo padrao de `sem_v2`)."""
+
+    def test_v3_persists_an_entrada_with_covariates_on_the_same_scenario_that_produces_v1(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)   # mesmo cenario que ja produz ENTRADA na V1/V2 (test_pos_runner_v1.py)
+            v1_entradas = [s for s in h.storage.pr1_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v1_entradas), 1, "pre-condicao: a V1 precisa ter entrado aqui")
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1, "V3 (zone_min_candles=4, mais permissiva) deveria ter entrado tambem")
+            sinal = v3_entradas[0]
+            self.assertEqual(sinal["versao_config_v3"], h.live.version_v3)
+            self.assertIsNotNone(sinal["caixa_candles"])
+            self.assertIsNotNone(sinal["mc_pico"])
+            self.assertIsNotNone(sinal["mc_base"])
+            self.assertIsNone(sinal["tg_message_id"], "silenciosa por padrao -- nunca alerta sem V3_ALERTAS")
+        finally:
+            h.close()
+
+    def test_sem_v3_disables_the_detector_entirely(self) -> None:
+        h = LiveHarness(sem_v3=True)
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            self.assertEqual(h.storage.pr3_signals(), [])
+        finally:
+            h.close()
+
+    def test_v3_alertas_true_sends_a_telegram_message_for_entrada(self) -> None:
+        h = LiveHarness(v3_alertas=True)
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1)
+            self.assertTrue(any("POS-RUNNER-V3" in t for t in h.texts()))
+            sinal = h.storage.pr3_signal(v3_entradas[0]["id"])
+            self.assertIsNotNone(sinal["tg_message_id"])
+        finally:
+            h.close()
+
+    def test_evidencia_v3_trajetoria_e_baseline_populam_reusando_as_tabelas_genericas(self) -> None:
+        """`pr_trajetoria`/`pr_baseline` sao genericas por (versao, entry_id) -- zero schema novo
+        precisou existir pra V3 (so `versao='v3'`)."""
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            v3_entradas = [s for s in h.storage.pr3_signals() if s["evento"] == "ENTRADA"]
+            self.assertGreaterEqual(len(v3_entradas), 1)
+            traj = h.storage.pr_trajetoria_get("v3", v3_entradas[0]["id"])
+            self.assertIsNotNone(traj, "trajetoria da V3 deveria existir (evidencia.py e generica por versao)")
+        finally:
+            h.close()
+
+    def test_daily_summary_v3_is_a_separate_block_and_a_noop_when_sem_v3(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.run_hours(17)
+            texto = h.live.daily_summary_v3()
+            self.assertIn("POS-RUNNER-V3", texto)
+            h2 = LiveHarness(sem_v3=True)
+            try:
+                h2.live.send_daily_summary_v3()
+                self.assertEqual(h2.texts(), [])
+            finally:
+                h2.close()
+        finally:
+            h.close()
+
+    def test_zone_min_candles_minimo_reflects_v3_unless_disabled(self) -> None:
+        h = LiveHarness()
+        try:
+            self.assertEqual(h.live._zone_min_candles_minimo(), 4)  # noqa: SLF001
+        finally:
+            h.close()
+        h2 = LiveHarness(sem_v3=True)
+        try:
+            self.assertEqual(h2.live._zone_min_candles_minimo(), 12)  # noqa: SLF001
+        finally:
+            h2.close()
+
+
 class RetentativaCurtaTests(unittest.TestCase):
     """PEDIDO 2026-11-02 (FASE 1f): pool quente/morno sem candle novo ainda retentar logo (+2/+5/
     +10min), nunca esperar o fechamento inteiro seguinte."""

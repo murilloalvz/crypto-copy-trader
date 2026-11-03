@@ -123,6 +123,17 @@ class SinalResolvido:
     idade_dias: Optional[float] = None
     mc_na_entrada: Optional[float] = None
     regime_amostragem: Optional[str] = None
+    # PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao, item 3): covariaveis PROPRIAS da V3 --
+    # `None`/`False` pra V1/V2 (nunca as calculam), preenchidas so quando `versao == "v3"` em
+    # `carregar_sinais_e_excluidos`. Usadas so pelos 8 estratos exploratorios do pre-registro da V3
+    # (nunca entram em H1-H12, que sao genericos sobre `dif_pareada`/`mint`/`t_entrada`).
+    caixa_candles: Optional[int] = None
+    caixa_horas: Optional[float] = None
+    queda_pico_pct: Optional[float] = None
+    mc_base: Optional[float] = None
+    razao_corpo_descomunal: Optional[float] = None
+    possivel_clone: bool = False
+    gatilho_v3: Optional[str] = None
 
     @property
     def dia_utc(self) -> str:
@@ -205,7 +216,10 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str,
     lista usavel -- os excluidos saem numa lista separada, com motivo, nunca silenciosamente."""
     out: list[SinalResolvido] = []
     excluidos: list[Excluido] = []
-    sinal_lookup = storage.pr1_signal if versao == "v1" else storage.pr2_signal
+    # PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): 3-way -- V3 reusa `pr_trajetoria`/
+    # `pr_baseline` (genericas por `versao`, ZERO schema novo) exatamente como V1/V2, so troca a
+    # tabela de origem do sinal (`pr3_signals`).
+    sinal_lookup = {"v1": storage.pr1_signal, "v2": storage.pr2_signal, "v3": storage.pr3_signal}[versao]
     for b in storage.pr_baseline_resolvidas_com_dif(versao):
         traj = storage.pr_trajetoria_get(versao, b["entry_id"])
         sinal = sinal_lookup(b["entry_id"])
@@ -233,6 +247,18 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str,
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
         risco_pct = 100.0 * (1.0 - stop / entry_price) if entry_price and stop is not None else None
+        # PEDIDO 2026-11-02 (POS-RUNNER-V3, item 3): covariaveis proprias da V3, so quando
+        # `pr3_signals` e a origem (as colunas so existem ali -- ver storage.py).
+        v3_extra: dict[str, Any] = {}
+        if versao == "v3":
+            from ..pos_runner.pos_runner_v3 import gatilho_tag_v3
+            v3_extra = dict(
+                caixa_candles=sinal["caixa_candles"], caixa_horas=sinal["caixa_horas"],
+                queda_pico_pct=sinal["queda_pico_pct"], mc_base=sinal["mc_base"],
+                razao_corpo_descomunal=sinal["razao_corpo_descomunal"],
+                possivel_clone=bool(sinal["possivel_clone"]),
+                gatilho_v3=gatilho_tag_v3(json.loads(sinal["gatilho"] or "[]")),
+            )
         out.append(SinalResolvido(
             entry_id=b["entry_id"], mint=sinal["mint"], symbol=sinal["symbol"] or "",
             t_entrada=traj["t_entrada"], dif_pareada=b["dif_pareada"],
@@ -242,7 +268,7 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str,
             result_net=sinal["result_net"], ticket_medio_usd=sinal["ticket_medio_usd"],
             token_signal_seq=sinal["token_signal_seq"], tempo_pico_caixa_s=_tempo_pico_caixa_s(sinal),
             idade_dias=sinal["idade_dias"], mc_na_entrada=sinal["mc_na_entrada"],
-            regime_amostragem=sinal["regime_amostragem"] or "pre_rotacao",
+            regime_amostragem=sinal["regime_amostragem"] or "pre_rotacao", **v3_extra,
         ))
     return out, excluidos
 
@@ -662,6 +688,80 @@ def _grupos_h2_h7(sinais: Sequence[SinalResolvido]) -> list[tuple[str, str, list
     return out
 
 
+# PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao, item 3): os 8 estratos exploratorios do
+# pre-registro (docs/pos-runner-v3/PREREGISTRO_V3_2026-11-02.md) -- MESMO metodo de H2-H7 (bootstrap
+# por dia, p-valor unilateral, Holm sobre a familia completa), NUNCA confirmatorios.
+def _grupos_v3_estratos(sinais: Sequence[SinalResolvido]) -> list[tuple[str, str, list[SinalResolvido]]]:
+    """[(estrato, nome_do_grupo, sinais_do_grupo), ...] -- so a particao, sem calcular nada ainda.
+    So usado para `versao == 'v3'` (os campos `caixa_candles`/`queda_pico_pct`/`mc_base`/
+    `razao_corpo_descomunal`/`possivel_clone`/`gatilho_v3` so existem preenchidos nesse caso --
+    ver `carregar_sinais_e_excluidos`)."""
+    out: list[tuple[str, str, list[SinalResolvido]]] = []
+    out.append(("caixa (candles)", ">=12", [s for s in sinais if s.caixa_candles is not None and s.caixa_candles >= 12]))
+    out.append(("caixa (candles)", "<12", [s for s in sinais if s.caixa_candles is not None and s.caixa_candles < 12]))
+    out.append(("caixa (horas)", ">=48h", [s for s in sinais if s.caixa_horas is not None and s.caixa_horas >= 48.0]))
+    out.append(("caixa (horas)", "<48h", [s for s in sinais if s.caixa_horas is not None and s.caixa_horas < 48.0]))
+    out.append(("idade", "2-7 dias", [s for s in sinais if s.idade_dias is not None and 2.0 <= s.idade_dias <= 7.0]))
+    out.append(("idade", "fora de 2-7 dias", [s for s in sinais if s.idade_dias is not None and not (2.0 <= s.idade_dias <= 7.0)]))
+    out.append(("queda do pico", "90-94%", [s for s in sinais if s.queda_pico_pct is not None and 90.0 <= s.queda_pico_pct <= 94.0]))
+    out.append(("queda do pico", "fora de 90-94%",
+               [s for s in sinais if s.queda_pico_pct is not None and not (90.0 <= s.queda_pico_pct <= 94.0)]))
+    out.append(("MC da base", "<=200k", [s for s in sinais if s.mc_base is not None and s.mc_base <= 200_000.0]))
+    out.append(("MC da base", ">200k", [s for s in sinais if s.mc_base is not None and s.mc_base > 200_000.0]))
+    out.append(("gatilho", "reacao_suporte", [s for s in sinais if s.gatilho_v3 and "reacao_suporte" in s.gatilho_v3]))
+    out.append(("gatilho", "rompimento", [s for s in sinais if s.gatilho_v3 and "rompimento" in s.gatilho_v3]))
+    out.append(("descomunal (corpo/box)", ">=25%",
+               [s for s in sinais if s.razao_corpo_descomunal is not None and s.razao_corpo_descomunal >= 0.25]))
+    out.append(("descomunal (corpo/box)", ">=50%",
+               [s for s in sinais if s.razao_corpo_descomunal is not None and s.razao_corpo_descomunal >= 0.50]))
+    out.append(("possivel clone", "sim", [s for s in sinais if s.possivel_clone]))
+    out.append(("possivel clone", "nao", [s for s in sinais if not s.possivel_clone]))
+    return out
+
+
+def rodar_exploratorias_v3(sinais: Sequence[SinalResolvido]) -> list[GrupoExploratorio]:
+    """Os 8 estratos da V3 sob Holm -- mesma disciplina de `rodar_exploratorias` (n>=10 tokens
+    distintos por grupo, familia completa), NUNCA confirmatorios."""
+    candidatos = []
+    for estrato, grupo, membros in _grupos_v3_estratos(sinais):
+        n = n_tokens_distintos(membros)
+        if n < MIN_TOKENS_GRUPO:
+            continue
+        media = float(np.mean([s.dif_pareada for s in membros]))
+        p = bootstrap_p_valor_unilateral(membros)
+        candidatos.append(GrupoExploratorio(estrato, grupo, n, media, p))
+    if not candidatos:
+        return []
+    significativos = holm_bonferroni([c.p_valor for c in candidatos])
+    return [GrupoExploratorio(c.hipotese, c.grupo, c.n_tokens, c.media_dif_pareada, c.p_valor, sig, c.estatistica)
+            for c, sig in zip(candidatos, significativos)]
+
+
+@dataclass(frozen=True)
+class ResumoRRealizado:
+    """PEDIDO 2026-11-02 (Passo 1 continuacao, item 3): "taxa de acerto, razao ganho/perda, R
+    mediano" -- SO relatorio/descritivo, nunca decide H1 (que usa `dif_pareada`, a baseline pareada,
+    nao o R realizado isolado)."""
+    n_fechados: int
+    taxa_acerto_pct: Optional[float]
+    razao_ganho_perda: Optional[float]   # profit factor: soma dos R positivos / |soma dos R negativos|
+    r_mediano: Optional[float]
+
+
+def resumo_r_realizado(sinais: Sequence[SinalResolvido]) -> ResumoRRealizado:
+    valores = [s.r_realizado for s in sinais if s.r_realizado is not None]
+    n = len(valores)
+    if n == 0:
+        return ResumoRRealizado(0, None, None, None)
+    positivos = [v for v in valores if v > 0]
+    negativos = [v for v in valores if v < 0]
+    soma_neg_abs = abs(sum(negativos))
+    razao = (sum(positivos) / soma_neg_abs) if soma_neg_abs > 0 else (float("inf") if positivos else None)
+    ordenados = sorted(valores)
+    mediana = ordenados[n // 2] if n % 2 else (ordenados[n // 2 - 1] + ordenados[n // 2]) / 2.0
+    return ResumoRRealizado(n, 100.0 * len(positivos) / n, razao, mediana)
+
+
 def h10_velocidade_queda(sinais: Sequence[SinalResolvido]) -> Optional[GrupoExploratorio]:
     """H10 (EMENDA 1, ja com o AJUSTE do mesmo dia) -- geracao de hipoteses, NAO confirmatoria.
     Spearman entre o tempo (segundos, continuo) do PICO acumulado conhecido ate o INICIO da caixa/
@@ -928,6 +1028,9 @@ class RelatorioCondicional:
     h1_com_entrada_atrasada: Optional[ResultadoH1] = None
     # PEDIDO 2026-10-30 (FASE 2, item 4): homogeneidade pre_rotacao vs pos_rotacao, nunca bloqueia H1.
     homogeneidade_regimes: Optional[ResultadoHomogeneidadeRegimes] = None
+    # PEDIDO 2026-11-02 (POS-RUNNER-V3, item 3): taxa de acerto/razao ganho-perda/R mediano -- SO
+    # descritivo, nunca decide H1 (que continua usando `dif_pareada`).
+    resumo_r: Optional[ResumoRRealizado] = None
 
 
 def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> RelatorioCondicional:
@@ -936,15 +1039,23 @@ def executar(storage: Any, versao: str, plano_path: Path = PLANO_PATH) -> Relato
     h1 = rodar_h1(sinais)
     sinais_com_atrasada, _ = carregar_sinais_e_excluidos(storage, versao, excluir_entrada_atrasada=False)
     h1_com_entrada_atrasada = rodar_h1(sinais_com_atrasada)
-    exploratorias = rodar_exploratorias(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
-    sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
-    h13 = rodar_h13(storage)
-    h14 = rodar_h14(storage)
+    if versao == "v3":
+        # PEDIDO 2026-11-02 (POS-RUNNER-V3, item 3): estratos PROPRIOS da V3 (ver
+        # docs/pos-runner-v3/PREREGISTRO_V3_2026-11-02.md) -- sombra/H13/H14 nao existem pra V3
+        # (pr_sombra/pr_radar sao recursos exclusivos de V1/V2, nunca teriam linha com versao='v3').
+        exploratorias = rodar_exploratorias_v3(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
+        sombra, h13, h14 = [], None, None
+    else:
+        exploratorias = rodar_exploratorias(sinais) if h1.status in ("EDGE_PROVISORIO", "INCONCLUSIVO") else []
+        sombra = [comparar_sombra(storage, versao, motivo) for motivo in SOMBRA_MOTIVOS]
+        h13 = rodar_h13(storage)
+        h14 = rodar_h14(storage)
     homogeneidade_regimes = rodar_homogeneidade_regimes(sinais)
+    resumo_r = resumo_r_realizado(sinais)
     return RelatorioCondicional(versao=versao, h1=h1, exploratorias=exploratorias, excluidos=excluidos,
                                 sombra=sombra, h13=h13, h14=h14,
                                 h1_com_entrada_atrasada=h1_com_entrada_atrasada,
-                                homogeneidade_regimes=homogeneidade_regimes)
+                                homogeneidade_regimes=homogeneidade_regimes, resumo_r=resumo_r)
 
 
 def formatar_markdown(rel: RelatorioCondicional) -> str:
@@ -974,6 +1085,15 @@ def formatar_markdown(rel: RelatorioCondicional) -> str:
     if rel.h1_com_entrada_atrasada is not None:
         linhas.append(f"  sensibilidade entrada_atrasada — excluindo (primário): {rel.h1.status} | "
                       f"incluindo (nunca confirmatório): {rel.h1_com_entrada_atrasada.status}")
+    if rel.resumo_r is not None and rel.resumo_r.n_fechados and rel.resumo_r.r_mediano is not None:
+        # PEDIDO 2026-11-02 (item 3): taxa de acerto/razão ganho-perda/R mediano -- SO descritivo,
+        # NUNCA decide H1 (que usa `dif_pareada`, não o R realizado isolado).
+        rr = rel.resumo_r
+        razao_txt = "∞ (sem perdas)" if rr.razao_ganho_perda == float("inf") else (
+            f"{rr.razao_ganho_perda:.2f}" if rr.razao_ganho_perda is not None else "s/d")
+        linhas.append(f"R realizado (descritivo, {rr.n_fechados} fechados): taxa de acerto "
+                      f"{rr.taxa_acerto_pct:.1f}% | razão ganho/perda {razao_txt} | "
+                      f"R mediano {rr.r_mediano:+.3f}")
     linhas.append("")
     if rel.homogeneidade_regimes is not None:
         h = rel.homogeneidade_regimes
@@ -1071,7 +1191,7 @@ def formatar_telegram(rel: RelatorioCondicional) -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Analise condicional da baseline pareada (PAPER / so leitura).")
-    parser.add_argument("--versao", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--versao", choices=("v1", "v2", "v3"), default="v1")
     parser.add_argument("--registrar-emenda", action="store_true",
                          help="EMENDA 1 (2026-10-29): re-registra o hash ATUAL do plano (ANTES de "
                               "qualquer analise sobre dados novos) -- nunca automatico, so quando "

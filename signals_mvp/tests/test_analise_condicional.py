@@ -678,5 +678,126 @@ class RodarH14Tests(unittest.TestCase):
         self.assertEqual(r.n_ignorar, 10)
 
 
+def _sinal_v3(mint: str, dif: float, dia_ts: float, entry_id: int, caixa_candles=None, caixa_horas=None,
+             queda_pico_pct=None, mc_base=None, razao_corpo_descomunal=None, possivel_clone=False,
+             gatilho_v3=None, result_net: float = 1.0, risco_pct: float = 20.0) -> cond.SinalResolvido:
+    return cond.SinalResolvido(
+        entry_id=entry_id, mint=mint, symbol=mint, t_entrada=dia_ts, dif_pareada=dif, gatilho=(),
+        risco_pct=risco_pct, liquidez_usd=None, holders_tag=None, tags=(), janela_ouro="janela_ouro",
+        result_net=result_net, caixa_candles=caixa_candles, caixa_horas=caixa_horas,
+        queda_pico_pct=queda_pico_pct, mc_base=mc_base, razao_corpo_descomunal=razao_corpo_descomunal,
+        possivel_clone=possivel_clone, gatilho_v3=gatilho_v3,
+    )
+
+
+class GruposV3EstratosTests(unittest.TestCase):
+    """PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao, item 3): os 8 estratos exploratorios
+    do pre-registro, MESMA disciplina de Holm que H2-H7."""
+
+    def test_caixa_candles_strata_partitions_by_12(self) -> None:
+        sinais = (
+            [_sinal_v3(f"a{i}", 1.0, i * DIA, i, caixa_candles=20) for i in range(5)]
+            + [_sinal_v3(f"b{i}", -1.0, i * DIA, 100 + i, caixa_candles=5) for i in range(5)]
+        )
+        grupos = dict(((h, g), [s.mint for s in membros]) for h, g, membros in cond._grupos_v3_estratos(sinais))  # noqa: SLF001
+        self.assertEqual(set(grupos[("caixa (candles)", ">=12")]), {f"a{i}" for i in range(5)})
+        self.assertEqual(set(grupos[("caixa (candles)", "<12")]), {f"b{i}" for i in range(5)})
+
+    def test_gatilho_strata_reads_the_persisted_tag(self) -> None:
+        sinais = [_sinal_v3("A", 1.0, 0.0, 1, gatilho_v3="reacao_suporte"),
+                 _sinal_v3("B", 1.0, 0.0, 2, gatilho_v3="rompimento"),
+                 _sinal_v3("C", 1.0, 0.0, 3, gatilho_v3="reacao_suporte+rompimento")]
+        grupos = dict(((h, g), [s.mint for s in membros]) for h, g, membros in cond._grupos_v3_estratos(sinais))  # noqa: SLF001
+        self.assertEqual(set(grupos[("gatilho", "reacao_suporte")]), {"A", "C"})
+        self.assertEqual(set(grupos[("gatilho", "rompimento")]), {"B", "C"})
+
+    def test_possivel_clone_strata(self) -> None:
+        sinais = [_sinal_v3("A", 1.0, 0.0, 1, possivel_clone=True), _sinal_v3("B", 1.0, 0.0, 2, possivel_clone=False)]
+        grupos = dict(((h, g), [s.mint for s in membros]) for h, g, membros in cond._grupos_v3_estratos(sinais))  # noqa: SLF001
+        self.assertEqual(grupos[("possivel clone", "sim")], ["A"])
+        self.assertEqual(grupos[("possivel clone", "nao")], ["B"])
+
+    def test_rodar_exploratorias_v3_detects_a_planted_edge_in_one_stratum(self) -> None:
+        sinais = (
+            [_sinal_v3(f"a{i}", 2.0 + 0.01 * i, i * DIA, i, caixa_candles=20) for i in range(15)]
+            + [_sinal_v3(f"b{i}", 0.01 * (i % 3 - 1), i * DIA, 100 + i, caixa_candles=5) for i in range(15)]
+        )
+        candidatos = cond.rodar_exploratorias_v3(sinais)
+        grupo_caixa = next(c for c in candidatos if c.hipotese == "caixa (candles)" and c.grupo == ">=12")
+        self.assertTrue(grupo_caixa.significativo_holm)
+
+    def test_groups_below_10_tokens_are_never_reported(self) -> None:
+        sinais = [_sinal_v3(f"a{i}", 1.0, i * DIA, i, caixa_candles=20) for i in range(5)]
+        self.assertEqual(cond.rodar_exploratorias_v3(sinais), [])
+
+
+class ResumoRRealizadoTests(unittest.TestCase):
+    def test_computes_hit_rate_profit_factor_and_median(self) -> None:
+        # R realizado = result_net / (risco_pct/100) -- ver `_r_multiplo`.
+        sinais = [
+            _sinal_v3("A", 0.0, 0.0, 1, result_net=0.4, risco_pct=20.0),   # R=2
+            _sinal_v3("B", 0.0, 0.0, 2, result_net=0.2, risco_pct=20.0),   # R=1
+            _sinal_v3("C", 0.0, 0.0, 3, result_net=-0.2, risco_pct=20.0),  # R=-1
+        ]
+        r = cond.resumo_r_realizado(sinais)
+        self.assertEqual(r.n_fechados, 3)
+        self.assertAlmostEqual(r.taxa_acerto_pct, 200.0 / 3.0)
+        self.assertAlmostEqual(r.razao_ganho_perda, 3.0)   # (2+1)/1
+        self.assertAlmostEqual(r.r_mediano, 1.0)
+
+    def test_empty_when_no_signal_has_a_realized_r(self) -> None:
+        r = cond.resumo_r_realizado([_sinal_v3("A", 0.0, 0.0, 1, result_net=None, risco_pct=None)])
+        self.assertEqual(r.n_fechados, 0)
+        self.assertIsNone(r.taxa_acerto_pct)
+
+
+class CarregarSinaisV3Tests(unittest.TestCase):
+    """PEDIDO 2026-11-02: `carregar_sinais_e_excluidos(storage, "v3")` -- MESMO pipeline generico de
+    V1/V2 (pr3_signals tem as mesmas colunas "sempre NULL" que o pipeline le incondicionalmente,
+    ver storage.py), so ganha as covariaveis proprias quando a origem e a V3."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="condicional_v3_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_loads_a_v3_signal_with_its_own_covariates_and_never_crashes(self) -> None:
+        signal_id = self.storage.pr3_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v3": "abc123", "gatilho": '["reacao_suporte"]', "tags": "[]",
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "fechado",
+            "entry_price": 100.0, "stop": 80.0, "caixa_candles": 15, "caixa_horas": 15.0,
+            "queda_pico_pct": 91.0, "mc_base": 150_000.0, "razao_corpo_descomunal": 0.3,
+            "possivel_clone": 1,
+        })
+        self.assertIsNotNone(signal_id)
+        self.storage.pr_trajetoria_upsert("v3", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=5_000.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        self.storage.pr_baseline_upsert("v3", signal_id, 1.0, chain="solana", pool="POOL1", tf="1h",
+                                        mint="MINT1", symbol="CAT", n_controles=5, controles_json="[]",
+                                        dif_pareada=0.7, r_controle_medio=0.3, r_sinal=1.0)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v3")
+        self.assertEqual(excluidos, [])
+        self.assertEqual(len(sinais), 1)
+        s = sinais[0]
+        self.assertEqual(s.caixa_candles, 15)
+        self.assertAlmostEqual(s.queda_pico_pct, 91.0)
+        self.assertAlmostEqual(s.mc_base, 150_000.0)
+        self.assertTrue(s.possivel_clone)
+        self.assertEqual(s.gatilho_v3, "reacao_suporte")
+
+    def test_executar_runs_end_to_end_for_v3_without_sombra_h13_h14(self) -> None:
+        rel = cond.executar(self.storage, "v3")
+        self.assertEqual(rel.versao, "v3")
+        self.assertEqual(rel.sombra, [])
+        self.assertIsNone(rel.h13)
+        self.assertIsNone(rel.h14)
+
+
 if __name__ == "__main__":
     unittest.main()

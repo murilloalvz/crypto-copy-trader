@@ -49,10 +49,12 @@ def _profundidade_media_pavios_pct(s_suporte: Optional[float], testes: list[dict
     return sum(profundidades) / len(profundidades)
 
 
-def _gatilho_tag(gatilhos: list[str]) -> str:
+def gatilho_tag_v3(gatilhos: list[str]) -> str:
     """Simplifica os 3 gatilhos do detector (`GATILHOS` em detector_v1.py) nos 2 rotulos do Passo 1:
     'reacao_suporte' (teste de suporte) ou 'rompimento' (power candle OU volume rompendo R) -- um
-    candle pode disparar os 2 ao mesmo tempo ('reacao_suporte+rompimento', nunca escondido)."""
+    candle pode disparar os 2 ao mesmo tempo ('reacao_suporte+rompimento', nunca escondido).
+    PUBLICA (sem `_`): reusada por `analise/condicional.py` pro estrato "gatilho" do Passo 1 item 3,
+    a partir do JSON ja persistido em `pr3_signals.gatilho` -- nunca recalculada diferente."""
     tem_reacao = "reacao_suporte" in gatilhos
     tem_rompimento = any(g in gatilhos for g in ("power_candle_rompimento", "rompimento_volume"))
     if tem_reacao and tem_rompimento:
@@ -125,5 +127,5 @@ def calcular_covariaveis_v3(
         tempo_desde_pico_h=((ev.decision_ts - peak_ts) / 3600.0) if peak_ts is not None else None,
         corpo_power_candle_atr=corpo_atr, razao_corpo_descomunal=descomunal,
         possivel_clone=possivel_clone(symbol, found_ts, outros_pools),
-        gatilho_tag=_gatilho_tag(list(data.get("gatilho") or [])),
+        gatilho_tag=gatilho_tag_v3(list(data.get("gatilho") or [])),
     )

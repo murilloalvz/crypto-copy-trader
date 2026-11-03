@@ -310,6 +310,44 @@ CREATE TABLE IF NOT EXISTS pr2_bankroll_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, tf TEXT NOT NULL, versao_config_v2 TEXT NOT NULL,
   pr2_signal_id INTEGER NOT NULL, row_json TEXT NOT NULL, UNIQUE (pr2_signal_id)
 );
+-- PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): "segunda corrida pos-queda" -- MESMO
+-- detector/simulador da V1 (`DetectorV1`/`simulate_v1`, zero codigo novo), so `ParamsV3`
+-- (hash proprio `56762db29cd6`). Schema espelha pr1_signals (chain/pool/tf/evento/ts_fechamento
+-- UNIQUE, idempotente) MENOS as colunas de holders/authority/vamp/carteiras_pro/retorno_sol_dia
+-- (V3 e silenciosa/medicao, nunca fez essas chamadas RPC extras nesta entrega -- simplificacao
+-- documentada, nao uma omissao silenciosa) MAIS as covariaveis proprias do Passo 1
+-- (`pos_runner_v3.calcular_covariaveis_v3`). Sem banca/CSV proprios nesta entrega (ver emenda).
+CREATE TABLE IF NOT EXISTS pr3_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, pool TEXT NOT NULL, tf TEXT NOT NULL,
+  evento TEXT NOT NULL DEFAULT 'ENTRADA', ts_fechamento INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, launchpad TEXT, dex TEXT, versao_config_v3 TEXT NOT NULL,
+  gatilho TEXT, tags TEXT, janela_ouro TEXT, hora_brt TEXT, origem TEXT,
+  event_json TEXT, status TEXT NOT NULL DEFAULT 'aberto',
+  entry_price REAL, stop REAL, topo REAL, s_suporte REAL, r_resistencia REAL,
+  tp1_price REAL, tp1_ts REAL, exit_full_price REAL, exit_full_ts REAL,
+  result_net REAL, reason TEXT, tempo_h REAL,
+  tg_message_id INTEGER, alert_ts REAL, closed_ts REAL,
+  ts_fechamento_candle INTEGER, ts_alerta REAL, ts_envio_telegram REAL,
+  token_signal_seq INTEGER, fonte_candle TEXT NOT NULL DEFAULT 'gt',
+  -- PEDIDO 2026-11-02 (Passo 1 continuacao, item 3): colunas presentes em pr1_signals/pr2_signals
+  -- que `analise/condicional.py: carregar_sinais_e_excluidos` le incondicionalmente -- a V3 nunca
+  -- as calcula (holders/liquidez/ticket/regime, simplificacao ja documentada), ficam SEMPRE NULL,
+  -- so pra reusar o pipeline de Holm/bootstrap sem duplicar codigo nem travar com coluna ausente.
+  entry_price_alerta REAL, liquidez_usd REAL, holders_tag TEXT, ticket_medio_usd REAL,
+  mc_na_entrada REAL, regime_amostragem TEXT,
+  -- covariaveis proprias da V3 (Passo 1) -- nunca lidas por regra/filtro/tamanho de posicao real:
+  caixa_candles INTEGER, caixa_horas REAL, idade_dias REAL, queda_pico_pct REAL,
+  mc_pico REAL, mc_base REAL, razao_base_l_bc REAL, n_pavios INTEGER, profundidade_pavios_pct REAL,
+  tempo_desde_pico_h REAL, corpo_power_candle_atr REAL, razao_corpo_descomunal REAL,
+  possivel_clone INTEGER NOT NULL DEFAULT 0, posicao_pct_supply REAL,
+  posicao_pct_supply_alerta INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (chain, pool, tf, evento, ts_fechamento)
+);
+CREATE INDEX IF NOT EXISTS pr3_signals_open ON pr3_signals (status);
+CREATE TABLE IF NOT EXISTS pr3_filtrados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, chain TEXT, pool TEXT, mint TEXT, symbol TEXT,
+  motivo TEXT NOT NULL, valor TEXT, versao_config_v3 TEXT
+);
 -- PEDIDO (PARTE 1 de 2) FASE 1: trajetoria pos-entrada (MFE/MAE/retornos em R, 1,2,4,8,24,48,72h), medicao
 -- AO LADO de V1/V2 -- nunca altera pr1_signals/pr2_signals nem nenhuma saida oficial (ver evidencia.py).
 -- `entry_id` = id em pr1_signals (versao='v1') ou pr2_signals (versao='v2'); `fechado` = 1 depois de 72h
@@ -1387,6 +1425,78 @@ class Storage:
             [iso_utc(r["ts"]), r["chain"], csv_safe(r["symbol"]), r["mint"], r["motivo"], csv_safe(r["valor"]), r["versao_config_v2"]]
             for r in self._all("SELECT * FROM pr2_filtrados ORDER BY ts, id")
         ]
+
+    # -- PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): mesmo padrao de pr1_*/pr2_* --------------
+    def pr3_insert_signal(self, row: dict) -> Optional[int]:
+        cols = list(row)
+        with self._lock:
+            cur = self._db.execute(
+                f"INSERT OR IGNORE INTO pr3_signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [row[c] for c in cols],
+            )
+            self._dirty["pos_runner_v3"] = True
+            return cur.lastrowid if cur.rowcount else None
+
+    def pr3_update_signal(self, signal_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        with self._lock:
+            self._db.execute(f"UPDATE pr3_signals SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             [*fields.values(), signal_id])
+            self._dirty["pos_runner_v3"] = True
+
+    def pr3_signal(self, signal_id: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr3_signals WHERE id=?", (signal_id,))
+
+    def pr3_signal_by_key(self, chain: str, pool: str, tf: str, evento: str, ts_fechamento: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr3_signals WHERE chain=? AND pool=? AND tf=? AND evento=? AND ts_fechamento=?",
+                         (chain, pool, tf, evento, ts_fechamento))
+
+    def pr3_token_next_seq(self, mint: Optional[str]) -> int:
+        if not mint:
+            return 1
+        row = self._one("SELECT COUNT(*) AS n FROM pr3_signals WHERE mint=? AND evento='ENTRADA'", (mint,))
+        return (row["n"] if row else 0) + 1
+
+    def pr3_signals(self, status: Optional[str] = None, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        where, args = [], []
+        for col, value in (("status", status), ("pool", pool), ("tf", tf)):
+            if value is not None:
+                where.append(f"{col}=?")
+                args.append(value)
+        sql = "SELECT * FROM pr3_signals" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts_fechamento, id"
+        return self._all(sql, args)
+
+    def pr3_add_filtrado(self, ts: float, chain: str, pool: str, mint: str, symbol: str, motivo: str, valor: str,
+                         versao_config_v3: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr3_filtrados (ts,chain,pool,mint,symbol,motivo,valor,versao_config_v3) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, chain, pool, mint, symbol, motivo, valor, versao_config_v3),
+            )
+            self._dirty["pos_runner_v3_filtrados"] = True
+
+    def pr3_version_start(self, version: str, ts: float) -> float:
+        key = f"pr3_versao_inicio:{version}"
+        with self._lock:
+            cur = self._db.execute("SELECT value FROM meta WHERE key='pr3_versao_atual'").fetchone()
+            if cur is None or cur[0] != version:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pr3_versao_atual', ?)", (version,))
+            else:
+                self._db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, repr(float(ts))))
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return float(row[0])
+
+    def pr3_filtrado_counts(self, since_ts: float) -> dict[str, int]:
+        return {r[0]: r[1] for r in self._all(
+            "SELECT motivo, COUNT(*) FROM pr3_filtrados WHERE ts>=? GROUP BY motivo", (since_ts,))}
+
+    def pr_pools_symbol_found_ts(self) -> list[tuple[Optional[str], Optional[float]]]:
+        """PEDIDO 2026-11-02 (POS-RUNNER-V3, `possivel_clone`): (symbol, found_ts) de TODO pool JA
+        descoberto, qualquer status -- leitura, zero chamada nova. Usado so pra cruzar "mesmo
+        ticker/nome com lancamento anterior entre os tokens descobertos"."""
+        return [(r["symbol"], r["found_ts"]) for r in self._all("SELECT symbol, found_ts FROM pr_pools")]
 
     def pr1_token_next_seq(self, mint: Optional[str]) -> int:
         """Sequencial do sinal dentro do MESMO token (mint): 1 para o 1o ENTRADA desse mint, 2 para o 2o,

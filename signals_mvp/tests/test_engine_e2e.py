@@ -454,6 +454,7 @@ class _FakePosRunnerForReport:
         self.bankroll_calls = 0
         self.summary_v1_calls = 0
         self.summary_v2_calls = 0
+        self.summary_v3_calls = 0
         self.relatorio_calls = 0
         self.relatorio_v2_calls = 0
         self.marcos_funil_calls = 0
@@ -469,6 +470,9 @@ class _FakePosRunnerForReport:
 
     def send_daily_summary_v2(self) -> None:
         self.summary_v2_calls += 1
+
+    def send_daily_summary_v3(self) -> None:
+        self.summary_v3_calls += 1
 
     def send_relatorio_semanal_v1(self) -> None:
         self.relatorio_calls += 1

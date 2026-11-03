@@ -200,6 +200,8 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     sem_radar = bool(os.environ.get("SEM_RADAR"))   # PEDIDO 2026-10-29 (item 4): desliga o Radar "caixa em formacao"
     radar_max_dia = int(os.environ.get("RADAR_MAX_DIA", "8"))
     sem_rotacao = bool(os.environ.get("SEM_ROTACAO"))   # PEDIDO 2026-10-30 (FASE 2, item 2): desliga a rotacao de vagas
+    sem_v3 = bool(os.environ.get("SEM_V3"))   # PEDIDO 2026-11-02 (POS-RUNNER-V3): SEM_V3=1 desliga a V3 por completo
+    v3_alertas = bool(os.environ.get("V3_ALERTAS"))   # padrao: silenciosa (so resumo diario); V3_ALERTAS=1 liga alerta por sinal
     settings = resolve_chamadas_por_ciclo(settings, raw, sem_v0)
     path = Path(settings.parametros)
     if not path.is_absolute():
@@ -222,7 +224,8 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          chain_name=chain["nome"], dexpaprika=dexpaprika, sem_v2=sem_v2, sem_evidencia=sem_evidencia,
                          sem_carteiras=sem_carteiras, carteiras_max_chamadas_dia=carteiras_max_chamadas_dia,
                          sem_sombra=sem_sombra, sombra_max_pools=sombra_max_pools,
-                         sem_radar=sem_radar, radar_max_dia=radar_max_dia, sem_rotacao=sem_rotacao)
+                         sem_radar=sem_radar, radar_max_dia=radar_max_dia, sem_rotacao=sem_rotacao,
+                         sem_v3=sem_v3, v3_alertas=v3_alertas)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)
@@ -230,11 +233,12 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     dp_status = "desligado"
     if dexpaprika is not None:
         dp_status = "com chave" if os.environ.get("DEXPAPRIKA_API_KEY", "").strip() else "sem chave (keyless)"
-    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | V2 config %s%s | %s chamadas/ciclo | "
-                 "RPC: %s | DexPaprika: %s",
+    console.info("POS-RUNNER %s | V0 config %s (%s)%s | V1 config %s | V2 config %s%s | V3 config %s%s | "
+                 "%s chamadas/ciclo | RPC: %s | DexPaprika: %s",
                  "ligado" if settings.ligado else "DESLIGADO (pos_runner.ligado)",
                  params.version, live.status, " [V0 DESLIGADO: POS_RUNNER_SEM_V0]" if sem_v0 else "",
                  live.version_v1, live.version_v2, " [V2 DESLIGADA: SEM_V2]" if sem_v2 else "",
+                 live.version_v3, " [V3 DESLIGADA: SEM_V3]" if sem_v3 else (" [V3_ALERTAS]" if v3_alertas else " [silenciosa]"),
                  settings.chamadas_por_ciclo, ", ".join(host_of(u) for u in rpc.endpoints), dp_status)
     return live
 
@@ -280,12 +284,13 @@ def _relatorio_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
 
 
 def _analise_v1_ou_v2(pos_runner: Any, args: list[str]) -> str:
-    """PEDIDO (PARTE 1 de 2) FASE 2c: "/analise [v1|v2]" -- mesma convencao do /relatorio. Nunca
-    mistura estatistica das 2 versoes; a recusa por amostra insuficiente/plano alterado vem do proprio
-    `analise_texto` (signals_mvp/analise/condicional.py)."""
+    """PEDIDO (PARTE 1 de 2) FASE 2c: "/analise [v1|v2|v3]" -- mesma convencao do /relatorio. Nunca
+    mistura estatistica das versoes; a recusa por amostra insuficiente/plano alterado vem do proprio
+    `analise_texto` (signals_mvp/analise/condicional.py). PEDIDO 2026-11-02: "v3" adicionada (POS-
+    RUNNER-V3, item 3) -- estratos proprios, sem sombra/H13/H14 (exclusivos de V1/V2)."""
     versao = args[0].lower() if args else "v1"
-    if versao not in ("v1", "v2"):
-        return "uso: /analise [v1|v2]"
+    if versao not in ("v1", "v2", "v3"):
+        return "uso: /analise [v1|v2|v3]"
     return pos_runner.analise_texto(versao)
 
 

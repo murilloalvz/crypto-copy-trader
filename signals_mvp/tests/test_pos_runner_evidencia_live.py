@@ -62,7 +62,9 @@ class TrajetoriaIntegrationTests(unittest.TestCase):
         _run_entrada(self.h)
         sinal = self.h.storage.pr1_signals()[0]
         rows = self.h.storage.pr_trajetoria_all()
-        self.assertEqual({r["versao"] for r in rows}, {"v1", "v2"}, "FASE 1: trajetoria para V1 E V2")
+        # PEDIDO 2026-11-02 (POS-RUNNER-V3): V3 reusa a MESMA evidencia generica por versao -- agora
+        # tambem entra aqui por padrao (zone_min_candles=4, mais permissiva que V1/V2).
+        self.assertEqual({r["versao"] for r in rows}, {"v1", "v2", "v3"}, "FASE 1: trajetoria para V1, V2 E V3")
         row = _v1_row(rows)
         self.assertEqual(row["entry_id"], sinal["id"])
         self.assertEqual(row["pool"], "POOL1")
@@ -111,7 +113,8 @@ class BaselineIntegrationTests(unittest.TestCase):
     def test_baseline_row_is_created_with_controls_sampled_from_cached_candles(self) -> None:
         _run_entrada(self.h)
         rows = self.h.storage.pr_baseline_all()
-        self.assertEqual({r["versao"] for r in rows}, {"v1", "v2"})
+        # PEDIDO 2026-11-02 (POS-RUNNER-V3): idem -- baseline tambem e generica por versao.
+        self.assertEqual({r["versao"] for r in rows}, {"v1", "v2", "v3"})
         row = _v1_row(rows)
         self.assertGreaterEqual(row["n_controles"], 3)
         self.assertIsNone(row["dif_pareada"], "ainda sem desfecho dos controles/sinal -- nunca parcial")
