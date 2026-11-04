@@ -1,27 +1,33 @@
-"""PEDIDO 2026-11-03 (continuacao -- pendente 1 do Passo 0e). SOMENTE LEITURA, zero chamada de rede.
+"""PEDIDO 2026-11-03/04 (continuacao -- FRENTE A). SOMENTE LEITURA, zero chamada de rede.
 
-Para cada sinal LIMPO (mesma exclusao de `analise.condicional`/`passo0e_topo_e_fechamento.py`:
-`contaminado_candle` fora; risco<3% reportado em % mas nunca em R) de V1/V2/V3, identifica O CANDLE
-exato que gerou o MFE e o MAE (ts, high/low, volume, os 2 candles vizinhos) -- nunca so o numero, que
-e tudo que `pr_trajetoria`/o Passo 0e ja mostravam. Cruza com `pr1_dexpaprika_divergencias` quando a
-origem e V1 (unica versao com essa tabela -- V2/V3 saem `s/d` explicito, nunca uma comparacao
-inventada).
+Para cada sinal FECHADO limpo (mesma exclusao de `analise.condicional`: `contaminado_candle` fora;
+risco<3% reportado em % mas nunca em R) das TRES fontes -- (A) sinais ao vivo V1/V2/V3
+(`pr1_signals`/`pr2_signals`/`pr3_signals`), (B) coorte retrospectiva lote 1 admitida apos o
+congelamento (`pr_retro_candidatos`, MESMO replay de `exit_lab.linhas_retro_admitido`) e (C) replay
+completo de V3 sobre pools admitidos hoje (MESMO evento bruto de
+`avaliar_v3_retro.parte_a_pools_admitidos`) -- identifica O CANDLE exato que gerou o MFE e o MAE (ts,
+high/low, volume, os 2 candles vizinhos). Cruza com `pr1_dexpaprika_divergencias` quando a origem e
+V1 (unica versao com essa tabela -- V2/V3 saem `s/d` explicito).
 
-Motivo do pedido: um MAE mais profundo que o stop oficial (ex.: -72% com stop em -40%) so e possivel
-se o candle que gerou isso aconteceu DEPOIS que a posicao ja tinha fechado -- a janela fixa de 72h de
-`pr_trajetoria`/`evidencia.calcular_trajetoria` (correta, documentada, nunca mudada aqui) mistura
-"durante a posicao" com "pos-saida" num unico MFE/MAE. Este script SEPARA os dois recortes, a partir
-dos MESMOS `pr_bars` e da MESMA formula `evidencia.r_de` (nenhum numero novo, so uma particao por
-`closed_ts` do sinal):
+Motivo do pedido original: um MAE mais profundo que o stop oficial (ex.: -72% com stop em -40%) so e
+possivel se o candle que gerou isso aconteceu DEPOIS que a posicao ja tinha fechado -- a janela fixa
+de 72h de `pr_trajetoria`/`evidencia.calcular_trajetoria` mistura "durante a posicao" com "pos-saida"
+num unico MFE/MAE. Este script SEPARA os dois recortes, a partir dos MESMOS `pr_bars` e da MESMA
+formula `evidencia.r_de` (nenhum numero novo):
 
-  - `durante_posicao`: candles com `ts+step` entre a entrada e `closed_ts` do sinal (inclusive) --
-    o MAE aqui nunca deveria passar do stop oficial (se passar, e evidencia de um fill tardio/gap, nao
-    desta particao);
-  - `pos_saida`: candles com `ts+step` depois de `closed_ts`, ate a janela de 72h -- SO diagnostico,
-    nunca influencia P&L (a posicao ja estava fechada).
+  - `durante_posicao`: candles com `ts+step` entre a entrada e a saida (persistida para V1/V2/V3 ao
+    vivo; RESSIMULADA com `simulate_v1` -- MESMOS parametros congelados -- para as fontes B/C, que
+    nunca persistem um `closed_ts` proprio);
+  - `pos_saida`: candles depois da saida, ate a janela de 72h -- SO diagnostico, nunca influencia P&L.
 
-Nunca altera `pr_trajetoria`/`pr_baseline`/H1/qualquer sinal -- relatorio novo, so leitura do que ja
-esta cacheado em `pr_bars`.
+PEDIDO 2026-11-04: tambem responde, agregado (`resumo()`), quantos sinais ficaram no lucro em algum
+momento ANTES da saida (MFE>0 na janela `durante_posicao`), o MFE tipico em multiplos do risco
+(mediana, so risco>=3%), e R por TOKEN (nunca por sinal -- R oficial: `100*result_net/risco_pct`
+para as fontes ao vivo, `simulate_v1.r_mult` para B/C, MESMA formula de `live.py:
+_atualizar_baseline`/`avaliar_candidatos_retro.py: _simular_entrada`).
+
+Nunca altera `pr_trajetoria`/`pr_baseline`/H1/`pr_retro_resultados`/qualquer sinal -- relatorio novo,
+so leitura do que ja esta cacheado em `pr_bars`.
 
 Uso (na VM):
     python -m signals_mvp.scripts.auditar_mfe --db dados/estado.sqlite
@@ -29,17 +35,26 @@ Uso (na VM):
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
+import sqlite3
+import statistics
+import argparse
 from pathlib import Path
 from typing import Any, Optional
 
 from ..analise.condicional import RISCO_IRREALISTA_MIN_PCT, _contaminado_candle, _risco_irrealista
 from ..config import make_paths
 from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.costs import CostModel
+from ..pos_runner.detector_v1 import DetectorV1
 from ..pos_runner.evidencia import JANELA_FECHAMENTO_H, r_de
+from ..pos_runner.params_v1 import load_params_v1
+from ..pos_runner.params_v2 import load_params_v2
+from ..pos_runner.params_v3 import load_params_v3
+from ..pos_runner.simulate_v1 import simulate_v1
 from ..storage import Storage
-from .exit_lab import _bar_idx_por_ts
+from .avaliar_v3_retro import _conectar_ro, parte_a_pools_admitidos
+from .exit_lab import _bar_idx_por_ts, _bars_truncados
 
 AVISO = "diagnostico (MFE/MAE do candle real, separado por janela); nunca altera H1/sinais/trajetoria"
 
@@ -101,18 +116,10 @@ def _detalhe_candle(storage: Storage, versao: str, pool: str, bars: list[Bar], e
            "vizinho_depois": _vizinho(bars, idx + 1), "divergencia_dexpaprika": divergencia}
 
 
-def medir_sinal(storage: Storage, versao: str, s: Any, bars: list[Bar]) -> Optional[dict[str, Any]]:
-    traj = storage.pr_trajetoria_get(versao, s["id"])
-    if traj is None or traj["t_entrada"] is None or s["entry_price"] is None or s["stop"] is None:
-        return None
-    entry_ts, entry_price, stop = traj["t_entrada"], s["entry_price"], s["stop"]
-    j0 = _bar_idx_por_ts(bars, entry_ts)
-    if j0 is None:
-        return None
-    step = tf_seconds(s["tf"] or "1h")
+def medir_de_base(storage: Storage, versao: str, origem: str, token: str, pool: str, bars: list[Bar], j0: int,
+                  entry_ts: float, entry_price: float, stop: float, risco_pct: Optional[float],
+                  closed_ts: Optional[float], step: int, r_oficial: Optional[float]) -> dict[str, Any]:
     risco_frac = (entry_price - stop) / entry_price if entry_price else None
-    risco_pct = traj["risco_pct"]
-    closed_ts = s["closed_ts"]
     h_exit = max(0.0, min(JANELA_FECHAMENTO_H, (closed_ts - entry_ts) / 3600.0)) if closed_ts is not None else None
     janelas_def: dict[str, tuple[float, float]] = {"pos_entrada_72h": (0.0, JANELA_FECHAMENTO_H)}
     if h_exit is not None:
@@ -123,11 +130,28 @@ def medir_sinal(storage: Storage, versao: str, s: Any, bars: list[Bar]) -> Optio
     for nome, (lo, hi) in janelas_def.items():
         mfe, mae = _extremos_na_janela(bars, j0, entry_ts, step, entry_price, risco_frac, lo, hi)
         janelas[nome] = {
-            "mfe": _detalhe_candle(storage, versao, s["pool"], bars, mfe, risco_pct),
-            "mae": _detalhe_candle(storage, versao, s["pool"], bars, mae, risco_pct),
+            "mfe": _detalhe_candle(storage, versao, pool, bars, mfe, risco_pct),
+            "mae": _detalhe_candle(storage, versao, pool, bars, mae, risco_pct),
         }
-    return {"token": s["symbol"] or (s["mint"] or "")[:8], "versao": versao, "risco_pct": risco_pct,
-           "janelas": janelas}
+    return {"token": token, "versao": versao, "origem": origem, "risco_pct": risco_pct,
+           "r_oficial": r_oficial, "janelas": janelas}
+
+
+def medir_sinal(storage: Storage, versao: str, s: Any, bars: list[Bar]) -> Optional[dict[str, Any]]:
+    traj = storage.pr_trajetoria_get(versao, s["id"])
+    if traj is None or traj["t_entrada"] is None or s["entry_price"] is None or s["stop"] is None:
+        return None
+    entry_ts, entry_price, stop = traj["t_entrada"], s["entry_price"], s["stop"]
+    j0 = _bar_idx_por_ts(bars, entry_ts)
+    if j0 is None:
+        return None
+    step = tf_seconds(s["tf"] or "1h")
+    risco_pct = traj["risco_pct"]
+    r_oficial = (100.0 * s["result_net"] / risco_pct) if (s["result_net"] is not None and risco_pct
+                                                          and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
+    token = s["symbol"] or (s["mint"] or "")[:8]
+    return medir_de_base(storage, versao, "ao_vivo", token, s["pool"], bars, j0, entry_ts, entry_price, stop,
+                        risco_pct, s["closed_ts"], step, r_oficial)
 
 
 def medir_versao(storage: Storage, versao: str) -> list[dict[str, Any]]:
@@ -144,6 +168,115 @@ def medir_versao(storage: Storage, versao: str) -> list[dict[str, Any]]:
         if r is not None:
             out.append(r)
     return out
+
+
+def _closed_ts_da_simulacao(bars: list[Bar], j0: int, step: int, res: Any) -> Optional[float]:
+    """`simulate_v1` nunca persiste `closed_ts` (fontes B/C sao simuladas, nunca sinais reais) -- a
+    saida e o ts+step da ULTIMA perna, SO quando `status=='fechado'` (em_aberto fica None, nunca
+    inventado -- a janela toda conta como `durante_posicao`, igual a um sinal real sem saida ainda)."""
+    if res.status != "fechado" or not res.legs:
+        return None
+    return float(res.legs[-1].ts) + step
+
+
+def medir_retro_admitido(storage: Storage, db_path: Path) -> list[dict[str, Any]]:
+    """Fonte B: coorte retro lote 1, SO admitido_apos_congelamento -- MESMO replay de
+    `exit_lab.linhas_retro_admitido` (candles truncados, `ParamsV1`/`ParamsV2` congelados), reusado
+    aqui SEM MUDANCA de regra, so pra extrair MFE/MAE em vez das 4 saidas alternativas."""
+    con = _conectar_ro(db_path)
+    try:
+        tabelas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "pr_retro_candidatos" not in tabelas:
+            return []
+        candidatos = con.execute("SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
+        costs = CostModel()
+        out: list[dict[str, Any]] = []
+        for row in candidatos:
+            pool_row = con.execute("SELECT added_ts, l_bc, launchpad FROM pr_pools WHERE pool=?", (row["pool"],)).fetchone()
+            if pool_row is None or pool_row["added_ts"] is None or pool_row["l_bc"] is None:
+                continue
+            for versao, params in (("v1", load_params_v1()), ("v2", load_params_v2())):
+                tf = params.timeframes[0]
+                step = tf_seconds(tf)
+                bars = _bars_truncados(con, row["pool"], tf, step, pool_row["added_ts"])
+                if not bars:
+                    continue
+                # CORRECAO 2026-11-04 (mesma de exit_lab.py: linhas_retro_admitido): `criado_ts` tem
+                # que vir da linha congelada (nunca None), senao `in_age_window()` sempre falha e
+                # nenhuma ENTRADA jamais aparece aqui.
+                det = DetectorV1(params, tf, pool_row["l_bc"], row["grad_ts"], row["criado_ts"])
+                dex = pool_row["launchpad"] or row["launchpad"] or "desconhecido"
+                for bar in bars:
+                    for ev in det.update(bar):
+                        if ev.kind != "ENTRADA":
+                            continue
+                        j0 = ev.idx + 1
+                        if j0 >= len(bars):
+                            continue
+                        entry = bars[j0].open
+                        stop = ev.data["stop"]
+                        risco_pct = ev.data.get("risco_pct")
+                        res = simulate_v1(bars, ev, params, costs, dex, pool_row["l_bc"], lambda _t: None)
+                        # coorte retro nunca tem fill real confirmado -- contaminado_candle (marcacao
+                        # manual pos-fill) nunca se aplica aqui, so risco<3% exclui o R (MESMA regra).
+                        r_oficial = None if (risco_pct is None or risco_pct < RISCO_IRREALISTA_MIN_PCT) else res.r_mult
+                        closed_ts = _closed_ts_da_simulacao(bars, j0, step, res)
+                        token = row["symbol"] or row["pool"][:8]
+                        out.append(medir_de_base(storage, versao, "retro_lote1", token, row["pool"], bars, j0,
+                                                 bars[j0].ts, entry, stop, risco_pct, closed_ts, step, r_oficial))
+        return out
+    finally:
+        con.close()
+
+
+def medir_v3_replay(storage: Storage, db_path: Path) -> list[dict[str, Any]]:
+    """Fonte C: replay completo de `ParamsV3` sobre pools admitidos hoje -- reusa o evento bruto de
+    `avaliar_v3_retro.parte_a_pools_admitidos` (`eventos_raw`), nunca duplica o replay."""
+    con = _conectar_ro(db_path)
+    try:
+        params_v3 = load_params_v3()
+        linhas_pool = parte_a_pools_admitidos(con, params_v3)
+    finally:
+        con.close()
+    costs = CostModel()
+    out: list[dict[str, Any]] = []
+    for lp in linhas_pool:
+        for bars, ev, dex, l_bc in lp["eventos_raw"]:
+            j0 = ev.idx + 1
+            if j0 >= len(bars):
+                continue
+            entry = bars[j0].open
+            stop = ev.data["stop"]
+            risco_pct = ev.data.get("risco_pct")
+            step = tf_seconds(params_v3.timeframes[0])
+            res = simulate_v1(bars, ev, params_v3, costs, dex, l_bc, lambda _t: None)
+            r_oficial = None if (risco_pct is None or risco_pct < RISCO_IRREALISTA_MIN_PCT) else res.r_mult
+            closed_ts = _closed_ts_da_simulacao(bars, j0, step, res)
+            out.append(medir_de_base(storage, "v3", "replay_v3", lp["symbol"], lp["pool"], bars, j0, bars[j0].ts,
+                                     entry, stop, risco_pct, closed_ts, step, r_oficial))
+    return out
+
+
+def resumo(resultados: list[dict[str, Any]]) -> dict[str, Any]:
+    """PEDIDO 2026-11-04: so os FECHADOS (tem janela `durante_posicao`) -- quantos lucraram em algum
+    momento antes da saida (MFE>0 nessa janela) e o MFE tipico em R (mediana, so risco>=3%); R por
+    TOKEN (nunca por sinal)."""
+    fechados = [r for r in resultados if "durante_posicao" in r["janelas"]]
+    com_mfe = [r["janelas"]["durante_posicao"]["mfe"] for r in fechados if r["janelas"]["durante_posicao"]["mfe"] is not None]
+    lucraram = sum(1 for m in com_mfe if m["pct"] > 0)
+    mfe_r_validos = [m["r"] for m in com_mfe if m["r"] is not None]
+    por_token: dict[str, list[float]] = {}
+    for r in resultados:
+        if r["r_oficial"] is not None:
+            por_token.setdefault(r["token"], []).append(r["r_oficial"])
+    r_por_token = {t: {"n": len(vs), "r_medio": statistics.fmean(vs)} for t, vs in sorted(por_token.items())}
+    return {
+        "n_fechados": len(fechados), "n_lucraram_antes_da_saida": lucraram,
+        "mfe_r_mediano": statistics.median(mfe_r_validos) if mfe_r_validos else None,
+        "n_mfe_r_valido": len(mfe_r_validos),
+        "n_tokens_distintos": len({r["token"] for r in resultados}),
+        "r_por_token": r_por_token,
+    }
 
 
 def _fmt_cand(c: Optional[dict[str, Any]]) -> str:
@@ -165,9 +298,17 @@ def _fmt_cand(c: Optional[dict[str, Any]]) -> str:
 def formatar(resultados: list[dict[str, Any]]) -> str:
     out = ["# auditar_mfe -- candle exato do MFE/MAE, durante posicao vs pos-saida (SOMENTE LEITURA)", "",
           f"({AVISO})", ""]
+    res = resumo(resultados)
+    out.append(f"## Resumo: {res['n_fechados']} fechado(s) limpo(s), {res['n_tokens_distintos']} token(s) distinto(s)")
+    out.append(f"lucraram em algum momento antes da saida: {res['n_lucraram_antes_da_saida']}/{res['n_fechados']}")
+    out.append(f"MFE tipico em R (mediana, so risco>=3%): " +
+              (f"{res['mfe_r_mediano']:+.2f}R (n={res['n_mfe_r_valido']})" if res["mfe_r_mediano"] is not None else "s/d"))
+    out.append("R por token: " + (", ".join(f"{t}={v['r_medio']:+.2f}R(n={v['n']})" for t, v in res["r_por_token"].items())
+                                  or "nenhum"))
+    out.append("")
     for r in resultados:
-        out.append(f"## {r['token']} ({r['versao']}) -- risco={r['risco_pct']:.1f}%" if r["risco_pct"] is not None
-                   else f"## {r['token']} ({r['versao']}) -- risco=s/d")
+        out.append(f"## {r['token']} ({r['versao']}/{r['origem']}) -- risco={r['risco_pct']:.1f}%" if r["risco_pct"] is not None
+                   else f"## {r['token']} ({r['versao']}/{r['origem']}) -- risco=s/d")
         for nome in ("pos_entrada_72h", "durante_posicao", "pos_saida"):
             jan = r["janelas"].get(nome)
             if jan is None:
@@ -184,6 +325,8 @@ def executar(db_path: Path) -> str:
     storage = Storage(paths)
     try:
         resultados = [r for v in ("v1", "v2", "v3") for r in medir_versao(storage, v)]
+        resultados += medir_retro_admitido(storage, db_path)
+        resultados += medir_v3_replay(storage, db_path)
         return formatar(resultados)
     finally:
         storage.close()

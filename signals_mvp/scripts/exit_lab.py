@@ -276,7 +276,7 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
         tabelas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "pr_retro_candidatos" not in tabelas:
             return [], 0
-        candidatos = con.execute("SELECT pool, symbol, launchpad FROM pr_retro_candidatos").fetchall()
+        candidatos = con.execute("SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
         costs = CostModel()
         linhas: list[dict[str, Any]] = []
         n_fora_do_alcance = 0
@@ -293,7 +293,13 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
                 bars = _bars_truncados(con, row["pool"], tf, step, pool_row["added_ts"])
                 if not bars:
                     continue
-                det = DetectorV1(params, tf, pool_row["l_bc"], None, None)
+                # CORRECAO 2026-11-04: `criado_ts` (da PROPRIA linha congelada, NUNCA None) precisa ir
+                # pro DetectorV1 -- sem ele, `age_days()`/`in_age_window()` sempre devolvem False e
+                # TODA zona emite FORA_DA_IDADE em vez de ENTRADA (a secao retro desta funcao nunca
+                # achava nenhum sinal, mesmo quando `avaliar_candidatos_retro.py: processar_candidato`
+                # -- que SEMPRE passa `criado_ts` -- acharia um real). MESMA convencao de
+                # `processar_candidato`, nunca uma regra nova.
+                det = DetectorV1(params, tf, pool_row["l_bc"], row["grad_ts"], row["criado_ts"])
                 dex = pool_row["launchpad"] or row["launchpad"] or "desconhecido"
                 for bar in bars:
                     for ev in det.update(bar):

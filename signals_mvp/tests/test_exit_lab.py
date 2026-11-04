@@ -185,6 +185,40 @@ class LinhasRetroAdmitidoTests(unittest.TestCase):
         self.assertEqual(linhas, [])
         self.assertEqual(n_fora, 1)
 
+    def test_candidato_admitido_com_historico_real_encontra_a_entrada_corrigido_2026_11_04(self) -> None:
+        """CORRECAO 2026-11-04: a versao anterior passava `criado_ts=None` pro `DetectorV1` -- sem
+        isso, `in_age_window()` sempre falha e TODA zona emite FORA_DA_IDADE em vez de ENTRADA, e esta
+        secao NUNCA achava nenhum sinal, mesmo com historico real que `avaliar_candidatos_retro.py`
+        (que sempre passa `criado_ts`) acharia. `criado_ts` agora vem da propria linha congelada."""
+        con = sqlite3.connect(str(self.db_path))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS pr_retro_candidatos (pool TEXT PRIMARY KEY, mint TEXT, symbol TEXT, "
+            "launchpad TEXT, l_bc REAL, grad_ts REAL, criado_ts REAL, mc_found REAL, lista_hash TEXT NOT NULL, "
+            "congelado_em REAL NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO pr_retro_candidatos (pool, mint, symbol, launchpad, grad_ts, criado_ts, lista_hash, "
+            "congelado_em) VALUES ('POOL1', 'MINT1', 'CAT', 'pumpfun', ?, ?, 'hash123', 0.0)",
+            (GRAD, CREATED),
+        )
+        bars = textbook_v1().bars
+        added_ts = max(b.ts for b in bars) + 7_200.0
+        con.execute(
+            "INSERT INTO pr_pools (pool, symbol, status, l_bc, grad_ts, added_ts) VALUES (?,?,?,?,?,?)",
+            ("POOL1", "CAT", "ativo", L_BC, GRAD, added_ts),
+        )
+        con.executemany(
+            "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOL1','1h',?,?,?,?,?,?,?)",
+            [(b.ts, b.open, b.high, b.low, b.close, b.volume, int(b.filled)) for b in bars],
+        )
+        con.commit()
+        con.close()
+        linhas, n_fora = exit_lab.linhas_retro_admitido(self.db_path)
+        self.assertEqual(n_fora, 0)
+        self.assertGreaterEqual(len(linhas), 1, "com criado_ts correto, a ENTRADA real precisa aparecer")
+        for l in linhas:
+            self.assertEqual(l["origem"], "retro")
+
 
 class ResumoPorTokenTests(unittest.TestCase):
     def test_agrega_media_de_pct_e_r_por_token_entre_origens_diferentes(self) -> None:
