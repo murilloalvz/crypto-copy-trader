@@ -413,6 +413,8 @@ class ResultadoCarteira:
     n_trades: int
     n_tokens: int
     prob_ruina_pct: Optional[float]
+    ruina_n_trades_medio: Optional[float]
+    ruina_n_bootstrap: int
     r_medio: Optional[float]
     r_mediano: Optional[float]
     r_medio_sem_top3: Optional[float]
@@ -569,15 +571,37 @@ def _executar_ledger(
     )
 
 
+@dataclasses.dataclass
+class ResultadoRuina:
+    prob_ruina_pct: Optional[float]
+    n_trades_medio: Optional[float]   # A2: nº medio de trades EFETIVAMENTE executados por caminho
+    n_bootstrap: int
+
+
 def probabilidade_ruina_bootstrap(
     trades: list[TradeV3], regra_tamanho: str, slippage_nome: str, custo_fixo_nome: str,
     banca_inicial: float, max_posicoes: int = MAX_POSICOES_PADRAO,
     max_volume_pct: float = MAX_VOLUME_PCT_PADRAO, fracao_ruina: float = FRACAO_RUINA,
     n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO, uma_por_token: bool = True,
-) -> Optional[float]:
+) -> ResultadoRuina:
     """P(a banca cai abaixo de `fracao_ruina` x `banca_inicial` em algum ponto), bootstrap por TOKEN
-    (blocos) sobre uma linha do TEMPO SINTETICA (blocos concatenados em sequencia, nunca a data real
-    -- evita que sortear o mesmo token >1x crie posicoes "simultaneas" que nunca existiram)."""
+    (blocos), MESMA curva de patrimonio do ledger real (`_executar_ledger`, A1).
+
+    CORRECAO 2026-11-05 (rodada 11, item A1/A2): a versao anterior reconstruia a amostra numa linha
+    do tempo SINTETICA sempre SEQUENCIAL -- cada entrada comecava exatamente 72h+1s depois da
+    anterior, SEMPRE, mesmo entre tokens DIFERENTES -- o que garantia que NUNCA mais de 1 posicao
+    ficava aberta ao mesmo tempo em replica alguma. Resultado: `max_posicoes`/`uma_por_token` NUNCA
+    tinham chance de bloquear nada dentro do bootstrap (desenho, nao bug de dado fixo -- mas o
+    efeito pratico era o mesmo: P(banca<50%) saia IDENTICA com `--max-posicoes 4` ou `10`, porque o
+    teto de vagas nunca era de fato testado pela amostra sintetica, so pela execucao cronologica real
+    fora do bootstrap). Corrigido: cada token sorteado preserva seus timestamps REAIS (preserva a
+    correlacao temporal genuina entre tokens -- 2 tokens que competiram por capital na mesma epoca de
+    verdade continuam competindo aqui, o que agora deixa `max_posicoes` ter efeito real na ruina).
+    Sortear o MESMO token real >1x (bootstrap com reposicao) e esperado -- cada sorteio (slot) recebe
+    um nome de token SINTETICO (`"{token}#{slot}"`) so pra nunca colidir consigo mesmo via
+    `uma_por_token` (2 copias IID do mesmo token sorteadas juntas sao 2 observacoes independentes,
+    nunca a mesma posicao duplicada); 2 slots de tokens DIFERENTES continuam competindo normalmente
+    pelas vagas, exatamente a situacao real que faz o teto importar."""
     elegiveis = [t for t in trades if t.status_72h not in ("pendente", "sem_dado") and t.r_72h is not None]
     por_token: dict[str, list[TradeV3]] = {}
     for t in elegiveis:
@@ -585,24 +609,88 @@ def probabilidade_ruina_bootstrap(
     chaves = sorted(por_token)
     n = len(chaves)
     if n == 0:
-        return None
+        return ResultadoRuina(None, None, n_bootstrap)
     limite_ruina = fracao_ruina * banca_inicial
-    passo_sintetico = HORIZONTES_S["72h"] + 1.0
     rng = np.random.default_rng(seed)
     ruinas = 0
+    n_trades_replicas: list[int] = []
     for _ in range(n_bootstrap):
         escolhidos = rng.integers(0, n, size=n)
-        amostra = []
-        t_sintetico = 0.0
-        for idx in escolhidos:
-            for t in sorted(por_token[chaves[idx]], key=lambda t: t.t_entrada):
-                amostra.append(dataclasses.replace(t, t_entrada=t_sintetico))
-                t_sintetico += passo_sintetico
+        amostra: list[TradeV3] = []
+        for slot, idx in enumerate(escolhidos):
+            tok_sintetico = f"{chaves[idx]}#{slot}"
+            for t in por_token[chaves[idx]]:
+                amostra.append(dataclasses.replace(t, token=tok_sintetico))
+        amostra.sort(key=lambda t: t.t_entrada)
         resultado = _executar_ledger(amostra, regra_tamanho, slippage_nome, custo_fixo_nome, banca_inicial,
                                      max_posicoes, max_volume_pct, uma_por_token=uma_por_token)
+        n_trades_replicas.append(len(resultado["resultados_usd"]))
         if resultado["banca_minima"] < limite_ruina:
             ruinas += 1
-    return 100.0 * ruinas / n_bootstrap
+    n_trades_medio = statistics.fmean(n_trades_replicas) if n_trades_replicas else None
+    return ResultadoRuina(100.0 * ruinas / n_bootstrap, n_trades_medio, n_bootstrap)
+
+
+K_PERMUTACAO_PADRAO = 1000
+
+
+@dataclasses.dataclass
+class DistribuicaoPermutacao:
+    k: int
+    n_trades_medio: Optional[float]
+    retorno_pct_q05: Optional[float]
+    retorno_pct_q25: Optional[float]
+    retorno_pct_mediana: Optional[float]
+    retorno_pct_q75: Optional[float]
+    retorno_pct_q95: Optional[float]
+    max_dd_pct_q05: Optional[float]
+    max_dd_pct_q25: Optional[float]
+    max_dd_pct_mediana: Optional[float]
+    max_dd_pct_q75: Optional[float]
+    max_dd_pct_q95: Optional[float]
+
+
+def distribuicao_por_permutacao(
+    trades: list[TradeV3], regra_tamanho: str, slippage_nome: str, custo_fixo_nome: str,
+    banca_inicial: float, max_posicoes: int = MAX_POSICOES_PADRAO,
+    max_volume_pct: float = MAX_VOLUME_PCT_PADRAO, k: int = K_PERMUTACAO_PADRAO, seed: int = SEED_PADRAO,
+    uma_por_token: bool = True,
+) -> DistribuicaoPermutacao:
+    """PEDIDO 2026-11-05 (rodada 11, item A4): o caminho cronologico UNICO (1 execucao real) NUNCA e
+    estimativa de distribuicao -- so uma realizacao. Mede a sensibilidade da carteira a QUAL sinal
+    cai em QUAL momento de chegada: mantem o CONJUNTO REAL de instantes de chegada (`t_entrada` de
+    cada sinal elegivel, que carrega a densidade/clusterizacao REAL de demanda por vagas) fixo, e
+    PERMUTA aleatoriamente qual sinal (token/R/risco/volume) ocupa cada instante (`rng.permutation`,
+    desempate aleatorio por construcao -- nunca reordena os instantes em si). Reexecuta o ledger
+    COMPLETO (MESMOS teto de posicoes/uma-por-token/caixa/patrimonio de `_executar_ledger`) a cada
+    permutacao -- K=1000 por padrao, semente fixa. Devolve mediana e quantis 5/25/75/95 do retorno
+    final e do maxDD%, alem do nº medio de trades executados por caminho (A5)."""
+    elegiveis = [t for t in trades if t.status_72h not in ("pendente", "sem_dado") and t.r_72h is not None]
+    n = len(elegiveis)
+    if n == 0:
+        return DistribuicaoPermutacao(k, None, None, None, None, None, None, None, None, None, None, None)
+    tempos_reais = sorted(t.t_entrada for t in elegiveis)
+    rng = np.random.default_rng(seed)
+    retornos = np.empty(k, dtype=float)
+    drawdowns = np.empty(k, dtype=float)
+    n_trades_replicas: list[int] = []
+    for i in range(k):
+        ordem = rng.permutation(n)
+        amostra = [dataclasses.replace(elegiveis[ordem[pos]], t_entrada=tempos_reais[pos]) for pos in range(n)]
+        resultado = _executar_ledger(amostra, regra_tamanho, slippage_nome, custo_fixo_nome, banca_inicial,
+                                     max_posicoes, max_volume_pct, uma_por_token=uma_por_token)
+        retornos[i] = 100.0 * (resultado["banca_final"] - banca_inicial) / banca_inicial
+        drawdowns[i] = resultado["max_dd_pct"]
+        n_trades_replicas.append(len(resultado["resultados_usd"]))
+    q_ret = np.percentile(retornos, [5.0, 25.0, 50.0, 75.0, 95.0])
+    q_dd = np.percentile(drawdowns, [5.0, 25.0, 50.0, 75.0, 95.0])
+    return DistribuicaoPermutacao(
+        k=k, n_trades_medio=statistics.fmean(n_trades_replicas),
+        retorno_pct_q05=float(q_ret[0]), retorno_pct_q25=float(q_ret[1]), retorno_pct_mediana=float(q_ret[2]),
+        retorno_pct_q75=float(q_ret[3]), retorno_pct_q95=float(q_ret[4]),
+        max_dd_pct_q05=float(q_dd[0]), max_dd_pct_q25=float(q_dd[1]), max_dd_pct_mediana=float(q_dd[2]),
+        max_dd_pct_q75=float(q_dd[3]), max_dd_pct_q95=float(q_dd[4]),
+    )
 
 
 def simular_carteira(
@@ -628,17 +716,18 @@ def simular_carteira(
     media_r_sem_custo = statistics.fmean(r["r_sem_custo_fixo_valores"]) if r["r_sem_custo_fixo_valores"] else None
     ponto_equilibrio = (media_r_sem_custo / media_inv) if (media_inv and media_r_sem_custo is not None) else None
     custo_fixo = CUSTO_FIXO_VARIANTES[custo_fixo_nome]
-    prob_ruina = probabilidade_ruina_bootstrap(trades, regra_tamanho, slippage_nome, custo_fixo_nome,
-                                               banca_inicial, max_posicoes, max_volume_pct,
-                                               uma_por_token=uma_por_token) \
-        if calcular_ruina else None
+    ruina = probabilidade_ruina_bootstrap(trades, regra_tamanho, slippage_nome, custo_fixo_nome,
+                                          banca_inicial, max_posicoes, max_volume_pct,
+                                          uma_por_token=uma_por_token) \
+        if calcular_ruina else ResultadoRuina(None, None, 0)
     return ResultadoCarteira(
         origem=origem, regra_tamanho=regra_tamanho, slippage_variante=slippage_nome,
         custo_fixo_variante=custo_fixo_nome, banca_inicial=banca_inicial, banca_final=r["banca_final"],
         retorno_pct=100.0 * (r["banca_final"] - banca_inicial) / banca_inicial,
         max_drawdown_pct=r["max_dd_pct"], max_drawdown_usd=r["max_dd_usd"],
         maior_sequencia_perdas=r["maior_sequencia_perdas"], n_trades=len(resultados_usd), n_tokens=len(r["tokens"]),
-        prob_ruina_pct=prob_ruina, r_medio=r_medio, r_mediano=r_mediano, r_medio_sem_top3=r_medio_sem_top3,
+        prob_ruina_pct=ruina.prob_ruina_pct, ruina_n_trades_medio=ruina.n_trades_medio,
+        ruina_n_bootstrap=ruina.n_bootstrap, r_medio=r_medio, r_mediano=r_mediano, r_medio_sem_top3=r_medio_sem_top3,
         ic90_bootstrap=_bootstrap_ic_por_token(r["por_token"]), ponto_equilibrio_custo_fixo_usd=ponto_equilibrio,
         custo_fixo_r_medio=(custo_fixo * media_inv) if media_inv is not None else None,
         slippage_r_medio=statistics.fmean(r["slippage_r_valores"]) if r["slippage_r_valores"] else None,
@@ -733,7 +822,13 @@ def _formatar_tabela_carteira(resultados: list[ResultadoCarteira]) -> list[str]:
     out = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in resultados:
         ic_txt = f"[{r.ic90_bootstrap[0]:+.2f},{r.ic90_bootstrap[1]:+.2f}]" if r.ic90_bootstrap else "s/d"
-        ruina_txt = f"{r.prob_ruina_pct:.1f}%" if r.prob_ruina_pct is not None else "s/d"
+        if r.prob_ruina_pct is not None:
+            # A5: a celula sempre diz a amostra (nº de bootstraps) e quantos trades por caminho em
+            # media -- nunca um numero isolado sem dizer a que se refere.
+            trades_txt = f"{r.ruina_n_trades_medio:.1f}" if r.ruina_n_trades_medio is not None else "s/d"
+            ruina_txt = f"{r.prob_ruina_pct:.1f}% ({trades_txt} trades/caminho, {r.ruina_n_bootstrap} boot)"
+        else:
+            ruina_txt = "s/d"
         equilibrio_txt = f"{r.ponto_equilibrio_custo_fixo_usd:.2f}" if r.ponto_equilibrio_custo_fixo_usd is not None else "s/d"
         pulados_total = sum(r.pulados_por_motivo.values())
         linha = [
@@ -807,6 +902,29 @@ def _formatar_sensibilidade_max_posicoes(trades: list[TradeV3], banca_inicial: f
     return out
 
 
+def _formatar_distribuicao_permutacao(trades: list[TradeV3], banca_inicial: float, max_posicoes: int,
+                                      max_volume_pct: float) -> list[str]:
+    """PEDIDO 2026-11-05 (rodada 11, item A4): distribuicao por permutacao aleatoria da ORDEM dos
+    sinais (K=1000, semente fixa, desempate aleatorio) -- SEMPRE ao lado do caminho cronologico
+    UNICO, com o AVISO de que 1 caminho nunca e estimativa de distribuicao (so 1 realizacao)."""
+    out = [f"Distribuicao por permutacao aleatoria da ordem dos sinais (K={K_PERMUTACAO_PADRAO}, "
+          "semente fixa; slippage base, custo fixo US$0.05) -- AVISO: o caminho cronologico UNICO "
+          "acima e SO 1 realizacao, NUNCA uma estimativa de distribuicao:", ""]
+    for regra in REGRAS_TAMANHO:
+        d = distribuicao_por_permutacao(trades, regra, "base", "US$0.05", banca_inicial,
+                                        max_posicoes=max_posicoes, max_volume_pct=max_volume_pct)
+        if d.retorno_pct_mediana is None:
+            out.append(f"  {regra}: s/d (sem sinais elegiveis)")
+            continue
+        out.append(f"  {regra} (trades/caminho~{d.n_trades_medio:.1f}, k={d.k}):")
+        out.append(f"    retorno%: q05={d.retorno_pct_q05:+.1f} q25={d.retorno_pct_q25:+.1f} "
+                  f"mediana={d.retorno_pct_mediana:+.1f} q75={d.retorno_pct_q75:+.1f} q95={d.retorno_pct_q95:+.1f}")
+        out.append(f"    maxDD%: q05={d.max_dd_pct_q05:.1f} q25={d.max_dd_pct_q25:.1f} "
+                  f"mediana={d.max_dd_pct_mediana:.1f} q75={d.max_dd_pct_q75:.1f} q95={d.max_dd_pct_q95:.1f}")
+    out.append("")
+    return out
+
+
 def _tabela_origem_banca(trades: list[TradeV3], origem_label: str, banca_inicial: float,
                          max_posicoes: int, max_volume_pct: float) -> tuple[list[str], list[ResultadoCarteira]]:
     if not trades:
@@ -823,6 +941,7 @@ def _tabela_origem_banca(trades: list[TradeV3], origem_label: str, banca_inicial
     out = [f"### {origem_label} -- banca inicial US${banca_inicial:.0f} (slippage base, custo fixo US$0.05)", ""]
     out.extend(_formatar_tabela_carteira(resultados))
     out.extend(_formatar_detalhe_pulados(resultados))
+    out.extend(_formatar_distribuicao_permutacao(trades, banca_inicial, max_posicoes, max_volume_pct))
     out.append(f"#### {origem_label} -- PIOR CENARIO DE CUSTO (slippage {PIOR_SLIPPAGE}, custo fixo "
               f"{PIOR_CUSTO_FIXO})")
     out.append("")
@@ -851,7 +970,8 @@ def _linha_csv(r: ResultadoCarteira, banca_cenario: float) -> dict[str, Any]:
         "banca_final_usd": round(r.banca_final, 2), "retorno_pct": round(r.retorno_pct, 2),
         "max_drawdown_pct": round(r.max_drawdown_pct, 2), "max_drawdown_usd": round(r.max_drawdown_usd, 2),
         "maior_sequencia_perdas": r.maior_sequencia_perdas, "n_trades": r.n_trades, "n_tokens": r.n_tokens,
-        "prob_ruina_pct": r.prob_ruina_pct, "r_medio": r.r_medio, "r_mediano": r.r_mediano,
+        "prob_ruina_pct": r.prob_ruina_pct, "ruina_n_trades_medio": r.ruina_n_trades_medio,
+        "ruina_n_bootstrap": r.ruina_n_bootstrap, "r_medio": r.r_medio, "r_mediano": r.r_mediano,
         "r_medio_sem_top3": r.r_medio_sem_top3,
         "ic90_lo": r.ic90_bootstrap[0] if r.ic90_bootstrap else None,
         "ic90_hi": r.ic90_bootstrap[1] if r.ic90_bootstrap else None,

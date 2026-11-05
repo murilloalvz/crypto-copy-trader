@@ -176,7 +176,9 @@ class LedgerRealizadoTests(unittest.TestCase):
 
 class ProbabilidadeRuinaTests(unittest.TestCase):
     def test_sem_trades_devolve_none(self) -> None:
-        self.assertIsNone(svc.probabilidade_ruina_bootstrap([], "V10", "base", "US$0.05", 250.0))
+        r = svc.probabilidade_ruina_bootstrap([], "V10", "base", "US$0.05", 250.0)
+        self.assertIsNone(r.prob_ruina_pct)
+        self.assertIsNone(r.n_trades_medio)
 
     def test_limiar_e_relativo_a_banca_inicial(self) -> None:
         passo = svc.HORIZONTES_S["72h"] + 1
@@ -185,14 +187,15 @@ class ProbabilidadeRuinaTests(unittest.TestCase):
         # banca=15, a 1a entrada (trava US$10, perde) ja derruba a banca bem abaixo de 50%.
         p_banca_grande = svc.probabilidade_ruina_bootstrap(trades, "V10", "base", "US$0.05", 10_000.0, n_bootstrap=200)
         p_banca_pequena = svc.probabilidade_ruina_bootstrap(trades, "V10", "base", "US$0.05", 15.0, n_bootstrap=200)
-        self.assertGreater(p_banca_pequena, p_banca_grande)
+        self.assertGreater(p_banca_pequena.prob_ruina_pct, p_banca_grande.prob_ruina_pct)
 
     def test_e_deterministico_com_a_mesma_seed(self) -> None:
         passo = svc.HORIZONTES_S["72h"] + 1
         trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=-1.0) for i in range(10)]
         p1 = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
         p2 = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
-        self.assertEqual(p1, p2)
+        self.assertEqual(p1.prob_ruina_pct, p2.prob_ruina_pct)
+        self.assertEqual(p1.n_trades_medio, p2.n_trades_medio)
 
     def test_usa_o_patrimonio_corrigido_a1_nunca_so_o_caixa(self) -> None:
         """PEDIDO 2026-11-05 (rodada 10, item 1): confirma que a ruina chama `_executar_ledger`
@@ -204,8 +207,8 @@ class ProbabilidadeRuinaTests(unittest.TestCase):
         # 4 posicoes V50 (US$50 cada = US$200, 80% da banca de 250) TODAS lucrativas -- o caixa cai
         # pra US$50 no momento de abrir a 4a (travado), mas o patrimonio nunca sai de ~US$250+.
         trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=1.0) for i in range(4)]
-        p = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
-        self.assertEqual(p, 0.0)
+        r = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
+        self.assertEqual(r.prob_ruina_pct, 0.0)
 
     def test_ruina_muda_quando_a_lista_de_trades_muda(self) -> None:
         """PEDIDO 2026-11-05 (rodada 10, item 1): regressao -- a ruina precisa responder a mudancas
@@ -217,8 +220,53 @@ class ProbabilidadeRuinaTests(unittest.TestCase):
         # reentradas BEM piores nos MESMOS 5 tokens (nunca um token novo) -- `n` pro bootstrap e igual.
         extra = base + [_trade_minimo(token=f"T{i}", t_entrada=(i + 100) * passo, r_72h=-20.0) for i in range(5)]
         p_extra = svc.probabilidade_ruina_bootstrap(extra, "V50", "base", "US$0.05", 250.0, n_bootstrap=3000)
-        self.assertNotEqual(p_base, p_extra)
-        self.assertGreater(p_extra, p_base)
+        self.assertNotEqual(p_base.prob_ruina_pct, p_extra.prob_ruina_pct)
+        self.assertGreater(p_extra.prob_ruina_pct, p_base.prob_ruina_pct)
+
+    def test_A1_diagnostico_max_posicoes_agora_tem_efeito_real_na_ruina(self) -> None:
+        """PEDIDO 2026-11-05 (rodada 11, item A1/A2) -- regressao do BUG DE DESENHO relatado: antes
+        desta correcao, a amostra sintetica do bootstrap SEMPRE espacava cada entrada 72h+1s depois
+        da anterior (mesmo entre tokens DIFERENTES), garantindo que NUNCA mais de 1 posicao ficava
+        aberta ao mesmo tempo -- `max_posicoes` nunca tinha chance de bloquear nada, e a ruina saia
+        IDENTICA entre `max_posicoes=4` e `max_posicoes=10` (exatamente o relato). Corrigido: os
+        tokens sorteados preservam seus timestamps REAIS (tokens que competiram por capital de
+        verdade continuam competindo), entao um teto de vagas mais apertado precisa, no minimo,
+        NUNCA ter MENOS ruina que um teto mais largo pra MESMA lista de sinais concorrendo por
+        capital de verdade. Usa muitos tokens com entradas BEM proximas no tempo real (a mesma
+        epoca) -- justamente o cenario que a versao antiga nunca testava."""
+        # 8 tokens, todos entrando quase juntos (1h de diferenca) -- com max_posicoes=2, so 2 cabem
+        # por vez e o resto fica de fora (sem_vaga); com max_posicoes=8, todos cabem.
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=i * 3600.0, r_72h=-3.0) for i in range(8)]
+        r_teto_apertado = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0,
+                                                            max_posicoes=2, n_bootstrap=3000)
+        r_teto_largo = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0,
+                                                          max_posicoes=8, n_bootstrap=3000)
+        # menos vagas -- menos trades executados por caminho em media (nunca o mesmo numero).
+        self.assertLess(r_teto_apertado.n_trades_medio, r_teto_largo.n_trades_medio)
+
+    def test_A3_prob_ruina_cresce_com_o_tamanho_da_posicao(self) -> None:
+        """PEDIDO 2026-11-05 (rodada 11, item A3): P(ruina) cresce com o tamanho da posicao pra
+        MESMA lista de trades (V50 arrisca mais capital por posicao que V10 -- perder a MESMA fracao
+        R dói mais em $ com posicao maior)."""
+        passo = svc.HORIZONTES_S["72h"] + 1
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=-3.0) for i in range(6)]
+        r_v10 = svc.probabilidade_ruina_bootstrap(trades, "V10", "base", "US$0.05", 250.0, n_bootstrap=3000)
+        r_v50 = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=3000)
+        self.assertGreaterEqual(r_v50.prob_ruina_pct, r_v10.prob_ruina_pct)
+
+    def test_sorteio_repetido_do_mesmo_token_nunca_colide_com_ele_mesmo(self) -> None:
+        """Bootstrap com reposicao PODE sortear o MESMO token real 2x (ex.: A,A) -- cada sorteio
+        (slot) recebe um nome sintetico distinto (`token#slot`), entao as 2 copias NUNCA se bloqueiam
+        via `uma_por_token` (seriam 2 observacoes IID, nunca a mesma posicao duplicada). Com 2 tokens
+        reais (1 trade cada) e `n=2` sorteios por replica, QUALQUER combinacao (A,A/A,B/B,A/B,B)
+        sempre contribui EXATAMENTE 2 trades -- se a colisao acontecesse (bug), sortear o MESMO token
+        2x derrubaria pra 1 trade (a 2a copia seria rejeitada como token_ja_aberto), puxando a media
+        pra baixo de 2.0."""
+        trades = [_trade_minimo(token="A", t_entrada=0.0, r_72h=1.0),
+                 _trade_minimo(token="B", t_entrada=0.0, r_72h=1.0)]
+        r = svc.probabilidade_ruina_bootstrap(trades, "V10", "base", "US$0.05", 10_000.0,
+                                              max_posicoes=1000, n_bootstrap=500)
+        self.assertEqual(r.n_trades_medio, 2.0)
 
 
 class MaxPerdaFracNaoAfetaRMedioTests(unittest.TestCase):
@@ -254,6 +302,41 @@ class MaxPerdaFracNaoAfetaRMedioTests(unittest.TestCase):
         self.assertNotAlmostEqual(r20["r_valores"][0], r40["r_valores"][0], places=3)
         # mas resultado_usd (o que o piso protege) fica IDENTICO -- ambos ja perderam 100% do principal.
         self.assertAlmostEqual(r20["resultados_usd"][0], r40["resultados_usd"][0], places=2)
+
+
+class DistribuicaoPermutacaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (rodada 11, item A4): distribuicao por permutacao aleatoria da ordem."""
+
+    def test_sem_sinais_devolve_tudo_none(self) -> None:
+        d = svc.distribuicao_por_permutacao([], "V10", "base", "US$0.05", 250.0, k=20)
+        self.assertIsNone(d.retorno_pct_mediana)
+        self.assertIsNone(d.n_trades_medio)
+
+    def test_preserva_os_instantes_reais_de_chegada_so_permuta_quem_ocupa_cada_um(self) -> None:
+        """Com `max_posicoes=1`, so 1 sinal por vez pode estar aberto -- como os instantes reais
+        (3 chegadas bem proximas) nunca mudam, o teto de vagas bloqueia o MESMO numero de posicoes
+        em QUALQUER permutacao (sempre 1 trade por caminho, nunca 3) -- confirma que a permutacao
+        preserva a densidade real de chegada, nunca so reordena por t_entrada."""
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=float(i), r_72h=1.0) for i in range(3)]
+        d = svc.distribuicao_por_permutacao(trades, "V10", "base", "US$0.05", 250.0, max_posicoes=1, k=50)
+        self.assertEqual(d.n_trades_medio, 1.0)
+
+    def test_quantis_sao_monotonos_q05_menor_ou_igual_mediana_menor_ou_igual_q95(self) -> None:
+        passo = svc.HORIZONTES_S["72h"] + 1
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=float(i) - 3.0) for i in range(8)]
+        d = svc.distribuicao_por_permutacao(trades, "V50", "base", "US$0.05", 250.0, k=200)
+        self.assertLessEqual(d.retorno_pct_q05, d.retorno_pct_mediana)
+        self.assertLessEqual(d.retorno_pct_mediana, d.retorno_pct_q95)
+        self.assertLessEqual(d.max_dd_pct_q05, d.max_dd_pct_mediana)
+        self.assertLessEqual(d.max_dd_pct_mediana, d.max_dd_pct_q95)
+
+    def test_e_deterministico_com_a_mesma_seed(self) -> None:
+        passo = svc.HORIZONTES_S["72h"] + 1
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=-1.0) for i in range(5)]
+        d1 = svc.distribuicao_por_permutacao(trades, "V50", "base", "US$0.05", 250.0, k=100)
+        d2 = svc.distribuicao_por_permutacao(trades, "V50", "base", "US$0.05", 250.0, k=100)
+        self.assertEqual(d1.retorno_pct_mediana, d2.retorno_pct_mediana)
+        self.assertEqual(d1.max_dd_pct_mediana, d2.max_dd_pct_mediana)
 
 
 class CorrecaoDeEntradaTests(unittest.TestCase):
