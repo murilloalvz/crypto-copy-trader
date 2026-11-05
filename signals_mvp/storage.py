@@ -1824,6 +1824,16 @@ class Storage:
                     [*cols.values(), versao, entry_id])
             self._dirty["pos_runner_v1_trajetoria"] = True
 
+    def pr_trajetoria_pool_tf_aberta(self, versao: str, pool: str, tf: str) -> bool:
+        """PEDIDO 2026-11-05 (item 2, cadencia de polling -- NUNCA detector/simulate/parametros/
+        criterio de sinal): existe alguma trajetoria AINDA aberta (fechado=0) pra este pool/tf/versao
+        -- so decide a CADENCIA do poll (`live.py: _heat`), nunca influencia o calculo da trajetoria
+        em si (`calcular_trajetoria`/`_atualizar_trajetoria`, intocados)."""
+        row = self._one(
+            "SELECT 1 FROM pr_trajetoria WHERE versao=? AND pool=? AND tf=? AND fechado=0 LIMIT 1",
+            (versao, pool, tf))
+        return row is not None
+
     def pr_trajetoria_abertas(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
         """So as linhas ainda NAO fechadas (fechado=0) precisam ser recalculadas a cada ciclo."""
         if versao is None:
