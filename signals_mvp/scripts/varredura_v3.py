@@ -50,6 +50,15 @@ ESCOPO DESTA RODADA (simplificacoes/cortes documentados, nunca escondidos):
   insuficiente) e imprime progresso. O comparador aleatorio (K=20) roda, por sinal, o DOBRO de
   varreduras causais dos 10 controles -- custo adicional esperado, nunca um numero fixo chutado (ver
   resposta final/PR pelo tempo medido).
+- Rodada 10 (item 2, reconciliacao R carteira x varredura): `resumo_r72h_por_ordem_sinal` separa o
+  R@72h MTM por ordem do sinal DENTRO do token (1a tentativa=seq 1 vs reentradas=seq>=2, calculado
+  OFFLINE aqui -- MESMO conceito de `token_signal_seq` ja usado ao vivo, nunca persistido). A
+  carteira (`simular_v3_carteira.py`) so REALIZA 1 posicao por token por vez (`uma_por_token`) --
+  reentradas que caem dentro da janela de 72h da 1a tentativa SEMPRE ficam de fora da media da
+  carteira; esta varredura conta TODO sinal deduplicado igualmente (1a tentativa e reentrada). Se a
+  media das reentradas for bem diferente da 1a tentativa, isso ja explica boa parte da divergencia
+  entre os 2 R medios, sem precisar de dedupe nem do piso de perda (rodada 10, item 3: o piso nunca
+  afeta r_medio da carteira, ver `AVISO_R_MEDIO` em `simular_v3_carteira.py`).
 
 Uso (na VM, a partir da raiz do repo -- RAM/CPU fracos, roda em background):
     nice -n 19 tmux new-session -d -s varredura_v3 \
@@ -555,6 +564,69 @@ def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> d
 
 
 # ---------------------------------------------------------------------------
+# Rodada 10, item 2: R@72h por ordem do sinal dentro do token (1a tentativa vs reentradas) --
+# reconciliacao entre o R medio da carteira (so 1 posicao/token por vez) e o R medio desta varredura
+# (conta todo sinal deduplicado igualmente).
+# ---------------------------------------------------------------------------
+
+TOKENS_EXCLUIDOS_DIAGNOSTICO: tuple[str, ...] = ("MOGZ", "PEAK")   # outliers citados pelo pedido
+
+
+def calcular_token_signal_seq(sinais: list[SinalVarredura]) -> dict[int, int]:
+    """Ordem do sinal DENTRO do token (1a tentativa=1, reentradas=2,3,...), por `t_entrada`
+    crescente -- MESMO conceito do `token_signal_seq` ja gravado ao vivo (`storage.
+    pr3_token_next_seq`), calculado OFFLINE aqui pra replay/retro (nunca persistido em tabela
+    alguma). Chave do dict = indice do sinal em `sinais` (nunca o objeto, que nao e hashable de
+    forma estavel)."""
+    por_token: dict[str, list[int]] = {}
+    for idx, s in enumerate(sinais):
+        por_token.setdefault(s.token, []).append(idx)
+    seq: dict[int, int] = {}
+    for indices in por_token.values():
+        for rank, idx in enumerate(sorted(indices, key=lambda i: sinais[i].t_entrada), start=1):
+            seq[idx] = rank
+    return seq
+
+
+@dataclasses.dataclass
+class ResumoPorOrdemSinal:
+    primeira_tentativa: Pareamento
+    reentradas: Pareamento
+    primeira_tentativa_sem_outliers: Pareamento
+    reentradas_sem_outliers: Pareamento
+
+
+def resumo_r72h_por_ordem_sinal(sinais: list[SinalVarredura], now: float,
+                                excluir_tokens: tuple[str, ...] = TOKENS_EXCLUIDOS_DIAGNOSTICO
+                                ) -> ResumoPorOrdemSinal:
+    """Rodada 10, item 2: separa o R@72h MTM (MESMA definicao de `_r_horizonte`/`calcular_r_horizonte`,
+    nunca duplicada) por ordem do sinal dentro do token. `pendente`/`sem_dado` ficam fora dos 2 lados
+    igualmente (MESMA regra de `_r_horizonte`, que devolve `None` pros 2 casos -- nunca um corte que
+    favoreca 1a tentativa ou reentrada)."""
+    params = load_params_v3()
+    costs = CostModel()
+    seq = calcular_token_signal_seq(sinais)
+    primeira: dict[str, list[float]] = {}
+    reentradas: dict[str, list[float]] = {}
+    primeira_filtrado: dict[str, list[float]] = {}
+    reentradas_filtrado: dict[str, list[float]] = {}
+    for idx, s in enumerate(sinais):
+        r = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs)
+        if r is None:
+            continue
+        destino = primeira if seq[idx] == 1 else reentradas
+        destino.setdefault(s.token, []).append(r)
+        if s.token not in excluir_tokens:
+            destino_filtrado = primeira_filtrado if seq[idx] == 1 else reentradas_filtrado
+            destino_filtrado.setdefault(s.token, []).append(r)
+    return ResumoPorOrdemSinal(
+        primeira_tentativa=_resumir_pareamento(primeira), reentradas=_resumir_pareamento(reentradas),
+        primeira_tentativa_sem_outliers=_resumir_pareamento(primeira_filtrado),
+        reentradas_sem_outliers=_resumir_pareamento(reentradas_filtrado),
+    )
+
+
+# ---------------------------------------------------------------------------
 # B3: agregacao por token, estratos (reusa condicional.py sem duplicar logica)
 # ---------------------------------------------------------------------------
 
@@ -562,6 +634,7 @@ def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> d
 @dataclasses.dataclass
 class ResultadoOrigem:
     origem: str
+    n_sinais_brutos: int
     n_sinais: int
     n_tokens: int
     n_pool_dias_ativos: int
@@ -571,12 +644,14 @@ class ResultadoOrigem:
     equilibrio_empirico: dict[float, dict[str, Any]]
     dif_pareada: Pareamento
     dif_toque: Pareamento
+    ordem_sinal: ResumoPorOrdemSinal
     estratos: list[GrupoExploratorio]
 
 
 def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) -> ResultadoOrigem:
     params = load_params_v3()
     costs = CostModel()
+    n_sinais_brutos = len(sinais)   # rodada 10, item 2: ANTES do dedupe, pra medir o efeito dele
     por_token = deduplicar_por_token(sinais)
     todos = [s for lst in por_token.values() for s in lst]
     n_corrompidos = sum(1 for s in todos if s.entrada_corrigida)
@@ -585,6 +660,7 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
     pool_dias = {(s.pool, int(s.t_entrada // 86400)) for s in todos}
     toques = resumo_toques(todos)
     equilibrio_empirico = calcular_equilibrio_empirico(todos, params)
+    ordem_sinal = resumo_r72h_por_ordem_sinal(todos, now)
 
     dif_por_token: dict[str, list[float]] = {}
     dif_toque_por_token: dict[str, list[float]] = {}
@@ -615,11 +691,11 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
     estratos = rodar_exploratorias_v3(resolvidos) if len(resolvidos) >= 10 else []
 
     return ResultadoOrigem(
-        origem=origem_label, n_sinais=len(todos), n_tokens=len(por_token),
+        origem=origem_label, n_sinais_brutos=n_sinais_brutos, n_sinais=len(todos), n_tokens=len(por_token),
         n_pool_dias_ativos=len(pool_dias), n_corrompidos=n_corrompidos, n_volume_baixo=n_volume_baixo,
         toques=toques, equilibrio_empirico=equilibrio_empirico,
         dif_pareada=_resumir_pareamento(dif_por_token), dif_toque=_resumir_pareamento(dif_toque_por_token),
-        estratos=estratos,
+        ordem_sinal=ordem_sinal, estratos=estratos,
     )
 
 
@@ -628,18 +704,20 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
 # ---------------------------------------------------------------------------
 
 
-def _formatar_pareamento(titulo: str, p: Pareamento) -> str:
+def _formatar_pareamento(titulo: str, p: Pareamento, rotulo_n: str = "n") -> str:
     ic_txt = f"[{p.ic90_bootstrap[0]:+.2f},{p.ic90_bootstrap[1]:+.2f}]" if p.ic90_bootstrap else "s/d"
     media_txt = f"{p.media:+.2f}" if p.media is not None else "s/d"
     mediana_txt = f"{p.mediana:+.2f}" if p.mediana is not None else "s/d"
     sem_top3_txt = f"{p.sem_top3:+.2f}" if p.sem_top3 is not None else "s/d"
-    return (f"{titulo} (pareados={p.n}): media={media_txt} | mediana={mediana_txt} | "
+    return (f"{titulo} ({rotulo_n}={p.n}): media={media_txt} | mediana={mediana_txt} | "
            f"sem top-3={sem_top3_txt} | IC90% bootstrap={ic_txt}")
 
 
 def _formatar_origem(r: ResultadoOrigem) -> list[str]:
+    n_duplicados = r.n_sinais_brutos - r.n_sinais
     out = [f"## {r.origem}", "",
-          f"n sinais: {r.n_sinais} | tokens distintos: {r.n_tokens} | pool-dias ativos: "
+          f"n sinais: {r.n_sinais} | brutos antes do dedupe: {r.n_sinais_brutos} (duplicados "
+          f"removidos: {n_duplicados}) | tokens distintos: {r.n_tokens} | pool-dias ativos: "
           f"{r.n_pool_dias_ativos}",
           f"dependem de candle corrompido: {r.n_corrompidos} | entrada com volume <25% media 24h: "
           f"{r.n_volume_baixo}", ""]
@@ -668,14 +746,23 @@ def _formatar_origem(r: ResultadoOrigem) -> list[str]:
     out.append(_formatar_pareamento(
         "Dif. pareada vs 10 controles, R@72h (regra se fechou antes do corte, senao marcado a "
         "mercado no corte -- NUNCA R de regra sem corte; censura 'pendente'/'sem_dado' descartada "
-        "dos 2 lados igualmente)", r.dif_pareada))
+        "dos 2 lados igualmente)", r.dif_pareada, rotulo_n="pareados"))
     out.append(_formatar_pareamento(
         f"Dif. pareada vs 10 controles, TOQUE (+{ALVO_PAREAMENTO_TOQUE:.0f}R antes de -1R, sinal=1/0 "
-        "menos media dos controles)", r.dif_toque))
+        "menos media dos controles)", r.dif_toque, rotulo_n="pareados"))
     if r.dif_pareada.n == 0 and r.dif_toque.n == 0:
         out.append("  (pareamento=0: created_ts ausente OU nenhum candle do pool passa queda>=80% "
                   "desde o pico e MC>=100k dentro da janela de idade da V3 -- nunca um corte que "
                   "favoreca sinal ou controle, so falta de candidato elegivel nesta origem)")
+    out.append("")
+    out.append("R@72h MTM por ordem do sinal dentro do token (rodada 10, item 2 -- reconciliacao "
+              "com simular_v3_carteira.py, que so realiza 1 posicao por token por vez):")
+    out.append(_formatar_pareamento("  1a tentativa (seq==1)", r.ordem_sinal.primeira_tentativa))
+    out.append(_formatar_pareamento("  reentradas (seq>=2)", r.ordem_sinal.reentradas))
+    out.append(_formatar_pareamento(f"  1a tentativa, sem {'/'.join(TOKENS_EXCLUIDOS_DIAGNOSTICO)}",
+                                    r.ordem_sinal.primeira_tentativa_sem_outliers))
+    out.append(_formatar_pareamento(f"  reentradas, sem {'/'.join(TOKENS_EXCLUIDOS_DIAGNOSTICO)}",
+                                    r.ordem_sinal.reentradas_sem_outliers))
     out.append("")
     if r.estratos:
         out.append("Estratos exploratorios (8 pre-registrados, Holm sobre a familia completa):")
@@ -699,22 +786,26 @@ def formatar(ao_vivo_admitido: ResultadoOrigem, nunca_admitido: ResultadoOrigem,
     return "\n".join(out)
 
 
+def _campos_pareamento(prefixo: str, p: Pareamento) -> dict[str, Any]:
+    return {
+        f"{prefixo}_media": p.media, f"{prefixo}_mediana": p.mediana, f"{prefixo}_sem_top3": p.sem_top3,
+        f"{prefixo}_ic90_lo": p.ic90_bootstrap[0] if p.ic90_bootstrap else None,
+        f"{prefixo}_ic90_hi": p.ic90_bootstrap[1] if p.ic90_bootstrap else None, f"{prefixo}_n": p.n,
+    }
+
+
 def _linhas_csv(r: ResultadoOrigem) -> list[dict[str, Any]]:
     linha: dict[str, Any] = {
-        "origem": r.origem, "n_sinais": r.n_sinais, "n_tokens": r.n_tokens,
-        "n_pool_dias_ativos": r.n_pool_dias_ativos, "n_corrompidos": r.n_corrompidos,
+        "origem": r.origem, "n_sinais_brutos": r.n_sinais_brutos, "n_sinais": r.n_sinais,
+        "n_tokens": r.n_tokens, "n_pool_dias_ativos": r.n_pool_dias_ativos, "n_corrompidos": r.n_corrompidos,
         "n_volume_baixo": r.n_volume_baixo,
-        "dif_pareada_r72h_media": r.dif_pareada.media, "dif_pareada_r72h_mediana": r.dif_pareada.mediana,
-        "dif_pareada_r72h_sem_top3": r.dif_pareada.sem_top3,
-        "dif_pareada_r72h_ic90_lo": r.dif_pareada.ic90_bootstrap[0] if r.dif_pareada.ic90_bootstrap else None,
-        "dif_pareada_r72h_ic90_hi": r.dif_pareada.ic90_bootstrap[1] if r.dif_pareada.ic90_bootstrap else None,
-        "n_pareados_r72h": r.dif_pareada.n,
-        "dif_pareada_toque_media": r.dif_toque.media, "dif_pareada_toque_mediana": r.dif_toque.mediana,
-        "dif_pareada_toque_sem_top3": r.dif_toque.sem_top3,
-        "dif_pareada_toque_ic90_lo": r.dif_toque.ic90_bootstrap[0] if r.dif_toque.ic90_bootstrap else None,
-        "dif_pareada_toque_ic90_hi": r.dif_toque.ic90_bootstrap[1] if r.dif_toque.ic90_bootstrap else None,
-        "n_pareados_toque": r.dif_toque.n,
     }
+    linha.update(_campos_pareamento("dif_pareada_r72h", r.dif_pareada))
+    linha.update(_campos_pareamento("dif_pareada_toque", r.dif_toque))
+    linha.update(_campos_pareamento("r72h_1a_tentativa", r.ordem_sinal.primeira_tentativa))
+    linha.update(_campos_pareamento("r72h_reentradas", r.ordem_sinal.reentradas))
+    linha.update(_campos_pareamento("r72h_1a_tentativa_sem_outliers", r.ordem_sinal.primeira_tentativa_sem_outliers))
+    linha.update(_campos_pareamento("r72h_reentradas_sem_outliers", r.ordem_sinal.reentradas_sem_outliers))
     for alvo, d in r.toques.items():
         linha[f"p_toque_{int(alvo)}r_pct"] = d["p_observado_pct"]
         linha[f"n_decididos_{int(alvo)}r"] = d["n_decididos"]

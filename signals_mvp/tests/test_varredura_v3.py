@@ -212,6 +212,64 @@ class PareamentoRodada9Tests(unittest.TestCase):
         self.assertEqual(vv3._aleatorios_indices(sinal_sem_idade, self.params), [])
 
 
+class TokenSignalSeqTests(unittest.TestCase):
+    """Rodada 10, item 2: ordem do sinal DENTRO do token, calculada offline (replay/retro)."""
+
+    def test_ordena_por_t_entrada_crescente_dentro_do_token(self) -> None:
+        bars = _bars_mc_elegiveis()
+        s_2a = _sinal(bars, ev_idx=1, token="CAT", t_entrada=300.0)
+        s_1a = _sinal(bars, ev_idx=1, token="CAT", t_entrada=100.0)
+        s_outro_token = _sinal(bars, ev_idx=1, token="DOG", t_entrada=50.0)
+        seq = vv3.calcular_token_signal_seq([s_2a, s_1a, s_outro_token])
+        self.assertEqual(seq[1], 1)   # s_1a (indice 1, t=100) e a 1a tentativa de CAT
+        self.assertEqual(seq[0], 2)   # s_2a (indice 0, t=300) e a 2a tentativa de CAT
+        self.assertEqual(seq[2], 1)   # DOG so tem 1 sinal -- sempre seq=1
+
+    def test_3a_tentativa_tambem_conta(self) -> None:
+        bars = _bars_mc_elegiveis()
+        sinais = [_sinal(bars, ev_idx=1, token="CAT", t_entrada=t) for t in (100.0, 200.0, 300.0)]
+        seq = vv3.calcular_token_signal_seq(sinais)
+        self.assertEqual([seq[i] for i in range(3)], [1, 2, 3])
+
+
+def _sinal_mc(bars: list[Bar], token: str, t_entrada: float) -> vv3.SinalVarredura:
+    """`_sinal` escalado pra bars em MC (`_bars_mc_elegiveis`) -- stop/topo/entry_price precisam
+    estar na MESMA escala dos bars (senao `simulate_v1` cancela a entrada por invalida)."""
+    return _sinal(bars, ev_idx=1, token=token, t_entrada=t_entrada, stop=100_000.0, topo=5_000_000.0,
+                 entry_price=150_000.0)
+
+
+class ResumoR72hPorOrdemSinalTests(unittest.TestCase):
+    """Rodada 10, item 2: reconciliacao R carteira x varredura -- R@72h MTM separado por 1a
+    tentativa (seq==1) vs reentradas (seq>=2), e variante sem MOGZ/PEAK."""
+
+    def test_separa_1a_tentativa_de_reentrada_por_token(self) -> None:
+        bars = _bars_mc_elegiveis()
+        primeira = _sinal_mc(bars, "CAT", float(bars[2].ts))
+        reentrada = _sinal_mc(bars, "CAT", float(bars[10].ts))
+        resumo = vv3.resumo_r72h_por_ordem_sinal([primeira, reentrada], now=1e12)
+        self.assertEqual(resumo.primeira_tentativa.n, 1)
+        self.assertEqual(resumo.reentradas.n, 1)
+
+    def test_tokens_excluidos_saem_so_da_variante_sem_outliers(self) -> None:
+        bars = _bars_mc_elegiveis()
+        normal = _sinal_mc(bars, "CAT", float(bars[2].ts))
+        outlier = _sinal_mc(bars, "MOGZ", float(bars[2].ts))
+        resumo = vv3.resumo_r72h_por_ordem_sinal([normal, outlier], now=1e12)
+        self.assertEqual(resumo.primeira_tentativa.n, 2)            # inclui MOGZ
+        self.assertEqual(resumo.primeira_tentativa_sem_outliers.n, 1)   # exclui MOGZ
+
+    def test_segunda_tentativa_do_mesmo_token_sem_outlier_nunca_afeta_a_1a(self) -> None:
+        bars = _bars_mc_elegiveis()
+        primeira = _sinal_mc(bars, "PEAK", float(bars[2].ts))
+        reentrada = _sinal_mc(bars, "PEAK", float(bars[10].ts))
+        resumo = vv3.resumo_r72h_por_ordem_sinal([primeira, reentrada], now=1e12)
+        self.assertEqual(resumo.primeira_tentativa.n, 1)
+        self.assertEqual(resumo.reentradas.n, 1)
+        self.assertEqual(resumo.primeira_tentativa_sem_outliers.n, 0)   # PEAK excluido
+        self.assertEqual(resumo.reentradas_sem_outliers.n, 0)
+
+
 class CreatedTsAdmitidoTests(unittest.TestCase):
     """Regressao do BUG corrigido na rodada 9, item 2: `carregar_universo_admitido` fixava
     `created_ts=None` sempre, zerando SEMPRE o pareamento com controles desta origem (`

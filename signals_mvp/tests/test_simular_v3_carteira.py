@@ -194,6 +194,67 @@ class ProbabilidadeRuinaTests(unittest.TestCase):
         p2 = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
         self.assertEqual(p1, p2)
 
+    def test_usa_o_patrimonio_corrigido_a1_nunca_so_o_caixa(self) -> None:
+        """PEDIDO 2026-11-05 (rodada 10, item 1): confirma que a ruina chama `_executar_ledger`
+        (MESMO motor que calcula patrimonio = caixa + posicoes abertas, A1) -- uma posicao aberta
+        trava capital mas NUNCA aparece como perda so por estar aberta; a ruina so dispara com um
+        resultado REALMENTE negativo o bastante, nunca pelo caixa cair so porque o principal esta
+        travado em posicoes ainda sem desfecho."""
+        passo = svc.HORIZONTES_S["72h"] + 1
+        # 4 posicoes V50 (US$50 cada = US$200, 80% da banca de 250) TODAS lucrativas -- o caixa cai
+        # pra US$50 no momento de abrir a 4a (travado), mas o patrimonio nunca sai de ~US$250+.
+        trades = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=1.0) for i in range(4)]
+        p = svc.probabilidade_ruina_bootstrap(trades, "V50", "base", "US$0.05", 250.0, n_bootstrap=500)
+        self.assertEqual(p, 0.0)
+
+    def test_ruina_muda_quando_a_lista_de_trades_muda(self) -> None:
+        """PEDIDO 2026-11-05 (rodada 10, item 1): regressao -- a ruina precisa responder a mudancas
+        na lista de trades (nunca ficar "presa" num numero antigo). Acrescenta reentradas BEM piores
+        aos MESMOS tokens (mesmo `n` de tokens distintos pro bootstrap) e confirma que a ruina sobe."""
+        passo = svc.HORIZONTES_S["72h"] + 1
+        base = [_trade_minimo(token=f"T{i}", t_entrada=i * passo, r_72h=0.5) for i in range(5)]
+        p_base = svc.probabilidade_ruina_bootstrap(base, "V50", "base", "US$0.05", 250.0, n_bootstrap=3000)
+        # reentradas BEM piores nos MESMOS 5 tokens (nunca um token novo) -- `n` pro bootstrap e igual.
+        extra = base + [_trade_minimo(token=f"T{i}", t_entrada=(i + 100) * passo, r_72h=-20.0) for i in range(5)]
+        p_extra = svc.probabilidade_ruina_bootstrap(extra, "V50", "base", "US$0.05", 250.0, n_bootstrap=3000)
+        self.assertNotEqual(p_base, p_extra)
+        self.assertGreater(p_extra, p_base)
+
+
+class MaxPerdaFracNaoAfetaRMedioTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (rodada 10, item 3): MAX_PERDA_FRAC (piso de -100% do principal) so existe
+    pra travar `resultado_usd`/banca/drawdown/ruina -- os valores de R reportados (`r_valores`,
+    `r_medio`/`r_mediano`/IC90% na tabela) sao SEMPRE o R-multiplo ANTES do piso (`r_final`, que pode
+    ir muito alem de -1.0 quando o R a mercado e muito negativo). Documentado aqui pra nunca ser
+    uma surpresa silenciosa pra quem le "R medio" na tabela."""
+
+    def test_r_valores_nunca_e_clampado_mesmo_quando_o_resultado_usd_e(self) -> None:
+        trades = [_trade_minimo(token="EXTREMO", t_entrada=0.0, r_72h=-20.0, risk_frac=0.2)]
+        r = svc._executar_ledger(trades, "V10", "base", "US$0.05", 250.0, svc.MAX_POSICOES_PADRAO,
+                                 svc.MAX_VOLUME_PCT_PADRAO)
+        # net_frac sem piso seria -20*0.2=-4.0 (perderia 400% do principal) -- resultado_usd TEM que
+        # ficar travado em -tamanho_usd (nunca perder mais que investiu).
+        self.assertAlmostEqual(r["resultados_usd"][0], -10.0, places=2)
+        # r_valores (o que alimenta r_medio/mediano/IC90% da tabela) fica MUITO abaixo de -1.0 --
+        # NUNCA e travado pelo MAX_PERDA_FRAC (e um numero so informativo do R de mercado, nunca o
+        # retorno realizado em $ que o piso protege).
+        self.assertLess(r["r_valores"][0], -1.0)
+        self.assertAlmostEqual(r["r_valores"][0], -20.0 - (0.05 / (10.0 * 0.2)), places=3)
+
+    def test_r_medio_da_tabela_e_identico_com_ou_sem_perda_extrema_alem_do_piso(self) -> None:
+        """Dobrar a severidade de uma perda que JA passa do piso (-20R vs -40R) muda `r_medio` da
+        tabela proporcionalmente (nunca "satura" em -1.0 como aconteceria se o R reportado fosse
+        o `net_frac` travado) -- confirma que o piso nunca contamina o R reportado."""
+        trades_20 = [_trade_minimo(token="A", t_entrada=0.0, r_72h=-20.0, risk_frac=0.2)]
+        trades_40 = [_trade_minimo(token="A", t_entrada=0.0, r_72h=-40.0, risk_frac=0.2)]
+        r20 = svc._executar_ledger(trades_20, "V10", "base", "US$0.05", 250.0, svc.MAX_POSICOES_PADRAO,
+                                   svc.MAX_VOLUME_PCT_PADRAO)
+        r40 = svc._executar_ledger(trades_40, "V10", "base", "US$0.05", 250.0, svc.MAX_POSICOES_PADRAO,
+                                   svc.MAX_VOLUME_PCT_PADRAO)
+        self.assertNotAlmostEqual(r20["r_valores"][0], r40["r_valores"][0], places=3)
+        # mas resultado_usd (o que o piso protege) fica IDENTICO -- ambos ja perderam 100% do principal.
+        self.assertAlmostEqual(r20["resultados_usd"][0], r40["resultados_usd"][0], places=2)
+
 
 class CorrecaoDeEntradaTests(unittest.TestCase):
     def test_candle_de_entrada_corrompido_usa_o_candle_limpo_anterior(self) -> None:
@@ -251,6 +312,7 @@ class ExecutarSmokeTests(unittest.TestCase):
     def test_banco_vazio_nunca_crasha(self) -> None:
         texto = svc.executar(self.storage.paths.db)
         self.assertIn(svc.AVISO, texto)
+        self.assertIn(svc.AVISO_R_MEDIO, texto)   # rodada 10, item 3 -- nunca escondido
         self.assertNotIn("Traceback", texto)
 
     def test_sinal_ainda_pendente_mostra_quando_completa_e_nunca_crasha(self) -> None:

@@ -72,6 +72,10 @@ from .exit_lab import _variante_a, _variante_c, _variante_d
 AVISO = ("EXPLORATORIO -- NUNCA evidencia de edge (H1/pre-registro decidem isso, nao este script). "
         "retro_lote1/replay_v3 sao amostra DENTRO da amostra (nunca population real); resultado em "
         "paper e TETO de execucao (a execucao real so pode ser igual ou pior).")
+AVISO_R_MEDIO = ("R medio/mediano/sem-top3/IC90% desta tabela SAO O R-MULTIPLO A MERCADO (r_final, "
+                 "com slippage/custo fixo deduzidos), NUNCA travado por MAX_PERDA_FRAC -- o piso de "
+                 "-100% do principal SO afeta resultado_usd/banca/drawdown/ruina (rodada 2026-11-05, "
+                 "item 3; documentado aqui pra nunca ser uma surpresa silenciosa pra quem le a tabela).")
 
 JANELA_VOLUME_MEDIO = 24   # candles 1h anteriores -- "media horaria das 24h antes"
 SLIPPAGE_VARIANTES: dict[str, float] = {"base": 0.0, "+0.1R": 0.1, "+0.3R": 0.3}
@@ -877,6 +881,7 @@ def relatorio(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3
     out.append(f"tetos: {PCT_SUPPLY_MAX}% do supply | {max_volume_pct}% do volume do candle de entrada | "
               f"max {max_posicoes} posicoes simultaneas (uma por TOKEN por vez) | exposicao total <=100% "
               f"da banca | entrada minima US${VALOR_MINIMO_USD:.0f}")
+    out.append(f"NOTA: {AVISO_R_MEDIO}")
     out.append("")
     linhas_csv: list[dict[str, Any]] = []
     for banca in bancas:
