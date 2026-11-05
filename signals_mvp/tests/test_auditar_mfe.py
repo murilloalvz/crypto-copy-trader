@@ -135,6 +135,7 @@ class AuditarMfeTests(unittest.TestCase):
         self.assertEqual(len(resultados), 1)
         self.assertAlmostEqual(resultados[0]["vol_entrada"], 5.0)
         self.assertAlmostEqual(resultados[0]["vol_24h_antes"], 100.0)
+        self.assertEqual(resultados[0]["n_candles_vol_pos_24h_antes"], 4)   # os 4 anteriores, todos vol>0
 
     def test_candle_volume_zero_nunca_decide_mfe_e_e_contado_como_descartado(self) -> None:
         # PEDIDO 2026-11-05 (correcao FRENTE A, item 1): o candle com o high mais alto (+400%) tem
@@ -300,6 +301,20 @@ class ResumoTests(unittest.TestCase):
         self.assertEqual(res["n_vol_entrada_valido"], 2)
         self.assertAlmostEqual(res["vol_entrada_mediano"], 27.5)
         self.assertAlmostEqual(res["vol_24h_antes_mediano"], 100.0)
+
+    def test_entrada_abaixo_de_25pct_da_media_horaria_das_24h_antes(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 3): media horaria = vol_24h_antes/24. CAT: media=400/24=16.67,
+        # 25%=4.17 -- vol_entrada=2.0 fica ABAIXO. DOG: media=240/24=10.0, 25%=2.5 -- vol_entrada=50.0
+        # fica ACIMA. BIRD: media horaria=0 (sem negociacao nas 24h antes) -- nunca entra no
+        # denominador (ja contado em n_24h_antes_sem_negociacao).
+        resultados = [
+            {"token": "CAT", "r_oficial": None, "janelas": {}, "vol_entrada": 2.0, "vol_24h_antes": 400.0},
+            {"token": "DOG", "r_oficial": None, "janelas": {}, "vol_entrada": 50.0, "vol_24h_antes": 240.0},
+            {"token": "BIRD", "r_oficial": None, "janelas": {}, "vol_entrada": 1.0, "vol_24h_antes": 0.0},
+        ]
+        res = auditar_mfe.resumo(resultados)
+        self.assertEqual(res["n_media_horaria_valida"], 2)   # BIRD fora (media horaria 0)
+        self.assertEqual(res["n_entrada_abaixo_25pct_media_horaria"], 1)   # so CAT
 
 
 class FontesBeCTests(unittest.TestCase):

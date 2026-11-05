@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Optional
 
 from ..config import make_paths
 from ..pos_runner.candles import Bar
@@ -288,9 +289,86 @@ class LinhasV3ReplayTests(unittest.TestCase):
         con.commit()
         con.close()
         texto = exit_lab.executar(self.db_path)
-        self.assertIn("## V3 replay", texto)
-        self.assertIn("## Por token", texto)
+        self.assertIn("## replay_v3 (EXPLORATORIO", texto)
+        self.assertIn("MESMA amostra", texto)
         self.assertIn("CAT", texto)
+
+
+def _linha_variantes(token: str, versao: str, origem: str,
+                     resultados: dict[str, Optional[tuple[float, float]]]) -> dict[str, Any]:
+    """PEDIDO 2026-11-05 (PARTE 2): helper minimo -- `resultados[nome]` e `(pct, r)` ou ausente
+    (em_aberto, nenhum resultado definido para essa variante)."""
+    linha: dict[str, Any] = {"token": token, "versao": versao, "origem": origem, "risco_pct": 20.0}
+    for nome in exit_lab.VARIANTES:
+        par = resultados.get(nome)
+        if par is None:
+            linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": ""}
+        else:
+            pct, r = par
+            linha[nome] = {"status": "fechado", "pct": pct, "r": r, "motivo": "stop"}
+    return linha
+
+
+class MesmaAmostraTests(unittest.TestCase):
+    def test_so_passam_sinais_com_resultado_definido_nas_4_variantes(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2a): CAT tem as 4 definidas; DOG so tem A e B (C/D em_aberto) --
+        # DOG nunca entra na mesma amostra, mesmo contribuindo pro N "cru" de A/B.
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3", {
+                "A_atual": (10.0, 0.5), "B_breakeven_1x_caixa": (5.0, 0.25),
+                "C_fechamento_1h_sob_teto": (8.0, 0.4), "D_30pct_topo_trailing": (12.0, 0.6)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {
+                "A_atual": (20.0, 1.0), "B_breakeven_1x_caixa": (15.0, 0.75)}),
+        ]
+        comum = exit_lab._mesma_amostra(linhas)
+        self.assertEqual(len(comum), 1)
+        self.assertEqual(comum[0]["token"], "CAT")
+
+    def test_amostra_vazia_quando_nenhum_sinal_tem_as_4_definidas(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 0.5)})]
+        self.assertEqual(exit_lab._mesma_amostra(linhas), [])
+
+
+class MediaEntreTokensTests(unittest.TestCase):
+    def test_token_com_muitos_sinais_nao_pesa_mais_que_token_com_1(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2b): PEAK tem 3 sinais (+30% cada), BIRD tem 1 (-10%) -- a media
+        # POR SINAL seria dominada por PEAK (+20% no geral); a media ENTRE TOKENS da peso 1 a cada
+        # token: (30 + (-10)) / 2 = +10%, nunca +20%.
+        linhas = [_linha_variantes("PEAK", "v1", "v1v2v3", {"A_atual": (30.0, 1.0)}) for _ in range(3)]
+        linhas.append(_linha_variantes("BIRD", "v1", "v1v2v3", {"A_atual": (-10.0, -0.5)}))
+        resumo_tokens = exit_lab.resumo_por_token(linhas)
+        mt = exit_lab.media_entre_tokens(resumo_tokens)
+        self.assertAlmostEqual(mt["A_atual"]["pct_medio_entre_tokens"], 10.0)
+        self.assertEqual(mt["A_atual"]["n_tokens"], 2)
+        self.assertEqual(mt["A_atual"]["n_tokens_positivos"], 1)   # so PEAK (+30%); BIRD e negativo
+
+    def test_variante_sem_nenhum_token_com_media_valida_fica_s_d(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 0.5)})]
+        resumo_tokens = exit_lab.resumo_por_token(linhas)
+        mt = exit_lab.media_entre_tokens(resumo_tokens)
+        self.assertIsNone(mt["B_breakeven_1x_caixa"]["pct_medio_entre_tokens"])
+        self.assertEqual(mt["B_breakeven_1x_caixa"]["n_tokens"], 0)
+
+
+class FormatarOrigemSeparadaTests(unittest.TestCase):
+    def test_versao_compartilhada_nunca_mistura_ao_vivo_com_retro_ou_replay(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2c, bug relatado): retro_lote1/replay_v3 reusam o MESMO rotulo de
+        # `versao` ("v1"/"v2"/"v3") que ao_vivo -- a secao "## ao_vivo / V3" NUNCA pode contar RATO
+        # (retro) ou PATO (replay), so GATO (origem="v1v2v3").
+        todas_4 = {"A_atual": (10.0, 0.5), "B_breakeven_1x_caixa": (10.0, 0.5),
+                  "C_fechamento_1h_sob_teto": (10.0, 0.5), "D_30pct_topo_trailing": (10.0, 0.5)}
+        linhas = [
+            _linha_variantes("GATO", "v3", "v1v2v3", todas_4),
+            _linha_variantes("RATO", "v3", "retro", todas_4),
+            _linha_variantes("PATO", "v3", "v3_replay", todas_4),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        idx_v3 = texto.index("## ao_vivo / V3")
+        idx_retro = texto.index("## retro_lote1")
+        bloco_v3 = texto[idx_v3:idx_retro]
+        self.assertIn("n no grupo: 1", bloco_v3)   # SO GATO -- nunca RATO/PATO so por compartilhar "v3"
+        self.assertNotIn("RATO", bloco_v3)
+        self.assertNotIn("PATO", bloco_v3)
 
 
 if __name__ == "__main__":

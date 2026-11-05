@@ -45,6 +45,21 @@ CORRECAO 2026-11-05 (mesma frente, sem tocar V1/V2/V3/H1/sinais/hashes):
    MESMO campo que `live.py` ja grava); tokens distintos com stop seguido de alta>=+100% nas 72h
    seguintes (janela `pos_saida`, candle limpo).
 
+PEDIDO 2026-11-05 (PARTE 3): esclarecimento + quantificacao, nenhuma mudanca de regra.
+
+`vol_entrada`/`vol_24h_antes` (e o novo `n_candles_vol_pos_24h_antes`) usam `bars[j0]` -- "candle de
+entrada" aqui e o candle ONDE O FILL ACONTECE (`j0`, cujo `open` e `entry_price`), que e o candle
+SEGUINTE ao candle do gatilho (a ENTRADA e decidida no FECHAMENTO de `bars[j0-1]`, executada no OPEN
+do candle seguinte -- mesma convencao causal de TP1/EXIT FULL, nunca lookahead; ver
+`exit_lab.py: _variante_a`, `ev = _SyntheticEvent(j0-1, ...)`). Nunca o candle do proprio gatilho.
+
+O modelo de custo (`pos_runner/costs.py: CostModel.slippage_pct`) usa SO `L_bc`/MC/`position_sol`
+(aproximacao de reserva via produto constante) -- NAO le volume do candle de forma alguma; o volume
+real do candle de entrada e um dado de mercado paralelo (medicao), nunca um insumo da slippage
+simulada. `resumo()` conta quantas entradas tem `vol_entrada` < 25% da media horaria das 24h
+anteriores (`vol_24h_antes/24`) -- so entre as com media horaria > 0 (nenhum limiar escolhido alem
+dos 25% explicitamente pedidos).
+
 Uso (na VM, a partir da raiz do repo):
     python -m signals_mvp.scripts.auditar_mfe --db signals_mvp/dados/estado.sqlite
 """
@@ -154,14 +169,19 @@ def _detalhe_candle(storage: Storage, versao: str, pool: str, bars: list[Bar], e
            "vizinho_depois": _vizinho(bars, idx + 1), "divergencia_dexpaprika": divergencia}
 
 
-def _volume_entrada_e_24h_antes(bars: list[Bar], j0: int, entry_ts: float) -> tuple[Optional[float], Optional[float]]:
-    """PEDIDO 2026-11-05 (FRENTE B): volume do candle de entrada e soma das 24h ANTERIORES a ele
-    (mesmo `pr_bars` ja carregado -- nenhuma chamada nova, nenhum limiar escolhido aqui)."""
+def _volume_entrada_e_24h_antes(bars: list[Bar], j0: int, entry_ts: float
+                                ) -> tuple[Optional[float], Optional[float], Optional[int]]:
+    """PEDIDO 2026-11-05 (FRENTE B/PARTE 4b): volume do candle de entrada (`bars[j0]`, onde o FILL
+    acontece -- ver docstring do modulo), soma de volume das 24h ANTERIORES a ele, e quantos desses
+    candles tiveram volume>0 (`n_candles_vol_pos_24h_antes`, reusado por `auditar_inatividade.py`) --
+    mesmo `pr_bars` ja carregado, nenhuma chamada nova, nenhum limiar escolhido aqui."""
     if j0 >= len(bars):
-        return None, None
+        return None, None, None
     vol_entrada = bars[j0].volume
-    vol_24h_antes = sum(b.volume for b in bars if entry_ts - 24 * 3600.0 <= b.ts < entry_ts)
-    return vol_entrada, vol_24h_antes
+    bars_24h_antes = [b for b in bars if entry_ts - 24 * 3600.0 <= b.ts < entry_ts]
+    vol_24h_antes = sum(b.volume for b in bars_24h_antes)
+    n_candles_vol_pos_24h_antes = sum(1 for b in bars_24h_antes if b.volume > 0)
+    return vol_entrada, vol_24h_antes, n_candles_vol_pos_24h_antes
 
 
 def medir_de_base(storage: Storage, versao: str, origem: str, token: str, pool: str, bars: list[Bar], j0: int,
@@ -183,10 +203,11 @@ def medir_de_base(storage: Storage, versao: str, origem: str, token: str, pool: 
             "mae": _detalhe_candle(storage, versao, pool, bars, mae, risco_pct),
             "n_candles_corrompidos_descartados": n_descartados,
         }
-    vol_entrada, vol_24h_antes = _volume_entrada_e_24h_antes(bars, j0, entry_ts)
+    vol_entrada, vol_24h_antes, n_candles_vol_pos_24h_antes = _volume_entrada_e_24h_antes(bars, j0, entry_ts)
     return {"token": token, "pool": pool, "entrada_ts": entry_ts, "versao": versao, "origem": origem,
            "risco_pct": risco_pct, "r_oficial": r_oficial, "reason": reason, "janelas": janelas,
-           "vol_entrada": vol_entrada, "vol_24h_antes": vol_24h_antes}
+           "vol_entrada": vol_entrada, "vol_24h_antes": vol_24h_antes,
+           "n_candles_vol_pos_24h_antes": n_candles_vol_pos_24h_antes}
 
 
 def medir_sinal(storage: Storage, versao: str, s: Any, bars: list[Bar]) -> Optional[dict[str, Any]]:
@@ -375,6 +396,13 @@ def resumo(resultados: list[dict[str, Any]], deduplicar: bool = True) -> dict[st
     vol_entrada_validos = [r["vol_entrada"] for r in base if r.get("vol_entrada") is not None]
     vol_24h_antes_validos = [r["vol_24h_antes"] for r in base if r.get("vol_24h_antes") is not None]
     n_24h_antes_zero = sum(1 for v in vol_24h_antes_validos if v == 0.0)
+    # PEDIDO 2026-11-05 (PARTE 3): media horaria das 24h ANTES (vol_24h_antes/24) comparada ao volume
+    # do candle de entrada -- so entre pares com media horaria > 0 (media==0 ja conta em
+    # n_24h_antes_sem_negociacao acima; 25% e o limiar literal pedido, nenhum outro escolhido aqui).
+    pares_media_horaria = [(r["vol_entrada"], r["vol_24h_antes"] / 24.0) for r in base
+                          if r.get("vol_entrada") is not None and r.get("vol_24h_antes") is not None
+                          and r["vol_24h_antes"] / 24.0 > 0.0]
+    n_entrada_abaixo_25pct_media_horaria = sum(1 for ve, mh in pares_media_horaria if ve < 0.25 * mh)
     n_candles_descartados = sum(jan.get("n_candles_corrompidos_descartados", 0)
                                 for r in base for jan in r["janelas"].values())
     return {
@@ -392,6 +420,8 @@ def resumo(resultados: list[dict[str, Any]], deduplicar: bool = True) -> dict[st
         "n_24h_antes_sem_negociacao": n_24h_antes_zero,
         "n_vol_entrada_valido": len(vol_entrada_validos),
         "n_candles_corrompidos_descartados": n_candles_descartados,
+        "n_entrada_abaixo_25pct_media_horaria": n_entrada_abaixo_25pct_media_horaria,
+        "n_media_horaria_valida": len(pares_media_horaria),
     }
 
 
@@ -440,6 +470,10 @@ def _formatar_resumo(res: dict[str, Any], titulo: str) -> list[str]:
               ", 24h ANTES da entrada mediano=" +
               (f"{res['vol_24h_antes_mediano']:.0f}" if res["vol_24h_antes_mediano"] is not None else "s/d") +
               f", sem NENHUMA negociacao nas 24h antes: {res['n_24h_antes_sem_negociacao']}/{res['n_vol_entrada_valido']}")
+    out.append("PARTE 3 -- 'candle de entrada' = bars[j0] (onde o FILL acontece, abertura do candle "
+              "SEGUINTE ao gatilho); slippage simulada (costs.py) NAO le volume do candle, so L_bc/MC. "
+              f"entradas com volume < 25% da media horaria das 24h antes: "
+              f"{res['n_entrada_abaixo_25pct_media_horaria']}/{res['n_media_horaria_valida']}")
     out.append("")
     return out
 

@@ -44,12 +44,26 @@ documentada do Passo 0e para a coorte retro, nunca escondida.
 
 PEDIDO 2026-11-03 (continuacao -- pendente 5, complemento): tambem cobre o REPLAY completo de
 `ParamsV3` sobre pools admitidos hoje (`avaliar_v3_retro.py: parte_a_pools_admitidos`, Parte A --
-reusa o evento bruto exposto la, `eventos_raw`, nunca duplica o replay) e agrega TUDO (v1/v2/v3 ao
-vivo, coorte retro, replay V3) por TOKEN (`resumo_por_token`) -- media de %/R por variante, nunca uma
-selecao do melhor.
+reusa o evento bruto exposto la, `eventos_raw`, nunca duplica o replay).
 
-Uso (na VM):
-    python -m signals_mvp.scripts.exit_lab --db dados/estado.sqlite
+CORRECAO 2026-11-05 (PARTE 2, mesmo script, sem tocar V1/V2/V3/H1/sinais/hashes):
+
+a) `_mesma_amostra`: cada variante fica `em_aberto` sob condicao PROPRIA (ex.: D so fecha quando
+   `remaining` chega a zero; C pode ficar pendente no ultimo candle) -- comparar medias com N
+   diferente por coluna (visto na pratica: V3 A=72/B=79/C=90/D=92) enviesa a comparacao. Toda media
+   por sinal agora usa SO os sinais com resultado definido nas 4 variantes ao mesmo tempo (n IGUAL
+   reportado uma vez, nunca por coluna).
+b) `media_entre_tokens`: media de 2o nivel -- cada TOKEN pesa 1x (nunca pelo numero de sinais), pra
+   um token com muitos sinais (ex.: PEAK=17) nao dominar a media; conta tokens com media>0 por
+   variante.
+c) `formatar()` separa ao_vivo (por versao v1/v2/v3)/retro_lote1/replay_v3 em blocos INDEPENDENTES
+   (antes a secao "## V1"/"## V2"/"## V3" misturava ao_vivo com retro/replay_v3 que compartilham o
+   mesmo rotulo de `versao` -- corrigido: filtra tambem por `origem`). replay_v3 rotulado
+   (EXPLORATORIO). NUNCA escolhe a "melhor" variante entre as 4 -- so reporta lado a lado, em
+   qualquer bloco.
+
+Uso (na VM, a partir da raiz do repo):
+    python -m signals_mvp.scripts.exit_lab --db signals_mvp/dados/estado.sqlite
 """
 
 from __future__ import annotations
@@ -367,8 +381,8 @@ def _media(valores: list[float]) -> Optional[float]:
 
 
 def resumo_por_token(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """PEDIDO 2026-11-03 (continuacao -- pendente 5): agrega TODAS as origens (v1/v2/v3 ao vivo,
-    retro lote1, replay V3) por token -- media de %/R por variante."""
+    """Agrega o grupo recebido (UMA origem por vez -- nunca mistura ao_vivo/retro_lote1/replay_v3,
+    ver PARTE 2c) por token -- media de %/R por variante."""
     por_token: dict[str, list[dict[str, Any]]] = {}
     for l in linhas:
         por_token.setdefault(l["token"], []).append(l)
@@ -383,53 +397,78 @@ def resumo_por_token(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _mesma_amostra(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-05 (PARTE 2a): so os sinais com resultado DEFINIDO (pct != None) nas 4
+    variantes -- garante n IGUAL nas 4 colunas (hoje cada variante tem seu proprio N, porque cada
+    regra de saida fica `em_aberto` sob condicoes diferentes -- comparar medias com N diferente por
+    coluna enviesa a comparacao)."""
+    return [l for l in linhas if all(l[nome]["pct"] is not None for nome in VARIANTES)]
+
+
+def media_entre_tokens(resumo_tokens: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """PEDIDO 2026-11-05 (PARTE 2b): media de 2o nivel -- cada TOKEN pesa 1x (nunca pelo numero de
+    sinais que ele tem), para um token com muitos sinais (ex.: 17) nao dominar a media geral; conta
+    tambem quantos tokens tem media>0 por variante. Nunca escolhe a "melhor" -- so lado a lado."""
+    out: dict[str, dict[str, Any]] = {}
+    for nome in VARIANTES:
+        pcts = [rt[nome]["pct_medio"] for rt in resumo_tokens if rt[nome]["pct_medio"] is not None]
+        rs = [rt[nome]["r_medio"] for rt in resumo_tokens if rt[nome]["r_medio"] is not None]
+        out[nome] = {"pct_medio_entre_tokens": _media(pcts), "r_medio_entre_tokens": _media(rs),
+                    "n_tokens": len(pcts), "n_tokens_positivos": sum(1 for v in pcts if v > 0)}
+    return out
+
+
+def _formatar_bloco(linhas_grupo: list[dict[str, Any]], titulo: str) -> list[str]:
+    """PEDIDO 2026-11-05 (PARTE 2a/b): mesma amostra (n igual nas 4 variantes) + media ENTRE TOKENS
+    (2o nivel, cada token pesa 1x) para UM grupo (uma origem/versao por vez -- ver PARTE 2c)."""
+    out = [f"## {titulo}", ""]
+    comum = _mesma_amostra(linhas_grupo)
+    out.append(f"n no grupo: {len(linhas_grupo)} | n na MESMA amostra (resultado definido nas 4 variantes): {len(comum)}")
+    if not comum:
+        out.append("  (nenhum sinal com resultado definido simultaneamente nas 4 variantes)")
+        out.append("")
+        return out
+    out.append("Media por SINAL, mesma amostra (n igual nas 4 colunas):")
+    for nome in VARIANTES:
+        pcts = [l[nome]["pct"] for l in comum]
+        rs = [l[nome]["r"] for l in comum if l[nome]["r"] is not None]
+        r_txt = f" | media R={_media(rs):+.2f} (n={len(rs)})" if rs else " | R: s/d"
+        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)}){r_txt}")
+    resumo_tokens = resumo_por_token(comum)
+    mt = media_entre_tokens(resumo_tokens)
+    out.append(f"Media ENTRE TOKENS, mesma amostra ({len(resumo_tokens)} token(s) distinto(s), cada um pesa 1x):")
+    for nome in VARIANTES:
+        m = mt[nome]
+        pct_txt = f"{m['pct_medio_entre_tokens']:+.1f}%" if m["pct_medio_entre_tokens"] is not None else "s/d"
+        r_txt = f"{m['r_medio_entre_tokens']:+.2f}R" if m["r_medio_entre_tokens"] is not None else "-"
+        out.append(f"  {nome}: {pct_txt}/{r_txt} | tokens com media>0: {m['n_tokens_positivos']}/{m['n_tokens']}")
+    out.append("")
+    return out
+
+
 def formatar(linhas: list[dict[str, Any]], sem_dado_box: dict[str, int], sem_bar_entrada: dict[str, int],
             n_fora_do_alcance_retro: int) -> str:
     out = [f"# exit_lab -- 4 saidas alternativas ({AVISO})", "",
           "Variantes: A=atual | B=breakeven apos 1x altura da caixa | C=1o fechamento 1h sob o teto | "
-          "D=30% no topo + trailing no fundo da mini-caixa.", ""]
+          "D=30% no topo + trailing no fundo da mini-caixa. NUNCA escolhe a melhor -- 4 saidas "
+          "testadas lado a lado, sempre na MESMA amostra (PARTE 2a) e por token (PARTE 2b).", "",
+          "Fontes SEPARADAS (PARTE 2c, nunca somadas): ao_vivo e retro_lote1 sao sinais reais/"
+          "candidatos realmente admitidos; replay_v3 e EXPLORATORIO (replay retroativo completo, "
+          "nunca uma coorte admitida de verdade).", ""]
+    ao_vivo = [l for l in linhas if l["origem"] == "v1v2v3"]
+    out.append(f"## ao_vivo (V1/V2/V3, n={len(ao_vivo)})")
+    out.append("")
     for versao in ("v1", "v2", "v3"):
-        linhas_v = [l for l in linhas if l["versao"] == versao]
-        out.append(f"## {versao.upper()} (n={len(linhas_v)}, "
-                  f"sem trajetoria/box: {sem_dado_box.get(versao, 0)}, sem candle de entrada: {sem_bar_entrada.get(versao, 0)})")
-        for nome in VARIANTES:
-            pcts = [l[nome]["pct"] for l in linhas_v if l[nome]["pct"] is not None]
-            rs = [l[nome]["r"] for l in linhas_v if l[nome]["r"] is not None]
-            out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d" +
-                      (f" | media R={_media(rs):+.2f} (n={len(rs)})" if rs else " | R: s/d"))
-        out.append("")
+        linhas_v = [l for l in ao_vivo if l["versao"] == versao]
+        out.extend(_formatar_bloco(linhas_v, f"ao_vivo / {versao.upper()} (sem trajetoria/box: "
+                                   f"{sem_dado_box.get(versao, 0)}, sem candle de entrada: "
+                                   f"{sem_bar_entrada.get(versao, 0)})"))
     retro = [l for l in linhas if l["origem"] == "retro"]
-    out.append(f"## Coorte retrospectiva (lote 1, so admitidos apos congelamento; n={len(retro)}, "
-              f"fora do alcance/sem dado: {n_fora_do_alcance_retro})")
-    for nome in VARIANTES:
-        pcts = [l[nome]["pct"] for l in retro if l[nome]["pct"] is not None]
-        rs = [l[nome]["r"] for l in retro if l[nome]["r"] is not None]
-        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
-    out.append("")
+    out.extend(_formatar_bloco(retro, f"retro_lote1 (so admitidos apos congelamento; "
+                               f"fora do alcance/sem dado: {n_fora_do_alcance_retro})"))
     v3_replay = [l for l in linhas if l["origem"] == "v3_replay"]
-    out.append(f"## V3 replay (pools admitidos hoje, historico completo; n={len(v3_replay)})")
-    for nome in VARIANTES:
-        pcts = [l[nome]["pct"] for l in v3_replay if l[nome]["pct"] is not None]
-        rs = [l[nome]["r"] for l in v3_replay if l[nome]["r"] is not None]
-        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
-    out.append("")
-    resumo_tokens = resumo_por_token(linhas)
-    out.append(f"## Por token ({len(resumo_tokens)} distinto(s), todas as origens)")
-    out.append("")
-    if resumo_tokens:
-        out.append("| token | n | " + " | ".join(f"{n} (%/R médios)" for n in VARIANTES) + " |")
-        out.append("|---|---|" + "---|" * len(VARIANTES))
-        for rt in resumo_tokens:
-            celulas = []
-            for nome in VARIANTES:
-                v = rt[nome]
-                pct = f"{v['pct_medio']:+.1f}%" if v["pct_medio"] is not None else "s/d"
-                r = f"{v['r_medio']:+.2f}R" if v["r_medio"] is not None else "-"
-                celulas.append(f"{pct}/{r} (n={v['n']})")
-            out.append(f"| {rt['token']} | {rt['n']} | " + " | ".join(celulas) + " |")
-    else:
-        out.append("nenhum sinal.")
-    out.append("")
+    out.extend(_formatar_bloco(v3_replay, "replay_v3 (EXPLORATORIO -- replay retroativo completo, "
+                               "nunca coorte admitida de verdade)"))
     out.append("Por sinal:")
     out.append("")
     out.append("| token | versão | origem | risco% | " + " | ".join(f"{n} (%/R/motivo)" for n in VARIANTES) + " |")
