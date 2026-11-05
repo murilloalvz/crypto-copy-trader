@@ -13,22 +13,33 @@ ESCOPO DESTA RODADA (simplificacoes/cortes documentados, nunca escondidos):
   parte_a_pools_admitidos` (status IN ativo/dormente/encerrado -- MESMO universo que o pedido
   descreve como "ativos, aposentados [=encerrado], dormentes"), zero duplicacao de replay.
 - B1(b) retro lote1: reusa o MESMO padrao de replay de `simular_v3_carteira.carregar_retro_lote1`
-  (pr_retro_candidatos + candles truncados em `pr_pools.added_ts`).
-  **Congelamento do "lote 2" (NAO implementado nesta rodada)**: exigiria uma tabela/coluna nova pra
-  distinguir 2 congelamentos (hoje `pr_retro_candidatos` so guarda 1 `lista_hash`/`congelado_em`
-  global) -- fica documentado como proximo passo (reusar `avaliar_candidatos_retro.
-  congelar_candidatos`, adaptado pra um `lote` explicito), nunca feito aqui sem essa decisao de
-  schema. O lote1 ja congelado continua intocado.
+  (pr_retro_candidatos + candles truncados em `pr_pools.added_ts`). O "lote 2" (rodada 9, item 5) e
+  CONGELADO separadamente por `scripts.avaliar_candidatos_retro.congelar_candidatos_lote2` (so a
+  lista de candidatos + hash/timestamp, SEM replay/rede) -- este script continua lendo so o lote1
+  ja admitido na replay (consumir lote2 exige decisao de admissao, fora do escopo desta rodada).
 - B1(c) "candidatos nunca admitidos com historico obtivel": pools com `status IN
   ('rejeitado','verificado')` que JA tem `pr_bars` cacheado (zero chamada nova) -- rotulado
   `universo_nunca_admitido`.
 - B1(d) "ampliar o historico via coleta lenta": EXPLICITAMENTE opcional no pedido e exige chamadas
   de rede ao vivo -- NAO implementado aqui (um script somente-leitura nunca deveria iniciar
-  coleta); documentado como trabalho futuro, separado, em tmux proprio, nunca concorrendo com o
-  bot.
-- B2 "comparacao contra entradas aleatorias no mesmo pool/fase": NAO implementada nesta rodada
-  (escopo cortado por tempo) -- so o pareamento contra os 10 controles (MESMA mecanica da H1,
-  `pos_runner/evidencia.py`) foi implementado. Fica documentado como extensao futura.
+  coleta); proposta de fontes/custo/tempo/vies no pre-registro B6 (rodada 9, item 4), ainda sem
+  execucao.
+- B2 "comparacao contra entradas aleatorias no mesmo pool/fase" (rodada 9, item 3): IMPLEMENTADO --
+  `calcular_equilibrio_empirico`, K=20 entradas aleatorias/sinal, MESMA elegibilidade/fase dos 10
+  controles pareados (`candidatos_elegiveis`) e MESMA distancia de stop (`evidencia.evento_controle`
+  via risco_pct do sinal), semente PROPRIA (nunca colide com o sorteio dos 10 controles). Substitui
+  o equilibrio TEORICO 1/(1+N) como referencia adicional (nunca remove o teorico do relatorio).
+- B2/item1 (rodada 9): o pareamento usa R@72h -- resolvido PELA REGRA se a saida real aconteceu
+  antes do corte de 72h, SENAO valorizado a MERCADO no proprio corte (`horizonte_fixo.
+  calcular_r_horizonte`, MESMA definicao usada pelo resto do projeto/H1) -- NUNCA R de saida por
+  regra sem corte. Censura: 'pendente' (horizonte ainda nao decorrido) e 'sem_dado' (entrada
+  cancelada, fora do stop/TOPO) descartados simetricamente dos 2 lados (sinal E controle), nunca um
+  corte que favoreca um lado. Pareamento por TOQUE novo: P(+2R antes de -1R) do sinal (1/0) menos a
+  media dos MESMOS 10 controles (nunca um 2o sorteio independente do pareamento em R).
+- Item2 (rodada 9, BUG corrigido): `carregar_universo_admitido` fixava `created_ts=None` sempre,
+  zerando o pareamento com controles SO desta origem (`candidatos_elegiveis` nunca elege nada sem
+  `created_ts`) -- corrigido buscando `created_ts` real via `pr_pools.info` (MESMO padrao das outras
+  2 origens).
 - B3 estratos: reusa DIRETAMENTE `analise.condicional._grupos_v3_estratos`/`rodar_exploratorias_v3`
   (os MESMOS 8 estratos pre-registrados pra V3, Holm sobre a familia completa) -- zero logica
   estatistica nova, so monta `SinalResolvido` com a covariavel certa
@@ -36,7 +47,9 @@ ESCOPO DESTA RODADA (simplificacoes/cortes documentados, nunca escondidos):
   media dos controles no MESMO horizonte.
 - B5 "nice/tmux": este script e passivo (nunca inicia um processo proprio) -- o comando de VM abaixo
   ja empacota nice+tmux; o script so faz o check de RAM antes de comecar (`--min-ram-mb`, aborta se
-  insuficiente) e imprime progresso.
+  insuficiente) e imprime progresso. O comparador aleatorio (K=20) roda, por sinal, o DOBRO de
+  varreduras causais dos 10 controles -- custo adicional esperado, nunca um numero fixo chutado (ver
+  resposta final/PR pelo tempo medido).
 
 Uso (na VM, a partir da raiz do repo -- RAM/CPU fracos, roda em background):
     nice -n 19 tmux new-session -d -s varredura_v3 \
@@ -190,19 +203,26 @@ def _montar_sinal(bars: list[Bar], ev: EventV1, dex: str, l_bc: Optional[float],
 
 def carregar_universo_admitido(db_path: Path) -> list[SinalVarredura]:
     """B1(a): TODOS os pools em `pr_pools` com status ativo/dormente/encerrado ("aposentado") e
-    historico completo -- reusa `avaliar_v3_retro.parte_a_pools_admitidos`, zero replay duplicado."""
+    historico completo -- reusa `avaliar_v3_retro.parte_a_pools_admitidos`, zero replay duplicado.
+
+    CORRECAO 2026-11-05 (rodada 9, item 2): `parte_a_pools_admitidos` nao devolve `created_ts` por
+    evento (so entra depois via `calcular_covariaveis_v3`/`idade_dias`) -- este script buscava
+    `created_ts=None` sempre, o que zerava SEMPRE o pareamento com controles desta origem
+    (`candidatos_elegiveis`/`_controles_r72h` nunca elegem nada sem `created_ts`). Busca `info` por
+    pool (MESMO padrao de `carregar_universo_nunca_admitido`/`carregar_retro_lote1`) e extrai
+    `created_ts` real via `_created_ts`, sem tocar o replay/`parte_a_pools_admitidos` em si."""
     con = _conectar_ro(db_path)
     try:
         params = load_params_v3()
         linhas_pool = parte_a_pools_admitidos(con, params)
         supply_por_pool = {r["pool"]: r["supply"] for r in con.execute("SELECT pool, supply FROM pr_pools")}
+        info_por_pool = {r["pool"]: r["info"] for r in con.execute("SELECT pool, info FROM pr_pools")}
     finally:
         con.close()
     sinais: list[SinalVarredura] = []
     for lp in linhas_pool:
+        created_ts = _created_ts(info_por_pool.get(lp["pool"]))
         for bars, ev, dex, l_bc in lp["eventos_raw"]:
-            created_ts = None  # `parte_a_pools_admitidos` nao devolve created_ts por evento; a
-                               # idade entra via `calcular_covariaveis_v3` (data.get("idade_dias")).
             s = _montar_sinal(bars, ev, dex, l_bc, "universo_admitido", lp["symbol"], "", lp["pool"],
                               params.timeframes[0], created_ts, supply_por_pool.get(lp["pool"]))
             if s is not None:
@@ -302,25 +322,39 @@ def deduplicar_por_token(sinais: list[SinalVarredura]) -> dict[str, list[SinalVa
 # ---------------------------------------------------------------------------
 
 
-def _primeiro_toque(sinal: SinalVarredura, alvo_r: float) -> Optional[str]:
-    """Varre causalmente a partir do candle de entrada: 'stop' se `low<=stop` (prioridade dentro do
-    MESMO candle, mesma convencao de `simulate_v1`), 'alvo' se `high>=preco_alvo`, `None` se a serie
-    acabar sem decidir (candles corrompidos pulados -- NUNCA decidem, mas tambem nunca contam como
-    "indefinido" so por existirem no meio do caminho)."""
-    risk = sinal.entry_price - sinal.stop
+def _toque_causal(bars: list[Bar], j0: int, entry_price: float, stop: float, alvo_r: float) -> Optional[str]:
+    """Varre causalmente a partir de `j0`: 'stop' se `low<=stop` (prioridade dentro do MESMO candle,
+    mesma convencao de `simulate_v1`), 'alvo' se `high>=preco_alvo`, `None` se a serie acabar sem
+    decidir (candles corrompidos pulados -- NUNCA decidem, mas tambem nunca contam como "indefinido"
+    so por existirem no meio do caminho). Generico (bars/entry/stop) pra servir tanto ao sinal real
+    quanto a um controle/entrada aleatoria pareados (rodada 9, itens 1/3) sem duplicar a varredura."""
+    risk = entry_price - stop
     if risk <= 0:
         return None
-    preco_alvo = sinal.entry_price + alvo_r * risk
-    j0 = sinal.ev.idx + 1
-    for idx in range(j0, len(sinal.bars)):
-        if candle_corrompido_provavel(sinal.bars, idx):
+    preco_alvo = entry_price + alvo_r * risk
+    for idx in range(j0, len(bars)):
+        if candle_corrompido_provavel(bars, idx):
             continue
-        bar = sinal.bars[idx]
-        if bar.low <= sinal.stop:
+        bar = bars[idx]
+        if bar.low <= stop:
             return "stop"
         if bar.high >= preco_alvo:
             return "alvo"
     return None
+
+
+def _toque_binario(resultado: Optional[str]) -> Optional[float]:
+    """1.0='alvo' (tocou +NR antes de -1R) / 0.0='stop' / `None`='indefinido' (nunca conta -- mesma
+    convencao de `resumo_toques`)."""
+    if resultado == "alvo":
+        return 1.0
+    if resultado == "stop":
+        return 0.0
+    return None
+
+
+def _primeiro_toque(sinal: SinalVarredura, alvo_r: float) -> Optional[str]:
+    return _toque_causal(sinal.bars, sinal.ev.idx + 1, sinal.entry_price, sinal.stop, alvo_r)
 
 
 def resumo_toques(sinais: list[SinalVarredura]) -> dict[str, Any]:
@@ -368,29 +402,87 @@ def _r_horizonte(sinal: SinalVarredura, horizonte_s: float, now: float, params: 
     return r.r_mult
 
 
-def _controles_r72h(sinal: SinalVarredura, params: Any, costs: CostModel, now: float) -> list[float]:
-    """R@72h dos 10 controles pareados do MESMO token (MESMA mecanica de `pos_runner/evidencia.py`
-    ja usada pela H1) -- nunca muda a regra de sorteio/qualificacao, so mede no horizonte fixo."""
+K_ALEATORIO = 20
+ALVO_PAREAMENTO_TOQUE = 2.0   # MESMO desfecho primario do B6 (P(+2R antes de -1R) vs 33,3%)
+
+
+def _candidatos_mesma_fase(sinal: SinalVarredura, params: Any) -> list[int]:
+    """"Fase" = MESMA elegibilidade de `candidatos_elegiveis` (pos-pico, queda>=80%, MC>=100k, dentro
+    da janela de idade da versao) -- nunca um conceito novo; serve tanto aos 10 controles pareados
+    quanto ao comparador de entrada aleatoria (rodada 9, item 3), so o K e a semente mudam."""
     if sinal.created_ts is None:
         return []
-    candidatos = candidatos_elegiveis(sinal.bars, sinal.created_ts, params.age_window_days,
-                                      tf_seconds(sinal.tf), sinal.ev.idx, DROP_MIN_CONTROLE, MC_MIN_CONTROLE)
+    return candidatos_elegiveis(sinal.bars, sinal.created_ts, params.age_window_days,
+                                tf_seconds(sinal.tf), sinal.ev.idx, DROP_MIN_CONTROLE, MC_MIN_CONTROLE)
+
+
+def _controles_indices(sinal: SinalVarredura, params: Any) -> list[int]:
+    """Indices dos 10 controles pareados do MESMO token (MESMA mecanica de `pos_runner/evidencia.py`
+    ja usada pela H1). Compartilhado pelo pareamento em R@72h e pelo pareamento por TOQUE (rodada 9,
+    item 1) -- os DOIS pareiam contra os MESMOS controles, nunca 2 sorteios independentes."""
+    candidatos = _candidatos_mesma_fase(sinal, params)
     if len(candidatos) < N_CONTROLES_MINIMO:
         return []
     entry_id = abs(hash((sinal.pool, sinal.tf, sinal.t_entrada))) % (2 ** 31)
-    escolhidos = sortear_controles(candidatos, entry_id, sinal.origem, N_CONTROLES_PADRAO)
+    return sortear_controles(candidatos, entry_id, sinal.origem, N_CONTROLES_PADRAO)
+
+
+def _aleatorios_indices(sinal: SinalVarredura, params: Any) -> list[int]:
+    """Comparador de entrada ALEATORIA (rodada 9, item 3): MESMA fase/elegibilidade dos controles
+    pareados, K=20 por sinal, semente PROPRIA (sufixo ":aleatorio" nunca colide com a dos 10
+    controles -- sorteios independentes sobre a MESMA populacao elegivel)."""
+    candidatos = _candidatos_mesma_fase(sinal, params)
+    if len(candidatos) < N_CONTROLES_MINIMO:
+        return []
+    entry_id = abs(hash((sinal.pool, sinal.tf, sinal.t_entrada))) % (2 ** 31)
+    return sortear_controles(candidatos, entry_id, sinal.origem + ":aleatorio", K_ALEATORIO)
+
+
+def _evento_controle_sinal(sinal: SinalVarredura, idx: int) -> Optional[EventV1]:
+    """MESMA distancia de stop do sinal (risco_pct) e MESMA forma relativa de saida (TOPO/S escalados
+    pela razao do sinal) -- via `evidencia.evento_controle`, reusado sem duplicar logica."""
     topo_mult = sinal.topo / sinal.entry_price
     s_mult = sinal.s_val / sinal.entry_price
     risco_pct_sinal = 100.0 * sinal.risk_frac
+    return evento_controle(sinal.bars, idx, risco_pct_sinal, topo_mult, s_mult)
+
+
+def _r72h_de_indices(sinal: SinalVarredura, indices: list[int], params: Any, costs: CostModel,
+                     now: float) -> list[float]:
+    """R@72h (rodada 9, item 1 -- esclarecimento): resolvido PELA REGRA se fechou antes do corte de
+    72h, SENAO valorizado a MERCADO no proprio corte (`horizonte_fixo.calcular_r_horizonte`) -- a
+    MESMA definicao de R@72h usada em todo o resto do projeto (H1/`analise/condicional.py`), NUNCA o
+    R de saida por regra sem corte (esse so existiria se a regra fechasse antes das 72h por si --
+    aqui sempre se re-mede no horizonte fixo, pra sinal e controles por igual). Censura: 'pendente'
+    (horizonte ainda nao decorrido) e 'sem_dado' (entrada cancelada, fora do stop/TOPO) sao
+    descartados dos DOIS lados pela MESMA regra -- nunca um corte que favoreca sinal ou controle."""
     valores: list[float] = []
-    for idx in escolhidos:
-        ev_c = evento_controle(sinal.bars, idx, risco_pct_sinal, topo_mult, s_mult)
+    for idx in indices:
+        ev_c = _evento_controle_sinal(sinal, idx)
         if ev_c is None:
             continue
         r = calcular_r_horizonte(sinal.bars, ev_c, params, costs, sinal.dex, sinal.l_bc,
                                  t_entrada=sinal.bars[idx].ts, horizonte_s=HORIZONTES_S["72h"], now=now)
         if r.r_mult is not None:
             valores.append(r.r_mult)
+    return valores
+
+
+def _toques_de_indices(sinal: SinalVarredura, indices: list[int], alvo_r: float) -> list[float]:
+    """Resultado binario (1.0=tocou alvo antes do stop / 0.0=stop primeiro) de cada indice, MESMA
+    varredura causal (`_toque_causal`) e MESMA distancia de stop do sinal (`_evento_controle_sinal`)
+    -- usado tanto no pareamento por toque (item 1) quanto no comparador aleatorio (item 3).
+    'indefinido' nunca conta (mesma convencao de `_toque_binario`)."""
+    valores: list[float] = []
+    for idx in indices:
+        ev_c = _evento_controle_sinal(sinal, idx)
+        if ev_c is None:
+            continue
+        entry_c = sinal.bars[ev_c.idx + 1].open
+        stop_c = ev_c.data["stop"]
+        b = _toque_binario(_toque_causal(sinal.bars, ev_c.idx + 1, entry_c, stop_c, alvo_r))
+        if b is not None:
+            valores.append(b)
     return valores
 
 
@@ -411,6 +503,57 @@ def _bootstrap_ic_media(valores_por_token: dict[str, list[float]], confianca: fl
     return float(np.percentile(medias, 100.0 * alpha / 2.0)), float(np.percentile(medias, 100.0 * (1.0 - alpha / 2.0)))
 
 
+@dataclasses.dataclass
+class Pareamento:
+    """Resumo de uma amostra pareada por token (reusado pro pareamento em R@72h E pro pareamento por
+    toque, rodada 9, item 1 -- MESMAS 5 estatisticas, nunca duplicadas por metrica)."""
+    media: Optional[float]
+    mediana: Optional[float]
+    sem_top3: Optional[float]
+    ic90_bootstrap: Optional[tuple[float, float]]
+    n: int
+
+
+def _resumir_pareamento(valores_por_token: dict[str, list[float]]) -> Pareamento:
+    valores = [v for lst in valores_por_token.values() for v in lst]
+    media = statistics.fmean(valores) if valores else None
+    mediana = statistics.median(valores) if valores else None
+    sem_top3 = None
+    if len(valores) > 3:
+        maiores = set(sorted(range(len(valores)), key=lambda i: valores[i], reverse=True)[:3])
+        resto = [v for i, v in enumerate(valores) if i not in maiores]
+        sem_top3 = statistics.fmean(resto) if resto else None
+    return Pareamento(media, mediana, sem_top3, _bootstrap_ic_media(valores_por_token), len(valores))
+
+
+def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> dict[float, dict[str, Any]]:
+    """Rodada 9, item 3: equilibrio EMPIRICO de P(+NR antes de -1R) via K=20 entradas aleatorias por
+    sinal (MESMA fase/distancia de stop dos controles pareados, semente propria) -- substitui o
+    teorico 1/(1+N) como referencia (que ignora custo/friccao/regime do universo real) quando houver
+    dado suficiente; NUNCA remove o teorico do relatorio, soma ao lado."""
+    valores_por_token: dict[float, dict[str, list[float]]] = {alvo: {} for alvo in ALVOS_R}
+    for s in sinais:
+        indices = _aleatorios_indices(s, params)
+        if not indices:
+            continue
+        for alvo in ALVOS_R:
+            vals = _toques_de_indices(s, indices, alvo)
+            if vals:
+                valores_por_token[alvo].setdefault(s.token, []).extend(vals)
+    out: dict[float, dict[str, Any]] = {}
+    for alvo in ALVOS_R:
+        vpt = valores_por_token[alvo]
+        todos_vals = [v for lst in vpt.values() for v in lst]
+        p = (100.0 * statistics.fmean(todos_vals)) if todos_vals else None
+        ic = _bootstrap_ic_media(vpt) if vpt else None
+        out[alvo] = {
+            "p_empirico_pct": p,
+            "ic90_empirico_pct": (ic[0] * 100.0, ic[1] * 100.0) if ic else None,
+            "n_draws": len(todos_vals), "n_tokens": len(vpt),
+        }
+    return out
+
+
 # ---------------------------------------------------------------------------
 # B3: agregacao por token, estratos (reusa condicional.py sem duplicar logica)
 # ---------------------------------------------------------------------------
@@ -425,11 +568,9 @@ class ResultadoOrigem:
     n_corrompidos: int
     n_volume_baixo: int
     toques: dict[float, dict[str, Any]]
-    dif_pareada_media: Optional[float]
-    dif_pareada_mediana: Optional[float]
-    dif_pareada_sem_top3: Optional[float]
-    ic90_bootstrap: Optional[tuple[float, float]]
-    n_pareados: int
+    equilibrio_empirico: dict[float, dict[str, Any]]
+    dif_pareada: Pareamento
+    dif_toque: Pareamento
     estratos: list[GrupoExploratorio]
 
 
@@ -443,45 +584,42 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
                          and s.volume_entrada < 0.25 * s.volume_medio_24h)
     pool_dias = {(s.pool, int(s.t_entrada // 86400)) for s in todos}
     toques = resumo_toques(todos)
+    equilibrio_empirico = calcular_equilibrio_empirico(todos, params)
 
     dif_por_token: dict[str, list[float]] = {}
+    dif_toque_por_token: dict[str, list[float]] = {}
     resolvidos: list[SinalResolvido] = []
     for idx, s in enumerate(todos):
+        escolhidos = _controles_indices(s, params)   # MESMOS 10 controles pro R e pro toque (item 1)
+        if not escolhidos:
+            continue
+        controles_r = _r72h_de_indices(s, escolhidos, params, costs, now)
         r72 = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs)
-        if r72 is None:
-            continue
-        controles = _controles_r72h(s, params, costs, now)
-        if not controles:
-            continue
-        dif = r72 - statistics.fmean(controles)
-        dif_por_token.setdefault(s.token, []).append(dif)
-        cov = calcular_covariaveis_v3(s.bars, s.ev, tf_seconds(s.tf), s.l_bc)
-        resolvidos.append(SinalResolvido(
-            entry_id=idx, mint=s.mint, symbol=s.token, t_entrada=s.t_entrada, dif_pareada=dif,
-            gatilho=(), risco_pct=100.0 * s.risk_frac, liquidez_usd=None, holders_tag=None, tags=(),
-            janela_ouro=None, caixa_candles=cov.caixa_candles, caixa_horas=cov.caixa_horas,
-            idade_dias=cov.idade_dias, mc_na_entrada=None, queda_pico_pct=cov.queda_pico_pct,
-            mc_base=cov.mc_base, razao_corpo_descomunal=cov.razao_corpo_descomunal,
-            possivel_clone=cov.possivel_clone, gatilho_v3=cov.gatilho_tag,
-        ))
-
-    dif_valores = [dif for lst in dif_por_token.values() for dif in lst]
-    dif_media = statistics.fmean(dif_valores) if dif_valores else None
-    dif_mediana = statistics.median(dif_valores) if dif_valores else None
-    dif_sem_top3 = None
-    if len(dif_valores) > 3:
-        maiores = set(sorted(range(len(dif_valores)), key=lambda i: dif_valores[i], reverse=True)[:3])
-        resto = [v for i, v in enumerate(dif_valores) if i not in maiores]
-        dif_sem_top3 = statistics.fmean(resto) if resto else None
+        if r72 is not None and controles_r:
+            dif = r72 - statistics.fmean(controles_r)
+            dif_por_token.setdefault(s.token, []).append(dif)
+            cov = calcular_covariaveis_v3(s.bars, s.ev, tf_seconds(s.tf), s.l_bc)
+            resolvidos.append(SinalResolvido(
+                entry_id=idx, mint=s.mint, symbol=s.token, t_entrada=s.t_entrada, dif_pareada=dif,
+                gatilho=(), risco_pct=100.0 * s.risk_frac, liquidez_usd=None, holders_tag=None, tags=(),
+                janela_ouro=None, caixa_candles=cov.caixa_candles, caixa_horas=cov.caixa_horas,
+                idade_dias=cov.idade_dias, mc_na_entrada=None, queda_pico_pct=cov.queda_pico_pct,
+                mc_base=cov.mc_base, razao_corpo_descomunal=cov.razao_corpo_descomunal,
+                possivel_clone=cov.possivel_clone, gatilho_v3=cov.gatilho_tag,
+            ))
+        controles_toque = _toques_de_indices(s, escolhidos, ALVO_PAREAMENTO_TOQUE)
+        s_toque = _toque_binario(_primeiro_toque(s, ALVO_PAREAMENTO_TOQUE))
+        if s_toque is not None and controles_toque:
+            dif_toque_por_token.setdefault(s.token, []).append(s_toque - statistics.fmean(controles_toque))
 
     estratos = rodar_exploratorias_v3(resolvidos) if len(resolvidos) >= 10 else []
 
     return ResultadoOrigem(
         origem=origem_label, n_sinais=len(todos), n_tokens=len(por_token),
         n_pool_dias_ativos=len(pool_dias), n_corrompidos=n_corrompidos, n_volume_baixo=n_volume_baixo,
-        toques=toques, dif_pareada_media=dif_media, dif_pareada_mediana=dif_mediana,
-        dif_pareada_sem_top3=dif_sem_top3, ic90_bootstrap=_bootstrap_ic_media(dif_por_token),
-        n_pareados=len(dif_valores), estratos=estratos,
+        toques=toques, equilibrio_empirico=equilibrio_empirico,
+        dif_pareada=_resumir_pareamento(dif_por_token), dif_toque=_resumir_pareamento(dif_toque_por_token),
+        estratos=estratos,
     )
 
 
@@ -490,25 +628,54 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
 # ---------------------------------------------------------------------------
 
 
+def _formatar_pareamento(titulo: str, p: Pareamento) -> str:
+    ic_txt = f"[{p.ic90_bootstrap[0]:+.2f},{p.ic90_bootstrap[1]:+.2f}]" if p.ic90_bootstrap else "s/d"
+    media_txt = f"{p.media:+.2f}" if p.media is not None else "s/d"
+    mediana_txt = f"{p.mediana:+.2f}" if p.mediana is not None else "s/d"
+    sem_top3_txt = f"{p.sem_top3:+.2f}" if p.sem_top3 is not None else "s/d"
+    return (f"{titulo} (pareados={p.n}): media={media_txt} | mediana={mediana_txt} | "
+           f"sem top-3={sem_top3_txt} | IC90% bootstrap={ic_txt}")
+
+
 def _formatar_origem(r: ResultadoOrigem) -> list[str]:
     out = [f"## {r.origem}", "",
           f"n sinais: {r.n_sinais} | tokens distintos: {r.n_tokens} | pool-dias ativos: "
           f"{r.n_pool_dias_ativos}",
           f"dependem de candle corrompido: {r.n_corrompidos} | entrada com volume <25% media 24h: "
           f"{r.n_volume_baixo}", ""]
-    out.append("P(tocar +NR antes de -1R) -- referencia de equilibrio sem custo = 100/(1+N)%:")
+    if r.n_sinais == 0:
+        out.append("(sem sinais nesta origem -- universo vazio para esta fonte nesta base)")
+        out.append("")
+        return out
+    out.append("P(tocar +NR antes de -1R) -- equilibrio TEORICO sem custo = 100/(1+N)%, e equilibrio "
+              "EMPIRICO (rodada 9, item 3: K=20 entradas aleatorias/sinal, mesma fase/distancia de "
+              "stop, no lugar do teorico):")
     for alvo, d in sorted(r.toques.items()):
         p_txt = f"{d['p_observado_pct']:.1f}%" if d["p_observado_pct"] is not None else "s/d"
         delta_txt = f"{d['delta_pct']:+.1f}pp" if d["delta_pct"] is not None else "s/d"
+        emp = r.equilibrio_empirico.get(alvo, {})
+        if emp.get("p_empirico_pct") is not None:
+            ic_e = emp.get("ic90_empirico_pct")
+            ic_e_txt = f" IC90%=[{ic_e[0]:.1f},{ic_e[1]:.1f}]" if ic_e else ""
+            emp_txt = (f"empirico={emp['p_empirico_pct']:.1f}%{ic_e_txt} (sorteios={emp['n_draws']}, "
+                      f"tokens={emp['n_tokens']})")
+        else:
+            emp_txt = "empirico=s/d (sem entrada elegivel p/ sorteio)"
         out.append(f"  +{alvo:.0f}R: observado={p_txt} (n={d['n_decididos']}, indefinido="
-                  f"{d['n_indefinido']}) | equilibrio={d['equilibrio_pct']:.1f}% | delta={delta_txt}")
+                  f"{d['n_indefinido']}) | teorico={d['equilibrio_pct']:.1f}% | delta={delta_txt} | "
+                  f"{emp_txt}")
     out.append("")
-    ic_txt = f"[{r.ic90_bootstrap[0]:+.2f},{r.ic90_bootstrap[1]:+.2f}]" if r.ic90_bootstrap else "s/d"
-    media_txt = f"{r.dif_pareada_media:+.2f}" if r.dif_pareada_media is not None else "s/d"
-    mediana_txt = f"{r.dif_pareada_mediana:+.2f}" if r.dif_pareada_mediana is not None else "s/d"
-    sem_top3_txt = f"{r.dif_pareada_sem_top3:+.2f}" if r.dif_pareada_sem_top3 is not None else "s/d"
-    out.append(f"Dif. pareada vs 10 controles (R, pareados={r.n_pareados}): media={media_txt} | "
-              f"mediana={mediana_txt} | sem top-3={sem_top3_txt} | IC90% bootstrap={ic_txt}")
+    out.append(_formatar_pareamento(
+        "Dif. pareada vs 10 controles, R@72h (regra se fechou antes do corte, senao marcado a "
+        "mercado no corte -- NUNCA R de regra sem corte; censura 'pendente'/'sem_dado' descartada "
+        "dos 2 lados igualmente)", r.dif_pareada))
+    out.append(_formatar_pareamento(
+        f"Dif. pareada vs 10 controles, TOQUE (+{ALVO_PAREAMENTO_TOQUE:.0f}R antes de -1R, sinal=1/0 "
+        "menos media dos controles)", r.dif_toque))
+    if r.dif_pareada.n == 0 and r.dif_toque.n == 0:
+        out.append("  (pareamento=0: created_ts ausente OU nenhum candle do pool passa queda>=80% "
+                  "desde o pico e MC>=100k dentro da janela de idade da V3 -- nunca um corte que "
+                  "favoreca sinal ou controle, so falta de candidato elegivel nesta origem)")
     out.append("")
     if r.estratos:
         out.append("Estratos exploratorios (8 pre-registrados, Holm sobre a familia completa):")
@@ -536,14 +703,24 @@ def _linhas_csv(r: ResultadoOrigem) -> list[dict[str, Any]]:
     linha: dict[str, Any] = {
         "origem": r.origem, "n_sinais": r.n_sinais, "n_tokens": r.n_tokens,
         "n_pool_dias_ativos": r.n_pool_dias_ativos, "n_corrompidos": r.n_corrompidos,
-        "n_volume_baixo": r.n_volume_baixo, "dif_pareada_media": r.dif_pareada_media,
-        "dif_pareada_mediana": r.dif_pareada_mediana, "dif_pareada_sem_top3": r.dif_pareada_sem_top3,
-        "ic90_lo": r.ic90_bootstrap[0] if r.ic90_bootstrap else None,
-        "ic90_hi": r.ic90_bootstrap[1] if r.ic90_bootstrap else None, "n_pareados": r.n_pareados,
+        "n_volume_baixo": r.n_volume_baixo,
+        "dif_pareada_r72h_media": r.dif_pareada.media, "dif_pareada_r72h_mediana": r.dif_pareada.mediana,
+        "dif_pareada_r72h_sem_top3": r.dif_pareada.sem_top3,
+        "dif_pareada_r72h_ic90_lo": r.dif_pareada.ic90_bootstrap[0] if r.dif_pareada.ic90_bootstrap else None,
+        "dif_pareada_r72h_ic90_hi": r.dif_pareada.ic90_bootstrap[1] if r.dif_pareada.ic90_bootstrap else None,
+        "n_pareados_r72h": r.dif_pareada.n,
+        "dif_pareada_toque_media": r.dif_toque.media, "dif_pareada_toque_mediana": r.dif_toque.mediana,
+        "dif_pareada_toque_sem_top3": r.dif_toque.sem_top3,
+        "dif_pareada_toque_ic90_lo": r.dif_toque.ic90_bootstrap[0] if r.dif_toque.ic90_bootstrap else None,
+        "dif_pareada_toque_ic90_hi": r.dif_toque.ic90_bootstrap[1] if r.dif_toque.ic90_bootstrap else None,
+        "n_pareados_toque": r.dif_toque.n,
     }
     for alvo, d in r.toques.items():
         linha[f"p_toque_{int(alvo)}r_pct"] = d["p_observado_pct"]
         linha[f"n_decididos_{int(alvo)}r"] = d["n_decididos"]
+        emp = r.equilibrio_empirico.get(alvo, {})
+        linha[f"p_empirico_{int(alvo)}r_pct"] = emp.get("p_empirico_pct")
+        linha[f"n_draws_empirico_{int(alvo)}r"] = emp.get("n_draws")
     return [linha]
 
 

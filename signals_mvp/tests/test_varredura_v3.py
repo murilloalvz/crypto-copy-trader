@@ -15,6 +15,8 @@ from pathlib import Path
 from ..config import make_paths
 from ..pos_runner.candles import Bar
 from ..pos_runner.detector_v1 import EventV1
+from ..pos_runner.costs import CostModel
+from ..pos_runner.params_v3 import load_params_v3
 from ..storage import Storage
 from ..scripts import varredura_v3 as vv3
 from .test_pos_runner_v1 import CREATED, GRAD, L_BC, textbook_v1
@@ -38,6 +40,22 @@ def _sinal(bars: list[Bar], ev_idx: int = 0, stop: float = 90.0, topo: float = 1
         entrada_corrigida=False, stop=stop, topo=topo, s_val=s_val, risk_frac=risk_frac,
         volume_gatilho=None, volume_entrada=None, volume_medio_24h=None, n_pavios=3,
     )
+
+
+def _bars_mc_elegiveis(n_flat: int = 25, n_rampa: int = 9) -> list[Bar]:
+    """Serie em escala de MC (USD, MESMA convencao de `pr_bars` -- `quotes.to_mc_bars`): idx0 fixa um
+    pico de 1.000.000; `n_flat` candles em ~150k (queda ~85% do pico, MC>=100k -- elegiveis pra
+    `candidatos_elegiveis`); depois `n_rampa` candles em disparada (garante que TODO controle/
+    entrada aleatoria sorteado na faixa plana, ao varrer causalmente pra frente, toca +NR antes do
+    stop -- nunca 'indefinido' por falta de candle). Usado so pra exercitar o pareamento por toque e
+    o comparador aleatorio (rodada 9, itens 1/3); SEM pretensao de realismo de mercado."""
+    bars = [_bar(0, 1_000_000, 1_000_000, 1_000_000, 1_000_000)]
+    for i in range(1, 1 + n_flat):
+        bars.append(_bar(i * 3600, 150_000, 155_000, 140_000, 150_000))
+    for j in range(n_rampa):
+        h = 200_000 + j * 300_000
+        bars.append(_bar((1 + n_flat + j) * 3600, h * 0.9, h, h * 0.85, h * 0.95))
+    return bars
 
 
 class RamTests(unittest.TestCase):
@@ -127,6 +145,101 @@ class ResumoToquesTests(unittest.TestCase):
         self.assertAlmostEqual(d["p_observado_pct"], 100.0)
         self.assertAlmostEqual(d["equilibrio_pct"], 50.0)   # 100/(1+1)
         self.assertAlmostEqual(d["delta_pct"], 50.0)
+
+
+class ResumirPareamentoTests(unittest.TestCase):
+    def test_media_mediana_sem_top3_ic90_e_n_corretos(self) -> None:
+        valores_por_token = {"A": [1.0, 2.0], "B": [3.0], "C": [10.0]}   # 10.0 e o maior, saida no sem_top3
+        p = vv3._resumir_pareamento(valores_por_token)
+        self.assertEqual(p.n, 4)
+        self.assertAlmostEqual(p.media, (1.0 + 2.0 + 3.0 + 10.0) / 4.0)
+        self.assertAlmostEqual(p.mediana, 2.5)
+        self.assertAlmostEqual(p.sem_top3, 1.0)   # remove os 3 maiores (10,3,2), so sobra o 1.0
+
+    def test_sem_top3_remove_os_3_maiores(self) -> None:
+        p = vv3._resumir_pareamento({"A": [1.0, 2.0, 3.0, 4.0, 100.0, 200.0, 300.0]})
+        self.assertEqual(p.n, 7)
+        self.assertAlmostEqual(p.sem_top3, (1.0 + 2.0 + 3.0 + 4.0) / 4.0)
+
+    def test_vazio_devolve_tudo_none(self) -> None:
+        p = vv3._resumir_pareamento({})
+        self.assertEqual(p.n, 0)
+        self.assertIsNone(p.media)
+        self.assertIsNone(p.ic90_bootstrap)
+
+
+class PareamentoRodada9Tests(unittest.TestCase):
+    """Rodada 2026-11-05 (9), itens 1 e 3: pareamento por TOQUE (MESMOS 10 controles do pareamento em
+    R@72h) e comparador de entrada ALEATORIA (K=20, semente propria). Bars sinteticos em escala de MC
+    (`_bars_mc_elegiveis`) so pra exercitar a mecanica -- sem pretensao de realismo de mercado."""
+
+    def setUp(self) -> None:
+        self.bars = _bars_mc_elegiveis()
+        self.sinal = _sinal(self.bars, ev_idx=1, created_ts=0.0, pool="POOL1", token="CAT")
+        self.params = load_params_v3()
+
+    def test_controles_e_aleatorios_usam_sementes_independentes(self) -> None:
+        controles = vv3._controles_indices(self.sinal, self.params)
+        aleatorios = vv3._aleatorios_indices(self.sinal, self.params)
+        self.assertEqual(len(controles), 10)   # N_CONTROLES_PADRAO, populacao >= 10
+        self.assertGreater(len(aleatorios), 10)   # K=20, populacao >= 20
+        self.assertLessEqual(len(aleatorios), 20)
+        self.assertNotEqual(set(controles), set(aleatorios))   # sorteio independente, nunca o mesmo
+
+    def test_r72h_e_toque_de_indices_resolvem_pros_mesmos_controles(self) -> None:
+        costs = CostModel()
+        indices = vv3._controles_indices(self.sinal, self.params)
+        valores_r = vv3._r72h_de_indices(self.sinal, indices, self.params, costs, now=1e12)
+        valores_toque = vv3._toques_de_indices(self.sinal, indices, vv3.ALVO_PAREAMENTO_TOQUE)
+        self.assertTrue(valores_r)
+        self.assertTrue(valores_toque)
+        self.assertTrue(all(v in (0.0, 1.0) for v in valores_toque))
+        # rampa no fim da serie: todo controle na faixa plana toca o alvo antes do stop (nunca stop).
+        self.assertTrue(all(v == 1.0 for v in valores_toque))
+
+    def test_calcular_equilibrio_empirico_agrega_por_token_e_alvo(self) -> None:
+        out = vv3.calcular_equilibrio_empirico([self.sinal], self.params)
+        self.assertEqual(set(out), set(vv3.ALVOS_R))
+        for alvo in vv3.ALVOS_R:
+            d = out[alvo]
+            self.assertGreater(d["n_draws"], 0)
+            self.assertEqual(d["n_tokens"], 1)
+            self.assertAlmostEqual(d["p_empirico_pct"], 100.0)   # rampa garante alvo em todo sorteio
+
+    def test_sem_created_ts_nunca_sorteia_nada(self) -> None:
+        sinal_sem_idade = _sinal(self.bars, ev_idx=1, created_ts=None, pool="POOL1")
+        self.assertEqual(vv3._controles_indices(sinal_sem_idade, self.params), [])
+        self.assertEqual(vv3._aleatorios_indices(sinal_sem_idade, self.params), [])
+
+
+class CreatedTsAdmitidoTests(unittest.TestCase):
+    """Regressao do BUG corrigido na rodada 9, item 2: `carregar_universo_admitido` fixava
+    `created_ts=None` sempre, zerando SEMPRE o pareamento com controles desta origem (`
+    candidatos_elegiveis` nunca elege nada sem `created_ts`)."""
+
+    def test_sinais_do_universo_admitido_carregam_created_ts_real(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="varredura_v3_createdts_"))
+        try:
+            storage = Storage(make_paths(tmp))
+            db_path = storage.paths.db
+            storage.close()
+            con = sqlite3.connect(str(db_path))
+            con.execute(
+                "INSERT INTO pr_pools (pool, symbol, status, l_bc, grad_ts, info) VALUES (?,?,?,?,?,?)",
+                ("POOL1", "CAT", "ativo", L_BC, GRAD, json.dumps({"criado_ts": CREATED})),
+            )
+            bars = textbook_v1().bars
+            con.executemany(
+                "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOL1','1h',?,?,?,?,?,?,?)",
+                [(b.ts, b.open, b.high, b.low, b.close, b.volume, int(b.filled)) for b in bars],
+            )
+            con.commit()
+            con.close()
+            sinais = vv3.carregar_universo_admitido(db_path)
+            self.assertTrue(sinais, "fixture deveria gerar >=1 ENTRADA sob ParamsV3")
+            self.assertTrue(all(s.created_ts == CREATED for s in sinais))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class ExecutarSmokeTests(unittest.TestCase):
