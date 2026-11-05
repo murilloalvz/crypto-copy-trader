@@ -89,6 +89,48 @@ class AuditarNegociacaoTests(unittest.TestCase):
         self.assertIn("auditar_negociacao", texto)
         self.assertNotIn("Traceback", texto)
 
+    def test_novos_tokens_de_destaque_entram_sem_remover_ant_chico(self) -> None:
+        # PEDIDO 2026-11-05 (FRENTE B): DESSA/NIO/MAMESUKE/FOCO/CAPY/WASTED/XD, alem de ANT/CHICO.
+        for symbol in ("DESSA", "NIO", "MAMESUKE", "FOCO", "CAPY", "WASTED", "XD", "ANT", "CHICO"):
+            self.assertIn(symbol, auditar.DESTAQUE_SYMBOLS)
+        con = sqlite3.connect(str(self.db_path))
+        self._inserir_pool(con, "POOLD", "DESSA", "ativo", None, {})
+        con.commit()
+        con.close()
+        self.assertTrue(auditar.medir(self.db_path, now=1_000_000.0)[0]["destaque"])
+
+    def test_candle_filled_conta_separado_de_volume_zero_real(self) -> None:
+        # candle filled (lacuna preenchida por fill_gaps) vs candle REAL com volume 0 -- `n_filled_24h`
+        # SO conta o primeiro (ja vem marcado `filled=1` em `pr_bars`, nenhum calculo novo aqui).
+        now = 1_000_000.0
+        con = sqlite3.connect(str(self.db_path))
+        self._inserir_pool(con, "POOLF", "FILLCHECK", "ativo", None, {})
+        bars = [
+            (now - 3 * 3600.0, 100, 100, 100, 100, 500.0, 0),   # real, volume>0, nunca filled
+            (now - 2 * 3600.0, 100, 100, 100, 100, 0.0, 0),     # real, volume=0, NAO filled (raro mas possivel)
+            (now - 1 * 3600.0, 100, 100, 100, 100, 0.0, 1),     # lacuna preenchida por fill_gaps
+        ]
+        con.executemany(
+            "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOLF','1h',?,?,?,?,?,?,?)", bars)
+        con.commit()
+        con.close()
+        l = auditar.medir(self.db_path, now=now)[0]
+        self.assertEqual(l["n_candles_24h"], 3)
+        self.assertEqual(l["n_vol_zero_24h"], 2)   # os dois candles com v=0 (filled ou nao)
+        self.assertEqual(l["n_filled_24h"], 1)     # SO o marcado filled=1
+
+    def test_fase_v1_v2_aparecem_na_linha_e_no_relatorio(self) -> None:
+        con = sqlite3.connect(str(self.db_path))
+        self._inserir_pool(con, "POOLG", "GATO", "ativo", None, {})
+        con.execute("UPDATE pr_pools SET fase_v1=?, fase_v2=? WHERE pool='POOLG'", ("runner", "sem_fase"))
+        con.commit()
+        con.close()
+        l = auditar.medir(self.db_path, now=1_000_000.0)[0]
+        self.assertEqual(l["fase_v1"], "runner")
+        self.assertEqual(l["fase_v2"], "sem_fase")
+        texto = auditar.executar(self.db_path)
+        self.assertIn("runner/sem_fase", texto)
+
 
 if __name__ == "__main__":
     unittest.main()

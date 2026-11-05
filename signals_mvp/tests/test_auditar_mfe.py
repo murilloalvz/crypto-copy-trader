@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from typing import Optional
 from pathlib import Path
 
 from ..config import make_paths
@@ -16,8 +17,11 @@ from ..scripts import auditar_mfe
 from .test_pos_runner_v1 import CREATED, GRAD, L_BC, textbook_v1
 
 
-def _bars(spec: list[tuple[float, float, float, float]], ts0: int = 0, step: int = 3_600) -> list[tuple]:
-    return [(ts0 + i * step, o, h, l, c, 0.0, 0) for i, (o, h, l, c) in enumerate(spec)]
+def _bars(spec: list[tuple[float, float, float, float]], ts0: int = 0, step: int = 3_600,
+         volume: float = 100.0) -> list[tuple]:
+    # PEDIDO 2026-11-05: volume>0 por padrao -- candle volume=0 agora e `candle_corrompido_provavel`
+    # e NUNCA concorre ao MFE/MAE (testes que precisam do candle real continuam precisando de volume).
+    return [(ts0 + i * step, o, h, l, c, volume, 0) for i, (o, h, l, c) in enumerate(spec)]
 
 
 class AuditarMfeTests(unittest.TestCase):
@@ -112,6 +116,156 @@ class AuditarMfeTests(unittest.TestCase):
         self.assertIn("high", mfe["divergencia_dexpaprika"])
         self.assertIn("GT=110", mfe["divergencia_dexpaprika"])
 
+    def test_vol_entrada_e_vol_24h_antes_somam_so_os_candles_anteriores_a_entrada(self) -> None:
+        # PEDIDO 2026-11-05 (FRENTE B): entrada no 5o candle (ts=4h); os 4 anteriores (10+20+30+40=100)
+        # estao dentro das 24h antes -- o candle de entrada (vol=5) NUNCA entra nessa soma.
+        signal_id = self._sinal("VOLCHECK", entry_price=100.0, stop=80.0, closed_ts=18_000.0)
+        self.storage.pr_trajetoria_upsert(
+            "v1", signal_id, 0.0, chain="solana", pool="VOLCHECK", tf="1h", mint="MINT_VOLCHECK",
+            symbol="VOLCHECK", t_entrada=14_400.0, preco_entrada=100.0, risco_pct=20.0, r_unidade=20.0,
+            fonte_candle="gt",
+        )
+        rows = [
+            (0, 100, 100, 100, 100, 10.0, 0), (3_600, 100, 100, 100, 100, 20.0, 0),
+            (7_200, 100, 100, 100, 100, 30.0, 0), (10_800, 100, 100, 100, 100, 40.0, 0),
+            (14_400, 100, 110, 95, 105, 5.0, 0), (18_000, 105, 108, 90, 95, 7.0, 0),
+        ]
+        self.storage.pr_append_bars("VOLCHECK", "1h", rows)
+        resultados = auditar_mfe.medir_versao(self.storage, "v1")
+        self.assertEqual(len(resultados), 1)
+        self.assertAlmostEqual(resultados[0]["vol_entrada"], 5.0)
+        self.assertAlmostEqual(resultados[0]["vol_24h_antes"], 100.0)
+
+    def test_candle_volume_zero_nunca_decide_mfe_e_e_contado_como_descartado(self) -> None:
+        # PEDIDO 2026-11-05 (correcao FRENTE A, item 1): o candle com o high mais alto (+400%) tem
+        # volume=0 (lacuna/sem negociacao) -- NUNCA pode vencer o MFE; o real vencedor e o proximo
+        # candle limpo (+10%), e o descartado entra na contagem da janela.
+        signal_id = self._sinal("VOLZERO", entry_price=100.0, stop=80.0, closed_ts=10_800.0)
+        self.storage.pr_trajetoria_upsert(
+            "v1", signal_id, 0.0, chain="solana", pool="VOLZERO", tf="1h", mint="MINT_VOLZERO",
+            symbol="VOLZERO", t_entrada=0.0, preco_entrada=100.0, risco_pct=20.0, r_unidade=20.0,
+            fonte_candle="gt",
+        )
+        rows = [
+            (0, 100, 105, 95, 100, 100.0, 0),      # entrada, limpo
+            (3_600, 100, 500, 100, 100, 0.0, 0),   # pico enorme, MAS volume=0 -- descartado
+            (7_200, 100, 110, 95, 105, 100.0, 0),  # real vencedor do MFE (+10%)
+        ]
+        self.storage.pr_append_bars("VOLZERO", "1h", rows)
+        resultados = auditar_mfe.medir_versao(self.storage, "v1")
+        self.assertEqual(len(resultados), 1)
+        jan = resultados[0]["janelas"]["pos_entrada_72h"]
+        self.assertAlmostEqual(jan["mfe"]["pct"], 10.0)
+        self.assertEqual(jan["n_candles_corrompidos_descartados"], 1)
+
+    def test_candle_pico_isolado_vs_2_vizinhos_nunca_decide_mfe(self) -> None:
+        # high 20x MAIOR que os dois vizinhos (105 e 108) -- mesmo com volume>0, e
+        # `candle_corrompido_provavel` (pico isolado, provavel erro de dado).
+        signal_id = self._sinal("PICOISOLADO", entry_price=100.0, stop=80.0, closed_ts=10_800.0)
+        self.storage.pr_trajetoria_upsert(
+            "v1", signal_id, 0.0, chain="solana", pool="PICOISOLADO", tf="1h", mint="MINT_PICOISOLADO",
+            symbol="PICOISOLADO", t_entrada=0.0, preco_entrada=100.0, risco_pct=20.0, r_unidade=20.0,
+            fonte_candle="gt",
+        )
+        rows = [
+            (0, 100, 105, 95, 100, 100.0, 0),       # entrada, limpo
+            (3_600, 100, 2_000, 100, 100, 100.0, 0),  # isolado: 2000 > 10x105 E > 10x108
+            (7_200, 100, 108, 95, 105, 100.0, 0),    # vizinho seguinte, limpo
+        ]
+        self.storage.pr_append_bars("PICOISOLADO", "1h", rows)
+        resultados = auditar_mfe.medir_versao(self.storage, "v1")
+        jan = resultados[0]["janelas"]["pos_entrada_72h"]
+        self.assertLess(jan["mfe"]["pct"], 20.0)   # nunca o +1900% do candle isolado
+        self.assertEqual(jan["n_candles_corrompidos_descartados"], 1)
+
+
+class DeduplicacaoEMetricasNovasTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (correcao FRENTE A, itens 2/3): dedup por (origem, pool, entrada_ts) e as
+    4 metricas novas -- dicts sinteticos minimos, mesmo estilo de ResumoTests."""
+
+    @staticmethod
+    def _linha(versao: str, origem: str, pool: str, entrada_ts: float, token: str,
+              mfe_r: Optional[float], reason: Optional[str] = None,
+              pos_saida_mfe_pct: Optional[float] = None) -> dict:
+        janelas: dict = {"durante_posicao": {"mfe": {"pct": 1.0, "r": mfe_r} if mfe_r is not None else None,
+                                             "mae": None, "n_candles_corrompidos_descartados": 0}}
+        if pos_saida_mfe_pct is not None:
+            janelas["pos_saida"] = {"mfe": {"pct": pos_saida_mfe_pct, "r": None},
+                                    "mae": None, "n_candles_corrompidos_descartados": 0}
+        return {"token": token, "pool": pool, "entrada_ts": entrada_ts, "versao": versao, "origem": origem,
+               "risco_pct": 20.0, "r_oficial": mfe_r, "reason": reason, "janelas": janelas,
+               "vol_entrada": None, "vol_24h_antes": None}
+
+    def test_mesmo_trade_em_v1_e_v2_conta_1x_no_resumo(self) -> None:
+        linhas = [
+            self._linha("v2", "ao_vivo", "POOL1", 100.0, "CAT", mfe_r=2.0),
+            self._linha("v1", "ao_vivo", "POOL1", 100.0, "CAT", mfe_r=2.0),   # MESMO trade real
+            self._linha("v1", "ao_vivo", "POOL2", 200.0, "DOG", mfe_r=0.5),  # trade DIFERENTE
+        ]
+        res = auditar_mfe.resumo(linhas)
+        self.assertEqual(res["n_antes_dedup"], 3)
+        self.assertEqual(res["n_depois_dedup"], 2)
+        self.assertEqual(res["n_fechados"], 2)
+        dedup = auditar_mfe._deduplicar_por_entrada(linhas)
+        grupo_cat = next(r for r in dedup if r["token"] == "CAT")
+        self.assertEqual(grupo_cat["versao"], "v1")   # prioridade v1 < v2
+        self.assertEqual(grupo_cat["_versoes_agrupadas"], ["v1", "v2"])
+
+    def test_tokens_distintos_com_mfe_1r_e_2r(self) -> None:
+        linhas = [
+            self._linha("v1", "ao_vivo", "P1", 1.0, "CAT", mfe_r=2.5),
+            self._linha("v1", "ao_vivo", "P2", 2.0, "DOG", mfe_r=1.2),
+            self._linha("v1", "ao_vivo", "P3", 3.0, "BIRD", mfe_r=0.3),
+        ]
+        res = auditar_mfe.resumo(linhas)
+        self.assertEqual(res["n_tokens_mfe_1r"], 2)   # CAT e DOG
+        self.assertEqual(res["n_tokens_mfe_2r"], 1)   # so CAT
+
+    def test_devolucao_2r_para_stop_so_conta_quem_fechou_em_stop(self) -> None:
+        linhas = [
+            self._linha("v1", "ao_vivo", "P1", 1.0, "CAT", mfe_r=2.5, reason="stop"),
+            self._linha("v1", "ao_vivo", "P2", 2.0, "DOG", mfe_r=3.0, reason="exit_full"),
+        ]
+        res = auditar_mfe.resumo(linhas)
+        self.assertEqual(res["n_devolucao_2r_para_stop"], 1)   # so CAT (DOG fechou em exit_full)
+
+    def test_stop_seguido_de_alta_100pct_72h_conta_token_distinto(self) -> None:
+        linhas = [
+            self._linha("v1", "ao_vivo", "P1", 1.0, "CAT", mfe_r=0.1, reason="stop", pos_saida_mfe_pct=150.0),
+            self._linha("v1", "ao_vivo", "P2", 2.0, "DOG", mfe_r=0.1, reason="stop", pos_saida_mfe_pct=20.0),
+            self._linha("v1", "ao_vivo", "P3", 3.0, "BIRD", mfe_r=0.1, reason="tp1", pos_saida_mfe_pct=150.0),
+        ]
+        res = auditar_mfe.resumo(linhas)
+        self.assertEqual(res["n_tokens_stop_seguido_alta_100pct_72h"], 1)   # so CAT
+
+    def test_formatar_separa_origens_e_marca_replay_v3_como_exploratorio(self) -> None:
+        # mfe_r=None (nunca formata candle de detalhe aqui -- so testa cabecalho/ordem do resumo).
+        linhas = [
+            self._linha("v1", "ao_vivo", "P1", 1.0, "CAT", mfe_r=None),
+            self._linha("v1", "retro_lote1", "P2", 2.0, "DOG", mfe_r=None),
+            self._linha("v3", "replay_v3", "P3", 3.0, "BIRD", mfe_r=None),
+        ]
+        texto = auditar_mfe.formatar(linhas)
+        self.assertIn("ao vivo (V1/V2/V3) -- resumo", texto)
+        self.assertIn("coorte retro lote 1", texto)
+        self.assertIn("replay V3 sobre pools admitidos hoje (EXPLORATORIO) -- resumo", texto)
+        self.assertLess(texto.index("ao vivo"), texto.index("retro lote 1"))
+        self.assertLess(texto.index("retro lote 1"), texto.index("replay V3"))
+
+
+class ExecutarSmokeTests(unittest.TestCase):
+    def test_executar_nunca_crasha_com_banco_vazio(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="auditar_mfe_executar_"))
+        try:
+            db_path = make_paths(tmp).db
+            storage = Storage(make_paths(tmp))
+            storage.close()
+            texto = auditar_mfe.executar(db_path)
+            self.assertIn("auditar_mfe", texto)
+            self.assertNotIn("Traceback", texto)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class ResumoTests(unittest.TestCase):
     def test_conta_lucro_antes_da_saida_mfe_r_mediano_e_r_por_token(self) -> None:
@@ -135,6 +289,17 @@ class ResumoTests(unittest.TestCase):
         resultados = [{"token": "CAT", "r_oficial": None, "janelas": {"pos_entrada_72h": {"mfe": None, "mae": None}}}]
         res = auditar_mfe.resumo(resultados)
         self.assertEqual(res["n_fechados"], 0)
+
+    def test_vol_24h_antes_zero_conta_como_sem_negociacao_antes_da_entrada(self) -> None:
+        resultados = [
+            {"token": "CAT", "r_oficial": None, "janelas": {}, "vol_entrada": 5.0, "vol_24h_antes": 0.0},
+            {"token": "DOG", "r_oficial": None, "janelas": {}, "vol_entrada": 50.0, "vol_24h_antes": 200.0},
+        ]
+        res = auditar_mfe.resumo(resultados)
+        self.assertEqual(res["n_24h_antes_sem_negociacao"], 1)
+        self.assertEqual(res["n_vol_entrada_valido"], 2)
+        self.assertAlmostEqual(res["vol_entrada_mediano"], 27.5)
+        self.assertAlmostEqual(res["vol_24h_antes_mediano"], 100.0)
 
 
 class FontesBeCTests(unittest.TestCase):
