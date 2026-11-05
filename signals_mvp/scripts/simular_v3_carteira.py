@@ -83,6 +83,13 @@ PCT_SUPPLY_MAX = 1.5             # teto fixo: posicao nunca > 1,5% do supply tot
 MAX_VOLUME_PCT_PADRAO = 10.0     # teto parametrizavel: posicao nunca > X% do volume do candle de entrada
 IMPACT_COEF_R = 1.0              # impacto de preco = IMPACT_COEF_R x (posicao/volume do candle de entrada)
 FRACAO_RUINA = 0.5               # P(banca cair abaixo de 50% do valor INICIAL daquele cenario)
+MAX_PERDA_FRAC = 1.0             # PEDIDO 2026-11-05 (A1): spot, SEM alavancagem -- uma posicao nunca
+                                 # perde mais que 100% do seu proprio principal, mesmo quando o R
+                                 # marcado a mercado (`r_72h`) e muito negativo (ex.: token que caiu
+                                 # 95% pode marcar -20R; sem este teto, `resultado_usd` ficava MAIOR
+                                 # em modulo que o proprio `tamanho_usd` investido -- bug real, nao
+                                 # so um limiar de seguranca).
+MAX_POSICOES_SENSIBILIDADE: tuple[int, ...] = (10, 25)   # A4: comparar com o teto configurado
 
 
 # ---------------------------------------------------------------------------
@@ -433,24 +440,38 @@ def _bootstrap_ic_por_token(valores_por_token: dict[str, list[float]], confianca
 
 def _executar_ledger(
     trades: list[TradeV3], regra_tamanho: str, slippage_nome: str, custo_fixo_nome: str,
-    banca_inicial: float, max_posicoes: int, max_volume_pct: float,
+    banca_inicial: float, max_posicoes: int, max_volume_pct: float, uma_por_token: bool = True,
 ) -> dict[str, Any]:
     """Motor do ledger, compartilhado por `simular_carteira` e `probabilidade_ruina_bootstrap` (nunca
-    duplicado). Banca debita o tamanho no instante da ENTRADA (trava o principal -- nunca disponivel
-    pra outra entrada) e so credita principal+resultado na LIBERACAO (`t_entrada+72h`) -- "so saldo
-    realizado volta ao capital" passa a valer de verdade. Capital insuficiente -> entra MENOR (nunca
-    abaixo de `VALOR_MINIMO_USD`); abaixo disso, pula e CONTA pelo motivo (`sem_vaga`/`sem_capital`/
-    `teto_supply`/`teto_volume`)."""
+    duplicado). Banca (caixa) debita o tamanho no instante da ENTRADA (trava o principal -- nunca
+    disponivel pra outra entrada) e so credita principal+resultado na LIBERACAO (`t_entrada+72h`) --
+    "so saldo realizado volta ao capital" passa a valer de verdade.
+
+    PEDIDO 2026-11-05 (A1, correcao de bug): maxDD/ruina agora usam PATRIMONIO = caixa + principal
+    das posicoes AINDA abertas, valorizado A CUSTO (pelo proprio `tamanho_usd` investido -- nunca a
+    mercado, porque este modelo discreto so conhece o desfecho FINAL de uma posicao no horizonte, nao
+    um preco intermediario pra marcar no meio do caminho; documentado, nunca escondido). Isso corrige
+    o caixa (so) subestimar o patrimonio real enquanto posicoes estao travadas, inflando artificialmente
+    o drawdown. Junto, `resultado_usd` agora e TRAVADO em -100% do principal (`MAX_PERDA_FRAC`) -- uma
+    posicao a vista, sem alavancagem, nunca perde mais do que investiu, mesmo quando o R marcado a
+    mercado e muito negativo (ex.: -10R num token que despencou); sem este teto, o drawdown podia
+    superar o capital jamais realmente exposto -- o bug relatado.
+
+    Capital insuficiente -> entra MENOR (nunca abaixo de `VALOR_MINIMO_USD`); abaixo disso, pula e
+    CONTA pelo motivo (`sem_vaga`/`sem_capital`/`teto_supply`/`teto_volume`/`token_ja_aberto` -- este
+    ultimo so quando `uma_por_token=True`, PEDIDO A3: 1 posicao por TOKEN por vez na carteira real,
+    nunca na varredura exploratoria da Parte B)."""
     slippage_r = SLIPPAGE_VARIANTES[slippage_nome]
     custo_fixo = CUSTO_FIXO_VARIANTES[custo_fixo_nome]
     banca = banca_inicial
     peak = banca_inicial
-    banca_minima = banca_inicial
+    patrimonio_minimo = banca_inicial
     max_dd_pct = 0.0
     max_dd_usd = 0.0
     sequencia_perdas = 0
     maior_sequencia_perdas = 0
-    posicoes_abertas: list[list[float]] = []   # [ts_libera, tamanho_usd, resultado_usd]
+    posicoes_abertas: list[list[Any]] = []   # [ts_libera, tamanho_usd, resultado_usd, token]
+    tokens_com_posicao_aberta: set[str] = set()
     curva: list[tuple[float, float]] = []
     resultados_usd: list[float] = []
     r_valores: list[float] = []
@@ -465,19 +486,28 @@ def _executar_ledger(
     def pular(motivo: str) -> None:
         pulados_por_motivo[motivo] = pulados_por_motivo.get(motivo, 0) + 1
 
+    def patrimonio() -> float:
+        return banca + sum(p[1] for p in posicoes_abertas)
+
+    def marcar_equity(ts: float) -> None:
+        nonlocal peak, max_dd_pct, max_dd_usd, patrimonio_minimo
+        p = patrimonio()
+        curva.append((ts, p))
+        peak = max(peak, p)
+        patrimonio_minimo = min(patrimonio_minimo, p)
+        dd_usd = peak - p
+        max_dd_usd = max(max_dd_usd, dd_usd)
+        dd_pct = 100.0 * dd_usd / peak if peak > 0 else 0.0
+        max_dd_pct = max(max_dd_pct, dd_pct)
+
     def liberar(ts_ref: float) -> None:
-        nonlocal banca, peak, max_dd_pct, max_dd_usd, banca_minima, sequencia_perdas, maior_sequencia_perdas
+        nonlocal banca, sequencia_perdas, maior_sequencia_perdas
         liberadas = sorted((p for p in posicoes_abertas if p[0] <= ts_ref), key=lambda p: p[0])
         for pos in liberadas:
             posicoes_abertas.remove(pos)
+            tokens_com_posicao_aberta.discard(pos[3])
             banca += pos[1] + pos[2]
-            curva.append((pos[0], banca))
-            peak = max(peak, banca)
-            banca_minima = min(banca_minima, banca)
-            dd_usd = peak - banca
-            max_dd_usd = max(max_dd_usd, dd_usd)
-            dd_pct = 100.0 * dd_usd / peak if peak > 0 else 0.0
-            max_dd_pct = max(max_dd_pct, dd_pct)
+            marcar_equity(pos[0])
             if pos[2] < 0:
                 sequencia_perdas += 1
                 maior_sequencia_perdas = max(maior_sequencia_perdas, sequencia_perdas)
@@ -490,6 +520,9 @@ def _executar_ledger(
             continue   # horizonte ainda nao decorreu -- nunca excluido do relatorio, so sem $/R ainda
         if trade.status_72h == "sem_dado" or trade.r_72h is None:
             continue   # entrada nunca valida -- nunca um trade de verdade (nem pra carteira nem pra R)
+        if uma_por_token and trade.token in tokens_com_posicao_aberta:
+            pular("token_ja_aberto")
+            continue
         if len(posicoes_abertas) >= max_posicoes:
             pular("sem_vaga")
             continue
@@ -506,10 +539,14 @@ def _executar_ledger(
         r_sem_custo_fixo = trade.r_72h - slippage_total_r
         custo_fixo_r = custo_fixo / (tamanho_usd * risk_frac)
         r_final = r_sem_custo_fixo - custo_fixo_r
-        resultado_usd = tamanho_usd * r_final * risk_frac
+        net_frac = max(r_final * risk_frac, -MAX_PERDA_FRAC)   # A1: nunca perde mais que o principal
+        resultado_usd = tamanho_usd * net_frac
         banca -= tamanho_usd   # o principal fica travado (nunca disponivel pra outra entrada) ate a
                                # LIBERACAO devolver principal+resultado.
-        posicoes_abertas.append([trade.t_entrada + HORIZONTES_S["72h"], tamanho_usd, resultado_usd])
+        posicoes_abertas.append([trade.t_entrada + HORIZONTES_S["72h"], tamanho_usd, resultado_usd, trade.token])
+        tokens_com_posicao_aberta.add(trade.token)
+        marcar_equity(trade.t_entrada)   # patrimonio NUNCA muda so por abrir (debito=valor investido),
+                                        # mas o ponto entra na curva/peak continuamente (A1).
         resultados_usd.append(resultado_usd)
         r_valores.append(r_final)
         r_sem_custo_fixo_valores.append(r_sem_custo_fixo)
@@ -520,7 +557,7 @@ def _executar_ledger(
     liberar(float("inf"))   # realiza o que sobrou, pra banca/drawdown finais ficarem corretos
 
     return dict(
-        banca_final=banca, banca_minima=banca_minima, max_dd_pct=max_dd_pct, max_dd_usd=max_dd_usd,
+        banca_final=banca, banca_minima=patrimonio_minimo, max_dd_pct=max_dd_pct, max_dd_usd=max_dd_usd,
         maior_sequencia_perdas=maior_sequencia_perdas, resultados_usd=resultados_usd, r_valores=r_valores,
         r_sem_custo_fixo_valores=r_sem_custo_fixo_valores, slippage_r_valores=slippage_r_valores,
         inverso_tamanho_risk=inverso_tamanho_risk, por_token=por_token, tokens=tokens, curva=curva,
@@ -532,7 +569,7 @@ def probabilidade_ruina_bootstrap(
     trades: list[TradeV3], regra_tamanho: str, slippage_nome: str, custo_fixo_nome: str,
     banca_inicial: float, max_posicoes: int = MAX_POSICOES_PADRAO,
     max_volume_pct: float = MAX_VOLUME_PCT_PADRAO, fracao_ruina: float = FRACAO_RUINA,
-    n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO,
+    n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO, uma_por_token: bool = True,
 ) -> Optional[float]:
     """P(a banca cai abaixo de `fracao_ruina` x `banca_inicial` em algum ponto), bootstrap por TOKEN
     (blocos) sobre uma linha do TEMPO SINTETICA (blocos concatenados em sequencia, nunca a data real
@@ -558,7 +595,7 @@ def probabilidade_ruina_bootstrap(
                 amostra.append(dataclasses.replace(t, t_entrada=t_sintetico))
                 t_sintetico += passo_sintetico
         resultado = _executar_ledger(amostra, regra_tamanho, slippage_nome, custo_fixo_nome, banca_inicial,
-                                     max_posicoes, max_volume_pct)
+                                     max_posicoes, max_volume_pct, uma_por_token=uma_por_token)
         if resultado["banca_minima"] < limite_ruina:
             ruinas += 1
     return 100.0 * ruinas / n_bootstrap
@@ -567,14 +604,14 @@ def probabilidade_ruina_bootstrap(
 def simular_carteira(
     trades: list[TradeV3], origem: str, regra_tamanho: str, slippage_nome: str, custo_fixo_nome: str,
     banca_inicial: float, max_posicoes: int = MAX_POSICOES_PADRAO, max_volume_pct: float = MAX_VOLUME_PCT_PADRAO,
-    calcular_ruina: bool = True,
+    calcular_ruina: bool = True, uma_por_token: bool = True,
 ) -> ResultadoCarteira:
     """1 ledger cronologico. Desfecho PRIMARIO = R marcado a mercado em 72h (`status_72h`/`r_72h`) --
     `pendente` NUNCA conta como perda, so fica fora da amostra ainda. `calcular_ruina=False` pula o
-    bootstrap de ruina (10k reamostras) -- usado pelo grid de custo/slippage pra nao pagar o custo
-    9x; a combinacao principal do relatorio sempre calcula."""
+    bootstrap de ruina (10k reamostras) -- usado pelo grid de custo/slippage e pela sensibilidade a
+    `max_posicoes` pra nao pagar o custo Nx (A5); a combinacao principal do relatorio sempre calcula."""
     r = _executar_ledger(trades, regra_tamanho, slippage_nome, custo_fixo_nome, banca_inicial,
-                         max_posicoes, max_volume_pct)
+                         max_posicoes, max_volume_pct, uma_por_token=uma_por_token)
     resultados_usd, r_valores = r["resultados_usd"], r["r_valores"]
     r_mediano = statistics.median(r_valores) if r_valores else None
     r_medio = statistics.fmean(r_valores) if r_valores else None
@@ -588,7 +625,8 @@ def simular_carteira(
     ponto_equilibrio = (media_r_sem_custo / media_inv) if (media_inv and media_r_sem_custo is not None) else None
     custo_fixo = CUSTO_FIXO_VARIANTES[custo_fixo_nome]
     prob_ruina = probabilidade_ruina_bootstrap(trades, regra_tamanho, slippage_nome, custo_fixo_nome,
-                                               banca_inicial, max_posicoes, max_volume_pct) \
+                                               banca_inicial, max_posicoes, max_volume_pct,
+                                               uma_por_token=uma_por_token) \
         if calcular_ruina else None
     return ResultadoCarteira(
         origem=origem, regra_tamanho=regra_tamanho, slippage_variante=slippage_nome,
@@ -635,6 +673,37 @@ def _resumo_amostra(trades: list[TradeV3], titulo: str, now: float) -> list[str]
     if rs:
         out.append(f"R primario (72h): media={statistics.fmean(rs):+.2f} | mediana={statistics.median(rs):+.2f} "
                   f"(n={len(rs)})")
+    out.append("")
+    return out
+
+
+def _resumo_criterios_oportunidade(trades: list[TradeV3]) -> list[str]:
+    """PEDIDO 2026-11-05 (A2): V_oportunidade deu igual a V10 -- reporta, separado, quantos sinais
+    satisfazem CADA criterio de upgrade e quantos tem os campos ausentes (nunca silencioso sobre
+    dado faltante). Se nenhum sinal passa em algum criterio, diz isso explicitamente."""
+    n = len(trades)
+    if n == 0:
+        return ["(sem sinais nesta origem para avaliar os criterios de V_oportunidade)", ""]
+    sem_volume_gatilho = sum(1 for t in trades if t.volume_gatilho is None)
+    sem_volume_medio = sum(1 for t in trades if t.volume_medio_24h is None)
+    sem_n_pavios = sum(1 for t in trades if t.n_pavios is None)
+    sem_volume_entrada = sum(1 for t in trades if t.volume_entrada is None)
+    passa_volume_gatilho = sum(1 for t in trades if t.volume_gatilho is not None and t.volume_medio_24h
+                               and t.volume_gatilho >= 2.0 * t.volume_medio_24h)
+    passa_pavios = sum(1 for t in trades if t.n_pavios == 3)
+    passa_qualidade = sum(1 for t in trades if t.volume_gatilho is not None and t.volume_medio_24h
+                          and t.volume_gatilho >= 2.0 * t.volume_medio_24h and t.n_pavios == 3)
+    passa_entrada_forte = sum(1 for t in trades if t.volume_entrada is not None and t.volume_medio_24h
+                              and t.volume_entrada >= 0.5 * t.volume_medio_24h)
+    out = [f"Criterios de V_oportunidade (n={n}):",
+          f"  volume do gatilho >=2x media 24h: {passa_volume_gatilho}/{n} (sem dado: {sem_volume_gatilho})",
+          f"  n_pavios==3: {passa_pavios}/{n} (sem dado: {sem_n_pavios})",
+          f"  AMBOS (qualifica p/ US$25+): {passa_qualidade}/{n}",
+          f"  volume de entrada >=50% media 24h: {passa_entrada_forte}/{n} (sem dado: {sem_volume_entrada})",
+          f"  media 24h ausente (nenhum dos 2 criterios pode avaliar): {sem_volume_medio}/{n}"]
+    if passa_qualidade == 0:
+        out.append("  NENHUM sinal desta origem satisfez o criterio de qualidade -- V_oportunidade "
+                  "sempre cai no US$10 base aqui (explica o resultado igual a V10).")
     out.append("")
     return out
 
@@ -704,45 +773,131 @@ def _formatar_grid_custos(trades: list[TradeV3], banca_inicial: float, max_posic
     return out
 
 
+PIOR_SLIPPAGE = "+0.3R"
+PIOR_CUSTO_FIXO = "US$0.30"
+
+
+def _formatar_sensibilidade_max_posicoes(trades: list[TradeV3], banca_inicial: float, max_volume_pct: float,
+                                         max_posicoes_configurado: int) -> list[str]:
+    """PEDIDO 2026-11-05 (A4): o teto de posicoes pula muitos sinais (uma posicao por token so libera
+    em 72h) -- compara o configurado com 10/25, SEM bootstrap de ruina (A5, caro demais pra rodar 3x
+    a mais aqui)."""
+    out = ["Sensibilidade ao teto de posicoes simultaneas (slippage base, custo fixo US$0.05):", ""]
+    valores = sorted({max_posicoes_configurado, *MAX_POSICOES_SENSIBILIDADE})
+    for max_pos in valores:
+        linhas_regra = []
+        for regra in REGRAS_TAMANHO:
+            r = simular_carteira(trades, "x", regra, "base", "US$0.05", banca_inicial, max_posicoes=max_pos,
+                                 max_volume_pct=max_volume_pct, calcular_ruina=False)
+            r_medio_txt = f"{r.r_medio:+.2f}" if r.r_medio is not None else "s/d"
+            sem_top3_txt = f"{r.r_medio_sem_top3:+.2f}" if r.r_medio_sem_top3 is not None else "s/d"
+            ic_txt = f"[{r.ic90_bootstrap[0]:+.2f},{r.ic90_bootstrap[1]:+.2f}]" if r.ic90_bootstrap else "s/d"
+            n_sem_vaga = r.pulados_por_motivo.get("sem_vaga", 0)
+            linhas_regra.append(f"{regra}: n={r.n_trades} (sem_vaga={n_sem_vaga}) R={r_medio_txt} "
+                               f"sem_top3={sem_top3_txt} IC90%={ic_txt}")
+        marca = " (configurado)" if max_pos == max_posicoes_configurado else ""
+        out.append(f"  max_posicoes={max_pos}{marca}:")
+        for linha in linhas_regra:
+            out.append(f"    {linha}")
+    out.append("")
+    return out
+
+
 def _tabela_origem_banca(trades: list[TradeV3], origem_label: str, banca_inicial: float,
-                         max_posicoes: int, max_volume_pct: float) -> list[str]:
+                         max_posicoes: int, max_volume_pct: float) -> tuple[list[str], list[ResultadoCarteira]]:
     if not trades:
-        return [f"### {origem_label} -- banca inicial US${banca_inicial:.0f}", "",
-               "(sem trades com desfecho definido ainda -- ver secao de amostra acima)", ""]
+        return ([f"### {origem_label} -- banca inicial US${banca_inicial:.0f}", "",
+                "(sem trades com desfecho definido ainda -- ver secao de amostra acima)", ""], [])
     resultados = [simular_carteira(trades, origem_label, regra, "base", "US$0.05", banca_inicial,
                                    max_posicoes=max_posicoes, max_volume_pct=max_volume_pct, calcular_ruina=True)
                  for regra in REGRAS_TAMANHO]
+    # A4: pior cenario de custo (slippage +0,3R, custo fixo US$0,30) -- FULL stats, nunca so o R
+    # convertido (ja no grid abaixo); com bootstrap de ruina (A5: so base + pior, nunca os 9 combos).
+    resultados_pior = [simular_carteira(trades, origem_label, regra, PIOR_SLIPPAGE, PIOR_CUSTO_FIXO, banca_inicial,
+                                        max_posicoes=max_posicoes, max_volume_pct=max_volume_pct, calcular_ruina=True)
+                       for regra in REGRAS_TAMANHO]
     out = [f"### {origem_label} -- banca inicial US${banca_inicial:.0f} (slippage base, custo fixo US$0.05)", ""]
     out.extend(_formatar_tabela_carteira(resultados))
     out.extend(_formatar_detalhe_pulados(resultados))
+    out.append(f"#### {origem_label} -- PIOR CENARIO DE CUSTO (slippage {PIOR_SLIPPAGE}, custo fixo "
+              f"{PIOR_CUSTO_FIXO})")
+    out.append("")
+    out.extend(_formatar_tabela_carteira(resultados_pior))
+    out.extend(_formatar_detalhe_pulados(resultados_pior))
     out.extend(_formatar_grid_custos(trades, banca_inicial, max_posicoes, max_volume_pct))
-    return out
+    out.extend(_formatar_sensibilidade_max_posicoes(trades, banca_inicial, max_volume_pct, max_posicoes))
+    return out, resultados
+
+
+def _escrever_csv(path: Path, linhas_csv: list[dict[str, Any]]) -> None:
+    import csv as _csv
+    if not linhas_csv:
+        return
+    campos = list(linhas_csv[0].keys())
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=campos)
+        writer.writeheader()
+        writer.writerows(linhas_csv)
+
+
+def _linha_csv(r: ResultadoCarteira, banca_cenario: float) -> dict[str, Any]:
+    return {
+        "banca_cenario": banca_cenario, "origem": r.origem, "regra": r.regra_tamanho,
+        "slippage": r.slippage_variante, "custo_fixo": r.custo_fixo_variante,
+        "banca_final_usd": round(r.banca_final, 2), "retorno_pct": round(r.retorno_pct, 2),
+        "max_drawdown_pct": round(r.max_drawdown_pct, 2), "max_drawdown_usd": round(r.max_drawdown_usd, 2),
+        "maior_sequencia_perdas": r.maior_sequencia_perdas, "n_trades": r.n_trades, "n_tokens": r.n_tokens,
+        "prob_ruina_pct": r.prob_ruina_pct, "r_medio": r.r_medio, "r_mediano": r.r_mediano,
+        "r_medio_sem_top3": r.r_medio_sem_top3,
+        "ic90_lo": r.ic90_bootstrap[0] if r.ic90_bootstrap else None,
+        "ic90_hi": r.ic90_bootstrap[1] if r.ic90_bootstrap else None,
+        "ponto_equilibrio_custo_fixo_usd": r.ponto_equilibrio_custo_fixo_usd,
+        "pulados_total": sum(r.pulados_por_motivo.values()), "entradas_reduzidas": r.n_entradas_reduzidas,
+    }
 
 
 def relatorio(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3], now: float,
              bancas: tuple[float, ...] = BANCA_CENARIOS_PADRAO, max_posicoes: int = MAX_POSICOES_PADRAO,
-             max_volume_pct: float = MAX_VOLUME_PCT_PADRAO) -> str:
+             max_volume_pct: float = MAX_VOLUME_PCT_PADRAO, csv_path: Optional[Path] = None,
+             progresso: bool = True) -> str:
+    import sys as _sys
+
+    def status(msg: str) -> None:
+        if progresso:
+            print(f"[simular_v3_carteira] {msg}", file=_sys.stderr, flush=True)
+
     out = ["# simular_v3_carteira -- carteira sobre sinais V3", "", f"AVISO: {AVISO}", ""]
     out.extend(_resumo_amostra(ao_vivo, "ao_vivo (V3)", now))
+    out.extend(_resumo_criterios_oportunidade(ao_vivo))
     out.extend(_resumo_amostra(retro, "retro_lote1 (V3, HIPOTETICO -- amostra dentro da amostra)", now))
+    out.extend(_resumo_criterios_oportunidade(retro))
     out.extend(_resumo_amostra(replay, "replay_v3 (EXPLORATORIO, HIPOTETICO -- amostra dentro da amostra)", now))
+    out.extend(_resumo_criterios_oportunidade(replay))
     out.extend(_resumo_overlap_tokens(ao_vivo, retro, replay))
     out.append(f"tetos: {PCT_SUPPLY_MAX}% do supply | {max_volume_pct}% do volume do candle de entrada | "
-              f"max {max_posicoes} posicoes simultaneas | exposicao total <=100% da banca | entrada minima "
-              f"US${VALOR_MINIMO_USD:.0f}")
+              f"max {max_posicoes} posicoes simultaneas (uma por TOKEN por vez) | exposicao total <=100% "
+              f"da banca | entrada minima US${VALOR_MINIMO_USD:.0f}")
     out.append("")
+    linhas_csv: list[dict[str, Any]] = []
     for banca in bancas:
         out.append(f"## Carteira -- banca US${banca:.0f}")
         out.append("")
-        out.extend(_tabela_origem_banca(ao_vivo, "ao_vivo", banca, max_posicoes, max_volume_pct))
-        out.extend(_tabela_origem_banca(retro, "retro_lote1 (HIPOTETICO)", banca, max_posicoes, max_volume_pct))
-        out.extend(_tabela_origem_banca(replay, "replay_v3 (HIPOTETICO)", banca, max_posicoes, max_volume_pct))
+        for trades, label in ((ao_vivo, "ao_vivo"), (retro, "retro_lote1 (HIPOTETICO)"),
+                              (replay, "replay_v3 (HIPOTETICO)")):
+            status(f"banca US${banca:.0f} | {label} ({len(trades)} sinais)...")
+            bloco, resultados = _tabela_origem_banca(trades, label, banca, max_posicoes, max_volume_pct)
+            out.extend(bloco)
+            linhas_csv.extend(_linha_csv(r, banca) for r in resultados)
     out.append(f"({AVISO})")
+    if csv_path is not None:
+        _escrever_csv(csv_path, linhas_csv)
+        out.append(f"(tabela principal tambem gravada em {csv_path})")
     return "\n".join(out)
 
 
 def executar(db_path: Path, desde: Optional[str] = None, banca: Optional[float] = None,
-            max_posicoes: int = MAX_POSICOES_PADRAO, max_volume_pct: float = MAX_VOLUME_PCT_PADRAO) -> str:
+            max_posicoes: int = MAX_POSICOES_PADRAO, max_volume_pct: float = MAX_VOLUME_PCT_PADRAO,
+            csv_path: Optional[Path] = None, progresso: bool = True) -> str:
     paths = dataclasses.replace(make_paths(), db=db_path, dados=db_path.parent)
     storage = Storage(paths)
     now = time.time()
@@ -754,7 +909,7 @@ def executar(db_path: Path, desde: Optional[str] = None, banca: Optional[float] 
     replay = carregar_replay_v3(db_path, now)
     bancas = (banca,) if banca is not None else BANCA_CENARIOS_PADRAO
     return relatorio(ao_vivo, retro, replay, now, bancas=bancas, max_posicoes=max_posicoes,
-                     max_volume_pct=max_volume_pct)
+                     max_volume_pct=max_volume_pct, csv_path=csv_path, progresso=progresso)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -767,9 +922,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-posicoes", type=int, default=MAX_POSICOES_PADRAO)
     parser.add_argument("--max-volume-pct", type=float, default=MAX_VOLUME_PCT_PADRAO,
                         help="teto: posicao nunca > X%% do volume do candle de entrada")
+    parser.add_argument("--csv", type=Path, default=None, help="grava a tabela principal (base) tambem em CSV")
+    parser.add_argument("--sem-progresso", action="store_true", help="nao imprime progresso em stderr")
     args = parser.parse_args(argv)
     print(executar(args.db, desde=args.desde, banca=args.banca, max_posicoes=args.max_posicoes,
-                  max_volume_pct=args.max_volume_pct))
+                  max_volume_pct=args.max_volume_pct, csv_path=args.csv, progresso=not args.sem_progresso))
     return 0
 
 

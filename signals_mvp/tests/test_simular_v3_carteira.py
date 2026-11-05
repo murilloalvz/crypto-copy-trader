@@ -300,5 +300,144 @@ class ExecutarSmokeTests(unittest.TestCase):
         self.assertEqual(trades, [])
 
 
+class A1PerdaTravadaETests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (A1): uma posicao a vista, sem alavancagem, nunca pode perder mais do que
+    investiu -- mesmo com R marcado a mercado muito negativo (ex.: token que despencou 95%)."""
+
+    def test_resultado_usd_nunca_excede_o_principal_investido_em_modulo(self) -> None:
+        # r_72h=-20 (extremo) x risk_frac=0.2 = -4.0 (-400%) SEM o teto -- com o teto, trava em -100%.
+        trades = [_trade_minimo(token="A", t_entrada=0.0, r_72h=-20.0)]
+        r = svc.simular_carteira(trades, "ao_vivo", "V25", "base", "US$0.05", 250.0, calcular_ruina=False)
+        self.assertEqual(r.n_trades, 1)
+        self.assertGreaterEqual(r.banca_final, 250.0 - 25.0 - 1e-6)   # nunca perde mais que os US$25 investidos
+
+    def test_maxdd_em_usd_nunca_excede_o_total_investido_num_unico_round(self) -> None:
+        # 4 posicoes de US$25 simultaneas (max_posicoes=4), todas com perda extrema -- o drawdown
+        # maximo em US$ tem que ficar <= 4*US$25=US$100 (o capital REALMENTE arriscado), nunca mais.
+        trades = [_trade_minimo(token=t, t_entrada=0.0, r_72h=-20.0) for t in ("A", "B", "C", "D")]
+        r = svc.simular_carteira(trades, "ao_vivo", "V25", "base", "US$0.05", 250.0, max_posicoes=4,
+                                 calcular_ruina=False)
+        self.assertEqual(r.n_trades, 4)
+        self.assertLessEqual(r.max_drawdown_usd, 4 * 25.0 + 1e-6)
+
+
+class A1EquityContinuaTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (A1): patrimonio (caixa + posicoes abertas a custo) rastreado a cada evento
+    -- abrir uma posicao NUNCA aparenta "drawdown" so por travar o principal (o patrimonio fica
+    invariante nesse instante; so muda quando a posicao de fato libera com resultado real)."""
+
+    def test_abrir_varias_posicoes_sem_liberar_nenhuma_nao_gera_drawdown_falso(self) -> None:
+        trades = [_trade_minimo(token=t, t_entrada=0.0, r_72h=0.0) for t in ("A", "B", "C", "D")]
+        r = svc.simular_carteira(trades, "ao_vivo", "V25", "base", "US$0.05", 250.0, max_posicoes=4,
+                                 calcular_ruina=False)
+        # 4 entradas de US$25 ao MESMO tempo travam US$100 do caixa, mas o patrimonio (caixa+posicoes)
+        # fica em 250 o tempo todo (r_72h=0, sem custo zerado so pelo coeficiente) -- dd deve ficar perto de 0.
+        self.assertLess(r.max_drawdown_usd, 5.0)   # so o atrito de custo fixo/impacto, nunca travamento
+
+
+class A2CriteriosOportunidadeTests(unittest.TestCase):
+    def test_reporta_quantos_passam_em_cada_criterio_e_sem_dado(self) -> None:
+        trades = [
+            _trade_minimo(token="A", volume_gatilho=100.0, volume_medio_24h=40.0, n_pavios=3,
+                         volume_entrada=25.0),   # passa tudo
+            _trade_minimo(token="B", volume_gatilho=50.0, volume_medio_24h=40.0, n_pavios=2,
+                         volume_entrada=5.0),    # nao passa nada
+            _trade_minimo(token="C", volume_gatilho=None, volume_medio_24h=None, n_pavios=None,
+                         volume_entrada=None),   # sem dado
+        ]
+        linhas = svc._resumo_criterios_oportunidade(trades)
+        texto = "\n".join(linhas)
+        self.assertIn("volume do gatilho >=2x media 24h: 1/3", texto)
+        self.assertIn("n_pavios==3: 1/3", texto)
+        self.assertIn("AMBOS (qualifica p/ US$25+): 1/3", texto)
+
+    def test_sem_nenhum_sinal_qualificado_avisa_explicitamente(self) -> None:
+        trades = [_trade_minimo(token="A", volume_gatilho=10.0, volume_medio_24h=40.0, n_pavios=1)]
+        texto = "\n".join(svc._resumo_criterios_oportunidade(trades))
+        self.assertIn("NENHUM sinal desta origem satisfez o criterio de qualidade", texto)
+
+    def test_sem_trades_nunca_crasha(self) -> None:
+        texto = "\n".join(svc._resumo_criterios_oportunidade([]))
+        self.assertIn("sem sinais", texto)
+
+
+class A3UmaPorTokenTests(unittest.TestCase):
+    def test_2o_sinal_do_mesmo_token_pula_e_conta_token_ja_aberto(self) -> None:
+        trades = [
+            _trade_minimo(token="CAT", t_entrada=0.0, r_72h=1.0),
+            _trade_minimo(token="CAT", t_entrada=10.0, r_72h=1.0),   # mesmo token, ainda aberto
+        ]
+        r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
+                                 calcular_ruina=False)
+        self.assertEqual(r.n_trades, 1)
+        self.assertEqual(r.pulados_por_motivo.get("token_ja_aberto"), 1)
+
+    def test_tokens_diferentes_nunca_bloqueiam_entre_si(self) -> None:
+        trades = [
+            _trade_minimo(token="CAT", t_entrada=0.0, r_72h=1.0),
+            _trade_minimo(token="DOG", t_entrada=10.0, r_72h=1.0),
+        ]
+        r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
+                                 calcular_ruina=False)
+        self.assertEqual(r.n_trades, 2)
+
+    def test_apos_liberar_o_mesmo_token_pode_entrar_de_novo(self) -> None:
+        passo = svc.HORIZONTES_S["72h"] + 1
+        trades = [
+            _trade_minimo(token="CAT", t_entrada=0.0, r_72h=1.0),
+            _trade_minimo(token="CAT", t_entrada=passo, r_72h=1.0),   # so depois que o 1o liberou
+        ]
+        r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
+                                 calcular_ruina=False)
+        self.assertEqual(r.n_trades, 2)
+        self.assertEqual(r.pulados_por_motivo.get("token_ja_aberto"), None)
+
+    def test_uma_por_token_desligado_permite_2_posicoes_do_mesmo_token(self) -> None:
+        trades = [
+            _trade_minimo(token="CAT", t_entrada=0.0, r_72h=1.0),
+            _trade_minimo(token="CAT", t_entrada=10.0, r_72h=1.0),
+        ]
+        r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
+                                 calcular_ruina=False, uma_por_token=False)
+        self.assertEqual(r.n_trades, 2)
+
+
+class A6CsvTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="simular_v3_carteira_csv_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_csv_path_grava_um_arquivo_com_cabecalho(self) -> None:
+        import csv as _csv
+        signal_id = self.storage.pr3_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v3": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "aberto", "entry_price": 100.0, "stop": 80.0, "topo": 10_000.0,
+            "s_suporte": 50.0, "r_resistencia": 90.0, "n_pavios": 3,
+        })
+        self.storage.pr_trajetoria_upsert("v3", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=4_600.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        bars = _bars_vol([
+            (100, 101, 99, 100, 10.0), (100, 102, 96, 101, 10.0),
+            (101, 103, 95, 102, 10.0), (102, 104, 95, 103, 10.0),
+        ])
+        self.storage.pr_append_bars("POOL1", "1h", [(b.ts, b.open, b.high, b.low, b.close, b.volume,
+                                                     int(b.filled)) for b in bars])
+        csv_path = self.tmp / "saida.csv"
+        texto = svc.executar(self.storage.paths.db, banca=250.0, csv_path=csv_path, progresso=False)
+        self.assertTrue(csv_path.exists())
+        with csv_path.open() as f:
+            linhas = list(_csv.DictReader(f))
+        self.assertGreater(len(linhas), 0)
+        self.assertIn("regra", linhas[0])
+        self.assertIn(str(csv_path), texto)
+
+
 if __name__ == "__main__":
     unittest.main()
