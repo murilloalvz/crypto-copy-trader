@@ -31,7 +31,7 @@ so leitura do que ja esta cacheado em `pr_bars`.
 
 CORRECAO 2026-11-05 (mesma frente, sem tocar V1/V2/V3/H1/sinais/hashes):
 
-1) `_candle_corrompido_provavel`: candle com volume=0 (inclui lacuna preenchida por `fill_gaps`, nunca
+1) `candle_corrompido_provavel`: candle com volume=0 (inclui lacuna preenchida por `fill_gaps`, nunca
    negociacao real) OU `high` > 10x o `high` de AMBOS os vizinhos (pico isolado, provavel erro de
    dado) NUNCA decide MFE/MAE -- descartado e contado por janela (`n_candles_corrompidos_descartados`),
    nunca silencioso. Retrospectivo, nunca o mesmo veto causal de `qualidade_candle.py` (V1/V2/V3).
@@ -75,7 +75,7 @@ from typing import Any, Optional
 
 from ..analise.condicional import RISCO_IRREALISTA_MIN_PCT, _contaminado_candle, _risco_irrealista
 from ..config import make_paths
-from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.candles import Bar, candle_corrompido_provavel, tf_seconds
 from ..pos_runner.costs import CostModel
 from ..pos_runner.detector_v1 import DetectorV1
 from ..pos_runner.evidencia import JANELA_FECHAMENTO_H, r_de
@@ -94,29 +94,12 @@ def _signals_de(storage: Storage, versao: str) -> list[Any]:
     return {"v1": storage.pr1_signals, "v2": storage.pr2_signals, "v3": storage.pr3_signals}[versao]()
 
 
-def _candle_corrompido_provavel(bars: list[Bar], idx: int) -> bool:
-    """PEDIDO 2026-11-05 (correcao FRENTE A): candle sem NENHUMA negociacao real (volume=0 -- inclui
-    as lacunas que `pos_runner/candles.py: fill_gaps` preenche pro detector contar duracao, nunca
-    negociacao de verdade) OU `high` > 10x o `high` de AMBOS os vizinhos (pico isolado, provavel erro
-    de dado) NUNCA decide o MFE/MAE deste relatorio. So os DOIS vizinhos existindo decide o 2o
-    criterio (nunca marca na borda da serie, onde so ha 1 vizinho pra comparar). Puramente
-    retrospectivo -- NUNCA o mesmo veto causal de `qualidade_candle.motivo_suspeito` (que decide
-    ENTRADA/TP1/saida ao vivo em V1/V2/V3, intocado aqui)."""
-    bar = bars[idx]
-    if bar.volume == 0.0:
-        return True
-    if idx - 1 < 0 or idx + 1 >= len(bars):
-        return False
-    anterior, seguinte = bars[idx - 1], bars[idx + 1]
-    return bar.high > 10.0 * anterior.high and bar.high > 10.0 * seguinte.high
-
-
 def _extremos_na_janela(bars: list[Bar], j0: int, entry_ts: float, step: int, entry_price: float,
                         risco_frac: Optional[float], h_lo_excl: float, h_hi_incl: float
                         ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], int]:
     """Mesmo criterio/janela de `evidencia.calcular_trajetoria` (ranking por R e por % sao a MESMA
     ordem, pois dividir por `risco_frac`>0 preserva o maximo/minimo) -- aqui guarda tambem o indice do
-    candle, nunca so o valor. Candle `_candle_corrompido_provavel` nunca concorre ao MFE/MAE (so
+    candle, nunca so o valor. Candle `candle_corrompido_provavel` nunca concorre ao MFE/MAE (so
     conta no 3o valor devolvido -- quantos foram descartados nesta janela, nunca silencioso)."""
     mfe = mae = None
     n_descartados = 0
@@ -127,7 +110,7 @@ def _extremos_na_janela(bars: list[Bar], j0: int, entry_ts: float, step: int, en
             continue
         if h > h_hi_incl + 1e-9:
             break
-        if _candle_corrompido_provavel(bars, j):
+        if candle_corrompido_provavel(bars, j):
             n_descartados += 1
             continue
         pct_high = 100.0 * (bar.high / entry_price - 1.0)
@@ -354,7 +337,7 @@ def _deduplicar_por_entrada(resultados: list[dict[str, Any]]) -> list[dict[str, 
 
 def resumo(resultados: list[dict[str, Any]], deduplicar: bool = True) -> dict[str, Any]:
     """PEDIDO 2026-11-04/05: so os FECHADOS (tem janela `durante_posicao`), SO candles limpos (MFE/MAE
-    ja excluem `_candle_corrompido_provavel` em `_extremos_na_janela`) e, por padrao, deduplicados por
+    ja excluem `candle_corrompido_provavel` em `_extremos_na_janela`) e, por padrao, deduplicados por
     trade real (`_deduplicar_por_entrada` -- nunca conta o mesmo trade 3x so por V1/V2/V3 coincidirem).
     Quantos lucraram em algum momento antes da saida (MFE>0 na janela `durante_posicao`); MFE tipico em
     R (mediana, so risco>=3%); tokens distintos que chegaram a +1R/+2R durante a posicao; trades que

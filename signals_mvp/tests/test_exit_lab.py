@@ -26,6 +26,13 @@ def _bars(spec: list[tuple[float, float, float, float]], ts0: int = 1_000, step:
     return [Bar(ts0 + i * step, o, h, l, c, 0.0, False) for i, (o, h, l, c) in enumerate(spec)]
 
 
+def _bars_vol(spec: list[tuple[float, float, float, float, float]], ts0: int = 1_000,
+             step: int = 3_600) -> list[Bar]:
+    # PEDIDO 2026-11-05 (item 1): `_bars` tem volume=0.0 fixo (todo candle fica `candle_corrompido_
+    # provavel`) -- a marcacao a mercado precisa de volume>0 pra achar um candle limpo pra marcar.
+    return [Bar(ts0 + i * step, o, h, l, c, v, False) for i, (o, h, l, c, v) in enumerate(spec)]
+
+
 class VarianteBTests(unittest.TestCase):
     def test_stop_so_sobe_para_o_breakeven_depois_de_1x_a_altura_da_caixa(self) -> None:
         bars = _bars([
@@ -107,6 +114,99 @@ class VarianteDTests(unittest.TestCase):
                                  dex="desconhecido", l_bc=None)
         self.assertEqual(r.reason, "stop")
         self.assertEqual(r.bars_held, 2)
+
+
+class MarcacaoAMercadoTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (item 1): corrige o vies de selecao de `_mesma_amostra` -- em_aberto nunca
+    mais e so excluido; o restante aberto e valorizado no ultimo candle LIMPO."""
+
+    def test_variante_b_em_aberto_e_valorizada_no_ultimo_close_limpo(self) -> None:
+        bars = _bars_vol([
+            (100, 105, 95, 102, 100.0),   # nunca toca o stop (80) nem a altura da caixa
+            (102, 108, 98, 106, 100.0),
+            (106, 110, 101, 109, 100.0),  # ULTIMO candle, limpo -- marca aqui (close=109, +9%)
+        ])
+        costs = CostModel()
+        r = exit_lab._variante_b(bars, 0, entry=100.0, stop0=80.0, s=85.0, r=200.0, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertIsNone(r.net_ret)              # visao (i): nunca inventa um fechamento
+        self.assertTrue(r.marcado_a_mercado)
+        self.assertIsNotNone(r.net_ret_marcado)
+        self.assertGreater(r.net_ret_marcado, 0.0)   # marcado no close 109 (+9% bruto) -- positivo
+        self.assertEqual(r.candle_marca_ts, bars[-1].ts)
+
+    def test_marcacao_pula_candle_corrompido_e_usa_o_limpo_anterior(self) -> None:
+        # sem altura de caixa (s=r=None) -- o stop NUNCA move de 80, e nenhum low aqui toca 80.
+        bars = _bars_vol([
+            (100, 105, 95, 102, 100.0),
+            (102, 110, 98, 106, 0.0),    # volume=0 -- corrompido, NUNCA marca aqui
+            (106, 108, 101, 107, 100.0),  # limpo -- e o ultimo LIMPO depois que o 4o candle (abaixo)
+        ])
+        # 4o candle tambem corrompido (volume=0) -- a busca precisa voltar 2 candles, nao so 1.
+        bars_corrompidos_no_fim = bars + [exit_lab.Bar(bars[-1].ts + 3_600, 107, 112, 100, 105, 0.0, False)]
+        costs = CostModel()
+        r = exit_lab._variante_b(bars_corrompidos_no_fim, 0, entry=100.0, stop0=80.0, s=None, r=None,
+                                 costs=costs, dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertTrue(r.marcado_a_mercado)
+        self.assertEqual(r.candle_marca_ts, bars[2].ts)   # o 3o candle (close=107), nunca o corrompido
+
+    def test_sem_nenhum_candle_limpo_na_serie_nunca_marca(self) -> None:
+        bars = _bars([(100, 105, 95, 102), (102, 108, 98, 106)])   # _bars = volume 0.0 em todos
+        costs = CostModel()
+        r = exit_lab._variante_b(bars, 0, entry=100.0, stop0=80.0, s=85.0, r=200.0, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertFalse(r.marcado_a_mercado)
+        self.assertIsNone(r.net_ret_marcado)
+
+    def test_variante_d_marca_so_a_fracao_ainda_aberta_mantendo_a_perna_ja_realizada(self) -> None:
+        bars = _bars_vol([
+            (100, 110, 95, 108, 100.0),
+            (108, 115, 104, 112, 100.0),
+            (112, 121, 108, 119, 100.0),   # toca o topo (121>=120) -- decide os 30% aqui
+            (119, 122, 117, 120, 100.0),   # executa os 30% a 119 (open); restam 70% abertos
+            (120, 123, 115, 121, 100.0),   # ULTIMO candle limpo -- marca os 70% restantes aqui (close=121)
+        ])
+        costs = CostModel()
+        params = load_params_v1()
+        r = exit_lab._variante_d(bars, 0, entry=100.0, stop0=80.0, topo=120.0, params=params, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertTrue(r.marcado_a_mercado)
+        # 30% ja realizado a 119 (+19%) + 70% marcado a 121 (+21%) -- os dois positivos, liquido positivo
+        self.assertGreater(r.net_ret_marcado, 0.0)
+
+
+class VisaoDuplaSemVieseDeSelecaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (item 1): reproduz o caso relatado (MOGZ/PEAK em_aberto na A, excluidos da
+    "mesma amostra" de hoje) -- a visao (ii) precisa INCLUIR esse trade, a (i) continua sem ele."""
+
+    def test_trade_em_aberto_na_a_e_excluido_da_visao_i_mas_entra_na_visao_ii(self) -> None:
+        linhas = [
+            _linha_variantes("MOGZ", "v3", "v1v2v3", {
+                # A em_aberto (candidato a vencedor ainda correndo), B/C/D ja resolvidas.
+                "B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                "D_30pct_topo_trailing": (12.0, 0.6),
+            }, marcados={"A_atual": (40.0, 2.0)}),   # A marcada a mercado: +40% (ainda correndo, forte)
+        ]
+        so_resolvidos = exit_lab._mesma_amostra(linhas)
+        todos = exit_lab._todos_valorizados(linhas)
+        self.assertEqual(so_resolvidos, [])          # visao (i): MOGZ EXCLUIDO -- vies de selecao
+        self.assertEqual(len(todos), 1)               # visao (ii): MOGZ ENTRA, valorizado a mercado
+        self.assertAlmostEqual(todos[0]["A_atual"]["pct_marcado"], 40.0)
+
+    def test_formatar_bloco_mostra_as_2_visoes_e_a_contagem_de_marcados(self) -> None:
+        linhas = [
+            _linha_variantes("MOGZ", "v1", "v1v2v3",
+                            {"B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                             "D_30pct_topo_trailing": (12.0, 0.6)},
+                            marcados={"A_atual": (40.0, 2.0)}),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        self.assertIn("(i) SO RESOLVIDOS", texto)
+        self.assertIn("(ii) TODOS OS TRADES", texto)
+        self.assertIn("valorizados a mercado", texto)
 
 
 class ExecutarSmokeTests(unittest.TestCase):
@@ -295,17 +395,29 @@ class LinhasV3ReplayTests(unittest.TestCase):
 
 
 def _linha_variantes(token: str, versao: str, origem: str,
-                     resultados: dict[str, Optional[tuple[float, float]]]) -> dict[str, Any]:
-    """PEDIDO 2026-11-05 (PARTE 2): helper minimo -- `resultados[nome]` e `(pct, r)` ou ausente
-    (em_aberto, nenhum resultado definido para essa variante)."""
+                     resultados: dict[str, Optional[tuple[float, float]]],
+                     marcados: Optional[dict[str, tuple[float, float]]] = None) -> dict[str, Any]:
+    """PEDIDO 2026-11-05 (PARTE 2/item 1): helper minimo -- `resultados[nome]` e `(pct, r)` ou ausente
+    (em_aberto, nenhum resultado definido para essa variante). `marcados[nome]` (opcional) e
+    `(pct_marcado, r_marcado)` pra testar a visao (ii) especificamente quando em_aberto; se ausente,
+    em_aberto fica sem marcacao (`pct_marcado=None`) -- MESMO fallback de `_marcar_a_mercado` sem
+    candle limpo."""
     linha: dict[str, Any] = {"token": token, "versao": versao, "origem": origem, "risco_pct": 20.0}
     for nome in exit_lab.VARIANTES:
         par = resultados.get(nome)
+        marcado = (marcados or {}).get(nome)
         if par is None:
-            linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": ""}
+            if marcado is None:
+                linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": "",
+                               "pct_marcado": None, "r_marcado": None, "marcado_a_mercado": False}
+            else:
+                pct_m, r_m = marcado
+                linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": "",
+                               "pct_marcado": pct_m, "r_marcado": r_m, "marcado_a_mercado": True}
         else:
             pct, r = par
-            linha[nome] = {"status": "fechado", "pct": pct, "r": r, "motivo": "stop"}
+            linha[nome] = {"status": "fechado", "pct": pct, "r": r, "motivo": "stop",
+                           "pct_marcado": pct, "r_marcado": r, "marcado_a_mercado": False}
     return linha
 
 
