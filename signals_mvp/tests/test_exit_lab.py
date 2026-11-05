@@ -209,6 +209,55 @@ class VisaoDuplaSemVieseDeSelecaoTests(unittest.TestCase):
         self.assertIn("valorizados a mercado", texto)
 
 
+class EstatisticasExploratoriasVisaoIITests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): mediana de R, fracao do R total dos 3 maiores trades e IC
+    bootstrap (por token, seed fixa) -- SO na visao (ii), nunca na (i); nunca escolhe variante."""
+
+    def test_fracao_top3_soma_os_3_maiores_sobre_o_total(self) -> None:
+        # top3 = 10+8+6=24; total = 10+8+6+1-3 = 22; 24/22 ~= +109%.
+        txt = exit_lab._fracao_top3([10.0, 8.0, 6.0, 1.0, -3.0])
+        self.assertIsNotNone(txt)
+        self.assertIn("+109%", txt)
+
+    def test_fracao_top3_e_s_d_quando_soma_total_e_quase_zero(self) -> None:
+        self.assertIsNone(exit_lab._fracao_top3([5.0, -5.0]))
+
+    def test_bootstrap_ic_e_none_sem_nenhum_r_na_variante(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"B_breakeven_1x_caixa": (5.0, 0.25)})]
+        self.assertIsNone(exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r"))
+
+    def test_bootstrap_ic_e_deterministico_com_a_mesma_seed(self) -> None:
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 1.0)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {"A_atual": (20.0, 2.0)}),
+            _linha_variantes("ELK", "v1", "v1v2v3", {"A_atual": (-5.0, -0.5)}),
+        ]
+        ic1 = exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r")
+        ic2 = exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r")
+        self.assertIsNotNone(ic1)
+        self.assertEqual(ic1, ic2, "mesma seed/entrada -- mesmo IC, sempre reproduzivel")
+        self.assertLessEqual(ic1[0], ic1[1])
+
+    def test_visao_ii_mostra_as_3_estatisticas_e_a_i_nunca_mostra(self) -> None:
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3",
+                            {"B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                             "D_30pct_topo_trailing": (12.0, 0.6)},
+                            marcados={"A_atual": (40.0, 2.0)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {
+                "A_atual": (20.0, 1.0), "B_breakeven_1x_caixa": (15.0, 0.75),
+                "C_fechamento_1h_sob_teto": (10.0, 0.5), "D_30pct_topo_trailing": (10.0, 0.5)}),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        self.assertIn("EXPLORATORIO (n pequeno, NUNCA decide H1/futilidade/variante vencedora)", texto)
+        self.assertIn("mediana R=", texto)
+        self.assertIn("IC90% bootstrap=", texto)
+        bloco_v1 = texto.split("## ao_vivo / V1")[1].split("## ao_vivo / V2")[0]
+        visao_i, visao_ii = bloco_v1.split("(ii) TODOS OS TRADES")
+        self.assertNotIn("mediana R=", visao_i)
+        self.assertIn("mediana R=", visao_ii)
+
+
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="exit_lab_"))
@@ -465,21 +514,24 @@ class MediaEntreTokensTests(unittest.TestCase):
 class FormatarOrigemSeparadaTests(unittest.TestCase):
     def test_versao_compartilhada_nunca_mistura_ao_vivo_com_retro_ou_replay(self) -> None:
         # PEDIDO 2026-11-05 (PARTE 2c, bug relatado): retro_lote1/replay_v3 reusam o MESMO rotulo de
-        # `versao` ("v1"/"v2"/"v3") que ao_vivo -- a secao "## ao_vivo / V3" NUNCA pode contar RATO
-        # (retro) ou PATO (replay), so GATO (origem="v1v2v3").
+        # `versao` ("v1"/"v2"/"v3") que ao_vivo -- a secao "## ao_vivo / V3" NUNCA pode contar URSO
+        # (retro) ou PATO (replay), so GATO (origem="v1v2v3"). PEDIDO 2026-11-05 (PARTE 3): token
+        # trocado de RATO pra URSO -- "RATO" e substring acidental de "EXPLORATORIO" (label nova da
+        # visao ii, sempre presente), o que derrubava este teste por colisao de texto, nunca por
+        # mistura real de origem.
         todas_4 = {"A_atual": (10.0, 0.5), "B_breakeven_1x_caixa": (10.0, 0.5),
                   "C_fechamento_1h_sob_teto": (10.0, 0.5), "D_30pct_topo_trailing": (10.0, 0.5)}
         linhas = [
             _linha_variantes("GATO", "v3", "v1v2v3", todas_4),
-            _linha_variantes("RATO", "v3", "retro", todas_4),
+            _linha_variantes("URSO", "v3", "retro", todas_4),
             _linha_variantes("PATO", "v3", "v3_replay", todas_4),
         ]
         texto = exit_lab.formatar(linhas, {}, {}, 0)
         idx_v3 = texto.index("## ao_vivo / V3")
         idx_retro = texto.index("## retro_lote1")
         bloco_v3 = texto[idx_v3:idx_retro]
-        self.assertIn("n no grupo: 1", bloco_v3)   # SO GATO -- nunca RATO/PATO so por compartilhar "v3"
-        self.assertNotIn("RATO", bloco_v3)
+        self.assertIn("n no grupo: 1", bloco_v3)   # SO GATO -- nunca URSO/PATO so por compartilhar "v3"
+        self.assertNotIn("URSO", bloco_v3)
         self.assertNotIn("PATO", bloco_v3)
 
 

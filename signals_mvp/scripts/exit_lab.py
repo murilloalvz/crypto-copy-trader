@@ -75,7 +75,16 @@ import statistics
 from pathlib import Path
 from typing import Any, Optional
 
-from ..analise.condicional import RISCO_IRREALISTA_MIN_PCT, _contaminado_candle, _risco_irrealista
+import numpy as np
+
+from ..analise.condicional import (
+    CONFIANCA_H1,
+    N_BOOTSTRAP_PADRAO,
+    RISCO_IRREALISTA_MIN_PCT,
+    SEED_PADRAO,
+    _contaminado_candle,
+    _risco_irrealista,
+)
 from ..config import make_paths
 from ..pos_runner.candles import Bar, candle_corrompido_provavel, tf_seconds
 from ..pos_runner.costs import CostModel
@@ -482,6 +491,46 @@ def media_entre_tokens(resumo_tokens: list[dict[str, Any]]) -> dict[str, dict[st
     return out
 
 
+def _fracao_top3(rs: list[float]) -> Optional[str]:
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): fracao do R TOTAL (soma de `rs`) que vem dos 3 maiores
+    trades individuais -- SO relatorio, nunca decide nada. `None` (texto s/d) quando a soma total e
+    ~0 (denominador instavel, nunca dividido por quase-zero)."""
+    soma_total = sum(rs)
+    if abs(soma_total) < 1e-9:
+        return None
+    top3 = sum(sorted(rs, reverse=True)[:3])
+    return f"{100.0 * top3 / soma_total:+.0f}% (top3={top3:+.2f}R / total={soma_total:+.2f}R, n={len(rs)})"
+
+
+def _bootstrap_ic_por_token(linhas: list[dict[str, Any]], nome: str, campo_r: str,
+                            n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO,
+                            confianca: float = CONFIANCA_H1) -> Optional[tuple[float, float]]:
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): IC bootstrap EXPLORATORIO da media de R da variante `nome`
+    -- em blocos por TOKEN (preserva a correlacao entre sinais do mesmo token), MESMO metodo de
+    `analise.condicional.bootstrap_media_e_limite_inferior` (reaproveitado aqui so pra nao duplicar a
+    logica estatistica -- nunca decide H1/futilidade, so acompanha a visao (ii) deste script
+    exploratorio). `None` sem nenhum valor de R na amostra desta variante."""
+    grupos: dict[str, list[float]] = {}
+    for l in linhas:
+        r = l[nome][campo_r]
+        if r is not None:
+            grupos.setdefault(l["token"], []).append(r)
+    chaves = sorted(grupos)
+    n = len(chaves)
+    if n == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    medias = np.empty(n_bootstrap, dtype=float)
+    for i in range(n_bootstrap):
+        escolhidos = rng.integers(0, n, size=n)
+        valores = [v for idx in escolhidos for v in grupos[chaves[idx]]]
+        medias[i] = float(np.mean(valores)) if valores else 0.0
+    alpha = 1.0 - confianca
+    lo = float(np.percentile(medias, 100.0 * alpha / 2.0))
+    hi = float(np.percentile(medias, 100.0 * (1.0 - alpha / 2.0)))
+    return lo, hi
+
+
 def _formatar_visao(linhas_grupo: list[dict[str, Any]], titulo_visao: str, campo_pct: str, campo_r: str,
                     amostra_fn: Any) -> list[str]:
     """PEDIDO 2026-11-05 (item 1): UMA das duas visoes (i/ii) -- mesma amostra (n igual nas 4
@@ -504,6 +553,25 @@ def _formatar_visao(linhas_grupo: list[dict[str, Any]], titulo_visao: str, campo
         rs = [l[nome][campo_r] for l in comum if l[nome][campo_r] is not None]
         r_txt = f" | media R={_media(rs):+.2f} (n={len(rs)})" if rs else " | R: s/d"
         out.append(f"    {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)}){r_txt}")
+    if campo_pct == "pct_marcado":
+        # PEDIDO 2026-11-05 (PARTE 3, item 2): SO na visao (ii) -- mediana de R, fracao do R total dos
+        # 3 maiores trades, IC bootstrap por token (10000 reamostras, seed fixa). EXPLORATORIO (n
+        # pequeno, nunca decide H1/futilidade/variante vencedora -- so acompanha a media por sinal
+        # ja reportada acima, com mais robustez a outlier/caudas).
+        out.append("  EXPLORATORIO (n pequeno, NUNCA decide H1/futilidade/variante vencedora): mediana "
+                  "de R, fracao do R total vinda dos 3 maiores trades, IC90% bootstrap da media de R "
+                  "(blocos por token, 10000 reamostras, seed fixa):")
+        for nome in VARIANTES:
+            rs = [l[nome][campo_r] for l in comum if l[nome][campo_r] is not None]
+            if not rs:
+                out.append(f"    {nome}: s/d (sem R na amostra)")
+                continue
+            mediana_txt = f"{statistics.median(rs):+.2f}R"
+            frac_txt = _fracao_top3(rs) or "s/d (soma do R ~0)"
+            ic = _bootstrap_ic_por_token(comum, nome, campo_r)
+            ic_txt = f"[{ic[0]:+.2f}R, {ic[1]:+.2f}R]" if ic is not None else "s/d"
+            out.append(f"    {nome}: mediana R={mediana_txt} | top-3/total={frac_txt} | "
+                      f"IC90% bootstrap={ic_txt}")
     resumo_tokens = resumo_por_token(comum, campo_pct, campo_r)
     mt = media_entre_tokens(resumo_tokens)
     out.append(f"  Media ENTRE TOKENS ({len(resumo_tokens)} token(s) distinto(s), cada um pesa 1x):")
