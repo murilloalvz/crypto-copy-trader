@@ -464,6 +464,134 @@ def resumo_b3_gestao(sinais: list[SinalAuditoria], now: float) -> dict[float, Re
 
 
 # ---------------------------------------------------------------------------
+# B3b: variantes de saida pos-TP1 e alvo proximo (exploratorio, SEM escolher vencedora)
+#
+# (a) TP1 de 30% no 1o power candle apos a entrada OU no topo da caixa (R), em vez do TOPO anterior
+#     (P_peak) com exaustao -- trigger MAIS PROXIMO/conservador que a regra oficial, nunca a altera.
+# (b) apos o TP1, breakeven do restante (70%) no preco de entrada.
+# (c) apos o TP1, saida do restante no 1o fechamento de 1h abaixo do "fundo estrutural" (fundo mais
+#     alto confirmado -- swing low causal: bars[k].low < vizinhos, so confirmado 1 candle depois) OU
+#     de uma linha de tendencia de alta (regressao linear simples pelos fundos estruturais
+#     confirmados, extrapolada pro candle atual) -- usa-se o MAIOR dos dois (mais protetor).
+#
+# SIMPLIFICACAO EXPLICITA (nunca escondida): (b)/(c) sao tratados como um UNICO nivel de stop
+# dinamico (SEMPRE testado via `low`, mesma convencao causal de prioridade-do-stop usada em todo o
+# projeto) -- em vez de misturar um stop por `low` com um gatilho por `close` no mesmo candle, que
+# exigiria uma regra de prioridade NOVA, nunca pre-registrada. R final = media PONDERADA pela fracao
+# de cada perna (30% no TP1 + 70% no restante), MESMA convencao de `simulate_v1` pra blender legs.
+# ---------------------------------------------------------------------------
+
+
+def _atr20_antes(bars: list[Bar], idx: int, periodo: int = 20) -> Optional[float]:
+    if idx < periodo:
+        return None
+    trs = []
+    for k in range(idx - periodo, idx):
+        prev_close = bars[k - 1].close if k > 0 else bars[k].open
+        trs.append(max(bars[k].high - bars[k].low, abs(bars[k].high - prev_close), abs(bars[k].low - prev_close)))
+    return sum(trs) / periodo
+
+
+def _trendline_valor(pontos: list[tuple[int, float]], idx: int) -> Optional[float]:
+    if len(pontos) < 2:
+        return None
+    n = len(pontos)
+    xs, ys = [p[0] for p in pontos], [p[1] for p in pontos]
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    den = sum((x - mean_x) ** 2 for x in xs)
+    if den == 0:
+        return None
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / den
+    return slope * idx + (mean_y - slope * mean_x)
+
+
+def _r_b3b_variante(s: SinalAuditoria, horizonte_s: float, now: float, params: Any) -> Optional[float]:
+    """`None` = TP1 desta variante nunca realizou (fora da amostra do horizonte) OU pendente."""
+    risk = s.entry_price - s.stop
+    if risk <= 0:
+        return None
+    idx_tp1 = None
+    for idx in range(s.j0, len(s.bars)):
+        if candle_corrompido_provavel(s.bars, idx):
+            continue
+        bar = s.bars[idx]
+        if bar.low <= s.stop:
+            return None   # tocou o stop ORIGINAL antes de qualquer TP1 -- nunca realizou
+        atr = _atr20_antes(s.bars, idx, periodo=params.atr_period)
+        power = atr is not None and (bar.high - bar.low) >= params.power_atr_mult * atr
+        rompeu_caixa = s.r_caixa is not None and bar.high >= s.r_caixa
+        if power or rompeu_caixa:
+            idx_tp1 = idx
+            break
+    if idx_tp1 is None or idx_tp1 + 1 >= len(s.bars):
+        return None
+    ts_corte = s.t_entrada + horizonte_s
+    if now < ts_corte:
+        return None
+    leg1_exit = s.bars[idx_tp1 + 1].open
+    r_leg1 = (leg1_exit - s.entry_price) / risk
+    # restante (70%): breakeven + fundo estrutural (swing low confirmado) + tendencia de alta,
+    # SEMPRE testado via `low` (stop dinamico unico, ver nota de simplificacao acima).
+    stop_dinamico = s.entry_price
+    fundo_estrutural: Optional[float] = None
+    pontos_fundo: list[tuple[int, float]] = []
+    ultimo_fechamento: Optional[float] = None
+    for idx in range(idx_tp1 + 1, len(s.bars)):
+        bar = s.bars[idx]
+        if bar.ts > ts_corte:
+            break
+        if candle_corrompido_provavel(s.bars, idx):
+            continue
+        # swing low CONFIRMADO em idx-1 (precisa do candle idx pra confirmar -- causal, zero lookahead)
+        if idx >= 2 and idx - 1 > idx_tp1:
+            anterior, atual_baixo, seguinte = s.bars[idx - 2].low, s.bars[idx - 1].low, bar.low
+            if atual_baixo < anterior and atual_baixo < seguinte:
+                fundo_estrutural = atual_baixo if fundo_estrutural is None else max(fundo_estrutural, atual_baixo)
+                pontos_fundo.append((idx - 1, atual_baixo))
+        nivel_tendencia = _trendline_valor(pontos_fundo, idx)
+        nivel = stop_dinamico
+        if fundo_estrutural is not None:
+            nivel = max(nivel, fundo_estrutural)
+        if nivel_tendencia is not None:
+            nivel = max(nivel, nivel_tendencia)
+        if bar.low <= nivel:
+            saida = max(nivel, bar.low)
+            r_leg2 = (saida - s.entry_price) / risk
+            return 0.30 * r_leg1 + 0.70 * r_leg2
+        ultimo_fechamento = bar.close
+    if ultimo_fechamento is None:
+        return 0.30 * r_leg1   # restante nunca abriu (corte logo no candle do TP1) -- so a 1a perna
+    r_leg2 = (ultimo_fechamento - s.entry_price) / risk   # nunca saiu -- marca no corte do horizonte
+    return 0.30 * r_leg1 + 0.70 * r_leg2
+
+
+@dataclasses.dataclass
+class ResumoB3bHorizonte:
+    n_sinais: int
+    n_tp1_realizado: int
+    frac_tp1_pct: Optional[float]
+    pareamento: "vv3.Pareamento"
+
+
+def resumo_b3b_variantes_saida(sinais: list[SinalAuditoria], now: float, params: Any
+                               ) -> dict[str, ResumoB3bHorizonte]:
+    out: dict[str, ResumoB3bHorizonte] = {}
+    for nome, horizonte_s in (("72h", HORIZONTES_S["72h"]), ("7d", HORIZONTES_S["7d"])):
+        valores_por_token: dict[str, list[float]] = {}
+        n_tp1 = 0
+        for s in sinais:
+            r = _r_b3b_variante(s, horizonte_s, now, params)
+            if r is None:
+                continue
+            n_tp1 += 1
+            valores_por_token.setdefault(s.token, []).append(r)
+        frac = (100.0 * n_tp1 / len(sinais)) if sinais else None
+        out[nome] = ResumoB3bHorizonte(n_sinais=len(sinais), n_tp1_realizado=n_tp1, frac_tp1_pct=frac,
+                                       pareamento=vv3._resumir_pareamento(valores_por_token))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # B4: local da entrada -- quartis de risco%/distancia a S/distancia ao topo da caixa, por gatilho
 # ---------------------------------------------------------------------------
 
@@ -741,6 +869,18 @@ def formatar_origem(sinais: list[SinalAuditoria], origem_label: str, now: float)
             media_txt = f"{media:+.2f}R" if media is not None else "s/d"
             frac_txt = f"{frac * 100.0:.0f}%" if frac is not None else "s/d"
             out.append(f"    {regra}: media={media_txt} | mediana da fracao do alvo preservada={frac_txt}")
+    out.append("")
+
+    out.append("### B3b -- variantes de saida pos-TP1 e alvo proximo (exploratorio, sem escolher vencedora)")
+    out.append("  (a) TP1 no 1o power candle OU no topo da caixa (R), em vez do TOPO anterior; "
+              "(b) breakeven do restante; (c) saida no fundo estrutural/tendencia de alta")
+    b3b = resumo_b3b_variantes_saida(sinais, now, params)
+    for horizonte, r in b3b.items():
+        frac_txt = f"{r.frac_tp1_pct:.1f}%" if r.frac_tp1_pct is not None else "s/d"
+        out.append(f"  horizonte={horizonte}: TP1 desta variante realizou em {r.n_tp1_realizado}/"
+                  f"{r.n_sinais} ({frac_txt})")
+        out.append("    " + vv3._formatar_pareamento("R final (30% TP1 + 70% restante)", r.pareamento,
+                                                     rotulo_n="n_tp1"))
     out.append("")
 
     out.append("### B4 -- local da entrada, por tipo de gatilho")

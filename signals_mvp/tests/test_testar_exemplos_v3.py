@@ -125,6 +125,38 @@ class TestarCasoTests(unittest.TestCase):
         self.assertEqual(r.pools_candidatos, [])
         self.assertIsNone(r.bateu_esperado)
 
+    def test_indefinido_e_fora_do_setup_nunca_contam_acerto_ou_erro(self) -> None:
+        con = self._con()
+        try:
+            caso_indef = tev.CasoExemplo(token_ou_pool="CAT", inicio=0.0, fim=1e12, esperado="indefinido", nota="")
+            caso_fora = tev.CasoExemplo(token_ou_pool="CAT", inicio=0.0, fim=1e12, esperado="fora_do_setup", nota="")
+            r_indef = tev.testar_caso(con, self.params, caso_indef)
+            r_fora = tev.testar_caso(con, self.params, caso_fora)
+        finally:
+            con.close()
+        self.assertIsNone(r_indef.bateu_esperado)
+        self.assertIsNone(r_fora.bateu_esperado)
+
+
+class FormatarSecaoSeparadaTests(unittest.TestCase):
+    def test_informativos_ficam_em_secao_propria_nunca_contados(self) -> None:
+        avaliado = tev.ResultadoCaso(
+            tev.CasoExemplo("CAT", 0.0, 1.0, "sinal", ""), ["POOL1"], True, [0.5], True)
+        informativo = tev.ResultadoCaso(
+            tev.CasoExemplo("DOG", 0.0, 1.0, "indefinido", "ver com o operador"), ["POOL2"], False, [], None)
+        texto = tev.formatar([avaliado, informativo])
+        self.assertIn("casos avaliados (esperado='sinal'/'descartar'): bateu 1/1", texto)
+        self.assertIn("Casos informativos", texto)
+        self.assertIn("DOG", texto)
+        self.assertIn("ver com o operador", texto)
+
+    def test_esperado_nao_reconhecido_nunca_e_silenciosamente_descartado(self) -> None:
+        caso_estranho = tev.ResultadoCaso(
+            tev.CasoExemplo("ZZZ", 0.0, 1.0, "talvez", ""), ["POOL3"], False, [], None)
+        texto = tev.formatar([caso_estranho])
+        self.assertIn("NAO RECONHECIDO", texto)
+        self.assertIn("ZZZ", texto)
+
 
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:

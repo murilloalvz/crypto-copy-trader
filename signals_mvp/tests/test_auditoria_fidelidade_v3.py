@@ -143,6 +143,61 @@ class ResumoB3GestaoTests(unittest.TestCase):
         self.assertEqual(resumo[2.0].n_atingiu, 0)
 
 
+class ResumoB3bVariantesSaidaTests(unittest.TestCase):
+    """PEDIDO 2026-11-06 (rodada 11, continuacao -- item B3b): TP1 no 1o power candle ou no topo da
+    caixa, breakeven, fundo estrutural/tendencia de alta."""
+
+    @staticmethod
+    def _params():
+        from ..pos_runner.params_v3 import load_params_v3
+        return load_params_v3()
+
+    def test_tp1_no_power_candle_e_blend_30_70_com_breakeven(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100)]              # idx0 gatilho
+        bars.append(_bar(3600, 100, 101, 99, 100))       # idx1 = j0 entrada
+        for i in range(2, 22):
+            bars.append(_bar(i * 3600, 100, 101, 99, 100))   # idx2..21, flat (ATR baixo)
+        bars.append(_bar(22 * 3600, 100, 140, 98, 135))      # idx22: power candle -- dispara TP1
+        bars.append(_bar(23 * 3600, 135, 136, 134, 135))     # idx23: leg1 sai no open=135
+        bars.append(_bar(24 * 3600, 135, 136, 90, 92))       # idx24: low=90 <= breakeven(100) -- sai
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        r = afv._r_b3b_variante(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        # r_leg1=(135-100)/10=3.5 (30%) ; r_leg2=(100-100)/10=0.0 (70%, breakeven) -> 0.3*3.5+0.7*0=1.05
+        self.assertAlmostEqual(r, 1.05, places=6)
+
+    def test_nunca_dispara_tp1_fica_fora_da_amostra(self) -> None:
+        bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(25)]   # nunca sobe, nunca e power
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        r = afv._r_b3b_variante(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        self.assertIsNone(r)
+
+    def test_toca_o_topo_da_caixa_tambem_dispara_tp1(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100), _bar(3600, 100, 101, 99, 100)]
+        bars.append(_bar(7200, 100, 120, 99, 110))   # toca r_caixa=110 -- dispara TP1 mesmo sem power
+        bars.append(_bar(10800, 110, 111, 109, 110))   # leg1 sai no open=110
+        bars.append(_bar(14400, 110, 111, 50, 55))     # crash -- toca breakeven(100)
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=110.0)
+        r = afv._r_b3b_variante(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        self.assertIsNotNone(r)
+
+    def test_resumo_agrega_fracao_tp1_e_pareamento_por_horizonte(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100)]
+        bars.append(_bar(3600, 100, 101, 99, 100))
+        for i in range(2, 22):
+            bars.append(_bar(i * 3600, 100, 101, 99, 100))
+        bars.append(_bar(22 * 3600, 100, 140, 98, 135))
+        bars.append(_bar(23 * 3600, 135, 136, 134, 135))
+        bars.append(_bar(24 * 3600, 135, 136, 90, 92))
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        resumo = afv.resumo_b3b_variantes_saida([s], now=1e12, params=self._params())
+        self.assertIn("72h", resumo)
+        self.assertIn("7d", resumo)
+        self.assertEqual(resumo["72h"].n_sinais, 1)
+        self.assertEqual(resumo["72h"].n_tp1_realizado, 1)
+        self.assertAlmostEqual(resumo["72h"].frac_tp1_pct, 100.0)
+        self.assertEqual(resumo["72h"].pareamento.n, 1)
+
+
 class ResumoB4Tests(unittest.TestCase):
     def test_agrupa_por_gatilho_e_marca_entrada_acima_do_topo(self) -> None:
         bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(3)]

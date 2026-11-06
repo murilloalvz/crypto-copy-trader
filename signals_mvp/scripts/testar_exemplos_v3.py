@@ -9,7 +9,10 @@ Formato do CSV (`--exemplos`), cabecalho EXATO obrigatorio:
                    reporta TODOS os pools candidatos, nunca escolhe um sozinho)
   inicio        -- timestamp ISO8601 (UTC) ou epoch em segundos -- inicio da janela esperada
   fim           -- timestamp ISO8601 (UTC) ou epoch em segundos -- fim da janela esperada
-  esperado      -- 'sinal' ou 'descartar'
+  esperado      -- 'sinal' | 'descartar' | 'indefinido' | 'fora_do_setup'. SO 'sinal'/'descartar'
+                   contam acerto/erro (bateu/divergiu); 'indefinido' (operador nao tem certeza) e
+                   'fora_do_setup' (caso fora do escopo da V3, ex.: outro tipo de padrao) sao
+                   listados EM SECAO SEPARADA, informativos, NUNCA contam como acerto nem erro.
   nota          -- texto livre (motivo/contexto; nunca interpretado pelo script, so impresso de volta)
 
 Modelo (cabecalho + 1 linha PLACEHOLDER, nunca um caso real) em
@@ -39,6 +42,8 @@ AVISO = ("PAPER/READ-ONLY -- confere a V3 CONGELADA contra exemplos do operador,
         "caso, NUNCA altera detector/parametros/criterio de sinal.")
 
 COLUNAS_OBRIGATORIAS = ("token_ou_pool", "inicio", "fim", "esperado", "nota")
+ESPERADOS_AVALIAVEIS = ("sinal", "descartar")       # contam acerto/erro
+ESPERADOS_INFORMATIVOS = ("indefinido", "fora_do_setup")   # listados a parte, NUNCA contam
 
 
 def _parse_ts(valor: str) -> float:
@@ -120,34 +125,52 @@ def testar_caso(con, params, caso: CasoExemplo) -> ResultadoCaso:
                     horarios.append(float(ev.ts))
     sinal_gerado = len(horarios) > 0
     bateu: Optional[bool] = None
-    if caso.esperado in ("sinal", "descartar"):
+    if caso.esperado in ESPERADOS_AVALIAVEIS:
         bateu = sinal_gerado == (caso.esperado == "sinal")
     return ResultadoCaso(caso, pools, sinal_gerado, sorted(horarios), bateu)
+
+
+def _linha_caso(r: ResultadoCaso, status: str) -> list[str]:
+    c = r.caso
+    if not r.pools_candidatos:
+        linha = [f"- {c.token_ou_pool}: POOL NAO ENCONTRADO em pr_pools (nunca inventa um match) "
+                f"-- esperado={c.esperado} | {status}"]
+    else:
+        pools_txt = ", ".join(r.pools_candidatos)
+        horarios_txt = (", ".join(datetime.fromtimestamp(h, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                                  for h in r.horarios_sinal) if r.horarios_sinal else "nenhum")
+        linha = [f"- {c.token_ou_pool} (pool(s)={pools_txt}): esperado={c.esperado} | "
+                f"sinal_gerado={r.sinal_gerado} | horarios={horarios_txt} | {status}"]
+    if c.nota:
+        linha.append(f"    nota: {c.nota}")
+    return linha
 
 
 def formatar(resultados: list[ResultadoCaso]) -> str:
     out = ["# testar_exemplos_v3 -- confere a V3 congelada contra exemplos do operador", "",
           f"AVISO: {AVISO}", ""]
-    avaliados = [r for r in resultados if r.bateu_esperado is not None]
+    avaliados = [r for r in resultados if r.caso.esperado in ESPERADOS_AVALIAVEIS]
+    informativos = [r for r in resultados if r.caso.esperado in ESPERADOS_INFORMATIVOS]
+    nao_reconhecidos = [r for r in resultados
+                        if r.caso.esperado not in ESPERADOS_AVALIAVEIS + ESPERADOS_INFORMATIVOS]
     n_ok = sum(1 for r in avaliados if r.bateu_esperado)
-    out.append(f"bateu o esperado: {n_ok}/{len(avaliados)} (de {len(resultados)} casos no CSV)")
+    out.append(f"casos avaliados (esperado='sinal'/'descartar'): bateu {n_ok}/{len(avaliados)}")
     out.append("")
-    for r in resultados:
-        c = r.caso
-        if not r.pools_candidatos:
-            out.append(f"- {c.token_ou_pool}: POOL NAO ENCONTRADO em pr_pools (nunca inventa um "
-                      f"match) -- esperado={c.esperado}" + (f" | nota: {c.nota}" if c.nota else ""))
-            continue
-        pools_txt = ", ".join(r.pools_candidatos)
-        horarios_txt = (", ".join(datetime.fromtimestamp(h, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                                  for h in r.horarios_sinal) if r.horarios_sinal else "nenhum")
-        status = "s/d (esperado nem 'sinal' nem 'descartar')" if r.bateu_esperado is None \
-            else ("OK" if r.bateu_esperado else "DIVERGIU")
-        out.append(f"- {c.token_ou_pool} (pool(s)={pools_txt}): esperado={c.esperado} | "
-                  f"sinal_gerado={r.sinal_gerado} | horarios={horarios_txt} | {status}")
-        if c.nota:
-            out.append(f"    nota: {c.nota}")
+    for r in avaliados:
+        out.extend(_linha_caso(r, "OK" if r.bateu_esperado else "DIVERGIU"))
     out.append("")
+    if informativos:
+        out.append("Casos informativos (esperado='indefinido'/'fora_do_setup') -- NUNCA contam "
+                  "como acerto nem erro, so reportados:")
+        for r in informativos:
+            out.extend(_linha_caso(r, "informativo (nao avaliado)"))
+        out.append("")
+    if nao_reconhecidos:
+        out.append("Casos com 'esperado' NAO RECONHECIDO (nunca inventa categoria -- revisar o "
+                  f"CSV; valores validos: {', '.join(ESPERADOS_AVALIAVEIS + ESPERADOS_INFORMATIVOS)}):")
+        for r in nao_reconhecidos:
+            out.extend(_linha_caso(r, "s/d (esperado nao reconhecido)"))
+        out.append("")
     return "\n".join(out)
 
 
