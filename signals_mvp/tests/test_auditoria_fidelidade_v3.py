@@ -198,6 +198,81 @@ class ResumoB3bVariantesSaidaTests(unittest.TestCase):
         self.assertEqual(resumo["72h"].pareamento.n, 1)
 
 
+class ResumoB3bVariantesTodosTests(unittest.TestCase):
+    """PEDIDO 2026-11-06 (rodada 12, Parte 4a): `_r_b3b_variante_todos`/`resumo_b3b_variantes_saida.
+    pareamento_todos` -- nunca descarta quem bate o stop antes do TP1 ou quem nunca dispara TP1
+    dentro do corte do horizonte (o calculo condicionado em `_r_b3b_variante` fica intocado)."""
+
+    @staticmethod
+    def _params():
+        from ..pos_runner.params_v3 import load_params_v3
+        return load_params_v3()
+
+    def test_stop_batido_antes_do_tp1_conta_como_resolvido_sem_tp1(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100), _bar(3600, 100, 102, 96, 101)]   # idx1=j0, entry=100
+        bars.append(_bar(7200, 101, 102, 70, 75))   # low=70 <= stop(90) -- fecha aqui, nunca viu TP1
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        r = afv._r_b3b_variante_todos(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        self.assertEqual(r.status, "resolvido")
+        self.assertFalse(r.tp1_realizado)
+        self.assertIsNotNone(r.r_mult)
+        self.assertLess(r.r_mult, 0.0)
+        # o calculo CONDICIONADO (intocado) continua devolvendo None pra este mesmo sinal.
+        self.assertIsNone(afv._r_b3b_variante(s, 72.0 * 3600.0, now=1e12, params=self._params()))
+
+    def test_tp1_realizado_bate_com_o_calculo_condicionado(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100)]
+        bars.append(_bar(3600, 100, 101, 99, 100))
+        for i in range(2, 22):
+            bars.append(_bar(i * 3600, 100, 101, 99, 100))
+        bars.append(_bar(22 * 3600, 100, 140, 98, 135))
+        bars.append(_bar(23 * 3600, 135, 136, 134, 135))
+        bars.append(_bar(24 * 3600, 135, 136, 90, 92))
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        r_condicional = afv._r_b3b_variante(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        r_todos = afv._r_b3b_variante_todos(s, 72.0 * 3600.0, now=1e12, params=self._params())
+        self.assertEqual(r_todos.status, "resolvido")
+        self.assertTrue(r_todos.tp1_realizado)
+        self.assertAlmostEqual(r_todos.r_mult, r_condicional, places=6)
+
+    def test_nunca_dispara_tp1_mas_horizonte_vencido_marca_a_mercado(self) -> None:
+        bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(5)]   # nunca sobe, nunca e power
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        ts_corte = s.t_entrada + 72.0 * 3600.0
+        r = afv._r_b3b_variante_todos(s, 72.0 * 3600.0, now=ts_corte + 1.0, params=self._params())
+        self.assertEqual(r.status, "marcado")
+        self.assertFalse(r.tp1_realizado)
+        self.assertIsNotNone(r.r_mult)
+        # o calculo CONDICIONADO (intocado) continua fora da amostra pra este mesmo sinal.
+        self.assertIsNone(afv._r_b3b_variante(s, 72.0 * 3600.0, now=ts_corte + 1.0, params=self._params()))
+
+    def test_horizonte_nao_decorrido_fica_pendente(self) -> None:
+        bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(5)]
+        s = _sinal(bars, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0)
+        r = afv._r_b3b_variante_todos(s, 72.0 * 3600.0, now=s.t_entrada + 1.0, params=self._params())
+        self.assertEqual(r.status, "pendente")
+
+    def test_resumo_agrega_condicional_e_todos_separadamente(self) -> None:
+        bars_stop = [_bar(0, 100, 101, 99, 100), _bar(3600, 100, 102, 96, 101),
+                    _bar(7200, 101, 102, 70, 75)]
+        s_stop = _sinal(bars_stop, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0,
+                        token="DOG")
+        bars_tp1 = [_bar(0, 100, 101, 99, 100), _bar(3600, 100, 101, 99, 100)]
+        for i in range(2, 22):
+            bars_tp1.append(_bar(i * 3600, 100, 101, 99, 100))
+        bars_tp1.append(_bar(22 * 3600, 100, 140, 98, 135))
+        bars_tp1.append(_bar(23 * 3600, 135, 136, 134, 135))
+        bars_tp1.append(_bar(24 * 3600, 135, 136, 90, 92))
+        s_tp1 = _sinal(bars_tp1, gatilho_idx=0, entry_price=100.0, stop=90.0, r_caixa=500.0, token="CAT")
+        resumo = afv.resumo_b3b_variantes_saida([s_stop, s_tp1], now=1e12, params=self._params())
+        r = resumo["72h"]
+        self.assertEqual(r.n_tp1_realizado, 1)       # condicional: so s_tp1
+        self.assertEqual(r.pareamento.n, 1)
+        self.assertEqual(r.n_vencido_todos, 2)        # todos: s_stop (resolvido) + s_tp1 (resolvido)
+        self.assertEqual(r.pareamento_todos.n, 2)
+        self.assertAlmostEqual(r.frac_tp1_pct_sobre_vencidos, 50.0)
+
+
 class ResumoB4Tests(unittest.TestCase):
     def test_agrupa_por_gatilho_e_marca_entrada_acima_do_topo(self) -> None:
         bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(3)]

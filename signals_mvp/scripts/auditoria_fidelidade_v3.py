@@ -479,6 +479,16 @@ def resumo_b3_gestao(sinais: list[SinalAuditoria], now: float) -> dict[float, Re
 # projeto) -- em vez de misturar um stop por `low` com um gatilho por `close` no mesmo candle, que
 # exigiria uma regra de prioridade NOVA, nunca pre-registrada. R final = media PONDERADA pela fracao
 # de cada perna (30% no TP1 + 70% no restante), MESMA convencao de `simulate_v1` pra blender legs.
+#
+# RODADA 12, PARTE 4a (pedido explicito, autorizado 2026-11-06): `_r_b3b_variante`/`resumo_b3b_
+# variantes_saida.pareamento` ficam INTOCADOS, mas a media/mediana que eles produzem e CONDICIONADA a
+# TP1 desta variante realizar (`_r_b3b_variante` devolve `None`, fora da media, pra quem bate o stop
+# original antes -- um corte de sobrevivencia que SOBRESTIMA o retorno) -- por isso agora rotulada
+# NAO-NEGOCIAVEL no relatorio (nunca decide tamanho de posicao de verdade). `_r_b3b_variante_todos`/
+# `ResumoB3bHorizonte.pareamento_todos` recalculam por token sobre TODOS os sinais com horizonte
+# vencido (resolvido OU marcado, com ou sem TP1), truncando a serie no corte ANTES de simular (zero
+# lookahead, MESMA disciplina de `horizonte_fixo`/`saida_fiel`) -- NUNCA usados pra escolher entre
+# variantes, so pra esclarecer a amostra do numero condicionado.
 # ---------------------------------------------------------------------------
 
 
@@ -565,12 +575,108 @@ def _r_b3b_variante(s: SinalAuditoria, horizonte_s: float, now: float, params: A
     return 0.30 * r_leg1 + 0.70 * r_leg2
 
 
+@dataclasses.dataclass(frozen=True)
+class ResultadoB3bTodos:
+    status: str   # 'pendente' | 'sem_dado' | 'resolvido' | 'marcado' (MESMA convencao de saida_fiel)
+    r_mult: Optional[float] = None
+    tp1_realizado: bool = False
+
+
+def _r_b3b_variante_todos(s: SinalAuditoria, horizonte_s: float, now: float, params: Any
+                          ) -> ResultadoB3bTodos:
+    """Rodada 12, Parte 4a (pedido explicito): recalcula por token sobre TODOS os sinais com horizonte
+    vencido -- `_r_b3b_variante` (acima) fica INTOCADA (continua sendo o calculo CONDICIONADO a TP1
+    realizar, agora rotulado NAO-NEGOCIAVEL no relatorio: medir media/mediana so sobre quem realiza
+    TP1 e um corte de sobrevivencia que SOBRESTIMA o retorno -- nunca decide tamanho de posicao de
+    verdade). MESMO gatilho de TP1 (power candle OU topo da caixa/R) e MESMA gestao do restante
+    (breakeven + fundo estrutural + tendencia de alta, sempre via `low`) de `_r_b3b_variante`, nunca um
+    numero novo -- a UNICA diferenca e que a serie e truncada no corte do horizonte ANTES de simular
+    (MESMA disciplina de `horizonte_fixo`/`saida_fiel`, zero lookahead), e o sinal NUNCA e descartado:
+    stop original batido antes do TP1 = perda realizada ('resolvido', tp1_realizado=False); TP1 nunca
+    dispara dentro do corte = marca a mercado no ultimo fechamento LIMPO ate o corte ('marcado',
+    tp1_realizado=False) -- em vez de `None` em ambos os casos (o que os excluia da media)."""
+    risk = s.entry_price - s.stop
+    if risk <= 0:
+        return ResultadoB3bTodos("sem_dado")
+    ts_corte = s.t_entrada + horizonte_s
+    if now < ts_corte:
+        return ResultadoB3bTodos("pendente")
+    idx_tp1 = None
+    ultimo_fechamento_fase1: Optional[float] = None
+    idx = s.j0
+    while idx < len(s.bars):
+        bar = s.bars[idx]
+        if bar.ts > ts_corte:
+            break
+        if candle_corrompido_provavel(s.bars, idx):
+            idx += 1
+            continue
+        if bar.low <= s.stop:
+            saida = min(bar.open, s.stop)
+            return ResultadoB3bTodos("resolvido", (saida - s.entry_price) / risk, False)
+        atr = _atr20_antes(s.bars, idx, periodo=params.atr_period)
+        power = atr is not None and (bar.high - bar.low) >= params.power_atr_mult * atr
+        rompeu_caixa = s.r_caixa is not None and bar.high >= s.r_caixa
+        if power or rompeu_caixa:
+            if idx + 1 >= len(s.bars) or s.bars[idx + 1].ts > ts_corte:
+                break   # disparou mas sem candle de execucao dentro do corte -- marca a fase 1 abaixo
+            idx_tp1 = idx
+            break
+        ultimo_fechamento_fase1 = bar.close
+        idx += 1
+    if idx_tp1 is None:
+        if ultimo_fechamento_fase1 is None:
+            return ResultadoB3bTodos("pendente")   # serie nunca teve um candle limpo antes do corte
+        r = (ultimo_fechamento_fase1 - s.entry_price) / risk
+        return ResultadoB3bTodos("marcado", r, False)
+    leg1_exit = s.bars[idx_tp1 + 1].open
+    r_leg1 = (leg1_exit - s.entry_price) / risk
+    stop_dinamico = s.entry_price
+    fundo_estrutural: Optional[float] = None
+    pontos_fundo: list[tuple[int, float]] = []
+    ultimo_fechamento: Optional[float] = None
+    idx2 = idx_tp1 + 1
+    while idx2 < len(s.bars):
+        bar = s.bars[idx2]
+        if bar.ts > ts_corte:
+            break
+        if candle_corrompido_provavel(s.bars, idx2):
+            idx2 += 1
+            continue
+        if idx2 >= 2 and idx2 - 1 > idx_tp1:
+            anterior, atual_baixo, seguinte = s.bars[idx2 - 2].low, s.bars[idx2 - 1].low, bar.low
+            if atual_baixo < anterior and atual_baixo < seguinte:
+                fundo_estrutural = atual_baixo if fundo_estrutural is None else max(fundo_estrutural, atual_baixo)
+                pontos_fundo.append((idx2 - 1, atual_baixo))
+        nivel_tendencia = _trendline_valor(pontos_fundo, idx2)
+        nivel = stop_dinamico
+        if fundo_estrutural is not None:
+            nivel = max(nivel, fundo_estrutural)
+        if nivel_tendencia is not None:
+            nivel = max(nivel, nivel_tendencia)
+        if bar.low <= nivel:
+            saida = max(nivel, bar.low)
+            r_leg2 = (saida - s.entry_price) / risk
+            return ResultadoB3bTodos("resolvido", 0.30 * r_leg1 + 0.70 * r_leg2, True)
+        ultimo_fechamento = bar.close
+        idx2 += 1
+    if ultimo_fechamento is None:
+        return ResultadoB3bTodos("marcado", 0.30 * r_leg1, True)
+    r_leg2 = (ultimo_fechamento - s.entry_price) / risk
+    return ResultadoB3bTodos("marcado", 0.30 * r_leg1 + 0.70 * r_leg2, True)
+
+
 @dataclasses.dataclass
 class ResumoB3bHorizonte:
     n_sinais: int
     n_tp1_realizado: int
     frac_tp1_pct: Optional[float]
-    pareamento: "vv3.Pareamento"
+    pareamento: "vv3.Pareamento"   # CONDICIONADO a TP1 realizar -- NAO-NEGOCIAVEL (ver docstring acima)
+    n_pendente_todos: int = 0
+    n_sem_dado_todos: int = 0
+    n_vencido_todos: int = 0
+    frac_tp1_pct_sobre_vencidos: Optional[float] = None
+    pareamento_todos: Optional["vv3.Pareamento"] = None   # TODOS os vencidos, com ou sem TP1
 
 
 def resumo_b3b_variantes_saida(sinais: list[SinalAuditoria], now: float, params: Any
@@ -586,8 +692,31 @@ def resumo_b3b_variantes_saida(sinais: list[SinalAuditoria], now: float, params:
             n_tp1 += 1
             valores_por_token.setdefault(s.token, []).append(r)
         frac = (100.0 * n_tp1 / len(sinais)) if sinais else None
-        out[nome] = ResumoB3bHorizonte(n_sinais=len(sinais), n_tp1_realizado=n_tp1, frac_tp1_pct=frac,
-                                       pareamento=vv3._resumir_pareamento(valores_por_token))
+
+        n_pendente = n_sem_dado = n_vencido = n_tp1_vencido = 0
+        valores_todos: dict[str, list[float]] = {}
+        for s in sinais:
+            rt = _r_b3b_variante_todos(s, horizonte_s, now, params)
+            if rt.status == "pendente":
+                n_pendente += 1
+                continue
+            if rt.status == "sem_dado":
+                n_sem_dado += 1
+                continue
+            n_vencido += 1
+            if rt.tp1_realizado:
+                n_tp1_vencido += 1
+            if rt.r_mult is not None:
+                valores_todos.setdefault(s.token, []).append(rt.r_mult)
+        frac_vencidos = (100.0 * n_tp1_vencido / n_vencido) if n_vencido else None
+
+        out[nome] = ResumoB3bHorizonte(
+            n_sinais=len(sinais), n_tp1_realizado=n_tp1, frac_tp1_pct=frac,
+            pareamento=vv3._resumir_pareamento(valores_por_token),
+            n_pendente_todos=n_pendente, n_sem_dado_todos=n_sem_dado, n_vencido_todos=n_vencido,
+            frac_tp1_pct_sobre_vencidos=frac_vencidos,
+            pareamento_todos=vv3._resumir_pareamento(valores_todos),
+        )
     return out
 
 
@@ -871,16 +1000,31 @@ def formatar_origem(sinais: list[SinalAuditoria], origem_label: str, now: float)
             out.append(f"    {regra}: media={media_txt} | mediana da fracao do alvo preservada={frac_txt}")
     out.append("")
 
-    out.append("### B3b -- variantes de saida pos-TP1 e alvo proximo (exploratorio, sem escolher vencedora)")
+    out.append("### B3b -- variantes de saida pos-TP1 e alvo proximo (exploratorio, NAO-NEGOCIAVEL -- "
+              "ver rodada 12 Parte 4a: nunca decide tamanho de posicao, so descreve)")
     out.append("  (a) TP1 no 1o power candle OU no topo da caixa (R), em vez do TOPO anterior; "
               "(b) breakeven do restante; (c) saida no fundo estrutural/tendencia de alta")
+    out.append("  (Rodada 12, Parte 4a: a media/mediana abaixo rotulada NAO-NEGOCIAVEL e CONDICIONADA "
+              "a TP1 desta variante realizar -- excluir quem bate o stop original antes do TP1 "
+              "sobrestima o retorno; 'sobre TODOS' recalcula por token incluindo esses casos e "
+              "marcando a mercado no corte quem nunca dispara TP1, nunca descartado.)")
     b3b = resumo_b3b_variantes_saida(sinais, now, params)
     for horizonte, r in b3b.items():
         frac_txt = f"{r.frac_tp1_pct:.1f}%" if r.frac_tp1_pct is not None else "s/d"
         out.append(f"  horizonte={horizonte}: TP1 desta variante realizou em {r.n_tp1_realizado}/"
-                  f"{r.n_sinais} ({frac_txt})")
-        out.append("    " + vv3._formatar_pareamento("R final (30% TP1 + 70% restante)", r.pareamento,
-                                                     rotulo_n="n_tp1"))
+                  f"{r.n_sinais} ({frac_txt} de TODOS os sinais, nunca so dos vencidos)")
+        out.append("    " + vv3._formatar_pareamento(
+            "[NAO-NEGOCIAVEL, condicionado a TP1] R final (30% TP1 + 70% restante)", r.pareamento,
+            rotulo_n="n_tp1"))
+        frac_venc_txt = (f"{r.frac_tp1_pct_sobre_vencidos:.1f}%"
+                        if r.frac_tp1_pct_sobre_vencidos is not None else "s/d")
+        out.append(f"    sobre TODOS os vencidos (resolvido+marcado, com ou sem TP1): "
+                  f"pendente={r.n_pendente_todos} | sem_dado={r.n_sem_dado_todos} | "
+                  f"vencidos={r.n_vencido_todos} | TP1 entre os vencidos={frac_venc_txt}")
+        if r.pareamento_todos is not None:
+            out.append("    " + vv3._formatar_pareamento(
+                "[sobre TODOS os vencidos] R final (30% TP1 + 70% restante, perda/marcacao se nunca "
+                "realizar TP1)", r.pareamento_todos, rotulo_n="n_vencido"))
     out.append("")
 
     out.append("### B4 -- local da entrada, por tipo de gatilho")
