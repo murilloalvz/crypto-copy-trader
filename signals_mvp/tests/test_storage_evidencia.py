@@ -53,6 +53,21 @@ class PrTrajetoriaStorageTests(unittest.TestCase):
         abertas = self.storage.pr_trajetoria_abertas("v1")
         self.assertEqual([r["entry_id"] for r in abertas], [1])
 
+    def test_pool_tf_aberta_so_true_quando_existe_linha_aberta_daquele_pool_tf_versao(self) -> None:
+        # PEDIDO 2026-11-05 (item 2, cadencia de polling): usado por `live.py: _heat` pra promover um
+        # pool com trajetoria ainda aberta a cadencia quente -- nunca criterio de sinal.
+        self.storage.pr_trajetoria_upsert("v1", 1, 0.0, chain="solana", pool="P1", tf="1h", mint="M", symbol="S",
+                                          t_entrada=0.0, preco_entrada=1.0, risco_pct=10.0, r_unidade=0.1,
+                                          fonte_candle="gt", fechado=0)
+        self.storage.pr_trajetoria_upsert("v1", 2, 0.0, chain="solana", pool="P2", tf="1h", mint="M", symbol="S",
+                                          t_entrada=0.0, preco_entrada=1.0, risco_pct=10.0, r_unidade=0.1,
+                                          fonte_candle="gt", fechado=1)
+        self.assertTrue(self.storage.pr_trajetoria_pool_tf_aberta("v1", "P1", "1h"))
+        self.assertFalse(self.storage.pr_trajetoria_pool_tf_aberta("v1", "P2", "1h"), "fechada -- nunca conta")
+        self.assertFalse(self.storage.pr_trajetoria_pool_tf_aberta("v2", "P1", "1h"), "versao diferente")
+        self.assertFalse(self.storage.pr_trajetoria_pool_tf_aberta("v1", "P1", "4h"), "tf diferente")
+        self.assertFalse(self.storage.pr_trajetoria_pool_tf_aberta("v1", "POOL_INEXISTENTE", "1h"))
+
     def test_csv_export_writes_the_trajetoria_file(self) -> None:
         self.storage.pr_trajetoria_upsert("v1", 1, 0.0, chain="solana", pool="P", tf="1h", mint="M", symbol="CAT",
                                           t_entrada=0.0, preco_entrada=100.0, risco_pct=20.0, r_unidade=20.0,

@@ -796,18 +796,25 @@ class BudgetTest(unittest.TestCase):
             h.close()
 
     def test_failed_discovery_list_does_not_stop_the_refreshes(self) -> None:
-        h = LiveHarness()
-        try:
-            start_tracking(h)
-            bars = len(h.storage.pr_bars("POOL1", "1h"))
-            h.clock.advance(H)
-            h.live.next_discovery = 0
-            h.world.fail = ApiError("http", "GeckoTerminal: HTTP 502", 502)   # a lista de descoberta falha
-            out = h.tick()
-            self.assertEqual(out["erros"], 1)
-            self.assertEqual(len(h.storage.pr_bars("POOL1", "1h")), bars + 1)
-        finally:
-            h.close()
+        # PEDIDO 2026-11-05 (item 2): este teste verifica resiliencia a falha de DESCOBERTA, nunca a
+        # prioridade de agendamento -- com a promocao de cadencia ligada (padrao), POOL1 em fase
+        # RUNNER passaria a ser rank==0 (1a passada, ANTES da descoberta) e consumiria o erro de
+        # mentira (`world.fail`, disparo unico) no lugar da propria descoberta, descaracterizando o
+        # cenario. `POS_RUNNER_CADENCIA_QUENTE=0` restaura a ordem original (descoberta primeiro,
+        # POOL1 na 2a passada) sem tocar a asserção original.
+        with mock.patch.dict("os.environ", {"POS_RUNNER_CADENCIA_QUENTE": "0"}):
+            h = LiveHarness()
+            try:
+                start_tracking(h)
+                bars = len(h.storage.pr_bars("POOL1", "1h"))
+                h.clock.advance(H)
+                h.live.next_discovery = 0
+                h.world.fail = ApiError("http", "GeckoTerminal: HTTP 502", 502)   # a lista de descoberta falha
+                out = h.tick()
+                self.assertEqual(out["erros"], 1)
+                self.assertEqual(len(h.storage.pr_bars("POOL1", "1h")), bars + 1)
+            finally:
+                h.close()
 
     def test_api_error_on_one_pool_backs_off_without_stopping_the_tick(self) -> None:
         h = LiveHarness()

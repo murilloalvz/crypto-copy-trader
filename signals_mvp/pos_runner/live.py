@@ -120,6 +120,20 @@ QUEDA_ROTACAO_PCT = 96.0
 # um invariante cientifico (mesma categoria de `rotacao_max_por_hora`).
 JANELA_ESPALHAMENTO_S = 300.0
 MAX_CHAMADAS_POR_MIN_PADRAO = 20
+# PEDIDO 2026-11-05 (item 2, captura/polling -- NUNCA detector/simulate/parametros/criterio de
+# sinal): emenda de amostragem datada. `_heat()` hoje so olha V0/V1 e trata a fase RUNNER como
+# "morno" (heat=1) -- sob o teto suave de ~20/min da 2a passada de `tick()`, isso atrasa o poll de
+# pools em runner/pullback/trajetoria ainda aberta ate 41-58min (medido na VM, p50/p95). Com a
+# promocao LIGADA (padrao): RUNNER conta como quente (heat=0, mesma prioridade ABSOLUTA -- 1a
+# passada de `tick()`, nunca throttled) em V1/V2/V3 (nao so V0/V1 como antes), e trajetoria ainda
+# aberta (`pr_trajetoria_pool_tf_aberta`, fechado=0 -- o sinal pode ja ter saido, mas a janela de
+# medicao de 72h continua rodando) TAMBEM conta como quente. `POS_RUNNER_CADENCIA_QUENTE=0` desliga
+# (volta ao `_heat` de antes: so V0/V1, RUNNER=morno, trajetoria sem peso extra) -- interruptor
+# unico para reverter sem precisar reverter o commit.
+
+
+def _cadencia_quente_ligada() -> bool:
+    return os.environ.get("POS_RUNNER_CADENCIA_QUENTE", "1") != "0"
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 # PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
@@ -1215,30 +1229,58 @@ class PosRunnerLive:
 
     # -- agenda ------------------------------------------------------------------------------------
     def _heat(self, pool: str, tf: str) -> int:
-        """0 = quente (fase 2 ou trade aberto: atualiza a cada candle), 1 = morno (runner), 2 = frio, -1 = sem carga.
-        Revisao da FASE 1: o calor e o MELHOR entre V0 e V1 -- com `--sem-v0` o `self.dets` do V0 fica sempre
-        vazio, e sem isto todo pool parecia "sem carga" (perdia a prioridade de fase 2/trade aberto da V1)."""
-        v0 = self._heat_v0(pool, tf)
-        v1 = self._heat_v1(pool, tf)
-        if v0 == -1 and v1 == -1:
-            return -1
-        return min(h for h in (v0, v1) if h != -1)
+        """0 = quente (fase 2/pullback, trade aberto, OU -- com `POS_RUNNER_CADENCIA_QUENTE` ligada,
+        item 2 -- RUNNER/trajetoria ainda aberta: atualiza a cada candle), 1 = morno (runner, so
+        quando a promocao esta desligada), 2 = frio, -1 = sem carga. Revisao da FASE 1: o calor e o
+        MELHOR entre V0 e V1 -- com `--sem-v0` o `self.dets` do V0 fica sempre vazio, e sem isto todo
+        pool parecia "sem carga" (perdia a prioridade de fase 2/trade aberto da V1). PEDIDO
+        2026-11-05 (item 2): com a promocao ligada, V2/V3 TAMBEM entram no `min()` -- antes so V0/V1
+        eram olhados, e um pool em runner/pullback/trajetoria aberta SO na V2/V3 nunca pesava na
+        cadencia (gap pre-existente, nunca corrigido antes)."""
+        candidatos = [self._heat_v0(pool, tf), self._heat_v1(pool, tf)]
+        if _cadencia_quente_ligada():
+            candidatos.append(self._heat_v2(pool, tf))
+            candidatos.append(self._heat_v3(pool, tf))
+        validos = [h for h in candidatos if h != -1]
+        return min(validos) if validos else -1
 
     def _heat_v0(self, pool: str, tf: str) -> int:
+        """V0 nunca tem `pr_trajetoria` (so V1/V2/V3) -- sem promocao por trajetoria aqui; RUNNER
+        promovido a quente so quando a emenda do item 2 esta ligada, igual as outras versoes."""
         det = self.dets.get((pool, tf))
         if det is None:
             return -1
         if det.phase == PHASE_PULLBACK or self.storage.pr_signals(status="aberto", pool=pool, tf=tf):
             return 0
+        if det.phase == PHASE_RUNNER:
+            return 0 if _cadencia_quente_ligada() else 1
+        return 2
+
+    def _heat_vN(self, pool: str, tf: str, dets: dict[tuple[str, str], Any],
+                signals_abertos: Any, versao: str) -> int:
+        """PEDIDO 2026-11-05 (item 2): MESMA logica de V0, mais a trajetoria ainda aberta
+        (`pr_trajetoria_pool_tf_aberta`) -- a janela de medicao de 72h pode continuar rodando mesmo
+        depois que a posicao/sinal ja fechou, e so e visivel por versao (v1/v2/v3), nunca por V0."""
+        det = dets.get((pool, tf))
+        if det is None:
+            return -1
+        if det.phase == PHASE_PULLBACK or signals_abertos(status="aberto", pool=pool, tf=tf):
+            return 0
+        if _cadencia_quente_ligada():
+            if det.phase == PHASE_RUNNER:
+                return 0
+            if self.storage.pr_trajetoria_pool_tf_aberta(versao, pool, tf):
+                return 0
         return 1 if det.phase == PHASE_RUNNER else 2
 
     def _heat_v1(self, pool: str, tf: str) -> int:
-        det = self.dets_v1.get((pool, tf))
-        if det is None:
-            return -1
-        if det.phase == PHASE_PULLBACK or self.storage.pr1_signals(status="aberto", pool=pool, tf=tf):
-            return 0
-        return 1 if det.phase == PHASE_RUNNER else 2
+        return self._heat_vN(pool, tf, self.dets_v1, self.storage.pr1_signals, "v1")
+
+    def _heat_v2(self, pool: str, tf: str) -> int:
+        return self._heat_vN(pool, tf, self.dets_v2, self.storage.pr2_signals, "v2")
+
+    def _heat_v3(self, pool: str, tf: str) -> int:
+        return self._heat_vN(pool, tf, self.dets_v3, self.storage.pr3_signals, "v3")
 
     def _interval(self, tf: str, heat: int) -> float:
         step = float(tf_seconds(tf))

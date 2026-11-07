@@ -503,6 +503,22 @@ CREATE TABLE IF NOT EXISTS pr_rss_amostra (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, rss_kb INTEGER NOT NULL, n_pools_ativos INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pr_rss_amostra_ts ON pr_rss_amostra (ts);
+-- PEDIDO 2026-11-05 (emenda horizonte fixo, autorizada -- ver docs/pos-runner-v1/
+-- EMENDA_2026-11-05_HORIZONTE_FIXO_PROPOSTA.md): R valorizado a mercado em horizontes fixos (72h/7d)
+-- apos t_entrada, por sinal (ao_vivo/retro/v3_replay) -- SO medicao/analise, nunca altera
+-- detector/simulate/parametros nem pr1_signals/pr2_signals/pr3_signals/pr_baseline. `entry_key` e o id
+-- do sinal (ao_vivo, string do inteiro) ou uma chave estavel pool|tf|t_entrada (retro/v3_replay, sem
+-- id persistido). `status`: 'pendente'|'resolvido_regra'|'marcado'|'sem_dado'. `r_controle_medio`/
+-- `dif_pareada` so fazem sentido pra origem='ao_vivo' (unica com controles pareados em pr_baseline).
+CREATE TABLE IF NOT EXISTS pr_horizonte_fixo (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, versao TEXT NOT NULL, origem TEXT NOT NULL,
+  entry_key TEXT NOT NULL, horizonte TEXT NOT NULL, calculado_ts REAL NOT NULL,
+  mint TEXT, symbol TEXT, t_entrada REAL,
+  status TEXT NOT NULL, r_mult REAL, candle_marca_ts REAL,
+  r_controle_medio REAL, dif_pareada REAL,
+  UNIQUE (versao, origem, entry_key, horizonte)
+);
+CREATE INDEX IF NOT EXISTS pr_horizonte_fixo_versao ON pr_horizonte_fixo (versao, origem, horizonte);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -1824,6 +1840,16 @@ class Storage:
                     [*cols.values(), versao, entry_id])
             self._dirty["pos_runner_v1_trajetoria"] = True
 
+    def pr_trajetoria_pool_tf_aberta(self, versao: str, pool: str, tf: str) -> bool:
+        """PEDIDO 2026-11-05 (item 2, cadencia de polling -- NUNCA detector/simulate/parametros/
+        criterio de sinal): existe alguma trajetoria AINDA aberta (fechado=0) pra este pool/tf/versao
+        -- so decide a CADENCIA do poll (`live.py: _heat`), nunca influencia o calculo da trajetoria
+        em si (`calcular_trajetoria`/`_atualizar_trajetoria`, intocados)."""
+        row = self._one(
+            "SELECT 1 FROM pr_trajetoria WHERE versao=? AND pool=? AND tf=? AND fechado=0 LIMIT 1",
+            (versao, pool, tf))
+        return row is not None
+
     def pr_trajetoria_abertas(self, versao: Optional[str] = None) -> list[sqlite3.Row]:
         """So as linhas ainda NAO fechadas (fechado=0) precisam ser recalculadas a cada ciclo."""
         if versao is None:
@@ -2109,6 +2135,43 @@ class Storage:
 
     def pr_rss_amostras_desde(self, since_ts: float) -> list[sqlite3.Row]:
         return self._all("SELECT rss_kb, n_pools_ativos FROM pr_rss_amostra WHERE ts>=?", (since_ts,))
+
+    # -- PEDIDO 2026-11-05 (emenda horizonte fixo, autorizada): R marcado em 72h/7d -- SO
+    # medicao/analise, nunca detector/simulate/parametros. Ver docs/pos-runner-v1/
+    # EMENDA_2026-11-05_HORIZONTE_FIXO_PROPOSTA.md e pos_runner/horizonte_fixo.py.
+    def pr_horizonte_fixo_upsert(
+        self, versao: str, origem: str, entry_key: str, horizonte: str, calculado_ts: float, status: str,
+        r_mult: Optional[float] = None, candle_marca_ts: Optional[float] = None,
+        mint: Optional[str] = None, symbol: Optional[str] = None, t_entrada: Optional[float] = None,
+        r_controle_medio: Optional[float] = None, dif_pareada: Optional[float] = None,
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_horizonte_fixo (versao, origem, entry_key, horizonte, calculado_ts, mint, "
+                "symbol, t_entrada, status, r_mult, candle_marca_ts, r_controle_medio, dif_pareada) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT (versao, origem, entry_key, horizonte) DO UPDATE SET "
+                "calculado_ts=excluded.calculado_ts, mint=excluded.mint, symbol=excluded.symbol, "
+                "t_entrada=excluded.t_entrada, status=excluded.status, r_mult=excluded.r_mult, "
+                "candle_marca_ts=excluded.candle_marca_ts, r_controle_medio=excluded.r_controle_medio, "
+                "dif_pareada=excluded.dif_pareada",
+                (versao, origem, entry_key, horizonte, calculado_ts, mint, symbol, t_entrada, status,
+                 r_mult, candle_marca_ts, r_controle_medio, dif_pareada))
+
+    def pr_horizonte_fixo_get(self, versao: str, origem: str, entry_key: str, horizonte: str) -> Optional[sqlite3.Row]:
+        return self._one(
+            "SELECT * FROM pr_horizonte_fixo WHERE versao=? AND origem=? AND entry_key=? AND horizonte=?",
+            (versao, origem, entry_key, horizonte))
+
+    def pr_horizonte_fixo_all(self, versao: Optional[str] = None, origem: Optional[str] = None,
+                              horizonte: Optional[str] = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM pr_horizonte_fixo WHERE 1=1"
+        args: list[Any] = []
+        for coluna, valor in (("versao", versao), ("origem", origem), ("horizonte", horizonte)):
+            if valor is not None:
+                sql += f" AND {coluna}=?"
+                args.append(valor)
+        return self._all(sql, tuple(args))
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:

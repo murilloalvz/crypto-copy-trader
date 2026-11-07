@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Optional
 
 from ..config import make_paths
 from ..pos_runner.candles import Bar
@@ -23,6 +24,13 @@ from .test_pos_runner_v1 import CREATED, GRAD, L_BC, textbook_v1
 
 def _bars(spec: list[tuple[float, float, float, float]], ts0: int = 1_000, step: int = 3_600) -> list[Bar]:
     return [Bar(ts0 + i * step, o, h, l, c, 0.0, False) for i, (o, h, l, c) in enumerate(spec)]
+
+
+def _bars_vol(spec: list[tuple[float, float, float, float, float]], ts0: int = 1_000,
+             step: int = 3_600) -> list[Bar]:
+    # PEDIDO 2026-11-05 (item 1): `_bars` tem volume=0.0 fixo (todo candle fica `candle_corrompido_
+    # provavel`) -- a marcacao a mercado precisa de volume>0 pra achar um candle limpo pra marcar.
+    return [Bar(ts0 + i * step, o, h, l, c, v, False) for i, (o, h, l, c, v) in enumerate(spec)]
 
 
 class VarianteBTests(unittest.TestCase):
@@ -108,6 +116,148 @@ class VarianteDTests(unittest.TestCase):
         self.assertEqual(r.bars_held, 2)
 
 
+class MarcacaoAMercadoTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (item 1): corrige o vies de selecao de `_mesma_amostra` -- em_aberto nunca
+    mais e so excluido; o restante aberto e valorizado no ultimo candle LIMPO."""
+
+    def test_variante_b_em_aberto_e_valorizada_no_ultimo_close_limpo(self) -> None:
+        bars = _bars_vol([
+            (100, 105, 95, 102, 100.0),   # nunca toca o stop (80) nem a altura da caixa
+            (102, 108, 98, 106, 100.0),
+            (106, 110, 101, 109, 100.0),  # ULTIMO candle, limpo -- marca aqui (close=109, +9%)
+        ])
+        costs = CostModel()
+        r = exit_lab._variante_b(bars, 0, entry=100.0, stop0=80.0, s=85.0, r=200.0, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertIsNone(r.net_ret)              # visao (i): nunca inventa um fechamento
+        self.assertTrue(r.marcado_a_mercado)
+        self.assertIsNotNone(r.net_ret_marcado)
+        self.assertGreater(r.net_ret_marcado, 0.0)   # marcado no close 109 (+9% bruto) -- positivo
+        self.assertEqual(r.candle_marca_ts, bars[-1].ts)
+
+    def test_marcacao_pula_candle_corrompido_e_usa_o_limpo_anterior(self) -> None:
+        # sem altura de caixa (s=r=None) -- o stop NUNCA move de 80, e nenhum low aqui toca 80.
+        bars = _bars_vol([
+            (100, 105, 95, 102, 100.0),
+            (102, 110, 98, 106, 0.0),    # volume=0 -- corrompido, NUNCA marca aqui
+            (106, 108, 101, 107, 100.0),  # limpo -- e o ultimo LIMPO depois que o 4o candle (abaixo)
+        ])
+        # 4o candle tambem corrompido (volume=0) -- a busca precisa voltar 2 candles, nao so 1.
+        bars_corrompidos_no_fim = bars + [exit_lab.Bar(bars[-1].ts + 3_600, 107, 112, 100, 105, 0.0, False)]
+        costs = CostModel()
+        r = exit_lab._variante_b(bars_corrompidos_no_fim, 0, entry=100.0, stop0=80.0, s=None, r=None,
+                                 costs=costs, dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertTrue(r.marcado_a_mercado)
+        self.assertEqual(r.candle_marca_ts, bars[2].ts)   # o 3o candle (close=107), nunca o corrompido
+
+    def test_sem_nenhum_candle_limpo_na_serie_nunca_marca(self) -> None:
+        bars = _bars([(100, 105, 95, 102), (102, 108, 98, 106)])   # _bars = volume 0.0 em todos
+        costs = CostModel()
+        r = exit_lab._variante_b(bars, 0, entry=100.0, stop0=80.0, s=85.0, r=200.0, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertFalse(r.marcado_a_mercado)
+        self.assertIsNone(r.net_ret_marcado)
+
+    def test_variante_d_marca_so_a_fracao_ainda_aberta_mantendo_a_perna_ja_realizada(self) -> None:
+        bars = _bars_vol([
+            (100, 110, 95, 108, 100.0),
+            (108, 115, 104, 112, 100.0),
+            (112, 121, 108, 119, 100.0),   # toca o topo (121>=120) -- decide os 30% aqui
+            (119, 122, 117, 120, 100.0),   # executa os 30% a 119 (open); restam 70% abertos
+            (120, 123, 115, 121, 100.0),   # ULTIMO candle limpo -- marca os 70% restantes aqui (close=121)
+        ])
+        costs = CostModel()
+        params = load_params_v1()
+        r = exit_lab._variante_d(bars, 0, entry=100.0, stop0=80.0, topo=120.0, params=params, costs=costs,
+                                 dex="desconhecido", l_bc=None)
+        self.assertEqual(r.status, "em_aberto")
+        self.assertTrue(r.marcado_a_mercado)
+        # 30% ja realizado a 119 (+19%) + 70% marcado a 121 (+21%) -- os dois positivos, liquido positivo
+        self.assertGreater(r.net_ret_marcado, 0.0)
+
+
+class VisaoDuplaSemVieseDeSelecaoTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (item 1): reproduz o caso relatado (MOGZ/PEAK em_aberto na A, excluidos da
+    "mesma amostra" de hoje) -- a visao (ii) precisa INCLUIR esse trade, a (i) continua sem ele."""
+
+    def test_trade_em_aberto_na_a_e_excluido_da_visao_i_mas_entra_na_visao_ii(self) -> None:
+        linhas = [
+            _linha_variantes("MOGZ", "v3", "v1v2v3", {
+                # A em_aberto (candidato a vencedor ainda correndo), B/C/D ja resolvidas.
+                "B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                "D_30pct_topo_trailing": (12.0, 0.6),
+            }, marcados={"A_atual": (40.0, 2.0)}),   # A marcada a mercado: +40% (ainda correndo, forte)
+        ]
+        so_resolvidos = exit_lab._mesma_amostra(linhas)
+        todos = exit_lab._todos_valorizados(linhas)
+        self.assertEqual(so_resolvidos, [])          # visao (i): MOGZ EXCLUIDO -- vies de selecao
+        self.assertEqual(len(todos), 1)               # visao (ii): MOGZ ENTRA, valorizado a mercado
+        self.assertAlmostEqual(todos[0]["A_atual"]["pct_marcado"], 40.0)
+
+    def test_formatar_bloco_mostra_as_2_visoes_e_a_contagem_de_marcados(self) -> None:
+        linhas = [
+            _linha_variantes("MOGZ", "v1", "v1v2v3",
+                            {"B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                             "D_30pct_topo_trailing": (12.0, 0.6)},
+                            marcados={"A_atual": (40.0, 2.0)}),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        self.assertIn("(i) SO RESOLVIDOS", texto)
+        self.assertIn("(ii) TODOS OS TRADES", texto)
+        self.assertIn("valorizados a mercado", texto)
+
+
+class EstatisticasExploratoriasVisaoIITests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): mediana de R, fracao do R total dos 3 maiores trades e IC
+    bootstrap (por token, seed fixa) -- SO na visao (ii), nunca na (i); nunca escolhe variante."""
+
+    def test_fracao_top3_soma_os_3_maiores_sobre_o_total(self) -> None:
+        # top3 = 10+8+6=24; total = 10+8+6+1-3 = 22; 24/22 ~= +109%.
+        txt = exit_lab._fracao_top3([10.0, 8.0, 6.0, 1.0, -3.0])
+        self.assertIsNotNone(txt)
+        self.assertIn("+109%", txt)
+
+    def test_fracao_top3_e_s_d_quando_soma_total_e_quase_zero(self) -> None:
+        self.assertIsNone(exit_lab._fracao_top3([5.0, -5.0]))
+
+    def test_bootstrap_ic_e_none_sem_nenhum_r_na_variante(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"B_breakeven_1x_caixa": (5.0, 0.25)})]
+        self.assertIsNone(exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r"))
+
+    def test_bootstrap_ic_e_deterministico_com_a_mesma_seed(self) -> None:
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 1.0)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {"A_atual": (20.0, 2.0)}),
+            _linha_variantes("ELK", "v1", "v1v2v3", {"A_atual": (-5.0, -0.5)}),
+        ]
+        ic1 = exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r")
+        ic2 = exit_lab._bootstrap_ic_por_token(linhas, "A_atual", "r")
+        self.assertIsNotNone(ic1)
+        self.assertEqual(ic1, ic2, "mesma seed/entrada -- mesmo IC, sempre reproduzivel")
+        self.assertLessEqual(ic1[0], ic1[1])
+
+    def test_visao_ii_mostra_as_3_estatisticas_e_a_i_nunca_mostra(self) -> None:
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3",
+                            {"B_breakeven_1x_caixa": (5.0, 0.25), "C_fechamento_1h_sob_teto": (8.0, 0.4),
+                             "D_30pct_topo_trailing": (12.0, 0.6)},
+                            marcados={"A_atual": (40.0, 2.0)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {
+                "A_atual": (20.0, 1.0), "B_breakeven_1x_caixa": (15.0, 0.75),
+                "C_fechamento_1h_sob_teto": (10.0, 0.5), "D_30pct_topo_trailing": (10.0, 0.5)}),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        self.assertIn("EXPLORATORIO (n pequeno, NUNCA decide H1/futilidade/variante vencedora)", texto)
+        self.assertIn("mediana R=", texto)
+        self.assertIn("IC90% bootstrap=", texto)
+        bloco_v1 = texto.split("## ao_vivo / V1")[1].split("## ao_vivo / V2")[0]
+        visao_i, visao_ii = bloco_v1.split("(ii) TODOS OS TRADES")
+        self.assertNotIn("mediana R=", visao_i)
+        self.assertIn("mediana R=", visao_ii)
+
+
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="exit_lab_"))
@@ -185,6 +335,40 @@ class LinhasRetroAdmitidoTests(unittest.TestCase):
         self.assertEqual(linhas, [])
         self.assertEqual(n_fora, 1)
 
+    def test_candidato_admitido_com_historico_real_encontra_a_entrada_corrigido_2026_11_04(self) -> None:
+        """CORRECAO 2026-11-04: a versao anterior passava `criado_ts=None` pro `DetectorV1` -- sem
+        isso, `in_age_window()` sempre falha e TODA zona emite FORA_DA_IDADE em vez de ENTRADA, e esta
+        secao NUNCA achava nenhum sinal, mesmo com historico real que `avaliar_candidatos_retro.py`
+        (que sempre passa `criado_ts`) acharia. `criado_ts` agora vem da propria linha congelada."""
+        con = sqlite3.connect(str(self.db_path))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS pr_retro_candidatos (pool TEXT PRIMARY KEY, mint TEXT, symbol TEXT, "
+            "launchpad TEXT, l_bc REAL, grad_ts REAL, criado_ts REAL, mc_found REAL, lista_hash TEXT NOT NULL, "
+            "congelado_em REAL NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO pr_retro_candidatos (pool, mint, symbol, launchpad, grad_ts, criado_ts, lista_hash, "
+            "congelado_em) VALUES ('POOL1', 'MINT1', 'CAT', 'pumpfun', ?, ?, 'hash123', 0.0)",
+            (GRAD, CREATED),
+        )
+        bars = textbook_v1().bars
+        added_ts = max(b.ts for b in bars) + 7_200.0
+        con.execute(
+            "INSERT INTO pr_pools (pool, symbol, status, l_bc, grad_ts, added_ts) VALUES (?,?,?,?,?,?)",
+            ("POOL1", "CAT", "ativo", L_BC, GRAD, added_ts),
+        )
+        con.executemany(
+            "INSERT INTO pr_bars (pool, tf, ts, o, h, l, c, v, filled) VALUES ('POOL1','1h',?,?,?,?,?,?,?)",
+            [(b.ts, b.open, b.high, b.low, b.close, b.volume, int(b.filled)) for b in bars],
+        )
+        con.commit()
+        con.close()
+        linhas, n_fora = exit_lab.linhas_retro_admitido(self.db_path)
+        self.assertEqual(n_fora, 0)
+        self.assertGreaterEqual(len(linhas), 1, "com criado_ts correto, a ENTRADA real precisa aparecer")
+        for l in linhas:
+            self.assertEqual(l["origem"], "retro")
+
 
 class ResumoPorTokenTests(unittest.TestCase):
     def test_agrega_media_de_pct_e_r_por_token_entre_origens_diferentes(self) -> None:
@@ -254,9 +438,101 @@ class LinhasV3ReplayTests(unittest.TestCase):
         con.commit()
         con.close()
         texto = exit_lab.executar(self.db_path)
-        self.assertIn("## V3 replay", texto)
-        self.assertIn("## Por token", texto)
+        self.assertIn("## replay_v3 (EXPLORATORIO", texto)
+        self.assertIn("MESMA amostra", texto)
         self.assertIn("CAT", texto)
+
+
+def _linha_variantes(token: str, versao: str, origem: str,
+                     resultados: dict[str, Optional[tuple[float, float]]],
+                     marcados: Optional[dict[str, tuple[float, float]]] = None) -> dict[str, Any]:
+    """PEDIDO 2026-11-05 (PARTE 2/item 1): helper minimo -- `resultados[nome]` e `(pct, r)` ou ausente
+    (em_aberto, nenhum resultado definido para essa variante). `marcados[nome]` (opcional) e
+    `(pct_marcado, r_marcado)` pra testar a visao (ii) especificamente quando em_aberto; se ausente,
+    em_aberto fica sem marcacao (`pct_marcado=None`) -- MESMO fallback de `_marcar_a_mercado` sem
+    candle limpo."""
+    linha: dict[str, Any] = {"token": token, "versao": versao, "origem": origem, "risco_pct": 20.0}
+    for nome in exit_lab.VARIANTES:
+        par = resultados.get(nome)
+        marcado = (marcados or {}).get(nome)
+        if par is None:
+            if marcado is None:
+                linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": "",
+                               "pct_marcado": None, "r_marcado": None, "marcado_a_mercado": False}
+            else:
+                pct_m, r_m = marcado
+                linha[nome] = {"status": "em_aberto", "pct": None, "r": None, "motivo": "",
+                               "pct_marcado": pct_m, "r_marcado": r_m, "marcado_a_mercado": True}
+        else:
+            pct, r = par
+            linha[nome] = {"status": "fechado", "pct": pct, "r": r, "motivo": "stop",
+                           "pct_marcado": pct, "r_marcado": r, "marcado_a_mercado": False}
+    return linha
+
+
+class MesmaAmostraTests(unittest.TestCase):
+    def test_so_passam_sinais_com_resultado_definido_nas_4_variantes(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2a): CAT tem as 4 definidas; DOG so tem A e B (C/D em_aberto) --
+        # DOG nunca entra na mesma amostra, mesmo contribuindo pro N "cru" de A/B.
+        linhas = [
+            _linha_variantes("CAT", "v1", "v1v2v3", {
+                "A_atual": (10.0, 0.5), "B_breakeven_1x_caixa": (5.0, 0.25),
+                "C_fechamento_1h_sob_teto": (8.0, 0.4), "D_30pct_topo_trailing": (12.0, 0.6)}),
+            _linha_variantes("DOG", "v1", "v1v2v3", {
+                "A_atual": (20.0, 1.0), "B_breakeven_1x_caixa": (15.0, 0.75)}),
+        ]
+        comum = exit_lab._mesma_amostra(linhas)
+        self.assertEqual(len(comum), 1)
+        self.assertEqual(comum[0]["token"], "CAT")
+
+    def test_amostra_vazia_quando_nenhum_sinal_tem_as_4_definidas(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 0.5)})]
+        self.assertEqual(exit_lab._mesma_amostra(linhas), [])
+
+
+class MediaEntreTokensTests(unittest.TestCase):
+    def test_token_com_muitos_sinais_nao_pesa_mais_que_token_com_1(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2b): PEAK tem 3 sinais (+30% cada), BIRD tem 1 (-10%) -- a media
+        # POR SINAL seria dominada por PEAK (+20% no geral); a media ENTRE TOKENS da peso 1 a cada
+        # token: (30 + (-10)) / 2 = +10%, nunca +20%.
+        linhas = [_linha_variantes("PEAK", "v1", "v1v2v3", {"A_atual": (30.0, 1.0)}) for _ in range(3)]
+        linhas.append(_linha_variantes("BIRD", "v1", "v1v2v3", {"A_atual": (-10.0, -0.5)}))
+        resumo_tokens = exit_lab.resumo_por_token(linhas)
+        mt = exit_lab.media_entre_tokens(resumo_tokens)
+        self.assertAlmostEqual(mt["A_atual"]["pct_medio_entre_tokens"], 10.0)
+        self.assertEqual(mt["A_atual"]["n_tokens"], 2)
+        self.assertEqual(mt["A_atual"]["n_tokens_positivos"], 1)   # so PEAK (+30%); BIRD e negativo
+
+    def test_variante_sem_nenhum_token_com_media_valida_fica_s_d(self) -> None:
+        linhas = [_linha_variantes("CAT", "v1", "v1v2v3", {"A_atual": (10.0, 0.5)})]
+        resumo_tokens = exit_lab.resumo_por_token(linhas)
+        mt = exit_lab.media_entre_tokens(resumo_tokens)
+        self.assertIsNone(mt["B_breakeven_1x_caixa"]["pct_medio_entre_tokens"])
+        self.assertEqual(mt["B_breakeven_1x_caixa"]["n_tokens"], 0)
+
+
+class FormatarOrigemSeparadaTests(unittest.TestCase):
+    def test_versao_compartilhada_nunca_mistura_ao_vivo_com_retro_ou_replay(self) -> None:
+        # PEDIDO 2026-11-05 (PARTE 2c, bug relatado): retro_lote1/replay_v3 reusam o MESMO rotulo de
+        # `versao` ("v1"/"v2"/"v3") que ao_vivo -- a secao "## ao_vivo / V3" NUNCA pode contar URSO
+        # (retro) ou PATO (replay), so GATO (origem="v1v2v3"). PEDIDO 2026-11-05 (PARTE 3): token
+        # trocado de RATO pra URSO -- "RATO" e substring acidental de "EXPLORATORIO" (label nova da
+        # visao ii, sempre presente), o que derrubava este teste por colisao de texto, nunca por
+        # mistura real de origem.
+        todas_4 = {"A_atual": (10.0, 0.5), "B_breakeven_1x_caixa": (10.0, 0.5),
+                  "C_fechamento_1h_sob_teto": (10.0, 0.5), "D_30pct_topo_trailing": (10.0, 0.5)}
+        linhas = [
+            _linha_variantes("GATO", "v3", "v1v2v3", todas_4),
+            _linha_variantes("URSO", "v3", "retro", todas_4),
+            _linha_variantes("PATO", "v3", "v3_replay", todas_4),
+        ]
+        texto = exit_lab.formatar(linhas, {}, {}, 0)
+        idx_v3 = texto.index("## ao_vivo / V3")
+        idx_retro = texto.index("## retro_lote1")
+        bloco_v3 = texto[idx_v3:idx_retro]
+        self.assertIn("n no grupo: 1", bloco_v3)   # SO GATO -- nunca URSO/PATO so por compartilhar "v3"
+        self.assertNotIn("URSO", bloco_v3)
+        self.assertNotIn("PATO", bloco_v3)
 
 
 if __name__ == "__main__":

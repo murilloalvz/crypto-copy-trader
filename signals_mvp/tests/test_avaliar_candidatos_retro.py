@@ -153,6 +153,110 @@ class CongelamentoTests(unittest.TestCase):
         self.assertEqual(segunda[0]["lista_hash"], hash1)
 
 
+class Lote2Tests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (rodada 9, item 5): congelamento do lote2 -- SO a lista de candidatos NOVOS
+    (nunca congelados em nenhum lote), hash+timestamp PROPRIOS, ZERO replay/ZERO rede. O lote1 ja
+    congelado (`congelar_candidatos`) fica intocado."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="retro_lote2_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _con(self):
+        return retro._conectar_rw(self.storage.paths.db)   # noqa: SLF001
+
+    def test_lote2_so_pega_candidatos_que_ainda_nao_foram_congelados(self) -> None:
+        now = time.time()
+        self.storage.pr_upsert_pool("LOTE1", status="verificado", symbol="LOTE1",
+                                    info=json.dumps({"criado_ts": CREATED}))
+        self.storage.pr_vaga_descarte_insert(now, "LOTE1")
+        con = self._con()
+        try:
+            lote1 = retro.congelar_candidatos(con, now)
+            self.assertEqual([c["pool"] for c in lote1], ["LOTE1"])
+            self.assertEqual(lote1[0]["lote"], 1)
+            # candidato NOVO, descoberto depois do congelamento do lote1 -- so este entra no lote2.
+            self.storage.pr_upsert_pool("LOTE2", status="verificado", symbol="LOTE2",
+                                        info=json.dumps({"criado_ts": CREATED}))
+            self.storage.pr_vaga_descarte_insert(now + 10.0, "LOTE2")
+            lote2 = retro.congelar_candidatos_lote2(con, now + 10.0)
+        finally:
+            con.close()
+        self.assertEqual([c["pool"] for c in lote2], ["LOTE2"])
+        self.assertEqual(lote2[0]["lote"], 2)
+        self.assertNotEqual(lote2[0]["lista_hash"], lote1[0]["lista_hash"])
+
+    def test_lote1_congelado_continua_intocado_depois_do_lote2(self) -> None:
+        now = time.time()
+        self.storage.pr_upsert_pool("LOTE1", status="verificado", symbol="LOTE1",
+                                    info=json.dumps({"criado_ts": CREATED}))
+        self.storage.pr_vaga_descarte_insert(now, "LOTE1")
+        con = self._con()
+        try:
+            lote1_antes = retro.congelar_candidatos(con, now)
+            self.storage.pr_upsert_pool("LOTE2", status="verificado", symbol="LOTE2",
+                                        info=json.dumps({"criado_ts": CREATED}))
+            self.storage.pr_vaga_descarte_insert(now + 10.0, "LOTE2")
+            retro.congelar_candidatos_lote2(con, now + 10.0)
+            lote1_depois = retro.congelar_candidatos(con, now + 10.0)
+        finally:
+            con.close()
+        self.assertEqual([c["pool"] for c in lote1_depois], ["LOTE1"])
+        self.assertEqual(lote1_depois[0]["lista_hash"], lote1_antes[0]["lista_hash"])
+        self.assertEqual(lote1_depois[0]["congelado_em"], lote1_antes[0]["congelado_em"])
+
+    def test_lote2_vazio_quando_nao_ha_candidato_novo(self) -> None:
+        now = time.time()
+        self.storage.pr_upsert_pool("LOTE1", status="verificado", symbol="LOTE1",
+                                    info=json.dumps({"criado_ts": CREATED}))
+        self.storage.pr_vaga_descarte_insert(now, "LOTE1")
+        con = self._con()
+        try:
+            retro.congelar_candidatos(con, now)
+            lote2 = retro.congelar_candidatos_lote2(con, now)
+        finally:
+            con.close()
+        self.assertEqual(lote2, [])
+
+    def test_lote2_e_idempotente_nunca_recalcula(self) -> None:
+        now = time.time()
+        self.storage.pr_upsert_pool("NOVO", status="verificado", symbol="NOVO",
+                                    info=json.dumps({"criado_ts": CREATED}))
+        self.storage.pr_vaga_descarte_insert(now, "NOVO")
+        con = self._con()
+        try:
+            primeira = retro.congelar_candidatos_lote2(con, now)
+            hash1 = primeira[0]["lista_hash"]
+            # candidato APARECE depois do congelamento do lote2 -- nunca deve entrar na amostra fixa.
+            self.storage.pr_upsert_pool("DEPOIS", status="verificado", symbol="DEPOIS",
+                                        info=json.dumps({"criado_ts": CREATED}))
+            self.storage.pr_vaga_descarte_insert(now + 10.0, "DEPOIS")
+            segunda = retro.congelar_candidatos_lote2(con, now + 10.0)
+        finally:
+            con.close()
+        self.assertEqual([c["pool"] for c in segunda], ["NOVO"])
+        self.assertEqual(segunda[0]["lista_hash"], hash1)
+
+    def test_lote2_nunca_grava_resultado_zero_replay(self) -> None:
+        """Congelar o lote2 e SO a lista -- nenhum `processar_candidato`/replay roda, entao
+        `pr_retro_resultados` continua vazia (nunca um resultado "fantasma" sem ter sido medido)."""
+        now = time.time()
+        self.storage.pr_upsert_pool("NOVO", status="verificado", symbol="NOVO",
+                                    info=json.dumps({"criado_ts": CREATED}))
+        self.storage.pr_vaga_descarte_insert(now, "NOVO")
+        con = self._con()
+        try:
+            retro.congelar_candidatos_lote2(con, now)
+            resultados = con.execute("SELECT COUNT(*) AS n FROM pr_retro_resultados").fetchone()
+        finally:
+            con.close()
+        self.assertEqual(resultados["n"], 0)
+
+
 class OrcamentoHorarioTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="retro_orc_"))

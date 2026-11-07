@@ -44,12 +44,26 @@ documentada do Passo 0e para a coorte retro, nunca escondida.
 
 PEDIDO 2026-11-03 (continuacao -- pendente 5, complemento): tambem cobre o REPLAY completo de
 `ParamsV3` sobre pools admitidos hoje (`avaliar_v3_retro.py: parte_a_pools_admitidos`, Parte A --
-reusa o evento bruto exposto la, `eventos_raw`, nunca duplica o replay) e agrega TUDO (v1/v2/v3 ao
-vivo, coorte retro, replay V3) por TOKEN (`resumo_por_token`) -- media de %/R por variante, nunca uma
-selecao do melhor.
+reusa o evento bruto exposto la, `eventos_raw`, nunca duplica o replay).
 
-Uso (na VM):
-    python -m signals_mvp.scripts.exit_lab --db dados/estado.sqlite
+CORRECAO 2026-11-05 (PARTE 2, mesmo script, sem tocar V1/V2/V3/H1/sinais/hashes):
+
+a) `_mesma_amostra`: cada variante fica `em_aberto` sob condicao PROPRIA (ex.: D so fecha quando
+   `remaining` chega a zero; C pode ficar pendente no ultimo candle) -- comparar medias com N
+   diferente por coluna (visto na pratica: V3 A=72/B=79/C=90/D=92) enviesa a comparacao. Toda media
+   por sinal agora usa SO os sinais com resultado definido nas 4 variantes ao mesmo tempo (n IGUAL
+   reportado uma vez, nunca por coluna).
+b) `media_entre_tokens`: media de 2o nivel -- cada TOKEN pesa 1x (nunca pelo numero de sinais), pra
+   um token com muitos sinais (ex.: PEAK=17) nao dominar a media; conta tokens com media>0 por
+   variante.
+c) `formatar()` separa ao_vivo (por versao v1/v2/v3)/retro_lote1/replay_v3 em blocos INDEPENDENTES
+   (antes a secao "## V1"/"## V2"/"## V3" misturava ao_vivo com retro/replay_v3 que compartilham o
+   mesmo rotulo de `versao` -- corrigido: filtra tambem por `origem`). replay_v3 rotulado
+   (EXPLORATORIO). NUNCA escolhe a "melhor" variante entre as 4 -- so reporta lado a lado, em
+   qualquer bloco.
+
+Uso (na VM, a partir da raiz do repo):
+    python -m signals_mvp.scripts.exit_lab --db signals_mvp/dados/estado.sqlite
 """
 
 from __future__ import annotations
@@ -61,9 +75,18 @@ import statistics
 from pathlib import Path
 from typing import Any, Optional
 
-from ..analise.condicional import RISCO_IRREALISTA_MIN_PCT, _contaminado_candle, _risco_irrealista
+import numpy as np
+
+from ..analise.condicional import (
+    CONFIANCA_H1,
+    N_BOOTSTRAP_PADRAO,
+    RISCO_IRREALISTA_MIN_PCT,
+    SEED_PADRAO,
+    _contaminado_candle,
+    _risco_irrealista,
+)
 from ..config import make_paths
-from ..pos_runner.candles import Bar, tf_seconds
+from ..pos_runner.candles import Bar, candle_corrompido_provavel, tf_seconds
 from ..pos_runner.costs import CostModel
 from ..pos_runner.detector_v1 import DetectorV1
 from ..pos_runner.params_v1 import ParamsV1, load_params_v1
@@ -89,6 +112,14 @@ class ExitResult:
     net_ret: Optional[float] = None
     reason: str = ""
     bars_held: Optional[int] = None
+    # PEDIDO 2026-11-05 (item 1, correcao de vies de selecao): quando `status != "fechado"`, o
+    # restante ABERTO e valorizado no ULTIMO candle LIMPO (nunca um candle corrompido -- MESMA regra
+    # de `candle_corrompido_provavel`), combinado com pernas JA realizadas (ex.: TP1/30% no topo).
+    # `net_ret` continua None quando nao fechou -- NUNCA sobrescrito -- este e um campo PARALELO, so
+    # pra visao (ii) "todos os trades" (ver `linhas_v1v2v3`/`formatar`).
+    net_ret_marcado: Optional[float] = None
+    marcado_a_mercado: bool = False
+    candle_marca_ts: Optional[float] = None
 
 
 def _leg_cost(costs: CostModel, dex: str, price: float, l_bc: Optional[float]) -> float:
@@ -101,13 +132,45 @@ def _net_de_legs(legs: list[tuple[float, float, float]], entry: float, entry_cos
     return net - 1.0
 
 
+def _marcar_a_mercado(bars: list[Bar], entry: float, entry_cost_pct: float, costs: CostModel, dex: str,
+                      l_bc: Optional[float], legs_realizados: list[tuple[float, float, float]],
+                      remaining: float) -> tuple[Optional[float], Optional[float]]:
+    """PEDIDO 2026-11-05 (item 1): valoriza o restante ABERTO (`remaining`) no candle LIMPO mais
+    recente da serie (nunca inventado -- `candle_corrompido_provavel`, MESMA regra de
+    `auditar_mfe.py`), combinado com as pernas JA realizadas (ex.: TP1/30% no topo, se houver).
+    Devolve `(None, None)` se nenhum candle limpo existir na serie inteira (nunca marca com dado
+    ruim)."""
+    if remaining <= 1e-9:
+        net = _net_de_legs(legs_realizados, entry, entry_cost_pct) if legs_realizados else None
+        return net, None
+    idx_limpo = None
+    for idx in range(len(bars) - 1, -1, -1):
+        if not candle_corrompido_provavel(bars, idx):
+            idx_limpo = idx
+            break
+    if idx_limpo is None:
+        return None, None
+    close_limpo = bars[idx_limpo].close
+    custo_marca = _leg_cost(costs, dex, close_limpo, l_bc)
+    legs_completos = legs_realizados + [(remaining, close_limpo, custo_marca)]
+    net = _net_de_legs(legs_completos, entry, entry_cost_pct)
+    return net, bars[idx_limpo].ts
+
+
 def _variante_a(bars: list[Bar], j0: int, stop: float, topo: float, s: float, params: ParamsV1,
                 costs: CostModel, dex: str, l_bc: Optional[float]) -> ExitResult:
     if j0 <= 0:
         return ExitResult("em_aberto", reason="sem_candle_anterior")
     ev = _SyntheticEvent(j0 - 1, {"stop": stop, "TOPO": topo, "S": s})
     res = simulate_v1(bars, ev, params, costs, dex, l_bc, lambda _t: None)
-    return ExitResult(res.status, res.net_ret, res.reason, res.bars_held)
+    if res.status == "fechado" or res.entry_price is None or res.entry_cost_pct is None:
+        return ExitResult(res.status, res.net_ret, res.reason, res.bars_held)
+    remaining = 1.0 - sum(leg.frac for leg in res.legs)
+    legs_realizados = [(leg.frac, leg.price, leg.cost_pct) for leg in res.legs]
+    net_marcado, marca_ts = _marcar_a_mercado(bars, res.entry_price, res.entry_cost_pct, costs, dex, l_bc,
+                                              legs_realizados, remaining)
+    return ExitResult(res.status, res.net_ret, res.reason, res.bars_held, net_ret_marcado=net_marcado,
+                      marcado_a_mercado=net_marcado is not None, candle_marca_ts=marca_ts)
 
 
 def _variante_b(bars: list[Bar], j0: int, entry: float, stop0: float, s: Optional[float],
@@ -128,7 +191,9 @@ def _variante_b(bars: list[Bar], j0: int, entry: float, stop0: float, s: Optiona
         if altura is not None and not moved and max_high - entry >= altura:
             stop, moved = entry, True
         j += 1
-    return ExitResult("em_aberto")
+    net_marcado, marca_ts = _marcar_a_mercado(bars, entry, entry_cost_pct, costs, dex, l_bc, [], 1.0)
+    return ExitResult("em_aberto", net_ret_marcado=net_marcado, marcado_a_mercado=net_marcado is not None,
+                      candle_marca_ts=marca_ts)
 
 
 def _variante_c(bars: list[Bar], j0: int, entry: float, stop: float, r: Optional[float],
@@ -143,12 +208,16 @@ def _variante_c(bars: list[Bar], j0: int, entry: float, stop: float, r: Optional
             return ExitResult("fechado", net, "stop", j - j0 + 1)
         if r is not None and bar.close < r:
             if j + 1 >= len(bars):
-                return ExitResult("em_aberto", reason="pendente_fechamento_sob_teto")
+                net_marcado, marca_ts = _marcar_a_mercado(bars, entry, entry_cost_pct, costs, dex, l_bc, [], 1.0)
+                return ExitResult("em_aberto", reason="pendente_fechamento_sob_teto", net_ret_marcado=net_marcado,
+                                  marcado_a_mercado=net_marcado is not None, candle_marca_ts=marca_ts)
             price = bars[j + 1].open
             net = _net_de_legs([(1.0, price, _leg_cost(costs, dex, price, l_bc))], entry, entry_cost_pct)
             return ExitResult("fechado", net, "fechamento_1h_abaixo_do_teto", j + 1 - j0 + 1)
         j += 1
-    return ExitResult("em_aberto")
+    net_marcado, marca_ts = _marcar_a_mercado(bars, entry, entry_cost_pct, costs, dex, l_bc, [], 1.0)
+    return ExitResult("em_aberto", net_ret_marcado=net_marcado, marcado_a_mercado=net_marcado is not None,
+                      candle_marca_ts=marca_ts)
 
 
 def _variante_d(bars: list[Bar], j0: int, entry: float, stop0: float, topo: Optional[float],
@@ -182,7 +251,26 @@ def _variante_d(bars: list[Bar], j0: int, entry: float, stop0: float, topo: Opti
         if k >= j0 + 1 and bars[k].low < bars[k - 1].low and bars[k].low < bars[k + 1].low and bars[k].low < bar.low:
             trail_stop = max(trail_stop, bars[k].low * (1.0 - params.stop_below_wick_pct))
         j += 1
-    return ExitResult("em_aberto")
+    net_marcado, marca_ts = _marcar_a_mercado(bars, entry, entry_cost_pct, costs, dex, l_bc, legs, remaining)
+    return ExitResult("em_aberto", net_ret_marcado=net_marcado, marcado_a_mercado=net_marcado is not None,
+                      candle_marca_ts=marca_ts)
+
+
+def _linha_variante(r_res: ExitResult, risk_frac: Optional[float], risco_pct: Optional[float]) -> dict[str, Any]:
+    """PEDIDO 2026-11-05 (item 1): monta o sub-dict de UMA variante com as DUAS visoes -- `pct`/`r`
+    (so resolvidos, `net_ret`) e `pct_marcado`/`r_marcado` (TODOS os trades -- usa `net_ret` quando
+    fechou, `net_ret_marcado` quando em_aberto; nunca None por causa so de estar em_aberto)."""
+    pct = (r_res.net_ret * 100.0) if r_res.net_ret is not None else None
+    r_mult = (r_res.net_ret / risk_frac) if (r_res.net_ret is not None and risk_frac
+                                             and risco_pct is not None
+                                             and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
+    net_para_marcar = r_res.net_ret if r_res.net_ret is not None else r_res.net_ret_marcado
+    pct_marcado = (net_para_marcar * 100.0) if net_para_marcar is not None else None
+    r_marcado = (net_para_marcar / risk_frac) if (net_para_marcar is not None and risk_frac
+                                                  and risco_pct is not None
+                                                  and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
+    return {"status": r_res.status, "pct": pct, "r": r_mult, "motivo": r_res.reason,
+           "pct_marcado": pct_marcado, "r_marcado": r_marcado, "marcado_a_mercado": r_res.marcado_a_mercado}
 
 
 def simular_sinal(bars: list[Bar], j0: int, entry: float, stop: float, topo: Optional[float],
@@ -249,11 +337,7 @@ def linhas_v1v2v3(storage: Storage, versao: str) -> tuple[list[dict[str, Any]], 
         linha = {"token": s["symbol"] or (s["mint"] or "")[:8], "versao": versao, "origem": "v1v2v3",
                 "risco_pct": risco_pct}
         for nome, r_res in resultado.items():
-            pct = (r_res.net_ret * 100.0) if r_res.net_ret is not None else None
-            r_mult = (r_res.net_ret / risk_frac) if (r_res.net_ret is not None and risk_frac
-                                                     and risco_pct is not None
-                                                     and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
-            linha[nome] = {"status": r_res.status, "pct": pct, "r": r_mult, "motivo": r_res.reason}
+            linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
         linhas.append(linha)
     return linhas, sem_dado_box, sem_bar_entrada
 
@@ -276,7 +360,7 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
         tabelas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "pr_retro_candidatos" not in tabelas:
             return [], 0
-        candidatos = con.execute("SELECT pool, symbol, launchpad FROM pr_retro_candidatos").fetchall()
+        candidatos = con.execute("SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
         costs = CostModel()
         linhas: list[dict[str, Any]] = []
         n_fora_do_alcance = 0
@@ -293,7 +377,13 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
                 bars = _bars_truncados(con, row["pool"], tf, step, pool_row["added_ts"])
                 if not bars:
                     continue
-                det = DetectorV1(params, tf, pool_row["l_bc"], None, None)
+                # CORRECAO 2026-11-04: `criado_ts` (da PROPRIA linha congelada, NUNCA None) precisa ir
+                # pro DetectorV1 -- sem ele, `age_days()`/`in_age_window()` sempre devolvem False e
+                # TODA zona emite FORA_DA_IDADE em vez de ENTRADA (a secao retro desta funcao nunca
+                # achava nenhum sinal, mesmo quando `avaliar_candidatos_retro.py: processar_candidato`
+                # -- que SEMPRE passa `criado_ts` -- acharia um real). MESMA convencao de
+                # `processar_candidato`, nunca uma regra nova.
+                det = DetectorV1(params, tf, pool_row["l_bc"], row["grad_ts"], row["criado_ts"])
                 dex = pool_row["launchpad"] or row["launchpad"] or "desconhecido"
                 for bar in bars:
                     for ev in det.update(bar):
@@ -311,11 +401,7 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
                         linha = {"token": row["symbol"] or row["pool"][:8], "versao": versao, "origem": "retro",
                                 "risco_pct": risco_pct}
                         for nome, r_res in resultado.items():
-                            pct = (r_res.net_ret * 100.0) if r_res.net_ret is not None else None
-                            r_mult = (r_res.net_ret / risk_frac) if (r_res.net_ret is not None and risk_frac
-                                                                     and risco_pct is not None
-                                                                     and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
-                            linha[nome] = {"status": r_res.status, "pct": pct, "r": r_mult, "motivo": r_res.reason}
+                            linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
                         linhas.append(linha)
         return linhas, n_fora_do_alcance
     finally:
@@ -347,11 +433,7 @@ def linhas_v3_replay_pools_admitidos(db_path: Path) -> list[dict[str, Any]]:
             resultado = simular_sinal(bars, j0, entry, stop, topo, s_val, r_val, params_v3, costs, dex, l_bc)
             linha = {"token": lp["symbol"], "versao": "v3", "origem": "v3_replay", "risco_pct": risco_pct}
             for nome, r_res in resultado.items():
-                pct = (r_res.net_ret * 100.0) if r_res.net_ret is not None else None
-                r_mult = (r_res.net_ret / risk_frac) if (r_res.net_ret is not None and risk_frac
-                                                         and risco_pct is not None
-                                                         and risco_pct >= RISCO_IRREALISTA_MIN_PCT) else None
-                linha[nome] = {"status": r_res.status, "pct": pct, "r": r_mult, "motivo": r_res.reason}
+                linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
             linhas.append(linha)
     return linhas
 
@@ -360,9 +442,12 @@ def _media(valores: list[float]) -> Optional[float]:
     return statistics.fmean(valores) if valores else None
 
 
-def resumo_por_token(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """PEDIDO 2026-11-03 (continuacao -- pendente 5): agrega TODAS as origens (v1/v2/v3 ao vivo,
-    retro lote1, replay V3) por token -- media de %/R por variante."""
+def resumo_por_token(linhas: list[dict[str, Any]], campo_pct: str = "pct", campo_r: str = "r"
+                     ) -> list[dict[str, Any]]:
+    """Agrega o grupo recebido (UMA origem por vez -- nunca mistura ao_vivo/retro_lote1/replay_v3,
+    ver PARTE 2c) por token -- media de %/R por variante. `campo_pct`/`campo_r` escolhem a visao
+    (PEDIDO 2026-11-05, item 1): "pct"/"r" (so resolvidos) ou "pct_marcado"/"r_marcado" (todos os
+    trades, em_aberto valorizados a mercado)."""
     por_token: dict[str, list[dict[str, Any]]] = {}
     for l in linhas:
         por_token.setdefault(l["token"], []).append(l)
@@ -370,10 +455,147 @@ def resumo_por_token(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for token, ls in sorted(por_token.items()):
         linha: dict[str, Any] = {"token": token, "n": len(ls)}
         for nome in VARIANTES:
-            pcts = [l[nome]["pct"] for l in ls if l[nome]["pct"] is not None]
-            rs = [l[nome]["r"] for l in ls if l[nome]["r"] is not None]
+            pcts = [l[nome][campo_pct] for l in ls if l[nome][campo_pct] is not None]
+            rs = [l[nome][campo_r] for l in ls if l[nome][campo_r] is not None]
             linha[nome] = {"pct_medio": _media(pcts), "r_medio": _media(rs), "n": len(pcts)}
         out.append(linha)
+    return out
+
+
+def _mesma_amostra(linhas: list[dict[str, Any]], campo_pct: str = "pct") -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-05 (PARTE 2a, item 1): so os sinais com resultado DEFINIDO no `campo_pct` nas 4
+    variantes -- garante n IGUAL nas 4 colunas. Com `campo_pct="pct"` (padrao, visao i "so
+    resolvidos"): cada variante tem seu proprio N porque fica `em_aberto` sob condicoes diferentes --
+    isso EXCLUI justamente os candidatos a vencedor ainda correndo (ex.: MOGZ/PEAK), um VIES DE
+    SELECAO. Com `campo_pct="pct_marcado"` (visao ii "todos os trades", ver `_todos_valorizados`):
+    em_aberto entra valorizado a mercado, nunca excluido so por nao ter fechado ainda."""
+    return [l for l in linhas if all(l[nome][campo_pct] is not None for nome in VARIANTES)]
+
+
+def _todos_valorizados(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """PEDIDO 2026-11-05 (item 1, visao ii): alias de `_mesma_amostra` sobre `pct_marcado` -- so
+    exclui quando nem o valor marcado a mercado existe (nenhum candle limpo na serie inteira)."""
+    return _mesma_amostra(linhas, campo_pct="pct_marcado")
+
+
+def media_entre_tokens(resumo_tokens: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """PEDIDO 2026-11-05 (PARTE 2b): media de 2o nivel -- cada TOKEN pesa 1x (nunca pelo numero de
+    sinais que ele tem), para um token com muitos sinais (ex.: 17) nao dominar a media geral; conta
+    tambem quantos tokens tem media>0 por variante. Nunca escolhe a "melhor" -- so lado a lado."""
+    out: dict[str, dict[str, Any]] = {}
+    for nome in VARIANTES:
+        pcts = [rt[nome]["pct_medio"] for rt in resumo_tokens if rt[nome]["pct_medio"] is not None]
+        rs = [rt[nome]["r_medio"] for rt in resumo_tokens if rt[nome]["r_medio"] is not None]
+        out[nome] = {"pct_medio_entre_tokens": _media(pcts), "r_medio_entre_tokens": _media(rs),
+                    "n_tokens": len(pcts), "n_tokens_positivos": sum(1 for v in pcts if v > 0)}
+    return out
+
+
+def _fracao_top3(rs: list[float]) -> Optional[str]:
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): fracao do R TOTAL (soma de `rs`) que vem dos 3 maiores
+    trades individuais -- SO relatorio, nunca decide nada. `None` (texto s/d) quando a soma total e
+    ~0 (denominador instavel, nunca dividido por quase-zero)."""
+    soma_total = sum(rs)
+    if abs(soma_total) < 1e-9:
+        return None
+    top3 = sum(sorted(rs, reverse=True)[:3])
+    return f"{100.0 * top3 / soma_total:+.0f}% (top3={top3:+.2f}R / total={soma_total:+.2f}R, n={len(rs)})"
+
+
+def _bootstrap_ic_por_token(linhas: list[dict[str, Any]], nome: str, campo_r: str,
+                            n_bootstrap: int = N_BOOTSTRAP_PADRAO, seed: int = SEED_PADRAO,
+                            confianca: float = CONFIANCA_H1) -> Optional[tuple[float, float]]:
+    """PEDIDO 2026-11-05 (PARTE 3, item 2): IC bootstrap EXPLORATORIO da media de R da variante `nome`
+    -- em blocos por TOKEN (preserva a correlacao entre sinais do mesmo token), MESMO metodo de
+    `analise.condicional.bootstrap_media_e_limite_inferior` (reaproveitado aqui so pra nao duplicar a
+    logica estatistica -- nunca decide H1/futilidade, so acompanha a visao (ii) deste script
+    exploratorio). `None` sem nenhum valor de R na amostra desta variante."""
+    grupos: dict[str, list[float]] = {}
+    for l in linhas:
+        r = l[nome][campo_r]
+        if r is not None:
+            grupos.setdefault(l["token"], []).append(r)
+    chaves = sorted(grupos)
+    n = len(chaves)
+    if n == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    medias = np.empty(n_bootstrap, dtype=float)
+    for i in range(n_bootstrap):
+        escolhidos = rng.integers(0, n, size=n)
+        valores = [v for idx in escolhidos for v in grupos[chaves[idx]]]
+        medias[i] = float(np.mean(valores)) if valores else 0.0
+    alpha = 1.0 - confianca
+    lo = float(np.percentile(medias, 100.0 * alpha / 2.0))
+    hi = float(np.percentile(medias, 100.0 * (1.0 - alpha / 2.0)))
+    return lo, hi
+
+
+def _formatar_visao(linhas_grupo: list[dict[str, Any]], titulo_visao: str, campo_pct: str, campo_r: str,
+                    amostra_fn: Any) -> list[str]:
+    """PEDIDO 2026-11-05 (item 1): UMA das duas visoes (i/ii) -- mesma amostra (n igual nas 4
+    variantes NESTA visao) + media por SINAL pareado + media ENTRE TOKENS (2o nivel, cada token pesa
+    1x). Nunca escolhe a "melhor" variante."""
+    out = [f"  {titulo_visao}", ""]
+    comum = amostra_fn(linhas_grupo)
+    out.append(f"  n no grupo: {len(linhas_grupo)} | n na amostra desta visao (resultado definido nas "
+              f"4 variantes): {len(comum)}")
+    if campo_pct == "pct_marcado":
+        n_marcados = sum(1 for l in comum for nome in VARIANTES if l[nome].get("marcado_a_mercado"))
+        out.append(f"  valorizados a mercado (soma sobre as 4 variantes, pode repetir o mesmo sinal): {n_marcados}")
+    if not comum:
+        out.append("    (nenhum sinal com resultado definido simultaneamente nas 4 variantes nesta visao)")
+        out.append("")
+        return out
+    out.append("  Media por SINAL pareado (n igual nas 4 colunas):")
+    for nome in VARIANTES:
+        pcts = [l[nome][campo_pct] for l in comum]
+        rs = [l[nome][campo_r] for l in comum if l[nome][campo_r] is not None]
+        r_txt = f" | media R={_media(rs):+.2f} (n={len(rs)})" if rs else " | R: s/d"
+        out.append(f"    {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)}){r_txt}")
+    if campo_pct == "pct_marcado":
+        # PEDIDO 2026-11-05 (PARTE 3, item 2): SO na visao (ii) -- mediana de R, fracao do R total dos
+        # 3 maiores trades, IC bootstrap por token (10000 reamostras, seed fixa). EXPLORATORIO (n
+        # pequeno, nunca decide H1/futilidade/variante vencedora -- so acompanha a media por sinal
+        # ja reportada acima, com mais robustez a outlier/caudas).
+        out.append("  EXPLORATORIO (n pequeno, NUNCA decide H1/futilidade/variante vencedora): mediana "
+                  "de R, fracao do R total vinda dos 3 maiores trades, IC90% bootstrap da media de R "
+                  "(blocos por token, 10000 reamostras, seed fixa):")
+        for nome in VARIANTES:
+            rs = [l[nome][campo_r] for l in comum if l[nome][campo_r] is not None]
+            if not rs:
+                out.append(f"    {nome}: s/d (sem R na amostra)")
+                continue
+            mediana_txt = f"{statistics.median(rs):+.2f}R"
+            frac_txt = _fracao_top3(rs) or "s/d (soma do R ~0)"
+            ic = _bootstrap_ic_por_token(comum, nome, campo_r)
+            ic_txt = f"[{ic[0]:+.2f}R, {ic[1]:+.2f}R]" if ic is not None else "s/d"
+            out.append(f"    {nome}: mediana R={mediana_txt} | top-3/total={frac_txt} | "
+                      f"IC90% bootstrap={ic_txt}")
+    resumo_tokens = resumo_por_token(comum, campo_pct, campo_r)
+    mt = media_entre_tokens(resumo_tokens)
+    out.append(f"  Media ENTRE TOKENS ({len(resumo_tokens)} token(s) distinto(s), cada um pesa 1x):")
+    for nome in VARIANTES:
+        m = mt[nome]
+        pct_txt = f"{m['pct_medio_entre_tokens']:+.1f}%" if m["pct_medio_entre_tokens"] is not None else "s/d"
+        r_txt = f"{m['r_medio_entre_tokens']:+.2f}R" if m["r_medio_entre_tokens"] is not None else "-"
+        out.append(f"    {nome}: {pct_txt}/{r_txt} | tokens com media>0: {m['n_tokens_positivos']}/{m['n_tokens']}")
+    out.append("")
+    return out
+
+
+def _formatar_bloco(linhas_grupo: list[dict[str, Any]], titulo: str) -> list[str]:
+    """PEDIDO 2026-11-05 (PARTE 2a/b corrigido pelo item 1): DUAS visoes lado a lado para UM grupo
+    (uma origem/versao por vez -- ver PARTE 2c) -- (i) so resolvidos (pode ter vies de selecao: exclui
+    em_aberto, que sao justamente os candidatos a vencedor ainda correndo) e (ii) TODOS os trades
+    (em_aberto valorizados a mercado no ultimo candle limpo, mantendo a fracao ainda aberta -- ex.:
+    os 70% restantes da variante D). Nunca escolhe a "melhor" variante em nenhuma das duas."""
+    out = [f"## {titulo}", ""]
+    out.extend(_formatar_visao(linhas_grupo, "(i) SO RESOLVIDOS -- pode ter vies de selecao (exclui "
+                               "em_aberto, candidatos a vencedor)", "pct", "r", _mesma_amostra))
+    out.extend(_formatar_visao(linhas_grupo, "(ii) TODOS OS TRADES -- em_aberto valorizado a mercado "
+                               "(ultimo close limpo, fracao aberta mantida)", "pct_marcado", "r_marcado",
+                               _todos_valorizados))
     return out
 
 
@@ -381,49 +603,25 @@ def formatar(linhas: list[dict[str, Any]], sem_dado_box: dict[str, int], sem_bar
             n_fora_do_alcance_retro: int) -> str:
     out = [f"# exit_lab -- 4 saidas alternativas ({AVISO})", "",
           "Variantes: A=atual | B=breakeven apos 1x altura da caixa | C=1o fechamento 1h sob o teto | "
-          "D=30% no topo + trailing no fundo da mini-caixa.", ""]
+          "D=30% no topo + trailing no fundo da mini-caixa. NUNCA escolhe a melhor -- 4 saidas "
+          "testadas lado a lado, sempre na MESMA amostra (PARTE 2a) e por token (PARTE 2b).", "",
+          "Fontes SEPARADAS (PARTE 2c, nunca somadas): ao_vivo e retro_lote1 sao sinais reais/"
+          "candidatos realmente admitidos; replay_v3 e EXPLORATORIO (replay retroativo completo, "
+          "nunca uma coorte admitida de verdade).", ""]
+    ao_vivo = [l for l in linhas if l["origem"] == "v1v2v3"]
+    out.append(f"## ao_vivo (V1/V2/V3, n={len(ao_vivo)})")
+    out.append("")
     for versao in ("v1", "v2", "v3"):
-        linhas_v = [l for l in linhas if l["versao"] == versao]
-        out.append(f"## {versao.upper()} (n={len(linhas_v)}, "
-                  f"sem trajetoria/box: {sem_dado_box.get(versao, 0)}, sem candle de entrada: {sem_bar_entrada.get(versao, 0)})")
-        for nome in VARIANTES:
-            pcts = [l[nome]["pct"] for l in linhas_v if l[nome]["pct"] is not None]
-            rs = [l[nome]["r"] for l in linhas_v if l[nome]["r"] is not None]
-            out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d" +
-                      (f" | media R={_media(rs):+.2f} (n={len(rs)})" if rs else " | R: s/d"))
-        out.append("")
+        linhas_v = [l for l in ao_vivo if l["versao"] == versao]
+        out.extend(_formatar_bloco(linhas_v, f"ao_vivo / {versao.upper()} (sem trajetoria/box: "
+                                   f"{sem_dado_box.get(versao, 0)}, sem candle de entrada: "
+                                   f"{sem_bar_entrada.get(versao, 0)})"))
     retro = [l for l in linhas if l["origem"] == "retro"]
-    out.append(f"## Coorte retrospectiva (lote 1, so admitidos apos congelamento; n={len(retro)}, "
-              f"fora do alcance/sem dado: {n_fora_do_alcance_retro})")
-    for nome in VARIANTES:
-        pcts = [l[nome]["pct"] for l in retro if l[nome]["pct"] is not None]
-        rs = [l[nome]["r"] for l in retro if l[nome]["r"] is not None]
-        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
-    out.append("")
+    out.extend(_formatar_bloco(retro, f"retro_lote1 (so admitidos apos congelamento; "
+                               f"fora do alcance/sem dado: {n_fora_do_alcance_retro})"))
     v3_replay = [l for l in linhas if l["origem"] == "v3_replay"]
-    out.append(f"## V3 replay (pools admitidos hoje, historico completo; n={len(v3_replay)})")
-    for nome in VARIANTES:
-        pcts = [l[nome]["pct"] for l in v3_replay if l[nome]["pct"] is not None]
-        rs = [l[nome]["r"] for l in v3_replay if l[nome]["r"] is not None]
-        out.append(f"  {nome}: media %={_media(pcts):+.1f}% (n={len(pcts)})" if pcts else f"  {nome}: s/d")
-    out.append("")
-    resumo_tokens = resumo_por_token(linhas)
-    out.append(f"## Por token ({len(resumo_tokens)} distinto(s), todas as origens)")
-    out.append("")
-    if resumo_tokens:
-        out.append("| token | n | " + " | ".join(f"{n} (%/R médios)" for n in VARIANTES) + " |")
-        out.append("|---|---|" + "---|" * len(VARIANTES))
-        for rt in resumo_tokens:
-            celulas = []
-            for nome in VARIANTES:
-                v = rt[nome]
-                pct = f"{v['pct_medio']:+.1f}%" if v["pct_medio"] is not None else "s/d"
-                r = f"{v['r_medio']:+.2f}R" if v["r_medio"] is not None else "-"
-                celulas.append(f"{pct}/{r} (n={v['n']})")
-            out.append(f"| {rt['token']} | {rt['n']} | " + " | ".join(celulas) + " |")
-    else:
-        out.append("nenhum sinal.")
-    out.append("")
+    out.extend(_formatar_bloco(v3_replay, "replay_v3 (EXPLORATORIO -- replay retroativo completo, "
+                               "nunca coorte admitida de verdade)"))
     out.append("Por sinal:")
     out.append("")
     out.append("| token | versão | origem | risco% | " + " | ".join(f"{n} (%/R/motivo)" for n in VARIANTES) + " |")
