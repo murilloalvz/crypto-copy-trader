@@ -112,7 +112,9 @@ AVISO = ("EXPLORATORIO -- DENTRO DA AMOSTRA (nunca fora-da-amostra no sentido fo
 
 RAM_MINIMA_MB_PADRAO = 150.0
 RISCO_MINIMO_PCT = RISCO_IRREALISTA_MIN_PCT   # mesma regra de realismo do resto do projeto
-ALVOS_R = (1.0, 2.0, 3.0)
+ALVOS_R = (1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0)   # rodada 12, Parte 4b: alinhado ao conjunto
+# completo de B2 (`auditoria_fidelidade_v3.ALVOS_R_B2`) -- P(+NR antes -1R) e o equilibrio EMPIRICO
+# (K=20 entradas aleatorias/sinal) passam a cobrir os mesmos 8 alvos, nunca so os 3 originais.
 JANELA_VOLUME_MEDIO = 24
 
 
