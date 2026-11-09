@@ -519,6 +519,19 @@ CREATE TABLE IF NOT EXISTS pr_horizonte_fixo (
   UNIQUE (versao, origem, entry_key, horizonte)
 );
 CREATE INDEX IF NOT EXISTS pr_horizonte_fixo_versao ON pr_horizonte_fixo (versao, origem, horizonte);
+-- PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizada -- ver docs/pos-runner-v3/
+-- PREREGISTRO_SAIDA_FIEL_2026-11-06.md): "saida fiel" (`pos_runner/saida_fiel.py`) calculada de
+-- forma INCREMENTAL para cada sinal V3 REAL (`pr3_signals`, evento='ENTRADA') -- SO
+-- medicao/sombra, NUNCA altera `pr3_signals`/alertas/`pr_trajetoria`/H1/criterio de sinal.
+-- `signal_id` = `pr3_signals.id`. `status`: 'pendente'|'resolvido'|'marcado'|'sem_dado' (MESMO
+-- vocabulario de `ResultadoSaidaFiel`).
+CREATE TABLE IF NOT EXISTS pr3_saidas_sombra (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id INTEGER NOT NULL, horizonte TEXT NOT NULL,
+  calculado_ts REAL NOT NULL, status TEXT NOT NULL, r_mult REAL,
+  tp1_realizado INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (signal_id, horizonte)
+);
+CREATE INDEX IF NOT EXISTS pr3_saidas_sombra_signal ON pr3_saidas_sombra (signal_id);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -2172,6 +2185,28 @@ class Storage:
                 sql += f" AND {coluna}=?"
                 args.append(valor)
         return self._all(sql, tuple(args))
+
+    # -- PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizada): sombra ao vivo da saida fiel -- SO
+    # medicao, nunca altera pr3_signals/alertas/pr_trajetoria/H1. Ver pos_runner/saida_fiel.py.
+    def pr3_saidas_sombra_upsert(self, signal_id: int, horizonte: str, calculado_ts: float, status: str,
+                                 r_mult: Optional[float] = None, tp1_realizado: bool = False) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr3_saidas_sombra (signal_id, horizonte, calculado_ts, status, r_mult, "
+                "tp1_realizado) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT (signal_id, horizonte) DO UPDATE SET "
+                "calculado_ts=excluded.calculado_ts, status=excluded.status, r_mult=excluded.r_mult, "
+                "tp1_realizado=excluded.tp1_realizado",
+                (signal_id, horizonte, calculado_ts, status, r_mult, int(tp1_realizado)))
+
+    def pr3_saidas_sombra_get(self, signal_id: int, horizonte: str) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr3_saidas_sombra WHERE signal_id=? AND horizonte=?",
+                         (signal_id, horizonte))
+
+    def pr3_saidas_sombra_all(self, signal_id: Optional[int] = None) -> list[sqlite3.Row]:
+        if signal_id is not None:
+            return self._all("SELECT * FROM pr3_saidas_sombra WHERE signal_id=?", (signal_id,))
+        return self._all("SELECT * FROM pr3_saidas_sombra", ())
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:

@@ -52,11 +52,13 @@ from .detector_v1 import DetectorV1, EventV1
 from .dexpaprika_v1 import DexPaprikaProvider
 from .evidencia import N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis, simular_controle, sortear_controles
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
+from .horizonte_fixo import HORIZONTES_S
 from .lineage import creation_time
 from .params import Params, is_preregistered
 from .params_v1 import load_params_v1
 from .params_v2 import load_params_v2
 from .params_v3 import load_params_v3
+from .saida_fiel import calcular_r_saida_fiel, garantir_saida_fiel_registrada
 from .pos_runner_v3 import POSICAO_PCT_SUPPLY_ALERTA, calcular_covariaveis_v3, posicao_pct_supply
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
@@ -703,6 +705,13 @@ class PosRunnerLive:
         self.v3_alertas = v3_alertas
         self.params_v3 = load_params_v3()
         self.version_v3 = self.params_v3.version
+        if not sem_v3:
+            # PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizado): congela/confere o hash do
+            # pre-registro da saida fiel ANTES do 1o ciclo -- fail-closed (`PreregistroAlteradoError`
+            # propaga e impede o bot de subir) se o texto mudou depois do 1o registro, mesma
+            # disciplina de `garantir_emenda_registrada`/`garantir_plano_registrado`. So roda se a V3
+            # estiver ligada (sem_v3=False) -- sem V3 nunca ha sombra pra calcular.
+            garantir_saida_fiel_registrada(storage)
         self.version_v3_start: Optional[float] = None
         self.dets_v3: dict[tuple[str, str], DetectorV1] = {}
         self._v3_invalid: set[tuple[str, str]] = set()
@@ -3082,7 +3091,16 @@ class PosRunnerLive:
         mid = self._send(text, self._keyboard_v3(row))
         if mid is not None:
             agora = self.clock()
-            self.storage.pr3_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora, ts_envio_telegram=agora)
+            # PEDIDO 2026-11-06 (rodada 12, Parte 3): entry_price_alerta passa a ser o fechamento do
+            # ULTIMO candle que `det` ja tem no instante REAL do envio (nunca uma chamada de rede nova
+            # -- reusa o que o ciclo ja buscou), em vez de uma copia do preco modelado na deteccao
+            # (`ev.data["close"]`, ja gravado no INSERT acima como valor provisorio). So difere do
+            # modelado quando o envio acontece depois da deteccao (ex.: alerta atrasado, ou reenviado
+            # num restart que repete candles ja persistidos) -- nos outros casos e honestamente o
+            # MESMO valor, nunca um numero inventado.
+            preco_no_envio = det.bars[-1].close if det.bars else None
+            self.storage.pr3_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora,
+                                           ts_envio_telegram=agora, entry_price_alerta=preco_no_envio)
 
     def _update_paper_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
         """MESMA estrutura de `_update_paper_v1`, sem banca (V3 nunca executa posicao real nesta
@@ -3121,6 +3139,30 @@ class PosRunnerLive:
                 exit_full_ts=exit_leg.ts if exit_leg else None, result_net=res.net_ret, reason=res.reason,
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
             )
+
+    def _sombra_saida_fiel_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
+        """PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizado): calcula a "saida fiel" (`pos_runner/
+        saida_fiel.py`, algoritmo EXATO do pre-registro congelado por hash -- `garantir_saida_fiel_
+        registrada`, chamado 1x no startup, ver `__init__`) de forma INCREMENTAL para cada sinal V3
+        REAL (`pr3_signals`) deste (pool,tf), em 72h/7d -- SO escreve em `pr3_saidas_sombra`, NUNCA em
+        `pr3_signals`/alertas/`pr_trajetoria`/H1/criterio de sinal. Chamado so via `_sombra_safe`
+        (nunca derruba o ciclo, mesma disciplina das outras sombras)."""
+        for signal in self.storage.pr3_signals(pool=row["pool"], tf=tf):
+            if signal["evento"] != "ENTRADA":
+                continue
+            if signal["stop"] is None or signal["topo"] is None or signal["entry_price"] is None:
+                continue
+            traj = self.storage.pr_trajetoria_get("v3", signal["id"])
+            if traj is None or traj["t_entrada"] is None:
+                continue
+            ev = event_v1_from_json(signal["event_json"])
+            dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+            for horizonte, horizonte_s in HORIZONTES_S.items():
+                r = calcular_r_saida_fiel(det.bars, ev, self.params_v3, self.costs, dex, row["l_bc"],
+                                          t_entrada=float(traj["t_entrada"]), horizonte_s=horizonte_s,
+                                          now=now, sol_usd_at=self._sol_at())
+                self.storage.pr3_saidas_sombra_upsert(signal["id"], horizonte, now, r.status, r.r_mult,
+                                                      r.tp1_realizado)
 
     def _update_evidencia_v3(self, row: Any, tf: str, now: float) -> None:
         for signal in self.storage.pr3_signals(pool=row["pool"], tf=tf):
@@ -3795,6 +3837,10 @@ class PosRunnerLive:
                     except Exception:  # noqa: BLE001 - ver evidencia v1 acima (mesma auditoria)
                         log.warning("POS-RUNNER evidencia v3: erro inesperado em %s %s, ignorado neste ciclo",
                                    row["symbol"], tf, exc_info=True)
+                # PEDIDO 2026-11-06 (rodada 12, Parte 3): sombra da saida fiel -- MESMO det_v3/bars ja
+                # atualizados acima, zero chamada de rede nova; `_sombra_safe` garante que nenhuma
+                # excecao daqui alcance o resto do ciclo (mesma disciplina das outras sombras).
+                self._sombra_safe(self._sombra_saida_fiel_v3, row, tf, det_v3, now, contexto="saida_fiel_v3")
             # PEDIDO 2026-10-29: persiste a fase ATUAL (V1 e V2) em pr_pools -- saude.py le daqui,
             # nunca do ultimo heartbeat em memoria (que fica defasado/ausente logo apos um restart).
             try:
