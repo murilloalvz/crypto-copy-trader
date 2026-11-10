@@ -341,9 +341,19 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
         if now - row["ts"] <= 86400.0:
             por_hora[int(row["ts"] // 3600)] += 1
     total_24h = sum(por_hora.values())
+    # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward da V3 (pr3_carteiras_sinal, sinal
+    # real + K placebo por sinal) -- so contagem/cobertura, anexado na MESMA linha de snapshots pra
+    # nao estourar o orcamento de linhas do relatorio (<=60, ver docstring do modulo).
+    forward = storage.pr3_carteiras_sinal_all()
+    sinais_fwd = [r for r in forward if r["tipo"] == "sinal"]
+    placebo_fwd = [r for r in forward if r["tipo"] == "placebo"]
+    cobertos_sinal = sum(1 for r in sinais_fwd if r["cobertura_valida"])
+    cobertos_placebo = sum(1 for r in placebo_fwd if r["cobertura_valida"])
     out = [f"CARTEIRAS: lista carregada={'sim' if sha else 'NAO'} (sha256={sha[:12] + '...' if sha else 's/d'}) "
           f"| n_carteiras_pro={n_carteiras or 's/d'} n_pessoas_pro={n_pessoas or 's/d'}",
-          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s)"]
+          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s) | "
+          f"forward V3: sinal={len(sinais_fwd)} (cobertura={cobertos_sinal}) placebo={len(placebo_fwd)} "
+          f"(cobertura={cobertos_placebo})"]
     pools_ativos = storage.pr_pools("ativo")
     abertos = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
               {s["pool"] for s in storage.pr2_signals(status="aberto")}

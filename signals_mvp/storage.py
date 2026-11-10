@@ -283,6 +283,21 @@ CREATE TABLE IF NOT EXISTS pr_carteiras_tentativa (
   sucesso INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pr_carteiras_tentativa_ts ON pr_carteiras_tentativa (ts, momento);
+-- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward (SO GRAVACAO) para a
+-- V3 -- no MOMENTO de cada sinal real ("sinal") e dos K pools de controle/placebo escolhidos no
+-- MESMO ciclo ("placebo"), quantas carteiras/pessoas "pro" estao entre os top holders e qual % do
+-- supply. Sem lookahead: `ts` e o instante da captura, nunca reaberto/sobrescrito depois com holders
+-- de data posterior. `cobertura_valida`=0 (holders indisponivel/RateLimited) nunca e promovido a
+-- n_carteiras_pro=0 fabricado -- fica NULL nesse caso (dado ausente explicito, nunca um "zero" chutado).
+-- Nunca entra em regra/filtro/alerta da V3 -- fora do hash de ParamsV3; so insumo do pre-registro
+-- docs/pos-runner-v3/PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md.
+CREATE TABLE IF NOT EXISTS pr3_carteiras_sinal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id INTEGER NOT NULL, tipo TEXT NOT NULL,
+  pool TEXT NOT NULL, mint TEXT, ts REAL NOT NULL,
+  n_carteiras_pro INTEGER, n_pessoas_pro INTEGER, pct_supply REAL, cobertura_valida INTEGER NOT NULL,
+  UNIQUE (signal_id, tipo, pool)
+);
+CREATE INDEX IF NOT EXISTS pr3_carteiras_sinal_signal ON pr3_carteiras_sinal (signal_id, tipo);
 -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
 -- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
 -- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
@@ -1826,6 +1841,25 @@ class Storage:
             args.append(int(sucesso))
         row = self._one(sql, tuple(args))
         return int(row["n"]) if row else 0
+
+    # -- PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward de carteiras "pro" p/ V3 -----
+    def pr3_carteiras_sinal_insert(self, signal_id: int, tipo: str, pool: str, mint: Optional[str], ts: float,
+                                   n_carteiras_pro: Optional[int], n_pessoas_pro: Optional[int],
+                                   pct_supply: Optional[float], cobertura_valida: bool) -> bool:
+        """Idempotente por (signal_id,tipo,pool) -- True se inseriu (1a vez), False se ja existia."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO pr3_carteiras_sinal (signal_id,tipo,pool,mint,ts,n_carteiras_pro,"
+                "n_pessoas_pro,pct_supply,cobertura_valida) VALUES (?,?,?,?,?,?,?,?,?)",
+                (signal_id, tipo, pool, mint, ts, n_carteiras_pro, n_pessoas_pro, pct_supply, int(cobertura_valida)),
+            )
+            return bool(cur.rowcount)
+
+    def pr3_carteiras_sinal_para_sinal(self, signal_id: int) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr3_carteiras_sinal WHERE signal_id=? ORDER BY tipo, pool", (signal_id,))
+
+    def pr3_carteiras_sinal_all(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM pr3_carteiras_sinal ORDER BY ts, id")
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:

@@ -200,6 +200,9 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     # baixo e configuravel, NUNCA o mesmo limitador que lineage/graduacao usam (ver diagnostico,
     # docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md).
     carteiras_rpc_per_min = float(os.environ.get("CARTEIRAS_RPC_PER_MIN", "10"))
+    # PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): K pools de controle/placebo gravados em
+    # `pr3_carteiras_sinal` no MESMO ciclo de cada sinal V3 real -- ver `_capturar_carteiras_sinal_v3`.
+    carteiras_placebo_k = int(os.environ.get("CARTEIRAS_PLACEBO_K", "3"))
     sem_sombra = bool(os.environ.get("SEM_SOMBRA"))   # PEDIDO (PARTE 2A) FASE 3: desliga a sombra dos filtros
     sombra_max_pools = int(os.environ.get("SOMBRA_MAX_POOLS", "10"))
     sem_radar = bool(os.environ.get("SEM_RADAR"))   # PEDIDO 2026-10-29 (item 4): desliga o Radar "caixa em formacao"
@@ -235,7 +238,7 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          sem_sombra=sem_sombra, sombra_max_pools=sombra_max_pools,
                          sem_radar=sem_radar, radar_max_dia=radar_max_dia, sem_rotacao=sem_rotacao,
                          sem_v3=sem_v3, v3_alertas=v3_alertas, rpc_carteiras=rpc_carteiras,
-                         carteiras_rpc_per_min=carteiras_rpc_per_min)
+                         carteiras_rpc_per_min=carteiras_rpc_per_min, carteiras_placebo_k=carteiras_placebo_k)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)

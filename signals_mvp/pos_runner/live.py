@@ -59,6 +59,7 @@ from .params_v1 import load_params_v1
 from .params_v2 import load_params_v2
 from .params_v3 import load_params_v3
 from .saida_fiel import calcular_r_saida_fiel, garantir_saida_fiel_registrada
+from .carteiras_forward import garantir_carteiras_forward_registrada
 from .pos_runner_v3 import POSICAO_PCT_SUPPLY_ALERTA, calcular_covariaveis_v3, posicao_pct_supply
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
@@ -608,6 +609,7 @@ class PosRunnerLive:
         v3_alertas: bool = False,
         rpc_carteiras: Any = None,
         carteiras_rpc_per_min: Optional[float] = None,
+        carteiras_placebo_k: int = 3,
     ):
         self.settings = settings
         self.params = params
@@ -672,6 +674,9 @@ class PosRunnerLive:
         self.adapter_carteiras = (SolanaAdapter(self.http, ctx, self.ohlcv, rpc_carteiras, links, terminal=terminal)
                                   if rpc_carteiras is not None else self.adapter)
         self.carteiras_rpc_per_min = carteiras_rpc_per_min
+        # PEDIDO 2026-11-10 (rodada 15, Parte 3): K pools de controle/placebo gravados no MESMO ciclo
+        # de cada sinal V3 real (instrumentacao forward -- ver `_capturar_carteiras_sinal_v3`).
+        self.carteiras_placebo_k = carteiras_placebo_k
         self.dets_v1: dict[tuple[str, str], DetectorV1] = {}
         self._v1_invalid: set[tuple[str, str]] = set()      # dado_invalido definitivo (nunca re-tenta)
         self._v1_mc_baixo_logged: set[str] = set()          # filtrado_mc_baixo: loga 1x por pool (nao reabre a cada ciclo)
@@ -754,6 +759,14 @@ class PosRunnerLive:
         self.sem_carteiras = sem_carteiras
         self.carteiras_max_chamadas_dia = carteiras_max_chamadas_dia
         self._mapa_carteiras_pro = carteiras_pro.carregar_mapa_grupos()   # {} se o arquivo nao existir
+        if not sem_v3 and not sem_carteiras:
+            # PEDIDO 2026-11-10 (rodada 15, Parte 4, autorizado): congela/confere o hash do
+            # pre-registro da instrumentacao forward de carteiras pro (docs/pos-runner-v3/
+            # PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md) ANTES de qualquer captura real poder
+            # acontecer -- fail-closed (`PreregistroAlteradoError` propaga e impede o bot de subir)
+            # se o texto mudou depois do 1o registro, mesma disciplina de `garantir_saida_fiel_
+            # registrada`. So roda se V3 E carteiras estiverem ligadas (senao nunca ha captura).
+            garantir_carteiras_forward_registrada(storage)
         self._carteiras_horaria_ultima: dict[str, int] = {}   # pool -> ultimo bucket de hora UTC coletado
         # PEDIDO (PARTE 2A) FASE 3: sombra dos filtros filtrado_mc_baixo e queda_96_mais -- MEDICAO AO
         # LADO (nunca altera deteccao/entrada/saida/banca/CSV oficiais de V1/V2). filtrado_idade nao
@@ -3109,6 +3122,10 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
+            # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward, SO GRAVACAO -- nunca
+            # pode impedir/atrasar o sinal ja inserido acima, por isso via `_sombra_safe`.
+            self._sombra_safe(self._capturar_carteiras_sinal_v3, row, signal_id, tf, now,
+                              contexto="carteiras_sinal_v3")
             signal = self.storage.pr3_signal(signal_id)
         if not self.v3_alertas or signal is None or signal["tg_message_id"]:
             return
@@ -3228,6 +3245,57 @@ class PosRunnerLive:
             chave, now, "solana", pool, mint, momento, holders.top_holders, n_carteiras, n_pessoas,
             grupos, versao=versao, entry_id=entry_id,
         )
+
+    # -- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward p/ V3 -----------------
+    def _carteiras_pools_controle(self, pool_gatilho: str, tf: str, k: int) -> list[str]:
+        """K pools de controle/placebo para o PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md -- mesma
+        fase do detector V1 no MESMO tf do pool-gatilho, SEM posicao aberta em nenhuma versao (senao
+        seria o proprio tipo de caso que o sinal representa), nunca o pool-gatilho. Simplificacao
+        documentada no pre-registro: o pedido original ("fase/idade/MC aproximados") fica so FASE --
+        casar idade/MC exigiria recalcular covariaveis de cada candidato, custo que so o placebo nao
+        justifica. Selecao DETERMINISTICA (ordem alfabetica do endereco do pool, sem random/seed) --
+        reproduzivel, nunca um sorteio diferente a cada chamada."""
+        fase_gatilho = self._fase_label_v1(pool_gatilho, tf)
+        candidatos = sorted(
+            pool for (pool, pool_tf) in self.dets_v1
+            if pool_tf == tf and pool != pool_gatilho and self._fase_label_v1(pool, tf) == fase_gatilho
+            and not self._carteiras_posicao_aberta(pool)
+        )
+        return candidatos[:k]
+
+    def _capturar_carteiras_sinal_v3_holders(self, signal_id: int, tipo: str, pool: str, mint: str,
+                                             launchpad: Optional[str], now: float) -> None:
+        excluded = self.adapter.excluded_accounts(pool, mint, launchpad)
+        holders = self._holders_instrumentado(mint, excluded, pool, now)
+        cobertura_valida = holders.tag != "holders_indisponivel"
+        n_carteiras = n_pessoas = pct_supply = None
+        if cobertura_valida:
+            owners_pct = {o: pct for o, pct in holders.top_holders}
+            n_carteiras, n_pessoas, _grupos = carteiras_pro.pessoas_presentes(list(owners_pct), self._mapa_carteiras_pro)
+            pct_supply = sum(pct for o, pct in owners_pct.items() if o in self._mapa_carteiras_pro)
+        self.storage.pr3_carteiras_sinal_insert(signal_id, tipo, pool, mint, now, n_carteiras, n_pessoas,
+                                                pct_supply, cobertura_valida)
+
+    def _capturar_carteiras_sinal_v3(self, row: Any, signal_id: int, tf: str, now: float) -> None:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 3): no MOMENTO de cada sinal V3 real ("sinal"), grava
+        quantas carteiras/pessoas "pro" estao entre os top holders e qual % do supply -- e o MESMO
+        para K pools de controle/placebo escolhidos no MESMO ciclo ("placebo"). Sem lookahead: tudo
+        resolvido AGORA (holders de data posterior nunca entra aqui). Usa o adapter COMPARTILHADO/
+        rapido (`self.adapter`, default de `_holders_instrumentado`) -- evento raro (1 por sinal V3),
+        MESMA prioridade de uma posicao aberta (ver `_carteiras_prioridade_alta`), nunca consome o
+        orcamento `carteiras_max_chamadas_dia`/`pr_carteiras_tentativa` (esse orcamento e so da coleta
+        horaria de baixa prioridade, Parte 2). SEM_CARTEIRAS=1 desliga isto tambem (mesma chave que
+        desliga o resto do cruzamento H8/H9)."""
+        if self.sem_carteiras:
+            return
+        pool, mint, launchpad = row["pool"], row["mint"], row["launchpad"]
+        self._capturar_carteiras_sinal_v3_holders(signal_id, "sinal", pool, mint, launchpad, now)
+        for pool_controle in self._carteiras_pools_controle(pool, tf, self.carteiras_placebo_k):
+            controle_row = self.storage.pr_pool(pool_controle)
+            if controle_row is None or not controle_row["mint"]:
+                continue
+            self._capturar_carteiras_sinal_v3_holders(
+                signal_id, "placebo", pool_controle, controle_row["mint"], controle_row["launchpad"], now)
 
     def _atualizar_carteiras_horaria(self, row: Any, tf: str, now: float) -> None:
         """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
