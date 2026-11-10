@@ -392,6 +392,26 @@ class ResumoPorTokenTests(unittest.TestCase):
         self.assertAlmostEqual(resumo[0]["A_atual"]["r_medio"], 1.0)
         self.assertEqual(resumo[0]["A_atual"]["n"], 2)
 
+    def test_clones_de_mesmo_ticker_mints_diferentes_nunca_se_fundem(self) -> None:
+        # RODADA 17 (achado A2 da auditoria 2026-11-10): 2 tokens com o MESMO ticker "CAT" mas
+        # mints diferentes nunca podem ser tratados como 1 so grupo.
+        variante_vazia = {"status": "fechado", "pct": None, "r": None, "motivo": "s/d"}
+        linhas = [
+            {"token": "CAT", "mint": "MINT_A", "versao": "v1", "origem": "v1v2v3", "risco_pct": 20.0,
+             "A_atual": {"status": "fechado", "pct": 10.0, "r": 0.5, "motivo": "stop"},
+             "B_breakeven_1x_caixa": variante_vazia, "C_fechamento_1h_sob_teto": variante_vazia,
+             "D_30pct_topo_trailing": variante_vazia},
+            {"token": "CAT", "mint": "MINT_B", "versao": "v3", "origem": "v3_replay", "risco_pct": 20.0,
+             "A_atual": {"status": "fechado", "pct": 30.0, "r": 1.5, "motivo": "stop"},
+             "B_breakeven_1x_caixa": variante_vazia, "C_fechamento_1h_sob_teto": variante_vazia,
+             "D_30pct_topo_trailing": variante_vazia},
+        ]
+        resumo = exit_lab.resumo_por_token(linhas)
+        self.assertEqual(len(resumo), 2, "clones de mesmo ticker (mints diferentes) nunca podem virar 1 linha so")
+        por_mint = {r["mint"]: r for r in resumo}
+        self.assertEqual(por_mint["MINT_A"]["n"], 1)
+        self.assertEqual(por_mint["MINT_B"]["n"], 1)
+
 
 class LinhasV3ReplayTests(unittest.TestCase):
     def setUp(self) -> None:

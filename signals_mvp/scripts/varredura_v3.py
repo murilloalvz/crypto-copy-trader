@@ -234,8 +234,10 @@ def carregar_universo_admitido(db_path: Path) -> list[SinalVarredura]:
     for lp in linhas_pool:
         created_ts = _created_ts(info_por_pool.get(lp["pool"]))
         for bars, ev, dex, l_bc in lp["eventos_raw"]:
-            s = _montar_sinal(bars, ev, dex, l_bc, "universo_admitido", lp["symbol"], "", lp["pool"],
-                              params.timeframes[0], created_ts, supply_por_pool.get(lp["pool"]))
+            # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real (nunca "") -- `parte_a_pools_
+            # admitidos` ja carrega `lp["mint"]` de verdade desde esta rodada.
+            s = _montar_sinal(bars, ev, dex, l_bc, "universo_admitido", lp["symbol"], lp["mint"] or lp["pool"],
+                              lp["pool"], params.timeframes[0], created_ts, supply_por_pool.get(lp["pool"]))
             if s is not None:
                 sinais.append(s)
     return sorted(sinais, key=lambda s: s.t_entrada)
@@ -249,7 +251,7 @@ def carregar_universo_nunca_admitido(db_path: Path) -> list[SinalVarredura]:
         params = load_params_v3()
         costs = CostModel()
         rows = con.execute(
-            "SELECT pool, symbol, l_bc, grad_ts, launchpad, info FROM pr_pools "
+            "SELECT pool, mint, symbol, l_bc, grad_ts, launchpad, info FROM pr_pools "
             "WHERE status IN ('rejeitado', 'verificado')").fetchall()
         tf = params.timeframes[0]
         sinais: list[SinalVarredura] = []
@@ -264,9 +266,10 @@ def carregar_universo_nunca_admitido(db_path: Path) -> list[SinalVarredura]:
                 for ev in det.update(bar):
                     if ev.kind != "ENTRADA":
                         continue
+                    # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real, nunca "".
                     s = _montar_sinal(bars, ev, dex, row["l_bc"], "universo_nunca_admitido",
-                                      row["symbol"] or row["pool"][:8], "", row["pool"], tf, created_ts,
-                                      None)
+                                      row["symbol"] or row["pool"][:8], row["mint"] or row["pool"],
+                                      row["pool"], tf, created_ts, None)
                     if s is not None:
                         sinais.append(s)
         return sorted(sinais, key=lambda s: s.t_entrada)
@@ -284,7 +287,7 @@ def carregar_retro_lote1(db_path: Path) -> list[SinalVarredura]:
             return []
         params = load_params_v3()
         candidatos = con.execute(
-            "SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
+            "SELECT pool, mint, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
         tf = params.timeframes[0]
         step = tf_seconds(tf)
         sinais: list[SinalVarredura] = []
@@ -302,9 +305,11 @@ def carregar_retro_lote1(db_path: Path) -> list[SinalVarredura]:
                 for ev in det.update(bar):
                     if ev.kind != "ENTRADA":
                         continue
+                    # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real -- `pr_retro_
+                    # candidatos` ja tinha a coluna, so nunca estava no SELECT.
                     s = _montar_sinal(bars, ev, dex, pool_row["l_bc"], "retro_lote1",
-                                      row["symbol"] or row["pool"][:8], "", row["pool"], tf,
-                                      row["criado_ts"], pool_row["supply"])
+                                      row["symbol"] or row["pool"][:8], row["mint"] or row["pool"],
+                                      row["pool"], tf, row["criado_ts"], pool_row["supply"])
                     if s is not None:
                         sinais.append(s)
         return sorted(sinais, key=lambda s: s.t_entrada)
@@ -316,7 +321,9 @@ def deduplicar_por_token(sinais: list[SinalVarredura]) -> dict[str, list[SinalVa
     """B1: agrupa por token distinto para a agregacao (cada token pesa 1x depois, nunca por sinal).
     Dedup de (pool, tf, t_entrada) repetidos (mesmo evento visto 2x) DENTRO do mesmo token -- nunca
     deveria acontecer entre fontes distintas (cada fonte tem seu proprio filtro de status, mutuamente
-    exclusivo), mas protege mesmo assim."""
+    exclusivo), mas protege mesmo assim. RODADA 17 (achado A2 da auditoria 2026-11-10): chave e
+    `s.mint` (identidade real, sempre carregado desde esta rodada), NUNCA `s.token` (symbol/ticker --
+    vulneravel a clones: 2 tokens distintos com o MESMO ticker nao podem contar como 1 so)."""
     por_token: dict[str, list[SinalVarredura]] = {}
     vistos: set[tuple[str, str, float]] = set()
     for s in sinais:
@@ -324,7 +331,7 @@ def deduplicar_por_token(sinais: list[SinalVarredura]) -> dict[str, list[SinalVa
         if chave in vistos:
             continue
         vistos.add(chave)
-        por_token.setdefault(s.token, []).append(s)
+        por_token.setdefault(s.mint, []).append(s)
     return por_token
 
 
@@ -550,7 +557,7 @@ def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> d
         for alvo in ALVOS_R:
             vals = _toques_de_indices(s, indices, alvo)
             if vals:
-                valores_por_token[alvo].setdefault(s.token, []).extend(vals)
+                valores_por_token[alvo].setdefault(s.mint, []).extend(vals)
     out: dict[float, dict[str, Any]] = {}
     for alvo in ALVOS_R:
         vpt = valores_por_token[alvo]
@@ -577,12 +584,12 @@ TOKENS_EXCLUIDOS_DIAGNOSTICO: tuple[str, ...] = ("MOGZ", "PEAK")   # outliers ci
 def calcular_token_signal_seq(sinais: list[SinalVarredura]) -> dict[int, int]:
     """Ordem do sinal DENTRO do token (1a tentativa=1, reentradas=2,3,...), por `t_entrada`
     crescente -- MESMO conceito do `token_signal_seq` ja gravado ao vivo (`storage.
-    pr3_token_next_seq`), calculado OFFLINE aqui pra replay/retro (nunca persistido em tabela
-    alguma). Chave do dict = indice do sinal em `sinais` (nunca o objeto, que nao e hashable de
-    forma estavel)."""
+    pr3_token_next_seq`, que usa o mint real), calculado OFFLINE aqui pra replay/retro (nunca
+    persistido em tabela alguma). Chave do dict = indice do sinal em `sinais` (nunca o objeto, que
+    nao e hashable de forma estavel). RODADA 17 (achado A2): agrupa por `s.mint`, nunca `s.token`."""
     por_token: dict[str, list[int]] = {}
     for idx, s in enumerate(sinais):
-        por_token.setdefault(s.token, []).append(idx)
+        por_token.setdefault(s.mint, []).append(idx)
     seq: dict[int, int] = {}
     for indices in por_token.values():
         for rank, idx in enumerate(sorted(indices, key=lambda i: sinais[i].t_entrada), start=1):
@@ -604,7 +611,9 @@ def resumo_r72h_por_ordem_sinal(sinais: list[SinalVarredura], now: float,
     """Rodada 10, item 2: separa o R@72h MTM (MESMA definicao de `_r_horizonte`/`calcular_r_horizonte`,
     nunca duplicada) por ordem do sinal dentro do token. `pendente`/`sem_dado` ficam fora dos 2 lados
     igualmente (MESMA regra de `_r_horizonte`, que devolve `None` pros 2 casos -- nunca um corte que
-    favoreca 1a tentativa ou reentrada)."""
+    favoreca 1a tentativa ou reentrada). RODADA 17 (achado A2): o AGRUPAMENTO (dict key) usa
+    `s.mint` (identidade real); a EXCLUSAO por `excluir_tokens` continua testando `s.token` (symbol)
+    de proposito -- `TOKENS_EXCLUIDOS_DIAGNOSTICO` e uma lista curada por TICKER, nunca por mint."""
     params = load_params_v3()
     costs = CostModel()
     seq = calcular_token_signal_seq(sinais)
@@ -617,10 +626,10 @@ def resumo_r72h_por_ordem_sinal(sinais: list[SinalVarredura], now: float,
         if r is None:
             continue
         destino = primeira if seq[idx] == 1 else reentradas
-        destino.setdefault(s.token, []).append(r)
+        destino.setdefault(s.mint, []).append(r)
         if s.token not in excluir_tokens:
             destino_filtrado = primeira_filtrado if seq[idx] == 1 else reentradas_filtrado
-            destino_filtrado.setdefault(s.token, []).append(r)
+            destino_filtrado.setdefault(s.mint, []).append(r)
     return ResumoPorOrdemSinal(
         primeira_tentativa=_resumir_pareamento(primeira), reentradas=_resumir_pareamento(reentradas),
         primeira_tentativa_sem_outliers=_resumir_pareamento(primeira_filtrado),
@@ -675,7 +684,7 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
         r72 = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs)
         if r72 is not None and controles_r:
             dif = r72 - statistics.fmean(controles_r)
-            dif_por_token.setdefault(s.token, []).append(dif)
+            dif_por_token.setdefault(s.mint, []).append(dif)   # RODADA 17 (achado A2): mint, nunca symbol
             cov = calcular_covariaveis_v3(s.bars, s.ev, tf_seconds(s.tf), s.l_bc)
             resolvidos.append(SinalResolvido(
                 entry_id=idx, mint=s.mint, symbol=s.token, t_entrada=s.t_entrada, dif_pareada=dif,
@@ -688,7 +697,7 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
         controles_toque = _toques_de_indices(s, escolhidos, ALVO_PAREAMENTO_TOQUE)
         s_toque = _toque_binario(_primeiro_toque(s, ALVO_PAREAMENTO_TOQUE))
         if s_toque is not None and controles_toque:
-            dif_toque_por_token.setdefault(s.token, []).append(s_toque - statistics.fmean(controles_toque))
+            dif_toque_por_token.setdefault(s.mint, []).append(s_toque - statistics.fmean(controles_toque))
 
     estratos = rodar_exploratorias_v3(resolvidos) if len(resolvidos) >= 10 else []
 

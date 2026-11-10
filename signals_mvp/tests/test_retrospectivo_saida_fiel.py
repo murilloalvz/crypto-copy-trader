@@ -63,6 +63,10 @@ class CarregarAoVivoTests(unittest.TestCase):
         s = sinais[0]
         self.assertEqual(s.origem, "ao_vivo")
         self.assertEqual(s.token, "CAT")
+        # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real (nunca ""), mesmo quando symbol e
+        # mint coincidem neste fixture (ver test_mint_real_carregado_mesmo_com_symbol_diferente abaixo
+        # pro caso-clone, onde symbol != mint de verdade e so mint decide identidade).
+        self.assertEqual(s.mint, "MINT1")
         self.assertEqual(s.pool, "POOL1")
         self.assertEqual(s.topo, 200.0)
         self.assertEqual(s.stop, 90.0)
@@ -72,6 +76,29 @@ class CarregarAoVivoTests(unittest.TestCase):
 
     def test_sem_sinal_persistido_devolve_lista_vazia(self) -> None:
         self.assertEqual(rsf.carregar_ao_vivo(self.storage.paths.db), [])
+
+    def test_mint_real_carregado_mesmo_com_symbol_repetido_de_outro_pool(self) -> None:
+        # RODADA 17 (achado A2): symbol "CAT" aqui e repetido de outro token hipotetico em outro
+        # pool -- s.mint precisa ser a identidade REAL (MINT_X), nunca cair no symbol ambiguo.
+        signal_id = self.storage.pr3_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 0,
+            "mint": "MINT_X", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v3": "abc123", "gatilho": json.dumps(["reacao_suporte"]), "tags": "[]",
+            "janela_ouro": "janela_ouro", "hora_brt": "09:00", "status": "aberto", "entry_price": 100.0,
+            "stop": 90.0, "topo": 200.0, "s_suporte": 80.0, "r_resistencia": 95.0, "n_pavios": 2,
+            "caixa_candles": 5, "caixa_horas": 5.0, "idade_dias": 3.0,
+        })
+        self.storage.pr_trajetoria_upsert("v3", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT_X", symbol="CAT", t_entrada=3600.0, preco_entrada=100.0,
+                                          risco_pct=10.0, r_unidade=10.0, fonte_candle="gt")
+        bars = [_bar(i * 3600, 100, 101, 99, 100) for i in range(10)]
+        self.storage.pr_append_bars("POOL1", "1h", [(b.ts, b.open, b.high, b.low, b.close, b.volume,
+                                                     int(b.filled)) for b in bars])
+        self.storage.pr_upsert_pool("POOL1", status="ativo", l_bc=L_BC,
+                                    info=json.dumps({"criado_ts": -10_000.0}))
+        s = rsf.carregar_ao_vivo(self.storage.paths.db)[0]
+        self.assertEqual(s.token, "CAT")
+        self.assertEqual(s.mint, "MINT_X")
 
 
 class AgregarHorizonteTests(unittest.TestCase):

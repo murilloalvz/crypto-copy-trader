@@ -276,7 +276,7 @@ def carregar_retro_lote1(db_path: Path, now: float) -> list[TradeV3]:
         params = load_params_v3()
         costs = CostModel()
         candidatos = con.execute(
-            "SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
+            "SELECT pool, mint, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
         from ..pos_runner.detector_v1 import DetectorV1
         from .exit_lab import _bars_truncados
         trades: list[TradeV3] = []
@@ -296,9 +296,10 @@ def carregar_retro_lote1(db_path: Path, now: float) -> list[TradeV3]:
                 for ev in det.update(bar):
                     if ev.kind != "ENTRADA":
                         continue
+                    # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real, nunca "".
                     trade = _montar_trade(bars, ev, params, costs, dex, pool_row["l_bc"], "retro_lote1",
-                                          row["symbol"] or row["pool"][:8], "", row["pool"], tf, now,
-                                          supply=pool_row["supply"])
+                                          row["symbol"] or row["pool"][:8], row["mint"] or row["pool"],
+                                          row["pool"], tf, now, supply=pool_row["supply"])
                     if trade is not None:
                         trades.append(trade)
         return sorted(trades, key=lambda t: t.t_entrada)
@@ -318,9 +319,10 @@ def carregar_replay_v3(db_path: Path, now: float) -> list[TradeV3]:
     trades: list[TradeV3] = []
     for lp in linhas_pool:
         for bars, ev, dex, l_bc in lp["eventos_raw"]:
+            # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real -- `lp["mint"]` ja carregado.
             trade = _montar_trade(bars, ev, params, costs, dex, l_bc, "v3_replay",
-                                  lp["symbol"], "", lp["pool"], params.timeframes[0], now,
-                                  supply=supply_por_pool.get(lp["pool"]))
+                                  lp["symbol"], lp["mint"] or lp["pool"], lp["pool"], params.timeframes[0],
+                                  now, supply=supply_por_pool.get(lp["pool"]))
             if trade is not None:
                 trades.append(trade)
     return sorted(trades, key=lambda t: t.t_entrada)
@@ -526,7 +528,7 @@ def _executar_ledger(
             continue   # horizonte ainda nao decorreu -- nunca excluido do relatorio, so sem $/R ainda
         if trade.status_72h == "sem_dado" or trade.r_72h is None:
             continue   # entrada nunca valida -- nunca um trade de verdade (nem pra carteira nem pra R)
-        if uma_por_token and trade.token in tokens_com_posicao_aberta:
+        if uma_por_token and trade.mint in tokens_com_posicao_aberta:   # RODADA 17 (achado A2): mint, nunca symbol
             pular("token_ja_aberto")
             continue
         if len(posicoes_abertas) >= max_posicoes:
@@ -549,8 +551,8 @@ def _executar_ledger(
         resultado_usd = tamanho_usd * net_frac
         banca -= tamanho_usd   # o principal fica travado (nunca disponivel pra outra entrada) ate a
                                # LIBERACAO devolver principal+resultado.
-        posicoes_abertas.append([trade.t_entrada + HORIZONTES_S["72h"], tamanho_usd, resultado_usd, trade.token])
-        tokens_com_posicao_aberta.add(trade.token)
+        posicoes_abertas.append([trade.t_entrada + HORIZONTES_S["72h"], tamanho_usd, resultado_usd, trade.mint])
+        tokens_com_posicao_aberta.add(trade.mint)
         marcar_equity(trade.t_entrada)   # patrimonio NUNCA muda so por abrir (debito=valor investido),
                                         # mas o ponto entra na curva/peak continuamente (A1).
         resultados_usd.append(resultado_usd)
@@ -558,8 +560,8 @@ def _executar_ledger(
         r_sem_custo_fixo_valores.append(r_sem_custo_fixo)
         slippage_r_valores.append(slippage_total_r)
         inverso_tamanho_risk.append(1.0 / (tamanho_usd * risk_frac))
-        por_token.setdefault(trade.token, []).append(r_final)
-        tokens.add(trade.token)
+        por_token.setdefault(trade.mint, []).append(r_final)   # RODADA 17 (achado A2): mint, nunca symbol
+        tokens.add(trade.mint)
     liberar(float("inf"))   # realiza o que sobrou, pra banca/drawdown finais ficarem corretos
 
     return dict(
@@ -602,10 +604,13 @@ def probabilidade_ruina_bootstrap(
     `uma_por_token` (2 copias IID do mesmo token sorteadas juntas sao 2 observacoes independentes,
     nunca a mesma posicao duplicada); 2 slots de tokens DIFERENTES continuam competindo normalmente
     pelas vagas, exatamente a situacao real que faz o teto importar."""
+    # RODADA 17 (achado A2 da auditoria 2026-11-10): agrupa e sorteia por `mint` (identidade real),
+    # nunca por `token` (symbol) -- o relabel sintetico abaixo tambem precisa mexer em `mint`, que e
+    # o campo que `_executar_ledger`/`uma_por_token` de fato olham desde a mesma correcao.
     elegiveis = [t for t in trades if t.status_72h not in ("pendente", "sem_dado") and t.r_72h is not None]
     por_token: dict[str, list[TradeV3]] = {}
     for t in elegiveis:
-        por_token.setdefault(t.token, []).append(t)
+        por_token.setdefault(t.mint, []).append(t)
     chaves = sorted(por_token)
     n = len(chaves)
     if n == 0:
@@ -620,7 +625,7 @@ def probabilidade_ruina_bootstrap(
         for slot, idx in enumerate(escolhidos):
             tok_sintetico = f"{chaves[idx]}#{slot}"
             for t in por_token[chaves[idx]]:
-                amostra.append(dataclasses.replace(t, token=tok_sintetico))
+                amostra.append(dataclasses.replace(t, mint=tok_sintetico))
         amostra.sort(key=lambda t: t.t_entrada)
         resultado = _executar_ledger(amostra, regra_tamanho, slippage_nome, custo_fixo_nome, banca_inicial,
                                      max_posicoes, max_volume_pct, uma_por_token=uma_por_token)
@@ -746,7 +751,7 @@ def _resumo_amostra(trades: list[TradeV3], titulo: str, now: float) -> list[str]
     resolvidos = [t for t in trades if t.status_72h != "pendente"]
     n_corrigidos = sum(1 for t in trades if t.entry_price_corrigido)
     n_atraso_corrigido = sum(1 for t in trades if t.entrada_atrasada_corrigida)
-    tokens = sorted({t.token for t in trades})
+    tokens = sorted({t.mint for t in trades})   # RODADA 17 (achado A2): mint, nunca symbol
     out = [f"## {titulo}", "",
           f"n total: {len(trades)} | tokens distintos: {len(tokens)} | pendentes de 72h (fora de "
           f"qualquer media/carteira, nunca descartados): {len(pendentes)} | com desfecho em 72h: "
@@ -802,16 +807,22 @@ def _resumo_criterios_oportunidade(trades: list[TradeV3]) -> list[str]:
 
 
 def _resumo_overlap_tokens(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3]) -> list[str]:
-    conjuntos = {"ao_vivo": {t.token for t in ao_vivo}, "retro_lote1": {t.token for t in retro},
-                "replay_v3": {t.token for t in replay}}
+    # RODADA 17 (achado A2 da auditoria 2026-11-10): overlap por mint, nunca symbol -- 2 clones de
+    # mesmo ticker em origens diferentes nunca podem contar como "o mesmo token apareceu nas 2". O
+    # symbol fica so pra EXIBICAO (nunca decide o overlap em si).
+    todos = ao_vivo + retro + replay
+    simbolo_de = {t.mint: t.token for t in todos}
+    conjuntos = {"ao_vivo": {t.mint for t in ao_vivo}, "retro_lote1": {t.mint for t in retro},
+                "replay_v3": {t.mint for t in replay}}
     contagem: dict[str, int] = {}
     for tokens in conjuntos.values():
         for tok in tokens:
             contagem[tok] = contagem.get(tok, 0) + 1
-    repetidos = sorted(tok for tok, n in contagem.items() if n > 1)
+    repetidos = sorted((mint for mint, n in contagem.items() if n > 1), key=lambda m: simbolo_de.get(m, m))
     linha = f"tokens em mais de 1 origem: {len(repetidos)}"
     if repetidos:
-        linha += " (" + ", ".join(repetidos[:10]) + (", ..." if len(repetidos) > 10 else "") + ")"
+        nomes = [simbolo_de.get(mint, mint) for mint in repetidos]
+        linha += " (" + ", ".join(nomes[:10]) + (", ..." if len(nomes) > 10 else "") + ")"
     return [linha, ""]
 
 

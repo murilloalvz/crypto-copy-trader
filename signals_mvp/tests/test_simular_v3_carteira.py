@@ -18,12 +18,18 @@ from .test_exit_lab import _bars_vol
 
 
 def _trade_minimo(**kwargs) -> svc.TradeV3:
-    base = dict(token="CAT", mint="MINT1", pool="POOL1", tf="1h", origem="ao_vivo", t_entrada=0.0,
+    # RODADA 17 (achado A2 da auditoria 2026-11-10): `mint` e a identidade REAL usada por
+    # `uma_por_token`/overlap/bootstrap (ver `simular_v3_carteira.py`) -- por padrao segue `token`
+    # (cada "token" sintetico deste fixture e seu proprio mint, MESMO comportamento de antes da
+    # correcao), MAS pode ser sobrescrito explicitamente pra testar o caso-clone (mesmo ticker,
+    # mint diferente).
+    base = dict(token="CAT", pool="POOL1", tf="1h", origem="ao_vivo", t_entrada=0.0,
                entry_price=100.0, entry_price_corrigido=False, entrada_atrasada_corrigida=False,
                risk_frac=0.2, volume_gatilho=None, volume_entrada=None, volume_medio_24h=None,
                n_pavios=None, supply=None,
                status_72h="marcado", r_72h=1.0, r_regra=None, r_7d=None, r_sombra_c=None, r_sombra_d=None)
     base.update(kwargs)
+    base.setdefault("mint", base["token"])
     return svc.TradeV3(**base)
 
 
@@ -382,6 +388,15 @@ class OverlapTokensTests(unittest.TestCase):
         linhas = svc._resumo_overlap_tokens(ao_vivo, retro, [])
         self.assertIn("tokens em mais de 1 origem: 0", linhas[0])
 
+    def test_clones_de_mesmo_ticker_em_origens_diferentes_nunca_contam_como_overlap(self) -> None:
+        # RODADA 17 (achado A2): mesmo ticker "CAT", mints DIFERENTES, em origens diferentes --
+        # antes da correcao isso contava como "o mesmo token apareceu em 2 origens"; agora, cada
+        # mint e sua propria identidade, nunca um overlap.
+        ao_vivo = [_trade_minimo(token="CAT", mint="MINT_A")]
+        retro = [_trade_minimo(token="CAT", mint="MINT_B", origem="retro_lote1")]
+        linhas = svc._resumo_overlap_tokens(ao_vivo, retro, [])
+        self.assertIn("tokens em mais de 1 origem: 0", linhas[0])
+
 
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -521,6 +536,17 @@ class A3UmaPorTokenTests(unittest.TestCase):
         trades = [
             _trade_minimo(token="CAT", t_entrada=0.0, r_72h=1.0),
             _trade_minimo(token="DOG", t_entrada=10.0, r_72h=1.0),
+        ]
+        r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
+                                 calcular_ruina=False)
+        self.assertEqual(r.n_trades, 2)
+
+    def test_clones_de_mesmo_ticker_mints_diferentes_nunca_bloqueiam_entre_si(self) -> None:
+        # RODADA 17 (achado A2): o MESMO ticker "CAT", mints DIFERENTES (clones) -- `uma_por_token`
+        # precisa permitir os 2 entrarem juntos, exatamente como tokens realmente diferentes.
+        trades = [
+            _trade_minimo(token="CAT", mint="MINT_A", t_entrada=0.0, r_72h=1.0),
+            _trade_minimo(token="CAT", mint="MINT_B", t_entrada=10.0, r_72h=1.0),
         ]
         r = svc.simular_carteira(trades, "ao_vivo", "V10", "base", "US$0.05", 250.0, max_posicoes=10,
                                  calcular_ruina=False)

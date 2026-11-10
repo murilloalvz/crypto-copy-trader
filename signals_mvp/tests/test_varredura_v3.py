@@ -27,7 +27,7 @@ def _bar(ts: float, o: float, h: float, l: float, c: float, v: float = 10.0) -> 
 
 
 def _sinal(bars: list[Bar], ev_idx: int = 0, stop: float = 90.0, topo: float = 1000.0,
-          s_val: float = 50.0, token: str = "CAT", pool: str = "P1", tf: str = "1h",
+          s_val: float = 50.0, token: str = "CAT", mint: str | None = None, pool: str = "P1", tf: str = "1h",
           t_entrada: float | None = None, entry_price: float = 100.0,
           created_ts: float | None = None, origem: str = "universo_admitido") -> vv3.SinalVarredura:
     ev = EventV1(kind="ENTRADA", idx=ev_idx, ts=bars[ev_idx].ts, decision_ts=bars[ev_idx].ts,
@@ -35,9 +35,9 @@ def _sinal(bars: list[Bar], ev_idx: int = 0, stop: float = 90.0, topo: float = 1
     risk_frac = (entry_price - stop) / entry_price
     t = t_entrada if t_entrada is not None else float(bars[ev_idx + 1].ts)
     return vv3.SinalVarredura(
-        token=token, mint=token, pool=pool, tf=tf, origem=origem, bars=bars, ev=ev, dex="pumpswap",
-        l_bc=L_BC, created_ts=created_ts, supply=None, t_entrada=t, entry_price=entry_price,
-        entrada_corrigida=False, stop=stop, topo=topo, s_val=s_val, risk_frac=risk_frac,
+        token=token, mint=mint if mint is not None else token, pool=pool, tf=tf, origem=origem, bars=bars,
+        ev=ev, dex="pumpswap", l_bc=L_BC, created_ts=created_ts, supply=None, t_entrada=t,
+        entry_price=entry_price, entrada_corrigida=False, stop=stop, topo=topo, s_val=s_val, risk_frac=risk_frac,
         volume_gatilho=None, volume_entrada=None, volume_medio_24h=None, n_pavios=3,
     )
 
@@ -85,6 +85,28 @@ class DeduplicarPorTokenTests(unittest.TestCase):
         self.assertEqual(set(por_token), {"CAT", "DOG"})
         self.assertEqual(len(por_token["CAT"]), 2)   # s1 e s3 (s2 e dup de s1)
         self.assertEqual(len(por_token["DOG"]), 1)
+
+    def test_agrupa_por_mint_nunca_por_symbol_clones_de_mesmo_ticker_ficam_separados(self) -> None:
+        # RODADA 17 (achado A2 da auditoria 2026-11-10): 2 tokens DISTINTOS (mints diferentes) com o
+        # MESMO ticker "CAT" -- antes da correcao, `deduplicar_por_token` agrupava por symbol e os
+        # fundia num so grupo; agora precisam ficar SEPARADOS, cada um sua propria chave (mint).
+        bars = [_bar(i * 3600, 100, 105, 95, 100) for i in range(5)]
+        s_clone_a = _sinal(bars, token="CAT", mint="MINT_A", pool="P1", t_entrada=3600.0)
+        s_clone_b = _sinal(bars, token="CAT", mint="MINT_B", pool="P2", t_entrada=3600.0)
+        por_token = vv3.deduplicar_por_token([s_clone_a, s_clone_b])
+        self.assertEqual(set(por_token), {"MINT_A", "MINT_B"})
+        self.assertEqual(len(por_token["MINT_A"]), 1)
+        self.assertEqual(len(por_token["MINT_B"]), 1)
+
+    def test_agrupa_por_mint_mesma_entidade_2_pools_mesmo_mint_ainda_soma(self) -> None:
+        # Mesmo token real (MESMO mint), 2 pools distintos (ex. migracao/relancamento) -- precisa
+        # continuar somando no MESMO grupo, exatamente como antes da correcao.
+        bars = [_bar(i * 3600, 100, 105, 95, 100) for i in range(5)]
+        s1 = _sinal(bars, token="CAT", mint="MINTCAT", pool="P1", t_entrada=3600.0)
+        s2 = _sinal(bars, token="CAT", mint="MINTCAT", pool="P2", t_entrada=3600.0)
+        por_token = vv3.deduplicar_por_token([s1, s2])
+        self.assertEqual(set(por_token), {"MINTCAT"})
+        self.assertEqual(len(por_token["MINTCAT"]), 2)
 
 
 class PrimeiroToqueTests(unittest.TestCase):
@@ -231,12 +253,22 @@ class TokenSignalSeqTests(unittest.TestCase):
         seq = vv3.calcular_token_signal_seq(sinais)
         self.assertEqual([seq[i] for i in range(3)], [1, 2, 3])
 
+    def test_clones_de_mesmo_ticker_mints_diferentes_contam_1a_tentativa_cada(self) -> None:
+        # RODADA 17 (achado A2): 2 tokens distintos com o MESMO ticker "CAT" nunca podem ser
+        # tratados como "a 2a tentativa do mesmo token" -- cada um e seq=1 (1a e UNICA tentativa dele).
+        bars = _bars_mc_elegiveis()
+        s_clone_a = _sinal(bars, ev_idx=1, token="CAT", mint="MINT_A", t_entrada=100.0)
+        s_clone_b = _sinal(bars, ev_idx=1, token="CAT", mint="MINT_B", t_entrada=200.0)
+        seq = vv3.calcular_token_signal_seq([s_clone_a, s_clone_b])
+        self.assertEqual(seq[0], 1)
+        self.assertEqual(seq[1], 1)
 
-def _sinal_mc(bars: list[Bar], token: str, t_entrada: float) -> vv3.SinalVarredura:
+
+def _sinal_mc(bars: list[Bar], token: str, t_entrada: float, mint: str | None = None) -> vv3.SinalVarredura:
     """`_sinal` escalado pra bars em MC (`_bars_mc_elegiveis`) -- stop/topo/entry_price precisam
     estar na MESMA escala dos bars (senao `simulate_v1` cancela a entrada por invalida)."""
-    return _sinal(bars, ev_idx=1, token=token, t_entrada=t_entrada, stop=100_000.0, topo=5_000_000.0,
-                 entry_price=150_000.0)
+    return _sinal(bars, ev_idx=1, token=token, mint=mint, t_entrada=t_entrada, stop=100_000.0,
+                 topo=5_000_000.0, entry_price=150_000.0)
 
 
 class ResumoR72hPorOrdemSinalTests(unittest.TestCase):
@@ -268,6 +300,17 @@ class ResumoR72hPorOrdemSinalTests(unittest.TestCase):
         self.assertEqual(resumo.reentradas.n, 1)
         self.assertEqual(resumo.primeira_tentativa_sem_outliers.n, 0)   # PEAK excluido
         self.assertEqual(resumo.reentradas_sem_outliers.n, 0)
+
+    def test_clones_de_mesmo_ticker_nunca_contam_como_1a_tentativa_e_reentrada(self) -> None:
+        # RODADA 17 (achado A2): 2 sinais com o MESMO ticker "CAT" mas MINTS diferentes (clones) --
+        # antes da correcao, o 2o entraria como "reentrada" do 1o; agora, cada um e sua propria
+        # "1a tentativa" (seq=1 nos 2), entao os 2 caem em `primeira_tentativa`, nenhum em `reentradas`.
+        bars = _bars_mc_elegiveis()
+        clone_a = _sinal_mc(bars, "CAT", float(bars[2].ts), mint="MINT_A")
+        clone_b = _sinal_mc(bars, "CAT", float(bars[10].ts), mint="MINT_B")
+        resumo = vv3.resumo_r72h_por_ordem_sinal([clone_a, clone_b], now=1e12)
+        self.assertEqual(resumo.primeira_tentativa.n, 2)
+        self.assertEqual(resumo.reentradas.n, 0)
 
 
 class CreatedTsAdmitidoTests(unittest.TestCase):

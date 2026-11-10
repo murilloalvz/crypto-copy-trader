@@ -334,8 +334,10 @@ def linhas_v1v2v3(storage: Storage, versao: str) -> tuple[list[dict[str, Any]], 
                                   s["r_resistencia"], params, costs, dex, l_bc)
         risco_pct = traj["risco_pct"]
         risk_frac = (s["entry_price"] - s["stop"]) / s["entry_price"] if s["entry_price"] else None
-        linha = {"token": s["symbol"] or (s["mint"] or "")[:8], "versao": versao, "origem": "v1v2v3",
-                "risco_pct": risco_pct}
+        # RODADA 17 (achado A2 da auditoria 2026-11-10): "mint" e a identidade real (`s["mint"]` ja
+        # e o mint real gravado ao vivo); "token" fica so pra exibicao.
+        linha = {"token": s["symbol"] or (s["mint"] or "")[:8], "mint": s["mint"] or s["pool"],
+                "versao": versao, "origem": "v1v2v3", "risco_pct": risco_pct}
         for nome, r_res in resultado.items():
             linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
         linhas.append(linha)
@@ -360,7 +362,7 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
         tabelas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "pr_retro_candidatos" not in tabelas:
             return [], 0
-        candidatos = con.execute("SELECT pool, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
+        candidatos = con.execute("SELECT pool, mint, symbol, launchpad, grad_ts, criado_ts FROM pr_retro_candidatos").fetchall()
         costs = CostModel()
         linhas: list[dict[str, Any]] = []
         n_fora_do_alcance = 0
@@ -398,8 +400,9 @@ def linhas_retro_admitido(db_path: Path) -> tuple[list[dict[str, Any]], int]:
                         risk_frac = (entry - stop) / entry if entry else None
                         resultado = simular_sinal(bars, j0, entry, stop, topo, s_val, r_val, params, costs, dex,
                                                   pool_row["l_bc"])
-                        linha = {"token": row["symbol"] or row["pool"][:8], "versao": versao, "origem": "retro",
-                                "risco_pct": risco_pct}
+                        # RODADA 17 (achado A2): mint real, nunca "".
+                        linha = {"token": row["symbol"] or row["pool"][:8], "mint": row["mint"] or row["pool"],
+                                "versao": versao, "origem": "retro", "risco_pct": risco_pct}
                         for nome, r_res in resultado.items():
                             linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
                         linhas.append(linha)
@@ -431,7 +434,9 @@ def linhas_v3_replay_pools_admitidos(db_path: Path) -> list[dict[str, Any]]:
             risco_pct = ev.data.get("risco_pct")
             risk_frac = (entry - stop) / entry if entry else None
             resultado = simular_sinal(bars, j0, entry, stop, topo, s_val, r_val, params_v3, costs, dex, l_bc)
-            linha = {"token": lp["symbol"], "versao": "v3", "origem": "v3_replay", "risco_pct": risco_pct}
+            # RODADA 17 (achado A2): `lp["mint"]` ja carregado de verdade por `parte_a_pools_admitidos`.
+            linha = {"token": lp["symbol"], "mint": lp["mint"] or lp["pool"], "versao": "v3",
+                    "origem": "v3_replay", "risco_pct": risco_pct}
             for nome, r_res in resultado.items():
                 linha[nome] = _linha_variante(r_res, risk_frac, risco_pct)
             linhas.append(linha)
@@ -448,12 +453,17 @@ def resumo_por_token(linhas: list[dict[str, Any]], campo_pct: str = "pct", campo
     ver PARTE 2c) por token -- media de %/R por variante. `campo_pct`/`campo_r` escolhem a visao
     (PEDIDO 2026-11-05, item 1): "pct"/"r" (so resolvidos) ou "pct_marcado"/"r_marcado" (todos os
     trades, em_aberto valorizados a mercado)."""
+    # RODADA 17 (achado A2 da auditoria 2026-11-10): agrupa por `mint` (ou `pool`, nunca `token`/
+    # symbol) -- clones de mesmo ticker nunca podem ser fundidos num so grupo.
     por_token: dict[str, list[dict[str, Any]]] = {}
+    simbolo_de: dict[str, str] = {}
     for l in linhas:
-        por_token.setdefault(l["token"], []).append(l)
+        chave = l.get("mint") or l["token"]
+        simbolo_de.setdefault(chave, l["token"])
+        por_token.setdefault(chave, []).append(l)
     out: list[dict[str, Any]] = []
-    for token, ls in sorted(por_token.items()):
-        linha: dict[str, Any] = {"token": token, "n": len(ls)}
+    for chave, ls in sorted(por_token.items()):
+        linha: dict[str, Any] = {"token": simbolo_de.get(chave, chave), "mint": chave, "n": len(ls)}
         for nome in VARIANTES:
             pcts = [l[nome][campo_pct] for l in ls if l[nome][campo_pct] is not None]
             rs = [l[nome][campo_r] for l in ls if l[nome][campo_r] is not None]

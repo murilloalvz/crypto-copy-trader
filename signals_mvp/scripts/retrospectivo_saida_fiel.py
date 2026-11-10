@@ -107,8 +107,10 @@ def carregar_ao_vivo(db_path: Path) -> list[vv3.SinalVarredura]:
             ev = EventV1(kind="ENTRADA", idx=gatilho_idx, ts=bars[gatilho_idx].ts,
                         decision_ts=bars[gatilho_idx].ts,
                         data={"stop": sinal["stop"], "TOPO": sinal["topo"], "S": sinal["s_suporte"]})
+            # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real, nunca "" -- `sinal["mint"]"
+            # (pr3_signals.mint, ja o mint real gravado ao vivo) estava disponivel mas nunca passado.
             s = vv3._montar_sinal(bars, ev, dex, l_bc, "ao_vivo", sinal["symbol"] or (sinal["mint"] or "")[:8],
-                                  sinal["mint"] or "", sinal["pool"], tf, created_ts, supply)
+                                  sinal["mint"] or sinal["pool"], sinal["pool"], tf, created_ts, supply)
             if s is not None:
                 out.append(s)
         return sorted(out, key=lambda s: s.t_entrada)
