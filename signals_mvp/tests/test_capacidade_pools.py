@@ -67,11 +67,15 @@ class RetireEstagnadoTests(unittest.TestCase):
             h.storage.pr_upsert_pool("POOL1", status="ativo", mint="MINT1", symbol="CAT", grad_ts=GRAD,
                                      added_ts=h.clock())
             h.storage.pr_append_bars("POOL1", "1h", [(int(GRAD), 1.0, 1.0, 1.0, 1.0, 1.0, True)])
+            # RODADA 17 item 4: `dets_v3` tambem precisa ser limpo na aposentacao (MESMO padrao dos
+            # outros 8 dicts -- achado da auditoria 2026-11-10, faltava so este).
+            h.live.dets_v3[("POOL1", "1h")] = object()
             h.live._retire_estagnado(GRAD + 25 * H)   # noqa: SLF001
             row = h.storage.pr_pool("POOL1")
             self.assertEqual(row["status"], "encerrado")
             self.assertIn("estagnado", row["motivo"])
             self.assertIn("sem candle", row["motivo"])
+            self.assertNotIn(("POOL1", "1h"), h.live.dets_v3)
         finally:
             h.close()
 
