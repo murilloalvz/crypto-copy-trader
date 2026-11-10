@@ -18,6 +18,7 @@ from .geckoterminal import GtClient
 from . import backup, healthchecks
 from .goplus import GoPlusClient
 from .http import ApiError, HttpClient, RateLimiter
+from .instance_lock import acquire_instance_lock
 from .logging_setup import setup_logging
 from .narrative import MetaSet, load_meta
 from .storage import Storage
@@ -418,6 +419,20 @@ class Worker:
             return EXIT_CONFIG_ERROR
         self._install_signals()
 
+        # RODADA 17 item 5: 'worker' tambem pode ser chamado direto (`python -m signals_mvp worker`,
+        # fora do supervisor) -- trava o MESMO lock de arquivo que `supervisor.py` ja usa
+        # (`instance_lock.py`), nunca 2 escritores fisicos no mesmo banco (invariante #9 do
+        # CLAUDE.md). Quando o supervisor spawna o worker como filho (`Supervisor._spawn`),
+        # `SIGNALS_MVP_SUPERVISED=1` avisa que o lock ja esta travado la fora -- o worker filho
+        # NUNCA tenta travar de novo (travaria contra o proprio supervisor pai e nunca subiria).
+        lock = None
+        if not os.environ.get("SIGNALS_MVP_SUPERVISED"):
+            lock = acquire_instance_lock(self.paths.db)
+            if lock is None:
+                console.error("O bot ja esta rodando (outra instancia tem o lock de %s.lock). Pare-a "
+                              "antes de iniciar outra.", self.paths.db.name)
+                return 1
+
         storage = Storage(self.paths)
         heartbeat = Heartbeat(self.paths.heartbeat)
         heartbeat.beat(force=True)
@@ -539,6 +554,8 @@ class Worker:
             storage.close()
         heartbeat.state = "parado"
         heartbeat.beat(force=True)
+        if lock is not None:
+            lock.release()
         return 0
 
     @staticmethod
