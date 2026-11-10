@@ -3356,7 +3356,11 @@ class PosRunnerLive:
         (`pr1_dexpaprika_divergencias` -- compartilhada por V1/V2, mesmos candles do mesmo pool) e o
         candle seguinte quando ja existir nesta chamada (simulate_v1 e re-simulado a cada ciclo sobre
         os candles mais recentes -- quem decide 'confirmar pelo candle seguinte' e aqui, nao dentro do
-        simulador, que so recebe a resposta ja resolvida)."""
+        simulador, que so recebe a resposta ja resolvida). RODADA 17 (achado P1 da Parte B da
+        auditoria 2026-11-10): a closure em si foi extraida pra `qualidade_candle.candle_confiavel_cb`
+        (funcao PURA, sem Storage -- reusada pelos motores offline: horizonte_fixo.py/varredura_v3.py/
+        simular_v3_carteira.py/etc., nunca uma 2a implementacao do mesmo veto); aqui so monta
+        `divergencia_max` (que exige o Storage ao vivo) e delega."""
         # PEDIDO 2026-10-29: alem de SE o candle diverge, guarda a MAIOR diferenca % (qualquer campo)
         # ja registrada pra ele -- so pra nomear a severidade (`candle_corrompido_provavel` quando
         # >50%), o veto em si (nenhum gatilho/TP1/saida decide neste candle) e o MESMO nos dois casos.
@@ -3366,14 +3370,7 @@ class PosRunnerLive:
                 continue
             ts = int(r["candle_ts"])
             divergencia_max[ts] = max(divergencia_max.get(ts, 0.0), r["diff_pct"])
-
-        def cb(j: int) -> Optional[str]:
-            bar = bars[j]
-            anterior = bars[j - 1].close if j > 0 else None
-            seguinte = bars[j + 1].open if j + 1 < len(bars) else None
-            return qualidade_candle.motivo_suspeito(bar, anterior, peak, seguinte, bar.ts in divergencia_max,
-                                                    divergencia_max.get(bar.ts))
-        return cb
+        return qualidade_candle.candle_confiavel_cb(bars, peak, divergencia_max)
 
     # -- PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada ---------------------------
     # Medicao AO LADO de V1/V2 (ver pos_runner/evidencia.py): roda DEPOIS de `_update_paper_v1/v2`, nunca

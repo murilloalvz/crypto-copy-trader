@@ -26,6 +26,7 @@ from .candles import Bar
 from .costs import CostModel
 from .detector_v1 import EventV1
 from .params_v1 import ParamsV1
+from .qualidade_candle import candle_confiavel_cb
 from .simulate_v1 import simulate_v1
 
 EMENDA_PATH = (
@@ -85,8 +86,13 @@ def _simular_e_marcar(
     """Roda `simulate_v1` e, se ainda `em_aberto` no FINAL da serie recebida (que quem chama ja
     truncou no corte), valoriza o restante a mercado (`scripts.exit_lab._marcar_a_mercado`, MESMA
     funcao do item 1, reusada sem copiar logica). Devolve (status_simulate, net_ret_ou_marcado,
-    candle_marca_ts, risk_frac)."""
-    res = simulate_v1(bars, event, params, costs, dex, l_bc, sol_usd_at)
+    candle_marca_ts, risk_frac). RODADA 17 (achado P1 da Parte B da auditoria 2026-11-10): passa o
+    MESMO veto de candle corrompido que o caminho ao vivo ja aplica (`qualidade_candle.
+    candle_confiavel_cb`, reusado sem copiar logica -- so sem o cruzamento DexPaprika, que exige o
+    Storage ao vivo e nao existe aqui; o veto por OHLC/pico/vizinho, que e o que realmente importa
+    pra nao deixar um candle tipo "McRib -561R" decidir stop/TP sem ser vetado, e identico)."""
+    confiavel = candle_confiavel_cb(bars, event.data.get("TOPO"))
+    res = simulate_v1(bars, event, params, costs, dex, l_bc, sol_usd_at, candle_confiavel=confiavel)
     if res.status != "em_aberto" or res.entry_price is None or res.entry_cost_pct is None:
         return res.status, res.net_ret, None, res.risk_frac
     from ..scripts.exit_lab import _marcar_a_mercado  # import tardio: evita ciclo exit_lab<->horizonte_fixo

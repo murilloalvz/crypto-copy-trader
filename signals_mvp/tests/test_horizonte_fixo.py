@@ -19,6 +19,7 @@ from ..pos_runner.horizonte_fixo import (
     hash_da_emenda,
 )
 from ..pos_runner.params_v1 import load_params_v1
+from ..pos_runner.simulate_v1 import simulate_v1
 from ..scripts import horizonte_fixo as hf_script
 from ..storage import Storage
 from .test_exit_lab import _bars_vol
@@ -93,6 +94,62 @@ class HorizonteMarcadoSemLookaheadTests(unittest.TestCase):
         r = calcular_r_horizonte(bars_sujos, ev, PARAMS, COSTS, "desconhecido", None, t_entrada=t_entrada,
                                  horizonte_s=STEP, now=t_entrada + 5 * STEP)
         self.assertEqual(r.status, "pendente")
+
+
+class VetoDeCandleCorrompidoTests(unittest.TestCase):
+    """RODADA 17 (achado P1 da Parte B da auditoria 2026-11-10): `calcular_r_horizonte` agora passa
+    o MESMO veto de candle corrompido que o caminho ao vivo ja aplica (`qualidade_candle.
+    candle_confiavel_cb`) -- um candle isolado/suspeito nunca pode decidir o stop, mesma classe de
+    falha do incidente real do McRib -561R."""
+
+    def _bars_com_spike_isolado(self) -> list:
+        return _bars_vol([
+            (100, 101, 99, 100, 10.0),    # idx0 ts=1000  -- candle anterior
+            (100, 102, 96, 101, 10.0),    # idx1 ts=4600  -- entry=100
+            (101, 5_000, 70, 90, 10.0),   # idx2 ts=8200  -- SPIKE isolado: high=5000 (>>10x o vizinho),
+                                          # low=70 <= stop(80) -- bateria o stop SE decidisse aqui.
+            (103, 104, 102, 103, 10.0),   # idx3 ts=11800 -- NAO confirma o nivel do spike (volta ao
+                                          # normal) -- idx2 fica "candle_isolado_vs_vizinhos", vetado.
+                                          # low=102 > stop(80): este candle, por si so, NUNCA bate o stop.
+        ])
+
+    def test_spike_isolado_nunca_decide_o_stop_fica_marcado_no_candle_limpo_seguinte(self) -> None:
+        bars = self._bars_com_spike_isolado()
+        t_entrada = bars[1].ts
+        ev = _evento(0, bars[0].ts, stop=80.0, topo=10_000.0, s=50.0)
+        r = calcular_r_horizonte(bars, ev, PARAMS, COSTS, "desconhecido", None, t_entrada=t_entrada,
+                                 horizonte_s=2 * STEP, now=t_entrada + 10 * STEP)
+        # com o veto: idx2 (spike) nunca resolve o trade -- idx3 (limpo, nao bate o stop) e o fim da
+        # serie truncada -- marcado a mercado no close de idx3 (103), NUNCA resolvido pela regra no
+        # stop batido do spike.
+        self.assertEqual(r.status, "marcado")
+        self.assertEqual(r.candle_marca_ts, bars[3].ts)
+        self.assertIsNotNone(r.r_mult)
+        # custos conservadores (dex "desconhecido") deixam o R marcado levemente negativo mesmo com
+        # close(103) > entry(100) -- mas MUITO menos negativo que o stop batido no spike (ver teste
+        # seguinte, que prova quanto pior seria SEM o veto: ~-1.27R vs ~-0.20R aqui).
+        self.assertGreater(r.r_mult, -0.5)
+
+    def test_sem_o_veto_o_mesmo_spike_bateria_o_stop_um_resultado_bem_mais_negativo(self) -> None:
+        # Mesma serie truncada, mesmo evento, chamando `simulate_v1` DIRETO sem `candle_confiavel`
+        # (comportamento ANTES da correcao desta rodada) -- confirma que o spike isolado teria, sim,
+        # decidido o stop se o veto nao existisse, com um R bem mais negativo (~-1,27R) que o marcado
+        # com o veto (~-0,20R) -- prova que a correcao muda o resultado de verdade, nunca um teste
+        # vazio que passaria de qualquer jeito.
+        bars = self._bars_com_spike_isolado()
+        ev = _evento(0, bars[0].ts, stop=80.0, topo=10_000.0, s=50.0)
+        bars_truncados = [b for b in bars if b.ts <= bars[3].ts]
+        res_sem_veto = simulate_v1(bars_truncados, ev, PARAMS, COSTS, "desconhecido", None, lambda _t: None)
+        self.assertEqual(res_sem_veto.status, "fechado")
+        self.assertEqual(res_sem_veto.reason, "stop")
+        r_mult_sem_veto = res_sem_veto.net_ret / res_sem_veto.risk_frac
+        self.assertLess(r_mult_sem_veto, -1.0, "sem o veto, bate o stop no spike -- R bem mais negativo")
+
+        t_entrada = bars[1].ts
+        r_com_veto = calcular_r_horizonte(bars, ev, PARAMS, COSTS, "desconhecido", None, t_entrada=t_entrada,
+                                          horizonte_s=2 * STEP, now=t_entrada + 10 * STEP)
+        self.assertGreater(r_com_veto.r_mult, r_mult_sem_veto,
+                           "com o veto, o resultado precisa ser bem melhor que o stop batido no spike")
 
 
 class HorizonteSemDadoTests(unittest.TestCase):
