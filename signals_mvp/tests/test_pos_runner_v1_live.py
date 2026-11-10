@@ -302,7 +302,11 @@ class EntradaTests(unittest.TestCase):
             return HolderCheck(top_holders=[])
 
         self.h.live.adapter.holders = holders_fn
-        self.h.live.carteiras_max_chamadas_dia = 10
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2): o orcamento agora conta TENTATIVAS (sucesso+falha,
+        # nunca so sucesso -- ver DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md); _run_to_entrada
+        # (17h) ja acumula varias tentativas falhas (adapter.rpc=None no harness) antes deste ponto --
+        # o teto precisa sobrar margem, nunca testar o orcamento em si (isso e o teste dedicado acima).
+        self.h.live.carteiras_max_chamadas_dia = 1000
         self.h.clock.advance(H)
         self.h.tick()
         self.assertIn("next_na_hora_da_chamada", vistos, "a coleta horaria precisa ter rodado neste teste")

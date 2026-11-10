@@ -274,6 +274,15 @@ CREATE TABLE IF NOT EXISTS pr_carteiras_snapshot (
   grupos_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pr_carteiras_snapshot_pool ON pr_carteiras_snapshot (pool, momento);
+-- PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizada): 1 linha por TENTATIVA (sucesso OU falha) da
+-- coleta de carteiras "pro" -- `pr_carteiras_snapshot` so grava em sucesso, entao o orcamento diario
+-- (`carteiras_max_chamadas_dia`) precisa contar tentativas daqui, nunca so sucessos de la (ver
+-- diagnostico docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md).
+CREATE TABLE IF NOT EXISTS pr_carteiras_tentativa (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL, momento TEXT NOT NULL,
+  sucesso INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pr_carteiras_tentativa_ts ON pr_carteiras_tentativa (ts, momento);
 -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
 -- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
 -- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
@@ -1794,6 +1803,29 @@ class Storage:
 
     def pr_carteiras_snapshot_all(self) -> list[sqlite3.Row]:
         return self._all("SELECT * FROM pr_carteiras_snapshot ORDER BY ts, id")
+
+    # -- PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado): orcamento de carteiras "pro" media
+    # TENTATIVAS (sucesso+falha), nunca so sucessos -- `pr_carteiras_snapshot` so grava em sucesso
+    # (dado ausente nunca vira linha fabricada), o que deixava o orcamento diario preso em 0 pra
+    # sempre quando toda tentativa falhava (RateLimited) e o bot nunca se autolimitava de verdade.
+    def pr_carteiras_tentativa_insert(self, ts: float, pool: str, momento: str, sucesso: bool) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr_carteiras_tentativa (ts, pool, momento, sucesso) VALUES (?,?,?,?)",
+                (ts, pool, momento, int(sucesso)))
+
+    def pr_carteiras_tentativa_count_since(self, since_ts: float, momento: Optional[str] = None,
+                                           sucesso: Optional[bool] = None) -> int:
+        sql = "SELECT COUNT(*) AS n FROM pr_carteiras_tentativa WHERE ts>=?"
+        args: list[Any] = [since_ts]
+        if momento is not None:
+            sql += " AND momento=?"
+            args.append(momento)
+        if sucesso is not None:
+            sql += " AND sucesso=?"
+            args.append(int(sucesso))
+        row = self._one(sql, tuple(args))
+        return int(row["n"]) if row else 0
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:

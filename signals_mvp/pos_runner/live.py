@@ -606,6 +606,8 @@ class PosRunnerLive:
         rotacao_max_por_hora: int = 2,
         sem_v3: bool = False,
         v3_alertas: bool = False,
+        rpc_carteiras: Any = None,
+        carteiras_rpc_per_min: Optional[float] = None,
     ):
         self.settings = settings
         self.params = params
@@ -659,6 +661,17 @@ class PosRunnerLive:
         self.version_v1 = self.params_v1.version
         self.version_v1_start: Optional[float] = None
         self.adapter = SolanaAdapter(self.http, ctx, self.ohlcv, rpc, links, terminal=terminal)
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado): a coleta HORARIA/baixa-prioridade de
+        # carteiras "pro" (`_atualizar_carteiras_horaria`) nunca deve consumir o orcamento do RPC
+        # compartilhado com lineage/graduacao (ver diagnostico, docs/pos-runner-v1/
+        # DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md) -- `rpc_carteiras`, se dado, e um
+        # `SolanaRpc` DEDICADO (endpoints iguais, limitador PROPRIO, ritmo deliberadamente baixo),
+        # usado SO pelo caminho de baixa prioridade. Sem `rpc_carteiras` (default), cai no MESMO
+        # `self.adapter` de sempre -- comportamento antigo preservado, nunca quebra quem nao configurar
+        # o cliente dedicado.
+        self.adapter_carteiras = (SolanaAdapter(self.http, ctx, self.ohlcv, rpc_carteiras, links, terminal=terminal)
+                                  if rpc_carteiras is not None else self.adapter)
+        self.carteiras_rpc_per_min = carteiras_rpc_per_min
         self.dets_v1: dict[tuple[str, str], DetectorV1] = {}
         self._v1_invalid: set[tuple[str, str]] = set()      # dado_invalido definitivo (nunca re-tenta)
         self._v1_mc_baixo_logged: set[str] = set()          # filtrado_mc_baixo: loga 1x por pool (nao reabre a cada ciclo)
@@ -914,6 +927,10 @@ class PosRunnerLive:
         self.storage.set_meta("pr_carteiras_runtime", json.dumps({
             "rpc_configurado": getattr(self.adapter, "rpc", None) is not None,
             "sem_carteiras": self.sem_carteiras, "carteiras_max_chamadas_dia": self.carteiras_max_chamadas_dia,
+            # PEDIDO 2026-11-10 (rodada 15, Parte 2): visibilidade do RPC dedicado de baixa prioridade
+            # -- None = sem cliente dedicado configurado (cai no self.adapter de sempre).
+            "carteiras_rpc_dedicado": self.adapter_carteiras is not self.adapter,
+            "carteiras_rpc_per_min": self.carteiras_rpc_per_min,
             "ts": now,
         }))
 
@@ -1663,13 +1680,29 @@ class PosRunnerLive:
             return
         self.storage.pr_rss_amostra_insert(now, rss_kb, len(self.storage.pr_pools("ativo")))
 
+    def _carteiras_posicao_aberta(self, pool: str) -> bool:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 2): posicao/sinal aberto em QUALQUER versao (V1/V2/V3)
+        -- prioridade ALTA da coleta de carteiras (ver `_carteiras_prioridade_alta`). V3 nunca
+        gerenciou banca real, mas `pr3_signals(status='aberto')` ainda marca um sinal em
+        acompanhamento, mesmo criterio de "recem-disparado/em aberto" dos outros."""
+        return bool(self.storage.pr1_signals(status="aberto", pool=pool)
+                   or self.storage.pr2_signals(status="aberto", pool=pool)
+                   or self.storage.pr3_signals(status="aberto", pool=pool))
+
     def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
-        """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao
-        aberta (V1 ou V2) OU pool acompanhado nas fases runner/pullback (V1 ou V2; "caixa" nao existe
-        no detector, so sem_fase/runner/pullback)."""
-        if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+        """PEDIDO 2026-10-29 (H9), estendido 2026-11-10 (rodada 15, Parte 2): elegibilidade da coleta
+        HORARIA de carteiras "pro" -- posicao aberta (V1, V2 OU V3) OU pool acompanhado nas fases
+        runner/pullback (V1 ou V2; "caixa" nao existe no detector, so sem_fase/runner/pullback)."""
+        if self._carteiras_posicao_aberta(pool):
             return True
         return self._fase_label_v1(pool, tf) in ("runner", "pullback") or self._fase_label_v2(pool, tf) in ("runner", "pullback")
+
+    def _carteiras_prioridade_alta(self, pool: str) -> bool:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 2): prioridade ABSOLUTA (RPC compartilhado/rapido,
+        `self.adapter`) pra pools com posicao/sinal aberto (QUALQUER versao); demais pools elegiveis
+        (so fase runner/pullback, sem posicao) ficam no RPC dedicado de baixa taxa
+        (`self.adapter_carteiras`) -- nunca compete pelo orcamento que lineage/graduacao precisam."""
+        return self._carteiras_posicao_aberta(pool)
 
     def _diagnostico_pool_fila(self, row: Any, tf: str, now: float) -> str:
         """PEDIDO 2026-10-28, item 2: token/fase/ultima tentativa/ultimo erro/fonte de 1 (pool,tf)
@@ -2566,14 +2599,18 @@ class PosRunnerLive:
             return None
         return res.gross_ret - 2.0 * (slip / 100.0)
 
-    def _holders_instrumentado(self, mint: str, excluded: Any, pool: str, now: float) -> Any:
+    def _holders_instrumentado(self, mint: str, excluded: Any, pool: str, now: float,
+                               adapter: Any = None) -> Any:
         """PEDIDO 2026-11-02 (3a rodada, Fix B): `pr_api_uso` so cobria `poll_pool` -- finalidade
         'carteiras' (RPC, `adapter.holders`) faltava. MESMA convencao de `_refresh_core` (so conta
         chamada de rede DE VERDADE, via `SolanaRpc.calls`; chain sem RPC -- Bsc/Robinhood -- nunca
-        grava, `rpc` fica None)."""
-        rpc = getattr(self.adapter, "rpc", None)
+        grava, `rpc` fica None). PEDIDO 2026-11-10 (rodada 15, Parte 2): `adapter` opcional -- default
+        `self.adapter` (ENTRADA, reusa chamada ja feita); a coleta horaria de baixa prioridade passa
+        `self.adapter_carteiras` (RPC dedicado, nunca o compartilhado com lineage)."""
+        adapter = adapter if adapter is not None else self.adapter
+        rpc = getattr(adapter, "rpc", None)
         antes = getattr(rpc, "calls", 0)
-        holders = self.adapter.holders(mint, excluded)
+        holders = adapter.holders(mint, excluded)
         if rpc is not None and getattr(rpc, "calls", 0) > antes:
             self.storage.pr_api_uso_insert(now, "rpc", "carteiras", pool, http_status=200, rate_limited=False)
         return holders
@@ -3194,16 +3231,28 @@ class PosRunnerLive:
 
     def _atualizar_carteiras_horaria(self, row: Any, tf: str, now: float) -> None:
         """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
-        2026-10-29: elegivel quando ha posicao ABERTA (V1 ou V2) OU a fase atual (V1 ou V2) e runner/
-        pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra H9 sem
-        nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da snapshot
-        de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22 chamadas RPC
-        sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate 20x
-        `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada em
-        SNAPSHOTS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao 600/dia
-        => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido. Prioridade BAIXA:
-        nunca atrasa o agendamento oficial (roda DEPOIS de `_schedule` acima) e o proprio cliente RPC
-        (`SolanaRpc`) ja pausa/recua em 429 (rate limiter adaptativo por endpoint)."""
+        2026-10-29: elegivel quando ha posicao ABERTA (V1, V2 ou V3) OU a fase atual (V1 ou V2) e
+        runner/pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra
+        H9 sem nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da
+        snapshot de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22
+        chamadas RPC sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate
+        20x `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada
+        em TENTATIVAS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao
+        600/dia => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido.
+
+        PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado -- diagnostico em docs/pos-runner-v1/
+        DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md): 2 correcoes.
+        (1) O orcamento diario agora conta TENTATIVAS (sucesso+falha, `pr_carteiras_tentativa`), nunca
+        so sucessos (`pr_carteiras_snapshot` so grava em sucesso -- antes disso, 100% de falha deixava
+        o orcamento preso em 0 pra sempre, sem o bot NUNCA se autolimitar de verdade).
+        (2) Prioridade: pools com posicao/sinal ABERTO (`_carteiras_prioridade_alta`) usam o MESMO RPC
+        compartilhado de sempre (`self.adapter`, rapido, prioridade absoluta); os demais elegiveis (so
+        fase runner/pullback, sem posicao aberta) usam `self.adapter_carteiras` (RPC DEDICADO, ritmo
+        deliberadamente baixo) -- nunca mais compete pelo orcamento que lineage/graduacao precisam.
+
+        Prioridade BAIXA no CICLO (nunca atrasa o agendamento oficial, roda DEPOIS de `_schedule`
+        acima); o proprio cliente RPC (`SolanaRpc`) ja pausa/recua em 429 (rate limiter adaptativo por
+        endpoint, agora um limitador PROPRIO pros pools de baixa prioridade)."""
         if self.sem_carteiras:
             return
         pool = row["pool"]
@@ -3213,14 +3262,18 @@ class PosRunnerLive:
         if not self._carteiras_elegivel(pool, tf):
             return
         inicio_do_dia = now - (now % 86400.0)
-        if self.storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
+        if self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
             self._carteiras_ciclo["orcamento_esgotado"] += 1
             return
         self._carteiras_horaria_ultima[pool] = bucket
         self._carteiras_ciclo["tentativas"] += 1
         self._carteiras_ultima_tentativa_ts = now
-        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now)
-        if holders.tag == "holders_indisponivel":
+        adapter = self.adapter if self._carteiras_prioridade_alta(pool) else self.adapter_carteiras
+        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
+                                              adapter=adapter)
+        sucesso = holders.tag != "holders_indisponivel"
+        self.storage.pr_carteiras_tentativa_insert(now, pool, "horaria", sucesso)
+        if not sucesso:
             self._carteiras_ciclo["erros"] += 1
             motivo = (holders.detail or {}).get("motivo", "s/d")
             self._carteiras_ultimo_erro = f"{row['symbol'] or pool}: {motivo}"

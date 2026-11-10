@@ -366,10 +366,20 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     if runtime_raw:
         rt = json.loads(runtime_raw)
         inicio_do_dia = now - (now % 86400.0)
-        usado_hoje = storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria")
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2): orcamento media TENTATIVAS (sucesso+falha), nunca so
+        # sucessos -- ver docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md
+        # (antes disso, 100% de falha deixava o orcamento preso em 0/limite pra sempre).
+        tentativas_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria")
+        sucessos_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria", sucesso=True)
+        rpc_dedicado = rt.get("carteiras_rpc_dedicado")
+        per_min = rt.get("carteiras_rpc_per_min")
+        dedicado_txt = (f"sim ({per_min:.0f}/min)" if rpc_dedicado and per_min is not None
+                       else ("sim" if rpc_dedicado else "NAO (compartilhado com lineage)"))
         out.append(f"  RPC configurado={'sim' if rt['rpc_configurado'] else 'NAO'} | "
+                  f"RPC dedicado (baixa prioridade)={dedicado_txt} | "
                   f"SEM_CARTEIRAS={'sim (desligado)' if rt['sem_carteiras'] else 'nao'} | "
-                  f"orcamento hoje: {usado_hoje}/{rt['carteiras_max_chamadas_dia']} chamada(s) | "
+                  f"orcamento hoje: {tentativas_hoje}/{rt['carteiras_max_chamadas_dia']} tentativa(s) "
+                  f"({sucessos_hoje} sucesso(s)) | "
                   f"(config lida ha {_fmt_h(now - rt['ts'])}, no proprio processo ao vivo)")
     else:
         out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
