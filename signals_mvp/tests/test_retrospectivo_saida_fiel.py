@@ -157,6 +157,44 @@ class AgregarHorizonteTests(unittest.TestCase):
         self.assertEqual(r.aleatorio_saida_fiel.n, 0)
 
 
+class AgregarOrigemSaidaFielTests(unittest.TestCase):
+    """RODADA 17 item 0 (achado durante a verificacao): `agregar_origem_saida_fiel` e os 4 dicts de
+    pareamento dentro de `agregar_horizonte` ainda agrupavam por `s.token` (SYMBOL) -- o mesmo bug de
+    identidade da rodada 17 item 2, so que faltou corrigir aqui. Clones (mesmo ticker, mint diferente)
+    nunca podem contar como 1 so token distinto."""
+
+    def _sinal(self, token: str, mint: str, pool: str) -> vv3.SinalVarredura:
+        bars = [
+            _bar(0, 100, 101, 99, 100),
+            _bar(STEP, 100, 102, 96, 101),      # entry=100
+            _bar(2 * STEP, 101, 102, 70, 75),   # low=70 <= stop(80)
+            _bar(3 * STEP, 75, 80, 74, 78),
+        ]
+        ev = EventV1(kind="ENTRADA", idx=0, ts=bars[0].ts, decision_ts=bars[0].ts,
+                    data={"stop": 80.0, "TOPO": 10_000.0, "S": 0.0})
+        s = vv3._montar_sinal(bars, ev, "desconhecido", None, "ao_vivo", token, mint, pool, "1h",
+                              None, None)
+        self.assertIsNotNone(s)
+        return s
+
+    def test_mesmo_ticker_mint_diferente_conta_como_2_tokens_distintos(self) -> None:
+        sinais = [self._sinal("CAT", "MINT_A", "POOL_A"), self._sinal("CAT", "MINT_B", "POOL_B")]
+        now = sinais[0].t_entrada + 73 * 3600
+        r = rsf.agregar_origem_saida_fiel(sinais, "ao_vivo", now)
+        self.assertEqual(r.n_sinais, 2)
+        self.assertEqual(r.n_tokens, 2)
+        # o pareamento (saida_fiel) tambem precisa tratar os 2 sinais como 2 unidades independentes,
+        # nunca agrupar os 2 R sob a mesma chave "CAT" (que subestimaria a variancia do bootstrap).
+        self.assertEqual(r.por_horizonte["72h"].saida_fiel.n, 2)
+
+    def test_mesmo_mint_tickers_diferentes_conta_como_1_token_so(self) -> None:
+        sinais = [self._sinal("CATOLD", "MINT_X", "POOL_A"), self._sinal("CATNEW", "MINT_X", "POOL_B")]
+        now = sinais[0].t_entrada + 73 * 3600
+        r = rsf.agregar_origem_saida_fiel(sinais, "ao_vivo", now)
+        self.assertEqual(r.n_sinais, 2)
+        self.assertEqual(r.n_tokens, 1)
+
+
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="rsf_smoke_"))

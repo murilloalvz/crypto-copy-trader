@@ -165,11 +165,11 @@ def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: flo
         if r_fiel.tp1_realizado:
             n_tp1 += 1
         if r_fiel.r_mult is not None:
-            valores_fiel.setdefault(s.token, []).append(r_fiel.r_mult)
+            valores_fiel.setdefault(s.mint, []).append(r_fiel.r_mult)
         r_a = calcular_r_horizonte(s.bars, s.ev, params, costs, s.dex, s.l_bc, t_entrada=s.t_entrada,
                                    horizonte_s=horizonte_s, now=now)
         if r_a.r_mult is not None:
-            valores_a.setdefault(s.token, []).append(r_a.r_mult)
+            valores_a.setdefault(s.mint, []).append(r_a.r_mult)
         # Atribuicao: MESMA saida fiel aplicada aos 10 controles e aos K=20 aleatorios do MESMO sinal
         # (MESMA fase/distancia de stop -- `_evento_controle_sinal`), pra separar entrada de saida.
         for idx in vv3._controles_indices(s, params):
@@ -178,14 +178,14 @@ def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: flo
                 continue
             r_c = _saida_fiel(s, ev_c, s.bars[idx].ts, horizonte_s, now, params, costs)
             if r_c.r_mult is not None:
-                valores_controles.setdefault(s.token, []).append(r_c.r_mult)
+                valores_controles.setdefault(s.mint, []).append(r_c.r_mult)
         for idx in vv3._aleatorios_indices(s, params):
             ev_r = vv3._evento_controle_sinal(s, idx)
             if ev_r is None:
                 continue
             r_r = _saida_fiel(s, ev_r, s.bars[idx].ts, horizonte_s, now, params, costs)
             if r_r.r_mult is not None:
-                valores_aleatorio.setdefault(s.token, []).append(r_r.r_mult)
+                valores_aleatorio.setdefault(s.mint, []).append(r_r.r_mult)
     fracao_tp1 = (100.0 * n_tp1 / n_vencido) if n_vencido else None
     return ResumoHorizonte(
         horizonte=horizonte, n_pendente=n_pendente, n_sem_dado=n_sem_dado, n_vencido=n_vencido,
@@ -210,7 +210,7 @@ def agregar_origem_saida_fiel(sinais: list[vv3.SinalVarredura], origem_label: st
     costs = CostModel()
     por_horizonte = {h: agregar_horizonte(sinais, h, now, params, costs) for h in HORIZONTES_S}
     return ResumoOrigemSaidaFiel(origem=origem_label, n_sinais=len(sinais),
-                                 n_tokens=len({s.token for s in sinais}), por_horizonte=por_horizonte)
+                                 n_tokens=len({s.mint for s in sinais}), por_horizonte=por_horizonte)
 
 
 # ---------------------------------------------------------------------------
