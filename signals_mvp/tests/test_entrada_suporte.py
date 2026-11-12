@@ -15,8 +15,11 @@ from ..pos_runner.candles import Bar
 from ..pos_runner.entrada_suporte import (
     PreregistroAlteradoError,
     garantir_entrada_suporte_registrada,
+    garantir_suporte_forward_registrada,
     hash_do_preregistro,
+    hash_do_preregistro_forward,
     localizar_revisitas_suporte,
+    toque_causal,
 )
 from ..pos_runner.params_v3 import load_params_v3
 from ..storage import Storage
@@ -25,6 +28,10 @@ H = 3600
 T0 = 1_790_000_000 - (1_790_000_000 % H)
 L_BC = 50_000.0
 CREATED = T0 - 3 * 86400
+
+
+def _bar(ts: float, o: float, h: float, l: float, c: float, v: float = 10.0) -> Bar:
+    return Bar(ts=int(ts), open=o, high=h, low=l, close=c, volume=v, filled=False)
 
 
 class Series:
@@ -124,3 +131,62 @@ class GarantirEntradaSuporteRegistradaTests(unittest.TestCase):
         self.storage.set_meta("entrada_suporte_preregistro_hash", "0" * 12)
         with self.assertRaises(PreregistroAlteradoError):
             garantir_entrada_suporte_registrada(self.storage)
+
+
+class GarantirSuporteForwardRegistradaTests(unittest.TestCase):
+    """RODADA 19 item 2: MESMA disciplina, hash SEPARADO (`entrada_suporte_forward_preregistro_hash`)
+    -- pre-registro da coleta FORWARD, nunca confundido com o do retrospectivo (rodada 18) acima."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="suporte_forward_hash_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_1a_chamada_registra_o_hash_atual(self) -> None:
+        atual = hash_do_preregistro_forward()
+        registrado = garantir_suporte_forward_registrada(self.storage)
+        self.assertEqual(registrado, atual)
+        self.assertEqual(self.storage.get_meta("entrada_suporte_forward_preregistro_hash"), atual)
+
+    def test_2a_chamada_com_hash_igual_nao_recusa(self) -> None:
+        garantir_suporte_forward_registrada(self.storage)
+        de_novo = garantir_suporte_forward_registrada(self.storage)
+        self.assertEqual(de_novo, hash_do_preregistro_forward())
+
+    def test_recusa_se_o_hash_registrado_divergir(self) -> None:
+        self.storage.set_meta("entrada_suporte_forward_preregistro_hash", "0" * 12)
+        with self.assertRaises(PreregistroAlteradoError):
+            garantir_suporte_forward_registrada(self.storage)
+
+    def test_hash_forward_e_diferente_do_hash_do_retrospectivo(self) -> None:
+        self.assertNotEqual(hash_do_preregistro_forward(), hash_do_preregistro())
+
+
+class ToqueCausalTests(unittest.TestCase):
+    """RODADA 19 item 1: `toque_causal` (nova mecanica -- `live.py` nao pode importar
+    `scripts/varredura_v3._toque_causal`, reusa esta copia dedicada em `pos_runner/`)."""
+
+    def test_stop_decide_quando_low_toca_antes_do_alvo(self) -> None:
+        bars = [
+            _bar(0, 100, 101, 99, 100), _bar(H, 100, 101, 99, 101),
+            _bar(2 * H, 101, 102, 70, 75),   # low=70<=stop(80)
+        ]
+        self.assertEqual(toque_causal(bars, 1, 100.0, 80.0, 2.0), "stop")
+
+    def test_alvo_decide_quando_high_toca_antes_do_stop(self) -> None:
+        bars = [
+            _bar(0, 100, 101, 99, 100), _bar(H, 100, 101, 99, 101),
+            _bar(2 * H, 101, 121, 99, 115),   # high=121 >= alvo (entry 100 + 1x risco 20 = 120)
+        ]
+        self.assertEqual(toque_causal(bars, 1, 100.0, 80.0, 1.0), "alvo")
+
+    def test_indefinido_quando_a_serie_acaba_sem_decidir(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100), _bar(H, 100, 101, 99, 101)]
+        self.assertIsNone(toque_causal(bars, 1, 100.0, 80.0, 5.0))
+
+    def test_risco_nao_positivo_devolve_none(self) -> None:
+        bars = [_bar(0, 100, 101, 99, 100)]
+        self.assertIsNone(toque_causal(bars, 0, 100.0, 100.0, 2.0))

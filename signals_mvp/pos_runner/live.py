@@ -50,9 +50,13 @@ from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .detector_v1 import DetectorV1, EventV1
 from .dexpaprika_v1 import DexPaprikaProvider
-from .evidencia import N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis, simular_controle, sortear_controles
+from .evidencia import (
+    DROP_MIN_CONTROLE, MC_MIN_CONTROLE, N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis,
+    evento_controle, simular_controle, sortear_controles,
+)
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
-from .horizonte_fixo import HORIZONTES_S
+from .entrada_suporte import garantir_suporte_forward_registrada, localizar_revisitas_suporte, toque_causal
+from .horizonte_fixo import HORIZONTES_S, calcular_r_horizonte
 from .lineage import creation_time
 from .params import Params, is_preregistered
 from .params_v1 import load_params_v1
@@ -610,6 +614,7 @@ class PosRunnerLive:
         rpc_carteiras: Any = None,
         carteiras_rpc_per_min: Optional[float] = None,
         carteiras_placebo_k: int = 3,
+        sem_suporte_sombra: bool = False,
     ):
         self.settings = settings
         self.params = params
@@ -730,6 +735,18 @@ class PosRunnerLive:
             # disciplina de `garantir_emenda_registrada`/`garantir_plano_registrado`. So roda se a V3
             # estiver ligada (sem_v3=False) -- sem V3 nunca ha sombra pra calcular.
             garantir_saida_fiel_registrada(storage)
+        # PEDIDO 2026-11-12 (rodada 19, item 2, autorizado): congela/confere o hash do pre-registro da
+        # coleta FORWARD "entrada no suporte" (docs/pos-runner-v3/PREREGISTRO_SUPORTE_FORWARD_
+        # 2026-11-12.md) ANTES de qualquer linha poder ser gravada em pr3_suporte_sombra -- fail-closed
+        # (`PreregistroAlteradoError` propaga e impede o bot de subir), MESMA disciplina de
+        # `garantir_saida_fiel_registrada`/`garantir_carteiras_forward_registrada`. So roda se V3
+        # estiver ligada E a sombra nao estiver desligada (SEM_SUPORTE_SOMBRA=1).
+        self.sem_suporte_sombra = sem_suporte_sombra
+        # zonas (pool,tf) ja gravadas OU ja decididas sem revisita elegivel -- nunca mais reexecuta o
+        # replay de `localizar_revisitas_suporte` pra essas (ver `_sombra_suporte_v3`).
+        self._suporte_sombra_zonas_vistas: dict[tuple[str, str], set[int]] = {}
+        if not sem_v3 and not sem_suporte_sombra:
+            garantir_suporte_forward_registrada(storage)
         self.version_v3_start: Optional[float] = None
         self.dets_v3: dict[tuple[str, str], DetectorV1] = {}
         self._v3_invalid: set[tuple[str, str]] = set()
@@ -3220,6 +3237,125 @@ class PosRunnerLive:
                 self.storage.pr3_saidas_sombra_upsert(signal["id"], horizonte, now, r.status, r.r_mult,
                                                       r.tp1_realizado)
 
+    @staticmethod
+    def _suporte_sombra_entrada_hipotetica(bars: list[Bar], j0: int, topo: Optional[float]) -> float:
+        """MESMA correcao de entrada de `scripts.varredura_v3._montar_sinal` (veto AMPLO, padrao desta
+        coleta -- RODADA 19 item 1), nunca duplicada em `scripts/` (live.py nao pode importar de la)."""
+        confiavel = qualidade_candle.candle_confiavel_cb(bars, topo)
+        entry_price = bars[j0].open
+        if confiavel(j0) is not None:
+            for idx in range(j0 - 1, -1, -1):
+                if confiavel(idx) is None:
+                    entry_price = bars[idx].close
+                    break
+        return entry_price
+
+    def _sombra_suporte_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
+        """RODADA 19 item 1 (autorizado -- pre-registrado em docs/pos-runner-v3/
+        PREREGISTRO_SUPORTE_FORWARD_2026-11-12.md, hash congelado por
+        `garantir_suporte_forward_registrada`, chamado 1x no startup, ver `__init__`). Para TODA zona
+        V3 deste (pool,tf) que ja teve `WATCHLIST` (caixa formada) e AINDA nao tem linha em
+        `pr3_suporte_sombra` -- NUNCA so a zona ATUAL de `det.zone` (ela ja rola pra frente no MESMO
+        `det.update(bar)` que decide o gatilho oficial, achado em teste: se a revisita e o gatilho sao
+        candles vizinhos, `det.zone` ja seria a zona NOVA antes deste metodo rodar) -- procura a 1a
+        revisita causal ao suporte S (reusa `entrada_suporte.localizar_revisitas_suporte`, MESMA
+        definicao do retrospectivo da rodada 18; `gatilho_idx` = o idx do evento ENTRADA/FORA_DA_IDADE
+        dessa zona, se ja decidido, senao `len(det.bars)` -- zona ainda aberta, tenta de novo no
+        proximo ciclo) e grava. `self._suporte_sombra_zonas_vistas` (por pool,tf) marca zonas ja
+        gravadas OU ja decididas sem revisita elegivel (nunca mais vao achar uma -- a janela fechou),
+        pra nao reexecutar o replay de `localizar_revisitas_suporte` pra sempre. TOPO usa `P_peak` do
+        PROPRIO evento WATCHLIST da zona (nunca `det.peak` atual, que pode ja ser de uma onda/zona
+        posterior). SO GRAVACAO -- nunca gera alerta/sinal, nunca altera `pr3_signals`/criterio/H1.
+        Acompanha (72h/7d, MESMA saida A oficial + toque causal +2R/+5R antes de -1R + K=20 controles
+        aleatorios do MESMO pool/fase, `pos_runner/evidencia.py`) TODAS as linhas ja gravadas deste
+        pool/tf, todo ciclo, idempotente (MESMA disciplina de `_sombra_saida_fiel_v3`). Chamado so via
+        `_sombra_safe`."""
+        if self.sem_suporte_sombra:
+            return
+        pool = row["pool"]
+        created_ts = self._created(row)
+        vistas = self._suporte_sombra_zonas_vistas.setdefault((pool, tf), set())
+        topo_por_zona: dict[int, Optional[float]] = {}
+        idx_decisao_por_zona: dict[int, int] = {}
+        for ev_hist in det.events:
+            zona_hist = ev_hist.data.get("zona")
+            if zona_hist is None:
+                continue
+            if ev_hist.kind == "WATCHLIST":
+                topo_por_zona.setdefault(zona_hist, ev_hist.data.get("P_peak"))
+            elif ev_hist.kind in ("ENTRADA", "FORA_DA_IDADE"):
+                idx_decisao_por_zona[zona_hist] = ev_hist.idx
+        for zona in topo_por_zona:
+            if zona in vistas:
+                continue
+            if self.storage.pr3_suporte_sombra_get(pool, tf, zona) is not None:
+                vistas.add(zona)
+                continue
+            gatilho_idx = idx_decisao_por_zona.get(zona, len(det.bars))
+            revisitas = localizar_revisitas_suporte(det.bars, tf, row["l_bc"], created_ts,
+                                                    self.params_v3, zona, gatilho_idx)
+            if not revisitas:
+                if zona in idx_decisao_por_zona:
+                    vistas.add(zona)   # janela fechada (gatilho ja decidido) sem revisita -- nunca mais
+                continue
+            rev = revisitas[0]
+            j0 = rev.idx + 1
+            if j0 >= len(det.bars):
+                continue   # candle de abertura ainda nao chegou -- tenta de novo no proximo ciclo
+            topo = topo_por_zona[zona]
+            entry_price = self._suporte_sombra_entrada_hipotetica(det.bars, j0, topo)
+            if entry_price > rev.stop and (topo is None or entry_price < topo):
+                risco_pct = 100.0 * (entry_price - rev.stop) / entry_price
+                self.storage.pr3_suporte_sombra_insert(
+                    pool=pool, tf=tf, zona=zona, mint=row["mint"], symbol=row["symbol"],
+                    ts_revisita=det.bars[rev.idx].ts, t_entrada=det.bars[j0].ts,
+                    entry_price=entry_price, stop=rev.stop, topo=topo if topo is not None else entry_price,
+                    s_suporte=rev.s_no_momento, risco_pct=risco_pct,
+                    volume_candle=det.bars[rev.idx].volume, idade_dias=det.age_days(rev.idx),
+                    criado_ts=now,
+                )
+            vistas.add(zona)
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        for suporte in self.storage.pr3_suporte_sombra_all(pool=pool, tf=tf):
+            idx_entrada = next((i for i, b in enumerate(det.bars) if b.ts == suporte["t_entrada"]), None)
+            if idx_entrada is None or idx_entrada == 0:
+                continue
+            idx_revisita = idx_entrada - 1
+            topo_mult = suporte["topo"] / suporte["entry_price"]
+            s_mult = suporte["s_suporte"] / suporte["entry_price"]
+            candidatos = candidatos_elegiveis(det.bars, created_ts, self.params_v3.age_window_days,
+                                              tf_seconds(tf), idx_revisita, DROP_MIN_CONTROLE,
+                                              MC_MIN_CONTROLE)
+            indices_aleatorios: list[int] = []
+            if len(candidatos) >= N_CONTROLES_MINIMO:
+                entry_id = abs(hash((pool, tf, suporte["t_entrada"]))) % (2 ** 31)
+                indices_aleatorios = sortear_controles(candidatos, entry_id, "suporte_sombra_v3:aleatorio", 20)
+            for horizonte, horizonte_s in HORIZONTES_S.items():
+                ev = EventV1(kind="ENTRADA_SUPORTE_SOMBRA", idx=idx_revisita, ts=suporte["ts_revisita"],
+                            decision_ts=suporte["ts_revisita"],
+                            data={"stop": suporte["stop"], "TOPO": suporte["topo"], "S": suporte["s_suporte"]})
+                r = calcular_r_horizonte(det.bars, ev, self.params_v3, self.costs, dex, row["l_bc"],
+                                         t_entrada=suporte["t_entrada"], horizonte_s=horizonte_s, now=now,
+                                         sol_usd_at=self._sol_at(), veto="amplo")
+                toque_2r = toque_causal(det.bars, idx_entrada, suporte["entry_price"], suporte["stop"],
+                                        2.0, peak=suporte["topo"])
+                toque_5r = toque_causal(det.bars, idx_entrada, suporte["entry_price"], suporte["stop"],
+                                        5.0, peak=suporte["topo"])
+                controles_r: list[Optional[float]] = []
+                for idx_c in indices_aleatorios:
+                    ev_c = evento_controle(det.bars, idx_c, 100.0 * (suporte["entry_price"] - suporte["stop"])
+                                          / suporte["entry_price"], topo_mult, s_mult)
+                    if ev_c is None:
+                        continue
+                    r_c = calcular_r_horizonte(det.bars, ev_c, self.params_v3, self.costs, dex, row["l_bc"],
+                                               t_entrada=det.bars[idx_c + 1].ts, horizonte_s=horizonte_s,
+                                               now=now, sol_usd_at=self._sol_at(), veto="amplo")
+                    controles_r.append(r_c.r_mult)
+                self.storage.pr3_suporte_sombra_saida_upsert(
+                    suporte["id"], horizonte, now, r.status, r.r_mult, toque_2r, toque_5r,
+                    json.dumps(controles_r), len(controles_r),
+                )
+
     def _update_evidencia_v3(self, row: Any, tf: str, now: float) -> None:
         for signal in self.storage.pr3_signals(pool=row["pool"], tf=tf):
             if signal["versao_config_v3"] != self.version_v3 or signal["evento"] != "ENTRADA" or signal["status"] == "cancelado":
@@ -3961,6 +4097,10 @@ class PosRunnerLive:
                 # atualizados acima, zero chamada de rede nova; `_sombra_safe` garante que nenhuma
                 # excecao daqui alcance o resto do ciclo (mesma disciplina das outras sombras).
                 self._sombra_safe(self._sombra_saida_fiel_v3, row, tf, det_v3, now, contexto="saida_fiel_v3")
+                # PEDIDO 2026-11-12 (rodada 19, item 1): sombra FORWARD "entrada no suporte" -- MESMO
+                # det_v3/bars ja atualizados acima, zero chamada de rede nova; `_sombra_safe` garante
+                # que nenhuma excecao daqui alcance o resto do ciclo (mesma disciplina das outras sombras).
+                self._sombra_safe(self._sombra_suporte_v3, row, tf, det_v3, now, contexto="suporte_sombra_v3")
             # PEDIDO 2026-10-29: persiste a fase ATUAL (V1 e V2) em pr_pools -- saude.py le daqui,
             # nunca do ultimo heartbeat em memoria (que fica defasado/ausente logo apos um restart).
             try:

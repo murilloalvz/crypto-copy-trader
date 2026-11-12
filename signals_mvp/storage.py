@@ -556,6 +556,30 @@ CREATE TABLE IF NOT EXISTS pr3_saidas_sombra (
   UNIQUE (signal_id, horizonte)
 );
 CREATE INDEX IF NOT EXISTS pr3_saidas_sombra_signal ON pr3_saidas_sombra (signal_id);
+-- PEDIDO 2026-11-12 (rodada 19, item 1, autorizado -- ver docs/pos-runner-v3/
+-- PREREGISTRO_SUPORTE_FORWARD_2026-11-12.md): sombra FORWARD da hipotese "entrada no suporte" --
+-- gravada AO VIVO para cada zona V3 (pool,tf,zona) na 1a revisita causal ao suporte S apos a caixa
+-- formada (WATCHLIST) e antes do gatilho real. SO GRAVACAO -- NUNCA gera alerta/sinal, NUNCA altera
+-- pr3_signals/criterio. UNIQUE(pool,tf,zona) = "uma decisao por zona", MESMA invariante do detector
+-- oficial (nunca mais de 1 revisita gravada por zona).
+CREATE TABLE IF NOT EXISTS pr3_suporte_sombra (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, pool TEXT NOT NULL, tf TEXT NOT NULL, zona INTEGER NOT NULL,
+  mint TEXT, symbol TEXT, ts_revisita REAL NOT NULL, t_entrada REAL NOT NULL,
+  entry_price REAL NOT NULL, stop REAL NOT NULL, topo REAL NOT NULL, s_suporte REAL NOT NULL,
+  risco_pct REAL, volume_candle REAL, idade_dias REAL, criado_ts REAL NOT NULL,
+  UNIQUE (pool, tf, zona)
+);
+CREATE INDEX IF NOT EXISTS pr3_suporte_sombra_pool ON pr3_suporte_sombra (pool, tf);
+-- Acompanhamento (72h/7d) das linhas acima -- MESMO padrao de pr3_saidas_sombra (status/r_mult por
+-- horizonte, recomputado TODO ciclo, idempotente). `controles_json` = lista de R (ou null) dos K=20
+-- controles aleatorios do MESMO pool/fase, no MESMO horizonte -- ver pos_runner/evidencia.py.
+CREATE TABLE IF NOT EXISTS pr3_suporte_sombra_saida (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, suporte_id INTEGER NOT NULL, horizonte TEXT NOT NULL,
+  calculado_ts REAL NOT NULL, status TEXT NOT NULL, r_mult REAL,
+  toque_2r TEXT, toque_5r TEXT, controles_json TEXT, n_controles INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (suporte_id, horizonte)
+);
+CREATE INDEX IF NOT EXISTS pr3_suporte_sombra_saida_suporte ON pr3_suporte_sombra_saida (suporte_id);
 """
 
 # colunas de `signals` que podem ser atualizadas depois da insercao
@@ -2273,6 +2297,68 @@ class Storage:
         if signal_id is not None:
             return self._all("SELECT * FROM pr3_saidas_sombra WHERE signal_id=?", (signal_id,))
         return self._all("SELECT * FROM pr3_saidas_sombra", ())
+
+    # -- PEDIDO 2026-11-12 (rodada 19, item 1): sombra FORWARD "entrada no suporte" -- SO medicao,
+    # nunca altera pr3_signals/alertas/H1. Ver pos_runner/entrada_suporte.py.
+    def pr3_suporte_sombra_insert(self, pool: str, tf: str, zona: int, mint: Optional[str],
+                                  symbol: Optional[str], ts_revisita: float, t_entrada: float,
+                                  entry_price: float, stop: float, topo: float, s_suporte: float,
+                                  risco_pct: Optional[float], volume_candle: Optional[float],
+                                  idade_dias: Optional[float], criado_ts: float) -> int:
+        """Ignora silenciosamente se ja existir uma linha para (pool,tf,zona) -- "uma decisao por
+        zona", idempotente (chamado todo ciclo so quando ainda nao ha linha, ver _sombra_suporte_v3).
+        Devolve o id da linha (nova ou ja existente)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr3_suporte_sombra (pool, tf, zona, mint, symbol, ts_revisita, t_entrada, "
+                "entry_price, stop, topo, s_suporte, risco_pct, volume_candle, idade_dias, criado_ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (pool, tf, zona) DO NOTHING",
+                (pool, tf, zona, mint, symbol, ts_revisita, t_entrada, entry_price, stop, topo,
+                 s_suporte, risco_pct, volume_candle, idade_dias, criado_ts))
+        row = self._one("SELECT id FROM pr3_suporte_sombra WHERE pool=? AND tf=? AND zona=?",
+                        (pool, tf, zona))
+        assert row is not None
+        return int(row["id"])
+
+    def pr3_suporte_sombra_get(self, pool: str, tf: str, zona: int) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr3_suporte_sombra WHERE pool=? AND tf=? AND zona=?",
+                         (pool, tf, zona))
+
+    def pr3_suporte_sombra_all(self, pool: Optional[str] = None, tf: Optional[str] = None) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM pr3_suporte_sombra WHERE 1=1"
+        args: list[Any] = []
+        if pool is not None:
+            sql += " AND pool=?"
+            args.append(pool)
+        if tf is not None:
+            sql += " AND tf=?"
+            args.append(tf)
+        return self._all(sql, tuple(args))
+
+    def pr3_suporte_sombra_saida_upsert(self, suporte_id: int, horizonte: str, calculado_ts: float,
+                                        status: str, r_mult: Optional[float] = None,
+                                        toque_2r: Optional[str] = None, toque_5r: Optional[str] = None,
+                                        controles_json: Optional[str] = None,
+                                        n_controles: int = 0) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO pr3_suporte_sombra_saida (suporte_id, horizonte, calculado_ts, status, "
+                "r_mult, toque_2r, toque_5r, controles_json, n_controles) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT (suporte_id, horizonte) DO UPDATE SET "
+                "calculado_ts=excluded.calculado_ts, status=excluded.status, r_mult=excluded.r_mult, "
+                "toque_2r=excluded.toque_2r, toque_5r=excluded.toque_5r, "
+                "controles_json=excluded.controles_json, n_controles=excluded.n_controles",
+                (suporte_id, horizonte, calculado_ts, status, r_mult, toque_2r, toque_5r,
+                 controles_json, n_controles))
+
+    def pr3_suporte_sombra_saida_get(self, suporte_id: int, horizonte: str) -> Optional[sqlite3.Row]:
+        return self._one("SELECT * FROM pr3_suporte_sombra_saida WHERE suporte_id=? AND horizonte=?",
+                         (suporte_id, horizonte))
+
+    def pr3_suporte_sombra_saida_all(self, suporte_id: Optional[int] = None) -> list[sqlite3.Row]:
+        if suporte_id is not None:
+            return self._all("SELECT * FROM pr3_suporte_sombra_saida WHERE suporte_id=?", (suporte_id,))
+        return self._all("SELECT * FROM pr3_suporte_sombra_saida", ())
 
     # -- PEDIDO 2026-10-29 (item 4): RADAR "caixa em formacao" -- ESTUDO, nunca sinal ------------------
     def pr_radar_get(self, chain: str, pool: str, tf: str, ts_fechamento: int) -> Optional[sqlite3.Row]:

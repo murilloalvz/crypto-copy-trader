@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..util import short_hash
+from . import qualidade_candle
 from .candles import Bar
 from .detector_v1 import DetectorV1
 
@@ -37,6 +38,15 @@ PREREGISTRO_PATH = (
     / "PREREGISTRO_ENTRADA_SUPORTE_2026-11-12.md"
 )
 META_KEY_HASH = "entrada_suporte_preregistro_hash"
+
+# RODADA 19 item 2 (autorizado): pre-registro SEPARADO da coleta FORWARD (pr3_suporte_sombra, ao
+# vivo em live.py) -- MESMO padrao de hash-freeze, documento proprio, nunca misturado com o hash do
+# retrospectivo dentro-da-amostra acima (rodada 18).
+PREREGISTRO_FORWARD_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "pos-runner-v3"
+    / "PREREGISTRO_SUPORTE_FORWARD_2026-11-12.md"
+)
+META_KEY_HASH_FORWARD = "entrada_suporte_forward_preregistro_hash"
 
 
 class PreregistroAlteradoError(RuntimeError):
@@ -59,6 +69,28 @@ def garantir_entrada_suporte_registrada(storage: Any, path: Path = PREREGISTRO_P
     if registrado != atual:
         raise PreregistroAlteradoError(
             f"docs/pos-runner-v3/PREREGISTRO_ENTRADA_SUPORTE_2026-11-12.md mudou depois de registrado "
+            f"(registrado {registrado}, atual {atual}) -- abra uma nova emenda datada, nunca "
+            "reescreva o pre-registro em silencio."
+        )
+    return atual
+
+
+def hash_do_preregistro_forward(path: Path = PREREGISTRO_FORWARD_PATH) -> str:
+    return short_hash(path.read_text(encoding="utf-8"))
+
+
+def garantir_suporte_forward_registrada(storage: Any, path: Path = PREREGISTRO_FORWARD_PATH) -> str:
+    """RODADA 19 item 2: MESMA disciplina de `garantir_entrada_suporte_registrada`, so que para o
+    pre-registro da coleta FORWARD (`pr3_suporte_sombra`, gravada ao vivo por `live.py`) -- hash
+    SEPARADO (`META_KEY_HASH_FORWARD`), nunca confundido com o do retrospectivo (rodada 18)."""
+    atual = hash_do_preregistro_forward(path)
+    registrado = storage.get_meta(META_KEY_HASH_FORWARD)
+    if registrado is None:
+        storage.set_meta(META_KEY_HASH_FORWARD, atual)
+        return atual
+    if registrado != atual:
+        raise PreregistroAlteradoError(
+            f"docs/pos-runner-v3/PREREGISTRO_SUPORTE_FORWARD_2026-11-12.md mudou depois de registrado "
             f"(registrado {registrado}, atual {atual}) -- abra uma nova emenda datada, nunca "
             "reescreva o pre-registro em silencio."
         )
@@ -103,3 +135,27 @@ def localizar_revisitas_suporte(bars: list[Bar], tf: str, l_bc: Optional[float],
         else:
             tocando = False
     return revisitas
+
+
+def toque_causal(bars: list[Bar], j0: int, entry_price: float, stop: float, alvo_r: float,
+                 peak: Optional[float] = None) -> Optional[str]:
+    """RODADA 19 item 1: MESMA mecanica de `scripts/varredura_v3._toque_causal` (reusada aqui, nunca
+    duplicada em `live.py`, que nao pode importar `scripts/` -- camada scripts->pos_runner nunca
+    inverte). 'stop' se `low<=stop` (prioridade no MESMO candle), 'alvo' se `high>=preco_alvo`, `None`
+    se a serie acabar sem decidir. Candle corrompido (veto AMPLO, `qualidade_candle.candle_confiavel_cb`
+    -- MESMO veto da coleta forward) nunca decide, mas tambem nunca conta como "indefinido" so por
+    existir no meio do caminho."""
+    risk = entry_price - stop
+    if risk <= 0:
+        return None
+    preco_alvo = entry_price + alvo_r * risk
+    confiavel = qualidade_candle.candle_confiavel_cb(bars, peak)
+    for idx in range(j0, len(bars)):
+        if confiavel(idx) is not None:
+            continue
+        bar = bars[idx]
+        if bar.low <= stop:
+            return "stop"
+        if bar.high >= preco_alvo:
+            return "alvo"
+    return None
