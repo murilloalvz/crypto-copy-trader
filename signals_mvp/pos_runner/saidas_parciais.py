@@ -28,6 +28,7 @@ from ..util import short_hash
 from .candles import Bar, candle_corrompido_provavel
 from .costs import CostModel
 from .detector_v1 import EventV1
+from .qualidade_candle import candle_confiavel_cb
 from .saida_fiel import _fechar, _pivo_confirmado
 
 PREREGISTRO_PATH = (
@@ -164,8 +165,11 @@ def calcular_r_variante(
     bars: list[Bar], event: EventV1, costs: CostModel, dex: str, l_bc: Optional[float],
     t_entrada: float, horizonte_s: float, now: float, variante: VarianteSaidaParcial,
     sol_usd_at: Callable[[float], Optional[float]] = lambda _t: None, slippage_saida_mult: float = 1.0,
+    veto: str = "simples",
 ) -> ResultadoSaidaParcial:
-    """Algoritmo EXATO do pré-registro (ver docstring do módulo), pra UMA `variante` da grade."""
+    """Algoritmo EXATO do pré-registro (ver docstring do módulo), pra UMA `variante` da grade.
+    RODADA 18 (item 2): `veto` ('simples' padrao -- ZERO mudanca de comportamento pra quem nao passa
+    o parametro -- ou 'amplo' opt-in, MESMO veto de `qualidade_candle.candle_confiavel_cb`)."""
     j0 = event.idx + 1
     if j0 >= len(bars):
         return ResultadoSaidaParcial("pendente")
@@ -196,6 +200,8 @@ def calcular_r_variante(
     ultimo_fechamento: Optional[float] = None
     ultimo_ts: Optional[float] = None
 
+    confiavel = candle_confiavel_cb(bars, event.data.get("TOPO")) if veto == "amplo" else None
+
     idx = j0
     while idx < len(bars):
         bar = bars[idx]
@@ -204,7 +210,8 @@ def calcular_r_variante(
         confirmado_em = idx - 2
         if confirmado_em >= j0 and _pivo_confirmado(bars, confirmado_em):
             pivos.append((confirmado_em, bars[confirmado_em].low))
-        if candle_corrompido_provavel(bars, idx):
+        vetado = confiavel(idx) is not None if confiavel is not None else candle_corrompido_provavel(bars, idx)
+        if vetado:
             idx += 1
             continue
         if tp1_leg is None:

@@ -143,6 +143,34 @@ class Tp1PorTopoAnteriorTests(unittest.TestCase):
         self.assertTrue(r.tp1_realizado)
 
 
+class VetoAmploOptInTests(unittest.TestCase):
+    """RODADA 18 item 2: `veto='amplo'` (opt-in, default continua 'simples') usa o MESMO veto do
+    caminho ao vivo (`qualidade_candle.candle_confiavel_cb`) -- candle isolado cujo salto e >10x o
+    CLOSE do vizinho anterior mas NUNCA >10x o HIGH de ambos os vizinhos (o simples exige os 2)."""
+
+    def _bars_com_spike_isolado(self) -> list:
+        return _bars_vol([
+            (100, 101, 99, 100, 10.0),    # idx0
+            (100, 150, 96, 101, 10.0),    # idx1 -- entry=100
+            (101, 1050, 70, 90, 10.0),    # idx2 -- spike isolado: low=70<=stop(80)
+            (100, 103, 98, 101, 10.0),    # idx3 -- nao confirma o nivel do spike
+        ])
+
+    def test_simples_padrao_bate_o_stop_amplo_opt_in_nunca_decide_nele(self) -> None:
+        bars = self._bars_com_spike_isolado()
+        ev = _evento(0, bars[0].ts, stop=80.0, topo=10_000.0)
+        r_simples = calcular_r_saida_fiel(bars, ev, PARAMS, COSTS, "desconhecido", None,
+                                          t_entrada=bars[1].ts, horizonte_s=2 * STEP,
+                                          now=bars[1].ts + 10 * STEP)
+        r_amplo = calcular_r_saida_fiel(bars, ev, PARAMS, COSTS, "desconhecido", None,
+                                        t_entrada=bars[1].ts, horizonte_s=2 * STEP,
+                                        now=bars[1].ts + 10 * STEP, veto="amplo")
+        self.assertEqual(r_simples.status, "resolvido")
+        self.assertLess(r_simples.r_mult, -1.0, "veto simples (padrao) bate o stop no spike")
+        self.assertEqual(r_amplo.status, "marcado")
+        self.assertGreater(r_amplo.r_mult, r_simples.r_mult)
+
+
 class Tp1PorPowerCandleTests(unittest.TestCase):
     def test_power_candle_dispara_tp1_sem_tocar_o_topo(self) -> None:
         flat = [(100, 101, 99, 100, 10.0)] * 20               # idx0..19 -- ATR baixo

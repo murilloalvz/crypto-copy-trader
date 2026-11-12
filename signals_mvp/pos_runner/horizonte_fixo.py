@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..util import short_hash
-from .candles import Bar
+from .candles import Bar, candle_corrompido_provavel
 from .costs import CostModel
 from .detector_v1 import EventV1
 from .params_v1 import ParamsV1
@@ -79,19 +79,31 @@ def _r_mult(net: Optional[float], risk_frac: Optional[float]) -> Optional[float]
     return net / risk_frac
 
 
+def _veto_simples_cb(bars: list[Bar]) -> Callable[[int], Optional[str]]:
+    """RODADA 18 (item 2): mesma FORMA de callback de `candle_confiavel_cb` (`j -> motivo|None`), mas
+    usando o veto SIMPLES (`candle_corrompido_provavel`) -- so pra permitir comparar os 2 vetos pelo
+    MESMO parametro `candle_confiavel` de `simulate_v1`, nunca uma 2a implementacao do veto simples."""
+    def cb(j: int) -> Optional[str]:
+        return "candle_corrompido_provavel" if candle_corrompido_provavel(bars, j) else None
+    return cb
+
+
 def _simular_e_marcar(
     bars: list[Bar], event: EventV1, params: ParamsV1, costs: CostModel, dex: str, l_bc: Optional[float],
-    sol_usd_at: Callable[[float], Optional[float]],
+    sol_usd_at: Callable[[float], Optional[float]], veto: str = "amplo",
 ) -> tuple[str, Optional[float], Optional[float], Optional[float]]:
     """Roda `simulate_v1` e, se ainda `em_aberto` no FINAL da serie recebida (que quem chama ja
     truncou no corte), valoriza o restante a mercado (`scripts.exit_lab._marcar_a_mercado`, MESMA
     funcao do item 1, reusada sem copiar logica). Devolve (status_simulate, net_ret_ou_marcado,
     candle_marca_ts, risk_frac). RODADA 17 (achado P1 da Parte B da auditoria 2026-11-10): passa o
-    MESMO veto de candle corrompido que o caminho ao vivo ja aplica (`qualidade_candle.
+    MESMO veto AMPLO de candle corrompido que o caminho ao vivo ja aplica (`qualidade_candle.
     candle_confiavel_cb`, reusado sem copiar logica -- so sem o cruzamento DexPaprika, que exige o
     Storage ao vivo e nao existe aqui; o veto por OHLC/pico/vizinho, que e o que realmente importa
-    pra nao deixar um candle tipo "McRib -561R" decidir stop/TP sem ser vetado, e identico)."""
-    confiavel = candle_confiavel_cb(bars, event.data.get("TOPO"))
+    pra nao deixar um candle tipo "McRib -561R" decidir stop/TP sem ser vetado, e identico). RODADA 18
+    (item 2): `veto='simples'` (opt-in, default continua 'amplo' -- ZERO mudanca de comportamento pra
+    quem nao passa este parametro) troca pro veto simples, pra comparar os 2 caminhos lado a lado."""
+    confiavel = (candle_confiavel_cb(bars, event.data.get("TOPO")) if veto == "amplo"
+                else _veto_simples_cb(bars))
     res = simulate_v1(bars, event, params, costs, dex, l_bc, sol_usd_at, candle_confiavel=confiavel)
     if res.status != "em_aberto" or res.entry_price is None or res.entry_cost_pct is None:
         return res.status, res.net_ret, None, res.risk_frac
@@ -107,19 +119,21 @@ def _simular_e_marcar(
 def calcular_r_horizonte(
     bars: list[Bar], event: EventV1, params: ParamsV1, costs: CostModel, dex: str, l_bc: Optional[float],
     t_entrada: float, horizonte_s: float, now: float,
-    sol_usd_at: Callable[[float], Optional[float]] = lambda _t: None,
+    sol_usd_at: Callable[[float], Optional[float]] = lambda _t: None, veto: str = "amplo",
 ) -> ResultadoHorizonte:
     """R no horizonte fixo (`t_entrada + horizonte_s`), causal (zero lookahead -- a serie e truncada
     no corte ANTES de simular, nunca depois). `event` e o MESMO formato que `simulate_v1` ja aceita
     (`idx`/`data`) -- serve tanto para o sinal real quanto para um controle pareado
-    (`evidencia.evento_controle`), sem duplicar logica de entrada/saida."""
+    (`evidencia.evento_controle`), sem duplicar logica de entrada/saida. RODADA 18 (item 2): `veto`
+    ('amplo' padrao, 'simples' opt-in) -- ver `_simular_e_marcar`."""
     ts_corte = t_entrada + horizonte_s
     if now < ts_corte:
         return ResultadoHorizonte("pendente")
     bars_truncados = [b for b in bars if b.ts <= ts_corte]
     if len(bars_truncados) <= event.idx + 1:
         return ResultadoHorizonte("pendente")   # corte decorrido mas candle de entrada ainda nao chegou
-    status, net, marca_ts, risk_frac = _simular_e_marcar(bars_truncados, event, params, costs, dex, l_bc, sol_usd_at)
+    status, net, marca_ts, risk_frac = _simular_e_marcar(bars_truncados, event, params, costs, dex, l_bc,
+                                                         sol_usd_at, veto=veto)
     if status == "cancelado":
         return ResultadoHorizonte("sem_dado")   # abriu fora do stop/TOPO -- nunca foi um trade de verdade
     if net is None:

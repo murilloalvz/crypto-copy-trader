@@ -43,6 +43,32 @@ def _evento(idx: int, ts: int, stop: float, topo: float = 0.0, r_caixa: float = 
                   data={"stop": stop, "TOPO": topo, "R": r_caixa})
 
 
+class VetoAmploOptInTests(unittest.TestCase):
+    """RODADA 18 item 2: `veto='amplo'` (opt-in, default continua 'simples') usa o MESMO veto do
+    caminho ao vivo -- candle isolado cujo salto e >10x o CLOSE do vizinho anterior mas NUNCA >10x o
+    HIGH de ambos os vizinhos (o simples exige os 2)."""
+
+    def test_simples_padrao_bate_o_stop_amplo_opt_in_marca_no_candle_limpo(self) -> None:
+        bars = _bars_vol([
+            (100, 101, 99, 100, 10.0),    # idx0
+            (100, 150, 96, 101, 10.0),    # idx1 -- entry=100
+            (101, 1050, 70, 90, 10.0),    # idx2 -- spike isolado: low=70<=stop(80)
+            (100, 103, 98, 101, 10.0),    # idx3 -- nao confirma o nivel do spike
+        ])
+        ev = _evento(0, bars[0].ts, stop=80.0, topo=10_000.0)
+        variante = VarianteSaidaParcial(TRIGGER_1R, 0.30, REMAINDER_SEGURAR)
+        r_simples = calcular_r_variante(bars, ev, COSTS, "desconhecido", None, t_entrada=bars[1].ts,
+                                        horizonte_s=2 * STEP, now=bars[1].ts + 10 * STEP,
+                                        variante=variante)
+        r_amplo = calcular_r_variante(bars, ev, COSTS, "desconhecido", None, t_entrada=bars[1].ts,
+                                      horizonte_s=2 * STEP, now=bars[1].ts + 10 * STEP,
+                                      variante=variante, veto="amplo")
+        self.assertEqual(r_simples.status, "resolvido")
+        self.assertLess(r_simples.r_mult, -0.9, "veto simples (padrao) bate o stop no spike")
+        self.assertEqual(r_amplo.status, "marcado")
+        self.assertGreater(r_amplo.r_mult, r_simples.r_mult)
+
+
 class GradeTests(unittest.TestCase):
     def test_grade_fechada_tem_exatamente_24_variantes_unicas(self) -> None:
         self.assertEqual(len(GRADE_24), 24)

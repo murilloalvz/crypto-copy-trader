@@ -146,6 +146,45 @@ class PrimeiroToqueTests(unittest.TestCase):
         self.assertEqual(vv3._primeiro_toque(s, 1.0), "alvo")
 
 
+class VetoAmploOptInTests(unittest.TestCase):
+    """RODADA 18 item 2: `veto='amplo'` (opt-in, default continua 'simples' em TODA funcao de
+    biblioteca) usa o MESMO veto do caminho ao vivo -- candle isolado cujo salto e >10x o CLOSE do
+    vizinho anterior mas NUNCA >10x o HIGH de ambos os vizinhos (o simples exige os 2)."""
+
+    def test_toque_causal_simples_bate_o_stop_amplo_nunca_decide_nele(self) -> None:
+        bars = [
+            _bar(0, 100, 101, 99, 100),
+            _bar(3600, 100, 150, 96, 101),      # idx1 -- entry=100
+            _bar(7200, 101, 1050, 70, 90),      # idx2 -- spike isolado: low=70<=stop(80)
+            _bar(10800, 100, 103, 98, 101),     # idx3 -- nao confirma o nivel do spike
+        ]
+        self.assertEqual(vv3._toque_causal(bars, 1, 100.0, 80.0, 5.0), "stop")
+        self.assertIsNone(vv3._toque_causal(bars, 1, 100.0, 80.0, 5.0, veto="amplo", peak=10_000.0))
+
+    def test_montar_sinal_simples_nunca_corrige_amplo_corrige_e_volta_mais(self) -> None:
+        bars = [
+            _bar(0, 100, 150, 96, 100),         # idx0 -- high alto o bastante p/ nunca bater o simples
+            _bar(3600, 101, 1050, 70, 90),      # idx1 (j0) -- spike isolado
+            _bar(7200, 100, 103, 98, 101),      # idx2 -- nao confirma
+        ]
+        ev = EventV1(kind="ENTRADA", idx=0, ts=bars[0].ts, decision_ts=bars[0].ts,
+                    data={"stop": 80.0, "TOPO": 10_000.0, "S": 0.0})
+        s_simples = vv3._montar_sinal(bars, ev, "desconhecido", None, "ao_vivo", "CAT", "MINT1",
+                                      "POOL1", "1h", None, None)
+        s_amplo = vv3._montar_sinal(bars, ev, "desconhecido", None, "ao_vivo", "CAT", "MINT1",
+                                    "POOL1", "1h", None, None, veto="amplo")
+        self.assertIsNotNone(s_simples)
+        self.assertIsNotNone(s_amplo)
+        self.assertFalse(s_simples.entrada_corrigida)
+        self.assertEqual(s_simples.entry_price, bars[1].open)
+        self.assertTrue(s_amplo.entrada_corrigida)
+        self.assertEqual(s_amplo.entry_price, bars[0].close)
+
+    def test_tokens_excluidos_diagnostico_inclui_high(self) -> None:
+        self.assertIn("HIGH", vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO)
+        self.assertIn("PEAK", vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO)
+
+
 class ResumoToquesTests(unittest.TestCase):
     def test_compara_contra_equilibrio_e_conta_indefinidos(self) -> None:
         bars_alvo = [

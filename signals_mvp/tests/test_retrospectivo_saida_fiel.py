@@ -157,6 +157,50 @@ class AgregarHorizonteTests(unittest.TestCase):
         self.assertEqual(r.aleatorio_saida_fiel.n, 0)
 
 
+class VetoAmploOptInTests(unittest.TestCase):
+    """RODADA 18 item 2: antes desta rodada, `agregar_horizonte` ja usava um veto MISTO -- saida fiel
+    (e seus controles/aleatorio) sempre 'simples' (default de `calcular_r_saida_fiel`), saida ATUAL A
+    sempre 'amplo' (default de `calcular_r_horizonte`, herdado desde a rodada 17). `veto=None`
+    (default do proprio `agregar_horizonte`) tem que preservar EXATAMENTE essa mistura; um valor
+    explicito forca o MESMO veto nas duas pontas."""
+
+    def _sinal_com_spike_isolado(self) -> vv3.SinalVarredura:
+        bars = [
+            _bar(0, 100, 101, 99, 100),
+            _bar(STEP, 100, 150, 96, 101),        # idx1 (j0) -- entry=100
+            _bar(2 * STEP, 101, 1050, 70, 90),    # idx2 -- spike isolado: low=70<=stop(80)
+            _bar(3 * STEP, 100, 103, 98, 101),    # idx3 -- nao confirma o nivel do spike
+        ]
+        ev = EventV1(kind="ENTRADA", idx=0, ts=bars[0].ts, decision_ts=bars[0].ts,
+                    data={"stop": 80.0, "TOPO": 10_000.0, "S": 0.0})
+        s = vv3._montar_sinal(bars, ev, "desconhecido", None, "ao_vivo", "CAT", "MINT1", "POOL1", "1h",
+                              None, None)
+        self.assertIsNotNone(s)
+        return s
+
+    def test_default_none_preserva_a_mistura_historica(self) -> None:
+        s = self._sinal_com_spike_isolado()
+        now = s.t_entrada + 73 * 3600
+        r = rsf.agregar_horizonte([s], "72h", now, PARAMS, COSTS)
+        self.assertLess(r.saida_fiel.media, -1.0, "saida fiel sem veto explicito usa 'simples' -- bate o stop")
+        self.assertGreater(r.saida_atual_a.media, r.saida_fiel.media,
+                           "saida atual A sem veto explicito usa 'amplo' -- nunca decide no spike")
+
+    def test_veto_simples_explicito_forca_as_2_pontas(self) -> None:
+        s = self._sinal_com_spike_isolado()
+        now = s.t_entrada + 73 * 3600
+        r = rsf.agregar_horizonte([s], "72h", now, PARAMS, COSTS, veto="simples")
+        self.assertLess(r.saida_fiel.media, -1.0)
+        self.assertLess(r.saida_atual_a.media, -1.0, "forcado 'simples' -- saida A tambem bate o stop")
+
+    def test_veto_amplo_explicito_forca_as_2_pontas(self) -> None:
+        s = self._sinal_com_spike_isolado()
+        now = s.t_entrada + 73 * 3600
+        r = rsf.agregar_horizonte([s], "72h", now, PARAMS, COSTS, veto="amplo")
+        self.assertGreater(r.saida_fiel.media, -1.0, "forcado 'amplo' -- saida fiel tambem nunca decide no spike")
+        self.assertGreater(r.saida_atual_a.media, -1.0)
+
+
 class AgregarOrigemSaidaFielTests(unittest.TestCase):
     """RODADA 17 item 0 (achado durante a verificacao): `agregar_origem_saida_fiel` e os 4 dicts de
     pareamento dentro de `agregar_horizonte` ainda agrupavam por `s.token` (SYMBOL) -- o mesmo bug de

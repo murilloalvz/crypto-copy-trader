@@ -30,6 +30,7 @@ from ..util import short_hash
 from .candles import Bar, candle_corrompido_provavel
 from .costs import CostModel
 from .detector_v1 import EventV1
+from .qualidade_candle import candle_confiavel_cb
 from .simulate_v1 import _atr, _exhaustion  # noqa: F401 (_exhaustion documentado, reusa so _atr aqui)
 
 PREREGISTRO_PATH = (
@@ -109,10 +110,13 @@ def _fechar(legs: list[tuple[float, float, float]], entry: float, entry_cost_pct
 def calcular_r_saida_fiel(
     bars: list[Bar], event: EventV1, params: Any, costs: CostModel, dex: str, l_bc: Optional[float],
     t_entrada: float, horizonte_s: float, now: float,
-    sol_usd_at: Callable[[float], Optional[float]] = lambda _t: None,
+    sol_usd_at: Callable[[float], Optional[float]] = lambda _t: None, veto: str = "simples",
 ) -> ResultadoSaidaFiel:
     """Algoritmo EXATO do pre-registro (ver docstring do modulo). `event.data["stop"]`/["TOPO"] sao
-    os MESMOS da V3 (ja calculados pelo detector) -- nunca recalculados aqui."""
+    os MESMOS da V3 (ja calculados pelo detector) -- nunca recalculados aqui. RODADA 18 (item 2):
+    `veto` ('simples' padrao -- ZERO mudanca de comportamento pra quem nao passa o parametro -- ou
+    'amplo' opt-in, MESMO veto de `qualidade_candle.candle_confiavel_cb` que `horizonte_fixo.py` ja
+    usa por padrao desde a Rodada 17) decide qual candle corrompido nunca pode decidir TP1/stop."""
     j0 = event.idx + 1
     if j0 >= len(bars):
         return ResultadoSaidaFiel("pendente")
@@ -138,6 +142,8 @@ def calcular_r_saida_fiel(
     ultimo_fechamento: Optional[float] = None
     ultimo_ts: Optional[float] = None
 
+    confiavel = candle_confiavel_cb(bars, topo) if veto == "amplo" else None
+
     idx = j0
     while idx < len(bars):
         bar = bars[idx]
@@ -146,7 +152,8 @@ def calcular_r_saida_fiel(
         confirmado_em = idx - 2
         if confirmado_em >= j0 and _pivo_confirmado(bars, confirmado_em):
             pivos.append((confirmado_em, bars[confirmado_em].low))
-        if candle_corrompido_provavel(bars, idx):
+        vetado = confiavel(idx) is not None if confiavel is not None else candle_corrompido_provavel(bars, idx)
+        if vetado:
             idx += 1
             continue
         if tp1_leg is None:

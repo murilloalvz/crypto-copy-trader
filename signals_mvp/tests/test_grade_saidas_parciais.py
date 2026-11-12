@@ -80,6 +80,54 @@ class CalcularVarianteSobreSinaisTests(unittest.TestCase):
         self.assertGreaterEqual(r.saida.media, r.saida_slip3x.media)
 
 
+class VetoAmploOptInTests(unittest.TestCase):
+    """RODADA 18 item 2: `_calcular_variante_sobre_sinais` ja usa 'amplo' por padrao (herdado de
+    `calcular_r_horizonte` desde a rodada 17) -- `agregar_origem_grade(veto=None)` tem que reproduzir
+    EXATAMENTE esse default (nunca um default proprio diferente), e um valor explicito tem que forcar
+    o MESMO veto em toda a grade (24 variantes)."""
+
+    def setUp(self) -> None:
+        self.params = load_params_v3()
+        self.costs = CostModel()
+
+    def _sinal_com_spike_isolado(self) -> vv3.SinalVarredura:
+        bars = [
+            _bar(0, 100, 101, 99, 100),
+            _bar(STEP, 100, 150, 96, 101),        # idx1 (j0) -- entry=100
+            _bar(2 * STEP, 101, 1050, 70, 90),    # idx2 -- spike isolado: low=70<=stop(80)
+            _bar(3 * STEP, 100, 103, 98, 101),    # idx3 -- nao confirma o nivel do spike
+        ]
+        ev = EventV1(kind="ENTRADA", idx=0, ts=bars[0].ts, decision_ts=bars[0].ts,
+                    data={"stop": 80.0, "TOPO": 10_000.0, "R": 0.0, "S": 0.0})
+        s = vv3._montar_sinal(bars, ev, "desconhecido", None, "ao_vivo", "CAT", "MINT1", "POOL1", "1h",
+                              -1000.0, None)
+        self.assertIsNotNone(s)
+        return s
+
+    def test_default_none_bate_o_default_amplo_da_biblioteca(self) -> None:
+        s = self._sinal_com_spike_isolado()
+        now = s.t_entrada + 73 * STEP
+        r_none = gsp.agregar_origem_grade([s], "x", now)
+        r_amplo = gsp.agregar_origem_grade([s], "x", now, veto="amplo")
+        nomes = list(r_none.por_horizonte["72h"])
+        for nome in nomes:
+            m_none = r_none.por_horizonte["72h"][nome].saida.media
+            m_amplo = r_amplo.por_horizonte["72h"][nome].saida.media
+            self.assertEqual(m_none, m_amplo)
+
+    def test_veto_simples_explicito_difere_do_default_amplo(self) -> None:
+        s = self._sinal_com_spike_isolado()
+        now = s.t_entrada + 73 * STEP
+        r_amplo = gsp.agregar_origem_grade([s], "x", now, veto="amplo")
+        r_simples = gsp.agregar_origem_grade([s], "x", now, veto="simples")
+        nome = next(iter(r_amplo.por_horizonte["72h"]))
+        m_amplo = r_amplo.por_horizonte["72h"][nome].saida.media
+        m_simples = r_simples.por_horizonte["72h"][nome].saida.media
+        self.assertIsNotNone(m_amplo)
+        self.assertIsNotNone(m_simples)
+        self.assertGreater(m_amplo, m_simples, "amplo nunca decide no spike isolado; simples bate o stop")
+
+
 class ExecutarSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="gsp_smoke_"))

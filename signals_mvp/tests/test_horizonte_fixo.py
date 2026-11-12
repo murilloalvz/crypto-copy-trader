@@ -151,6 +151,28 @@ class VetoDeCandleCorrompidoTests(unittest.TestCase):
         self.assertGreater(r_com_veto.r_mult, r_mult_sem_veto,
                            "com o veto, o resultado precisa ser bem melhor que o stop batido no spike")
 
+    def test_veto_simples_explicito_bate_o_stop_onde_o_amplo_vetaria(self) -> None:
+        """RODADA 18 item 2: candle isolado cujo salto e >10x o CLOSE do vizinho anterior mas NUNCA
+        >10x o HIGH de ambos os vizinhos (o veto simples exige os 2) -- o amplo veta, o simples (opt-
+        in via `veto='simples'`) NAO veta e bate o stop nele, prova que o parametro de fato alterna
+        entre os 2 vetos (nunca uma 3a implementacao divergente)."""
+        bars = _bars_vol([
+            (100, 101, 99, 100, 10.0),    # idx0
+            (100, 150, 96, 101, 10.0),    # idx1 -- entry=100
+            (101, 1050, 70, 90, 10.0),    # idx2 -- spike isolado: low=70<=stop(80)
+            (100, 103, 98, 101, 10.0),    # idx3 -- nao confirma o nivel do spike
+        ])
+        ev = _evento(0, bars[0].ts, stop=80.0, topo=10_000.0, s=50.0)
+        t_entrada = bars[1].ts
+        r_amplo = calcular_r_horizonte(bars, ev, PARAMS, COSTS, "desconhecido", None, t_entrada=t_entrada,
+                                       horizonte_s=2 * STEP, now=t_entrada + 10 * STEP, veto="amplo")
+        r_simples = calcular_r_horizonte(bars, ev, PARAMS, COSTS, "desconhecido", None, t_entrada=t_entrada,
+                                         horizonte_s=2 * STEP, now=t_entrada + 10 * STEP, veto="simples")
+        self.assertEqual(r_amplo.status, "marcado", "amplo veta idx2 -- marca no idx3 limpo")
+        self.assertEqual(r_simples.status, "resolvido_regra", "simples nunca veta idx2 -- bate o stop nele")
+        self.assertLess(r_simples.r_mult, -1.0)
+        self.assertGreater(r_amplo.r_mult, r_simples.r_mult)
+
 
 class HorizonteSemDadoTests(unittest.TestCase):
     def test_entrada_cancelada_fora_do_stop_topo_fica_sem_dado(self) -> None:

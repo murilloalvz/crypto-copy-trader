@@ -156,7 +156,7 @@ class ResumoVariante:
 
 def _calcular_variante_sobre_sinais(
     sinais: list[vv3.SinalVarredura], variante: VarianteSaidaParcial, horizonte_s: float, now: float,
-    params: Any, costs: CostModel,
+    params: Any, costs: CostModel, veto: str = "amplo",
 ) -> ResumoVariante:
     n_pendente = n_sem_dado = n_vencido = n_tp1 = 0
     leg1_vals: list[float] = []
@@ -171,7 +171,7 @@ def _calcular_variante_sobre_sinais(
 
     for s in sinais:
         r1x = calcular_r_variante(s.bars, s.ev, costs, s.dex, s.l_bc, s.t_entrada, horizonte_s, now,
-                                  variante, slippage_saida_mult=1.0)
+                                  variante, slippage_saida_mult=1.0, veto=veto)
         if r1x.status == "pendente":
             n_pendente += 1
             continue
@@ -190,9 +190,9 @@ def _calcular_variante_sobre_sinais(
         if r1x.r_mult is not None:
             valores_por_token.setdefault(s.token, []).append(r1x.r_mult)
             r2x = calcular_r_variante(s.bars, s.ev, costs, s.dex, s.l_bc, s.t_entrada, horizonte_s, now,
-                                      variante, slippage_saida_mult=2.0)
+                                      variante, slippage_saida_mult=2.0, veto=veto)
             r3x = calcular_r_variante(s.bars, s.ev, costs, s.dex, s.l_bc, s.t_entrada, horizonte_s, now,
-                                      variante, slippage_saida_mult=3.0)
+                                      variante, slippage_saida_mult=3.0, veto=veto)
             if r2x.r_mult is not None:
                 valores_por_token_2x.setdefault(s.token, []).append(r2x.r_mult)
             if r3x.r_mult is not None:
@@ -205,7 +205,7 @@ def _calcular_variante_sobre_sinais(
             if ev_c is None:
                 continue
             r_c = calcular_r_variante(s.bars, ev_c, costs, s.dex, s.l_bc, s.bars[idx].ts, horizonte_s,
-                                      now, variante)
+                                      now, variante, veto=veto)
             if r_c.r_mult is not None:
                 valores_controles.setdefault(s.token, []).append(r_c.r_mult)
                 valores_controles_sinal.append(r_c.r_mult)
@@ -214,7 +214,7 @@ def _calcular_variante_sobre_sinais(
             if ev_r is None:
                 continue
             r_r = calcular_r_variante(s.bars, ev_r, costs, s.dex, s.l_bc, s.bars[idx].ts, horizonte_s,
-                                      now, variante)
+                                      now, variante, veto=veto)
             if r_r.r_mult is not None:
                 valores_aleatorio.setdefault(s.token, []).append(r_r.r_mult)
         if r1x.r_mult is not None and valores_controles_sinal:
@@ -246,8 +246,12 @@ class ResumoOrigemGrade:
     b3b_a_sobre_todos_72h: Optional[float]
 
 
-def agregar_origem_grade(sinais: list[vv3.SinalVarredura], origem_label: str, now: float
-                         ) -> ResumoOrigemGrade:
+def agregar_origem_grade(sinais: list[vv3.SinalVarredura], origem_label: str, now: float,
+                         veto: Optional[str] = None) -> ResumoOrigemGrade:
+    """RODADA 18 (item 2): `veto` None preserva o comportamento historico de cada chamada interna
+    (`_calcular_variante_sobre_sinais` ja usa 'amplo' por padrao -- herdado de `calcular_r_horizonte`
+    desde a rodada 17); um valor explicito ('simples'/'amplo') forca o mesmo veto em toda a grade."""
+    kwargs_veto = {"veto": veto} if veto is not None else {}
     params = load_params_v3()
     costs = CostModel()
     por_horizonte: dict[str, dict[str, ResumoVariante]] = {}
@@ -255,7 +259,7 @@ def agregar_origem_grade(sinais: list[vv3.SinalVarredura], origem_label: str, no
         resumos: dict[str, ResumoVariante] = {}
         for variante in GRADE_24:
             resumos[variante.nome] = _calcular_variante_sobre_sinais(sinais, variante, horizonte_s,
-                                                                     now, params, costs)
+                                                                     now, params, costs, **kwargs_veto)
         if horizonte == "72h":
             p_valores = [_bootstrap_p_valor_por_token(resumos[v.nome].dif_pareada_por_token) or 1.0
                         for v in GRADE_24]
@@ -368,7 +372,11 @@ def _escrever_csv(path: Path, linhas: list[dict[str, Any]]) -> None:
 
 
 def executar(db_path: Path, csv_path: Optional[Path] = None, progresso: bool = True,
-            min_ram_mb: float = RAM_MINIMA_MB_PADRAO) -> str:
+            min_ram_mb: float = RAM_MINIMA_MB_PADRAO, veto: str = "amplo") -> str:
+    """RODADA 18 (item 2): `veto` ('amplo' padrao DESTE SCRIPT/CLI) decide o veto de candle
+    corrompido em todo o caminho (entrada corrigida nos loaders + todas as 24 variantes). Alem do
+    relatorio normal, reporta tambem as mesmas metricas EXCLUINDO `vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO`
+    (leave-token-out, ex.: PEAK/HIGH)."""
     import sys as _sys
     vv3.checar_ram_ou_abortar(min_ram_mb)
 
@@ -384,24 +392,36 @@ def executar(db_path: Path, csv_path: Optional[Path] = None, progresso: bool = T
         storage.close()
 
     now = time.time()
+    status(f"veto de candle corrompido: {veto}")
     status("carregando ao_vivo...")
     ao_vivo = rsf.carregar_ao_vivo(db_path)
     status(f"ao_vivo: {len(ao_vivo)} sinais. carregando retro_lote1...")
-    retro = vv3.carregar_retro_lote1(db_path)
+    retro = vv3.carregar_retro_lote1(db_path, veto=veto)
     status(f"retro_lote1: {len(retro)} sinais. carregando replay_v3 (pode levar um tempo -- replay "
           "completo de todos os pools admitidos)...")
-    replay = vv3.carregar_universo_admitido(db_path)
+    replay = vv3.carregar_universo_admitido(db_path, veto=veto)
     status(f"replay_v3: {len(replay)} sinais. agregando (24 variantes x 2 horizontes x controles x "
           "aleatorio x 3 niveis de custo -- pode levar bastante tempo)...")
-    r_ao_vivo = agregar_origem_grade(ao_vivo, "ao_vivo", now)
+    r_ao_vivo = agregar_origem_grade(ao_vivo, "ao_vivo", now, veto=veto)
     status("ao_vivo agregado.")
-    r_retro = agregar_origem_grade(retro, "retro_lote1", now)
+    r_retro = agregar_origem_grade(retro, "retro_lote1", now, veto=veto)
     status("retro_lote1 agregado.")
-    r_replay = agregar_origem_grade(replay, "replay_v3", now)
-    status("replay_v3 agregado. montando relatorio.")
+    r_replay = agregar_origem_grade(replay, "replay_v3", now, veto=veto)
+    status("replay_v3 agregado. agregando leave-token-out (sem PEAK/HIGH)...")
+    sufixo = f"_sem_{'_'.join(vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO)}"
+    r_ao_vivo_lto = agregar_origem_grade(vv3._sem_outliers(ao_vivo, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                         "ao_vivo" + sufixo, now, veto=veto)
+    r_retro_lto = agregar_origem_grade(vv3._sem_outliers(retro, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                       "retro_lote1" + sufixo, now, veto=veto)
+    r_replay_lto = agregar_origem_grade(vv3._sem_outliers(replay, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                        "replay_v3" + sufixo, now, veto=veto)
+    status("leave-token-out agregado. montando relatorio.")
     texto = formatar(r_ao_vivo, r_retro, r_replay)
+    texto += ("\n\n# leave-token-out (sem " + ", ".join(vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO) + ")\n\n" +
+             formatar(r_ao_vivo_lto, r_retro_lto, r_replay_lto))
     if csv_path is not None:
-        linhas = _linhas_csv(r_ao_vivo) + _linhas_csv(r_retro) + _linhas_csv(r_replay)
+        linhas = (_linhas_csv(r_ao_vivo) + _linhas_csv(r_retro) + _linhas_csv(r_replay) +
+                 _linhas_csv(r_ao_vivo_lto) + _linhas_csv(r_retro_lto) + _linhas_csv(r_replay_lto))
         _escrever_csv(csv_path, linhas)
         texto += f"\n(tabela tambem gravada em {csv_path})"
     return texto
@@ -416,9 +436,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--sem-progresso", action="store_true", help="nao imprime progresso em stderr")
     parser.add_argument("--min-ram-mb", type=float, default=RAM_MINIMA_MB_PADRAO,
                         help="aborta se a RAM disponivel ficar abaixo disso (MB)")
+    parser.add_argument("--veto", choices=("simples", "amplo"), default="amplo",
+                        help="veto de candle corrompido usado em todo o caminho (padrao: amplo)")
     args = parser.parse_args(argv)
     print(executar(args.db, csv_path=args.csv, progresso=not args.sem_progresso,
-                   min_ram_mb=args.min_ram_mb))
+                   min_ram_mb=args.min_ram_mb, veto=args.veto))
     return 0
 
 

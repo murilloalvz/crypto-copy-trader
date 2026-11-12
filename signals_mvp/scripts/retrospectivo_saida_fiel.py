@@ -69,11 +69,13 @@ RAM_MINIMA_MB_PADRAO = vv3.RAM_MINIMA_MB_PADRAO
 # ---------------------------------------------------------------------------
 
 
-def carregar_ao_vivo(db_path: Path) -> list[vv3.SinalVarredura]:
+def carregar_ao_vivo(db_path: Path, veto: str = "simples") -> list[vv3.SinalVarredura]:
     """MESMO padrao de leitura de `auditoria_fidelidade_v3.carregar_ao_vivo` (pr3_signals/
     pr_trajetoria/pr_bars/pr_pools), mas monta um `SinalVarredura` (via `vv3._montar_sinal`) em vez de
     um `SinalAuditoria` -- precisa de `created_ts`/`pool`/`tf`/`origem` pra reusar
-    `_controles_indices`/`_aleatorios_indices` sem adaptador."""
+    `_controles_indices`/`_aleatorios_indices` sem adaptador. RODADA 18 (item 2): `veto` decide o veto
+    de candle corrompido usado na correcao de entrada (`vv3._montar_sinal`); padrao 'simples' preserva
+    o comportamento historico (chamada sem o parametro)."""
     paths = dataclasses.replace(make_paths(), db=db_path, dados=db_path.parent)
     storage = Storage(paths)
     try:
@@ -110,7 +112,8 @@ def carregar_ao_vivo(db_path: Path) -> list[vv3.SinalVarredura]:
             # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real, nunca "" -- `sinal["mint"]"
             # (pr3_signals.mint, ja o mint real gravado ao vivo) estava disponivel mas nunca passado.
             s = vv3._montar_sinal(bars, ev, dex, l_bc, "ao_vivo", sinal["symbol"] or (sinal["mint"] or "")[:8],
-                                  sinal["mint"] or sinal["pool"], sinal["pool"], tf, created_ts, supply)
+                                  sinal["mint"] or sinal["pool"], sinal["pool"], tf, created_ts, supply,
+                                  veto=veto)
             if s is not None:
                 out.append(s)
         return sorted(out, key=lambda s: s.t_entrada)
@@ -124,9 +127,9 @@ def carregar_ao_vivo(db_path: Path) -> list[vv3.SinalVarredura]:
 
 
 def _saida_fiel(s: vv3.SinalVarredura, ev: EventV1, t_entrada: float, horizonte_s: float, now: float,
-                params: Any, costs: CostModel) -> ResultadoSaidaFiel:
+                params: Any, costs: CostModel, veto: str = "simples") -> ResultadoSaidaFiel:
     return calcular_r_saida_fiel(s.bars, ev, params, costs, s.dex, s.l_bc, t_entrada=t_entrada,
-                                 horizonte_s=horizonte_s, now=now)
+                                 horizonte_s=horizonte_s, now=now, veto=veto)
 
 
 @dataclasses.dataclass
@@ -144,7 +147,12 @@ class ResumoHorizonte:
 
 
 def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: float, params: Any,
-                      costs: CostModel) -> ResumoHorizonte:
+                      costs: CostModel, veto: Optional[str] = None) -> ResumoHorizonte:
+    """RODADA 18 (item 2): `veto` None preserva o comportamento historico MISTO -- saida fiel (e seus
+    controles/aleatorio) usa o default de `calcular_r_saida_fiel` ('simples'), saida ATUAL A usa o
+    default de `calcular_r_horizonte` ('amplo', herdado desde a rodada 17); um valor explicito
+    ('simples'/'amplo') forca o MESMO veto nas duas pontas."""
+    kwargs_veto = {"veto": veto} if veto is not None else {}
     horizonte_s = HORIZONTES_S[horizonte]
     n_pendente = n_sem_dado = n_vencido = n_tp1 = 0
     valores_fiel: dict[str, list[float]] = {}
@@ -152,7 +160,7 @@ def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: flo
     valores_controles: dict[str, list[float]] = {}
     valores_aleatorio: dict[str, list[float]] = {}
     for s in sinais:
-        r_fiel = _saida_fiel(s, s.ev, s.t_entrada, horizonte_s, now, params, costs)
+        r_fiel = _saida_fiel(s, s.ev, s.t_entrada, horizonte_s, now, params, costs, **kwargs_veto)
         if r_fiel.status == "pendente":
             n_pendente += 1
             continue
@@ -167,7 +175,7 @@ def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: flo
         if r_fiel.r_mult is not None:
             valores_fiel.setdefault(s.mint, []).append(r_fiel.r_mult)
         r_a = calcular_r_horizonte(s.bars, s.ev, params, costs, s.dex, s.l_bc, t_entrada=s.t_entrada,
-                                   horizonte_s=horizonte_s, now=now)
+                                   horizonte_s=horizonte_s, now=now, **kwargs_veto)
         if r_a.r_mult is not None:
             valores_a.setdefault(s.mint, []).append(r_a.r_mult)
         # Atribuicao: MESMA saida fiel aplicada aos 10 controles e aos K=20 aleatorios do MESMO sinal
@@ -176,14 +184,14 @@ def agregar_horizonte(sinais: list[vv3.SinalVarredura], horizonte: str, now: flo
             ev_c = vv3._evento_controle_sinal(s, idx)
             if ev_c is None:
                 continue
-            r_c = _saida_fiel(s, ev_c, s.bars[idx].ts, horizonte_s, now, params, costs)
+            r_c = _saida_fiel(s, ev_c, s.bars[idx].ts, horizonte_s, now, params, costs, **kwargs_veto)
             if r_c.r_mult is not None:
                 valores_controles.setdefault(s.mint, []).append(r_c.r_mult)
         for idx in vv3._aleatorios_indices(s, params):
             ev_r = vv3._evento_controle_sinal(s, idx)
             if ev_r is None:
                 continue
-            r_r = _saida_fiel(s, ev_r, s.bars[idx].ts, horizonte_s, now, params, costs)
+            r_r = _saida_fiel(s, ev_r, s.bars[idx].ts, horizonte_s, now, params, costs, **kwargs_veto)
             if r_r.r_mult is not None:
                 valores_aleatorio.setdefault(s.mint, []).append(r_r.r_mult)
     fracao_tp1 = (100.0 * n_tp1 / n_vencido) if n_vencido else None
@@ -204,11 +212,11 @@ class ResumoOrigemSaidaFiel:
     por_horizonte: dict[str, ResumoHorizonte]
 
 
-def agregar_origem_saida_fiel(sinais: list[vv3.SinalVarredura], origem_label: str, now: float
-                              ) -> ResumoOrigemSaidaFiel:
+def agregar_origem_saida_fiel(sinais: list[vv3.SinalVarredura], origem_label: str, now: float,
+                              veto: Optional[str] = None) -> ResumoOrigemSaidaFiel:
     params = load_params_v3()
     costs = CostModel()
-    por_horizonte = {h: agregar_horizonte(sinais, h, now, params, costs) for h in HORIZONTES_S}
+    por_horizonte = {h: agregar_horizonte(sinais, h, now, params, costs, veto=veto) for h in HORIZONTES_S}
     return ResumoOrigemSaidaFiel(origem=origem_label, n_sinais=len(sinais),
                                  n_tokens=len({s.mint for s in sinais}), por_horizonte=por_horizonte)
 
@@ -259,7 +267,13 @@ def formatar(ao_vivo: ResumoOrigemSaidaFiel, retro: ResumoOrigemSaidaFiel, repla
     return "\n".join(out)
 
 
-def executar(db_path: Path, progresso: bool = True, min_ram_mb: float = RAM_MINIMA_MB_PADRAO) -> str:
+def executar(db_path: Path, progresso: bool = True, min_ram_mb: float = RAM_MINIMA_MB_PADRAO,
+            veto: str = "amplo") -> str:
+    """RODADA 18 (item 2): `veto` ('amplo' padrao DESTE SCRIPT/CLI) forca o MESMO veto de candle
+    corrompido em todo o caminho (entrada corrigida nos loaders, saida fiel E saida atual A -- antes
+    da rodada 18 essas 2 pontas usavam defaults distintos, 'simples' e 'amplo' respectivamente). Alem
+    do relatorio normal, reporta tambem as mesmas metricas EXCLUINDO `vv3.TOKENS_EXCLUIDOS_
+    DIAGNOSTICO` (leave-token-out, ex.: PEAK/HIGH)."""
     import sys as _sys
     vv3.checar_ram_ou_abortar(min_ram_mb)
 
@@ -275,22 +289,34 @@ def executar(db_path: Path, progresso: bool = True, min_ram_mb: float = RAM_MINI
         storage.close()
 
     now = time.time()
+    status(f"veto de candle corrompido: {veto}")
     status("carregando ao_vivo...")
-    ao_vivo = carregar_ao_vivo(db_path)
+    ao_vivo = carregar_ao_vivo(db_path, veto=veto)
     status(f"ao_vivo: {len(ao_vivo)} sinais. carregando retro_lote1...")
-    retro = vv3.carregar_retro_lote1(db_path)
+    retro = vv3.carregar_retro_lote1(db_path, veto=veto)
     status(f"retro_lote1: {len(retro)} sinais. carregando replay_v3 (pode levar um tempo -- replay "
           "completo de todos os pools admitidos)...")
-    replay = vv3.carregar_universo_admitido(db_path)
+    replay = vv3.carregar_universo_admitido(db_path, veto=veto)
     status(f"replay_v3: {len(replay)} sinais. agregando (saida fiel + saida A + controles + "
           "aleatorio, por horizonte)...")
-    r_ao_vivo = agregar_origem_saida_fiel(ao_vivo, "ao_vivo", now)
+    r_ao_vivo = agregar_origem_saida_fiel(ao_vivo, "ao_vivo", now, veto=veto)
     status("ao_vivo agregado.")
-    r_retro = agregar_origem_saida_fiel(retro, "retro_lote1", now)
+    r_retro = agregar_origem_saida_fiel(retro, "retro_lote1", now, veto=veto)
     status("retro_lote1 agregado.")
-    r_replay = agregar_origem_saida_fiel(replay, "replay_v3", now)
-    status("replay_v3 agregado. montando relatorio.")
-    return formatar(r_ao_vivo, r_retro, r_replay)
+    r_replay = agregar_origem_saida_fiel(replay, "replay_v3", now, veto=veto)
+    status("replay_v3 agregado. agregando leave-token-out (sem PEAK/HIGH)...")
+    sufixo = f"_sem_{'_'.join(vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO)}"
+    r_ao_vivo_lto = agregar_origem_saida_fiel(vv3._sem_outliers(ao_vivo, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                              "ao_vivo" + sufixo, now, veto=veto)
+    r_retro_lto = agregar_origem_saida_fiel(vv3._sem_outliers(retro, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                            "retro_lote1" + sufixo, now, veto=veto)
+    r_replay_lto = agregar_origem_saida_fiel(vv3._sem_outliers(replay, vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                             "replay_v3" + sufixo, now, veto=veto)
+    status("leave-token-out agregado. montando relatorio.")
+    texto = formatar(r_ao_vivo, r_retro, r_replay)
+    texto += ("\n\n# leave-token-out (sem " + ", ".join(vv3.TOKENS_EXCLUIDOS_DIAGNOSTICO) + ")\n\n" +
+             formatar(r_ao_vivo_lto, r_retro_lto, r_replay_lto))
+    return texto
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -301,8 +327,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--sem-progresso", action="store_true", help="nao imprime progresso em stderr")
     parser.add_argument("--min-ram-mb", type=float, default=RAM_MINIMA_MB_PADRAO,
                         help="aborta se a RAM disponivel ficar abaixo disso (MB)")
+    parser.add_argument("--veto", choices=("simples", "amplo"), default="amplo",
+                        help="veto de candle corrompido usado em todo o caminho (padrao: amplo)")
     args = parser.parse_args(argv)
-    print(executar(args.db, progresso=not args.sem_progresso, min_ram_mb=args.min_ram_mb))
+    print(executar(args.db, progresso=not args.sem_progresso, min_ram_mb=args.min_ram_mb,
+                   veto=args.veto))
     return 0
 
 

@@ -89,6 +89,7 @@ from ..analise.condicional import (
 from ..pos_runner.candles import Bar, candle_corrompido_provavel, tf_seconds
 from ..pos_runner.costs import CostModel
 from ..pos_runner.detector_v1 import DetectorV1, EventV1
+from ..pos_runner.qualidade_candle import candle_confiavel_cb
 from ..pos_runner.evidencia import (
     DROP_MIN_CONTROLE,
     MC_MIN_CONTROLE,
@@ -185,18 +186,27 @@ def _volume_medio_24h_antes(bars: list[Bar], idx: int) -> Optional[float]:
     return (sum(b.volume for b in janela) / len(janela)) if janela else None
 
 
+def _vetado(bars: list[Bar], idx: int, veto: str, peak: Optional[float]) -> bool:
+    """RODADA 18 (item 2): decide se o candle `idx` esta vetado, pelo veto SIMPLES (padrao, ZERO
+    mudanca de comportamento pra quem nao passa `veto`) ou AMPLO (opt-in, MESMO veto do caminho ao
+    vivo -- `qualidade_candle.candle_confiavel_cb`)."""
+    if veto == "amplo":
+        return candle_confiavel_cb(bars, peak)(idx) is not None
+    return candle_corrompido_provavel(bars, idx)
+
+
 def _montar_sinal(bars: list[Bar], ev: EventV1, dex: str, l_bc: Optional[float], origem: str, token: str,
                   mint: str, pool: str, tf: str, created_ts: Optional[float],
-                  supply: Optional[float]) -> Optional[SinalVarredura]:
+                  supply: Optional[float], veto: str = "simples") -> Optional[SinalVarredura]:
     j0 = ev.idx + 1
     if j0 >= len(bars):
         return None
     stop, topo, s_val = ev.data["stop"], ev.data["TOPO"], ev.data["S"]
-    entrada_corrigida = candle_corrompido_provavel(bars, j0)
+    entrada_corrigida = _vetado(bars, j0, veto, topo)
     entry_price = bars[j0].open
     if entrada_corrigida:
         for idx in range(j0 - 1, -1, -1):
-            if not candle_corrompido_provavel(bars, idx):
+            if not _vetado(bars, idx, veto, topo):
                 entry_price = bars[idx].close
                 break
     if entry_price <= 0 or entry_price <= stop or entry_price >= topo:
@@ -212,7 +222,7 @@ def _montar_sinal(bars: list[Bar], ev: EventV1, dex: str, l_bc: Optional[float],
     )
 
 
-def carregar_universo_admitido(db_path: Path) -> list[SinalVarredura]:
+def carregar_universo_admitido(db_path: Path, veto: str = "simples") -> list[SinalVarredura]:
     """B1(a): TODOS os pools em `pr_pools` com status ativo/dormente/encerrado ("aposentado") e
     historico completo -- reusa `avaliar_v3_retro.parte_a_pools_admitidos`, zero replay duplicado.
 
@@ -237,13 +247,14 @@ def carregar_universo_admitido(db_path: Path) -> list[SinalVarredura]:
             # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real (nunca "") -- `parte_a_pools_
             # admitidos` ja carrega `lp["mint"]` de verdade desde esta rodada.
             s = _montar_sinal(bars, ev, dex, l_bc, "universo_admitido", lp["symbol"], lp["mint"] or lp["pool"],
-                              lp["pool"], params.timeframes[0], created_ts, supply_por_pool.get(lp["pool"]))
+                              lp["pool"], params.timeframes[0], created_ts, supply_por_pool.get(lp["pool"]),
+                              veto=veto)
             if s is not None:
                 sinais.append(s)
     return sorted(sinais, key=lambda s: s.t_entrada)
 
 
-def carregar_universo_nunca_admitido(db_path: Path) -> list[SinalVarredura]:
+def carregar_universo_nunca_admitido(db_path: Path, veto: str = "simples") -> list[SinalVarredura]:
     """B1(c): candidatos descobertos e NUNCA admitidos (`status IN ('rejeitado','verificado')`) que
     ja tem `pr_bars` cacheado -- zero chamada de rede, replay V3 sobre o que ja esta no banco."""
     con = _conectar_ro(db_path)
@@ -269,7 +280,7 @@ def carregar_universo_nunca_admitido(db_path: Path) -> list[SinalVarredura]:
                     # RODADA 17 (achado A2 da auditoria 2026-11-10): mint real, nunca "".
                     s = _montar_sinal(bars, ev, dex, row["l_bc"], "universo_nunca_admitido",
                                       row["symbol"] or row["pool"][:8], row["mint"] or row["pool"],
-                                      row["pool"], tf, created_ts, None)
+                                      row["pool"], tf, created_ts, None, veto=veto)
                     if s is not None:
                         sinais.append(s)
         return sorted(sinais, key=lambda s: s.t_entrada)
@@ -277,7 +288,7 @@ def carregar_universo_nunca_admitido(db_path: Path) -> list[SinalVarredura]:
         con.close()
 
 
-def carregar_retro_lote1(db_path: Path) -> list[SinalVarredura]:
+def carregar_retro_lote1(db_path: Path, veto: str = "simples") -> list[SinalVarredura]:
     """B1(b): coorte retro lote1 JA congelada (`pr_retro_candidatos`) -- mesmo padrao de replay de
     `simular_v3_carteira.carregar_retro_lote1`. Lote2 NAO congelado nesta rodada (ver docstring)."""
     con = _conectar_ro(db_path)
@@ -309,7 +320,7 @@ def carregar_retro_lote1(db_path: Path) -> list[SinalVarredura]:
                     # candidatos` ja tinha a coluna, so nunca estava no SELECT.
                     s = _montar_sinal(bars, ev, dex, pool_row["l_bc"], "retro_lote1",
                                       row["symbol"] or row["pool"][:8], row["mint"] or row["pool"],
-                                      row["pool"], tf, row["criado_ts"], pool_row["supply"])
+                                      row["pool"], tf, row["criado_ts"], pool_row["supply"], veto=veto)
                     if s is not None:
                         sinais.append(s)
         return sorted(sinais, key=lambda s: s.t_entrada)
@@ -340,18 +351,21 @@ def deduplicar_por_token(sinais: list[SinalVarredura]) -> dict[str, list[SinalVa
 # ---------------------------------------------------------------------------
 
 
-def _toque_causal(bars: list[Bar], j0: int, entry_price: float, stop: float, alvo_r: float) -> Optional[str]:
+def _toque_causal(bars: list[Bar], j0: int, entry_price: float, stop: float, alvo_r: float,
+                  veto: str = "simples", peak: Optional[float] = None) -> Optional[str]:
     """Varre causalmente a partir de `j0`: 'stop' se `low<=stop` (prioridade dentro do MESMO candle,
     mesma convencao de `simulate_v1`), 'alvo' se `high>=preco_alvo`, `None` se a serie acabar sem
     decidir (candles corrompidos pulados -- NUNCA decidem, mas tambem nunca contam como "indefinido"
     so por existirem no meio do caminho). Generico (bars/entry/stop) pra servir tanto ao sinal real
-    quanto a um controle/entrada aleatoria pareados (rodada 9, itens 1/3) sem duplicar a varredura."""
+    quanto a um controle/entrada aleatoria pareados (rodada 9, itens 1/3) sem duplicar a varredura.
+    RODADA 18 (item 2): `veto`/`peak` -- ver `_vetado` (padrao 'simples', ZERO mudanca de
+    comportamento pra quem nao passa os parametros novos)."""
     risk = entry_price - stop
     if risk <= 0:
         return None
     preco_alvo = entry_price + alvo_r * risk
     for idx in range(j0, len(bars)):
-        if candle_corrompido_provavel(bars, idx):
+        if _vetado(bars, idx, veto, peak):
             continue
         bar = bars[idx]
         if bar.low <= stop:
@@ -371,16 +385,18 @@ def _toque_binario(resultado: Optional[str]) -> Optional[float]:
     return None
 
 
-def _primeiro_toque(sinal: SinalVarredura, alvo_r: float) -> Optional[str]:
-    return _toque_causal(sinal.bars, sinal.ev.idx + 1, sinal.entry_price, sinal.stop, alvo_r)
+def _primeiro_toque(sinal: SinalVarredura, alvo_r: float, veto: str = "simples") -> Optional[str]:
+    return _toque_causal(sinal.bars, sinal.ev.idx + 1, sinal.entry_price, sinal.stop, alvo_r,
+                         veto=veto, peak=sinal.ev.data.get("TOPO"))
 
 
-def resumo_toques(sinais: list[SinalVarredura]) -> dict[str, Any]:
+def resumo_toques(sinais: list[SinalVarredura], veto: str = "simples") -> dict[str, Any]:
     """P(tocar +1R/+2R/+3R ANTES de -1R) -- referencia de equilibrio (sem custo): 1/(1+alvo).
-    `indefinido` (serie acabou sem decidir) fica de fora do denominador, nunca conta como fracasso."""
+    `indefinido` (serie acabou sem decidir) fica de fora do denominador, nunca conta como fracasso.
+    RODADA 18 (item 2): `veto` (padrao 'simples', ZERO mudanca pra quem nao passa)."""
     out: dict[str, Any] = {}
     for alvo in ALVOS_R:
-        resultados = [_primeiro_toque(s, alvo) for s in sinais]
+        resultados = [_primeiro_toque(s, alvo, veto=veto) for s in sinais]
         decididos = [r for r in resultados if r is not None]
         n_alvo = sum(1 for r in decididos if r == "alvo")
         n = len(decididos)
@@ -414,9 +430,13 @@ def _mfe_mae_r(sinal: SinalVarredura, horizonte_s: float) -> tuple[Optional[floa
     return (max_high - sinal.entry_price) / risk, (min_low - sinal.entry_price) / risk
 
 
-def _r_horizonte(sinal: SinalVarredura, horizonte_s: float, now: float, params: Any, costs: CostModel) -> Optional[float]:
+def _r_horizonte(sinal: SinalVarredura, horizonte_s: float, now: float, params: Any, costs: CostModel,
+                 veto: str = "amplo") -> Optional[float]:
+    """RODADA 18 (item 2): `veto` default 'amplo' preserva o comportamento JA EXISTENTE desta funcao
+    (delega a `calcular_r_horizonte`, que ja usa o veto amplo por padrao desde a Rodada 17) -- nunca
+    uma mudanca silenciosa pra quem chama sem passar o parametro novo."""
     r = calcular_r_horizonte(sinal.bars, sinal.ev, params, costs, sinal.dex, sinal.l_bc,
-                             t_entrada=sinal.t_entrada, horizonte_s=horizonte_s, now=now)
+                             t_entrada=sinal.t_entrada, horizonte_s=horizonte_s, now=now, veto=veto)
     return r.r_mult
 
 
@@ -466,31 +486,36 @@ def _evento_controle_sinal(sinal: SinalVarredura, idx: int) -> Optional[EventV1]
 
 
 def _r72h_de_indices(sinal: SinalVarredura, indices: list[int], params: Any, costs: CostModel,
-                     now: float) -> list[float]:
+                     now: float, veto: str = "amplo") -> list[float]:
     """R@72h (rodada 9, item 1 -- esclarecimento): resolvido PELA REGRA se fechou antes do corte de
     72h, SENAO valorizado a MERCADO no proprio corte (`horizonte_fixo.calcular_r_horizonte`) -- a
     MESMA definicao de R@72h usada em todo o resto do projeto (H1/`analise/condicional.py`), NUNCA o
     R de saida por regra sem corte (esse so existiria se a regra fechasse antes das 72h por si --
     aqui sempre se re-mede no horizonte fixo, pra sinal e controles por igual). Censura: 'pendente'
     (horizonte ainda nao decorrido) e 'sem_dado' (entrada cancelada, fora do stop/TOPO) sao
-    descartados dos DOIS lados pela MESMA regra -- nunca um corte que favoreca sinal ou controle."""
+    descartados dos DOIS lados pela MESMA regra -- nunca um corte que favoreca sinal ou controle.
+    RODADA 18 (item 2): `veto` default 'amplo' preserva o comportamento JA EXISTENTE (delega a
+    `calcular_r_horizonte`, amplo por padrao desde a Rodada 17)."""
     valores: list[float] = []
     for idx in indices:
         ev_c = _evento_controle_sinal(sinal, idx)
         if ev_c is None:
             continue
         r = calcular_r_horizonte(sinal.bars, ev_c, params, costs, sinal.dex, sinal.l_bc,
-                                 t_entrada=sinal.bars[idx].ts, horizonte_s=HORIZONTES_S["72h"], now=now)
+                                 t_entrada=sinal.bars[idx].ts, horizonte_s=HORIZONTES_S["72h"], now=now,
+                                 veto=veto)
         if r.r_mult is not None:
             valores.append(r.r_mult)
     return valores
 
 
-def _toques_de_indices(sinal: SinalVarredura, indices: list[int], alvo_r: float) -> list[float]:
+def _toques_de_indices(sinal: SinalVarredura, indices: list[int], alvo_r: float,
+                       veto: str = "simples") -> list[float]:
     """Resultado binario (1.0=tocou alvo antes do stop / 0.0=stop primeiro) de cada indice, MESMA
     varredura causal (`_toque_causal`) e MESMA distancia de stop do sinal (`_evento_controle_sinal`)
     -- usado tanto no pareamento por toque (item 1) quanto no comparador aleatorio (item 3).
-    'indefinido' nunca conta (mesma convencao de `_toque_binario`)."""
+    'indefinido' nunca conta (mesma convencao de `_toque_binario`). RODADA 18 (item 2): `veto`
+    (padrao 'simples', ZERO mudanca pra quem nao passa)."""
     valores: list[float] = []
     for idx in indices:
         ev_c = _evento_controle_sinal(sinal, idx)
@@ -498,7 +523,8 @@ def _toques_de_indices(sinal: SinalVarredura, indices: list[int], alvo_r: float)
             continue
         entry_c = sinal.bars[ev_c.idx + 1].open
         stop_c = ev_c.data["stop"]
-        b = _toque_binario(_toque_causal(sinal.bars, ev_c.idx + 1, entry_c, stop_c, alvo_r))
+        b = _toque_binario(_toque_causal(sinal.bars, ev_c.idx + 1, entry_c, stop_c, alvo_r,
+                                         veto=veto, peak=ev_c.data.get("TOPO")))
         if b is not None:
             valores.append(b)
     return valores
@@ -544,18 +570,20 @@ def _resumir_pareamento(valores_por_token: dict[str, list[float]]) -> Pareamento
     return Pareamento(media, mediana, sem_top3, _bootstrap_ic_media(valores_por_token), len(valores))
 
 
-def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> dict[float, dict[str, Any]]:
+def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any,
+                                 veto: str = "simples") -> dict[float, dict[str, Any]]:
     """Rodada 9, item 3: equilibrio EMPIRICO de P(+NR antes de -1R) via K=20 entradas aleatorias por
     sinal (MESMA fase/distancia de stop dos controles pareados, semente propria) -- substitui o
     teorico 1/(1+N) como referencia (que ignora custo/friccao/regime do universo real) quando houver
-    dado suficiente; NUNCA remove o teorico do relatorio, soma ao lado."""
+    dado suficiente; NUNCA remove o teorico do relatorio, soma ao lado. RODADA 18 (item 2): `veto`
+    (padrao 'simples', ZERO mudanca pra quem nao passa)."""
     valores_por_token: dict[float, dict[str, list[float]]] = {alvo: {} for alvo in ALVOS_R}
     for s in sinais:
         indices = _aleatorios_indices(s, params)
         if not indices:
             continue
         for alvo in ALVOS_R:
-            vals = _toques_de_indices(s, indices, alvo)
+            vals = _toques_de_indices(s, indices, alvo, veto=veto)
             if vals:
                 valores_por_token[alvo].setdefault(s.mint, []).extend(vals)
     out: dict[float, dict[str, Any]] = {}
@@ -578,7 +606,7 @@ def calcular_equilibrio_empirico(sinais: list[SinalVarredura], params: Any) -> d
 # (conta todo sinal deduplicado igualmente).
 # ---------------------------------------------------------------------------
 
-TOKENS_EXCLUIDOS_DIAGNOSTICO: tuple[str, ...] = ("MOGZ", "PEAK")   # outliers citados pelo pedido
+TOKENS_EXCLUIDOS_DIAGNOSTICO: tuple[str, ...] = ("MOGZ", "PEAK", "HIGH")   # outliers citados pelo pedido
 
 
 def calcular_token_signal_seq(sinais: list[SinalVarredura]) -> dict[int, int]:
@@ -606,14 +634,17 @@ class ResumoPorOrdemSinal:
 
 
 def resumo_r72h_por_ordem_sinal(sinais: list[SinalVarredura], now: float,
-                                excluir_tokens: tuple[str, ...] = TOKENS_EXCLUIDOS_DIAGNOSTICO
+                                excluir_tokens: tuple[str, ...] = TOKENS_EXCLUIDOS_DIAGNOSTICO,
+                                veto: Optional[str] = None,
                                 ) -> ResumoPorOrdemSinal:
     """Rodada 10, item 2: separa o R@72h MTM (MESMA definicao de `_r_horizonte`/`calcular_r_horizonte`,
     nunca duplicada) por ordem do sinal dentro do token. `pendente`/`sem_dado` ficam fora dos 2 lados
     igualmente (MESMA regra de `_r_horizonte`, que devolve `None` pros 2 casos -- nunca um corte que
     favoreca 1a tentativa ou reentrada). RODADA 17 (achado A2): o AGRUPAMENTO (dict key) usa
     `s.mint` (identidade real); a EXCLUSAO por `excluir_tokens` continua testando `s.token` (symbol)
-    de proposito -- `TOKENS_EXCLUIDOS_DIAGNOSTICO` e uma lista curada por TICKER, nunca por mint."""
+    de proposito -- `TOKENS_EXCLUIDOS_DIAGNOSTICO` e uma lista curada por TICKER, nunca por mint.
+    RODADA 18 (item 2): `veto=None` (padrao) preserva o comportamento JA EXISTENTE (`_r_horizonte` sem
+    override, amplo); `veto='simples'/'amplo'` explicito forca esse veto uniformemente."""
     params = load_params_v3()
     costs = CostModel()
     seq = calcular_token_signal_seq(sinais)
@@ -621,8 +652,9 @@ def resumo_r72h_por_ordem_sinal(sinais: list[SinalVarredura], now: float,
     reentradas: dict[str, list[float]] = {}
     primeira_filtrado: dict[str, list[float]] = {}
     reentradas_filtrado: dict[str, list[float]] = {}
+    kwargs_r = {"veto": veto} if veto is not None else {}
     for idx, s in enumerate(sinais):
-        r = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs)
+        r = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs, **kwargs_r)
         if r is None:
             continue
         destino = primeira if seq[idx] == 1 else reentradas
@@ -659,7 +691,13 @@ class ResultadoOrigem:
     estratos: list[GrupoExploratorio]
 
 
-def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) -> ResultadoOrigem:
+def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float,
+                   veto: Optional[str] = None) -> ResultadoOrigem:
+    """RODADA 18 (item 2): `veto=None` (padrao) preserva o comportamento JA EXISTENTE de cada
+    sub-calculo (toque/equilibrio/entrada-corrigida ficam no veto simples; R@72h/dif_pareada ficam no
+    veto amplo, herdado de `calcular_r_horizonte` desde a Rodada 17) -- ZERO mudanca silenciosa pra
+    quem chama sem o parametro novo. `veto='simples'/'amplo'` explicito forca esse veto, uniforme,
+    em TODOS os sub-calculos (toque E R@72h)."""
     params = load_params_v3()
     costs = CostModel()
     n_sinais_brutos = len(sinais)   # rodada 10, item 2: ANTES do dedupe, pra medir o efeito dele
@@ -669,9 +707,10 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
     n_volume_baixo = sum(1 for s in todos if s.volume_entrada is not None and s.volume_medio_24h
                          and s.volume_entrada < 0.25 * s.volume_medio_24h)
     pool_dias = {(s.pool, int(s.t_entrada // 86400)) for s in todos}
-    toques = resumo_toques(todos)
-    equilibrio_empirico = calcular_equilibrio_empirico(todos, params)
-    ordem_sinal = resumo_r72h_por_ordem_sinal(todos, now)
+    kwargs_veto = {"veto": veto} if veto is not None else {}
+    toques = resumo_toques(todos, **kwargs_veto)
+    equilibrio_empirico = calcular_equilibrio_empirico(todos, params, **kwargs_veto)
+    ordem_sinal = resumo_r72h_por_ordem_sinal(todos, now, veto=veto)
 
     dif_por_token: dict[str, list[float]] = {}
     dif_toque_por_token: dict[str, list[float]] = {}
@@ -680,8 +719,8 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
         escolhidos = _controles_indices(s, params)   # MESMOS 10 controles pro R e pro toque (item 1)
         if not escolhidos:
             continue
-        controles_r = _r72h_de_indices(s, escolhidos, params, costs, now)
-        r72 = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs)
+        controles_r = _r72h_de_indices(s, escolhidos, params, costs, now, **kwargs_veto)
+        r72 = _r_horizonte(s, HORIZONTES_S["72h"], now, params, costs, **kwargs_veto)
         if r72 is not None and controles_r:
             dif = r72 - statistics.fmean(controles_r)
             dif_por_token.setdefault(s.mint, []).append(dif)   # RODADA 17 (achado A2): mint, nunca symbol
@@ -694,8 +733,8 @@ def agregar_origem(sinais: list[SinalVarredura], origem_label: str, now: float) 
                 mc_base=cov.mc_base, razao_corpo_descomunal=cov.razao_corpo_descomunal,
                 possivel_clone=cov.possivel_clone, gatilho_v3=cov.gatilho_tag,
             ))
-        controles_toque = _toques_de_indices(s, escolhidos, ALVO_PAREAMENTO_TOQUE)
-        s_toque = _toque_binario(_primeiro_toque(s, ALVO_PAREAMENTO_TOQUE))
+        controles_toque = _toques_de_indices(s, escolhidos, ALVO_PAREAMENTO_TOQUE, **kwargs_veto)
+        s_toque = _toque_binario(_primeiro_toque(s, ALVO_PAREAMENTO_TOQUE, **kwargs_veto))
         if s_toque is not None and controles_toque:
             dif_toque_por_token.setdefault(s.mint, []).append(s_toque - statistics.fmean(controles_toque))
 
@@ -837,8 +876,18 @@ def _escrever_csv(path: Path, linhas: list[dict[str, Any]]) -> None:
         writer.writerows(linhas)
 
 
+def _sem_outliers(sinais: list[SinalVarredura], tokens: tuple[str, ...]) -> list[SinalVarredura]:
+    return [s for s in sinais if s.token not in tokens]
+
+
 def executar(db_path: Path, csv_path: Optional[Path] = None, progresso: bool = True,
-            min_ram_mb: float = RAM_MINIMA_MB_PADRAO) -> str:
+            min_ram_mb: float = RAM_MINIMA_MB_PADRAO, veto: str = "amplo") -> str:
+    """RODADA 18 (item 2): `veto` ('amplo' padrao DESTE SCRIPT/CLI -- nunca o default das funcoes de
+    biblioteca em si, que preservam o comportamento antigo quando chamadas sem o parametro) decide o
+    veto de candle corrompido usado em TODO o caminho (entrada corrigida, toque, R@72h/dif_pareada).
+    Alem do relatorio normal, reporta tambem as mesmas metricas EXCLUINDO `TOKENS_EXCLUIDOS_
+    DIAGNOSTICO` (leave-token-out, ex.: PEAK/HIGH) -- nunca decide nada, so mostra o quanto esses
+    tokens pesam no resultado."""
     import sys as _sys
     checar_ram_ou_abortar(min_ram_mb)
 
@@ -847,22 +896,34 @@ def executar(db_path: Path, csv_path: Optional[Path] = None, progresso: bool = T
             print(f"[varredura_v3] {msg}", file=_sys.stderr, flush=True)
 
     now = time.time()
+    status(f"veto de candle corrompido: {veto}")
     status("carregando universo_admitido (pode levar um tempo -- replay completo de todos os pools)...")
-    admitido = carregar_universo_admitido(db_path)
+    admitido = carregar_universo_admitido(db_path, veto=veto)
     status(f"universo_admitido: {len(admitido)} sinais brutos. carregando universo_nunca_admitido...")
-    nunca_admitido = carregar_universo_nunca_admitido(db_path)
+    nunca_admitido = carregar_universo_nunca_admitido(db_path, veto=veto)
     status(f"universo_nunca_admitido: {len(nunca_admitido)} sinais brutos. carregando retro_lote1...")
-    retro = carregar_retro_lote1(db_path)
+    retro = carregar_retro_lote1(db_path, veto=veto)
     status(f"retro_lote1: {len(retro)} sinais brutos. agregando (pareamento com controles, estratos)...")
-    r_admitido = agregar_origem(admitido, "universo_admitido", now)
+    r_admitido = agregar_origem(admitido, "universo_admitido", now, veto=veto)
     status("universo_admitido agregado.")
-    r_nunca_admitido = agregar_origem(nunca_admitido, "universo_nunca_admitido", now)
+    r_nunca_admitido = agregar_origem(nunca_admitido, "universo_nunca_admitido", now, veto=veto)
     status("universo_nunca_admitido agregado.")
-    r_retro = agregar_origem(retro, "retro_lote1", now)
-    status("retro_lote1 agregado. montando relatorio.")
+    r_retro = agregar_origem(retro, "retro_lote1", now, veto=veto)
+    status("retro_lote1 agregado. agregando leave-token-out (sem PEAK/HIGH)...")
+    sufixo = f"_sem_{'_'.join(TOKENS_EXCLUIDOS_DIAGNOSTICO)}"
+    r_admitido_lto = agregar_origem(_sem_outliers(admitido, TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                    "universo_admitido" + sufixo, now, veto=veto)
+    r_nunca_admitido_lto = agregar_origem(_sem_outliers(nunca_admitido, TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                          "universo_nunca_admitido" + sufixo, now, veto=veto)
+    r_retro_lto = agregar_origem(_sem_outliers(retro, TOKENS_EXCLUIDOS_DIAGNOSTICO),
+                                 "retro_lote1" + sufixo, now, veto=veto)
+    status("leave-token-out agregado. montando relatorio.")
     texto = formatar(r_admitido, r_nunca_admitido, r_retro)
+    texto += ("\n\n# leave-token-out (sem " + ", ".join(TOKENS_EXCLUIDOS_DIAGNOSTICO) + ")\n\n" +
+             formatar(r_admitido_lto, r_nunca_admitido_lto, r_retro_lto))
     if csv_path is not None:
-        linhas = _linhas_csv(r_admitido) + _linhas_csv(r_nunca_admitido) + _linhas_csv(r_retro)
+        linhas = (_linhas_csv(r_admitido) + _linhas_csv(r_nunca_admitido) + _linhas_csv(r_retro) +
+                 _linhas_csv(r_admitido_lto) + _linhas_csv(r_nunca_admitido_lto) + _linhas_csv(r_retro_lto))
         _escrever_csv(csv_path, linhas)
         texto += f"\n(tabela tambem gravada em {csv_path})"
     return texto
@@ -876,8 +937,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--sem-progresso", action="store_true", help="nao imprime progresso em stderr")
     parser.add_argument("--min-ram-mb", type=float, default=RAM_MINIMA_MB_PADRAO,
                         help="aborta se a RAM disponivel ficar abaixo disso (MB)")
+    parser.add_argument("--veto", choices=("simples", "amplo"), default="amplo",
+                        help="veto de candle corrompido usado em todo o caminho (padrao: amplo)")
     args = parser.parse_args(argv)
-    print(executar(args.db, csv_path=args.csv, progresso=not args.sem_progresso, min_ram_mb=args.min_ram_mb))
+    print(executar(args.db, csv_path=args.csv, progresso=not args.sem_progresso, min_ram_mb=args.min_ram_mb,
+                   veto=args.veto))
     return 0
 
 
