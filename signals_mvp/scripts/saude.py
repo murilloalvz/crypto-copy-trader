@@ -427,12 +427,18 @@ def _secao_sombra(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     (SOMBRA_MAX_POOLS), sinais por motivo/status (`pr_sombra`) e erros da sombra (log, `_sombra_safe`
     -- ver incidente de producao 2026-10-29, candles sobrepostos)."""
     out = ["SOMBRA:"]
+    # HANDOFF 2026-11-12/13, item (d): isto NUNCA e o total de pools ativos do bot (ver FILA, que le
+    # pr_pools status='ativo' direto do banco) -- e so o subconjunto, bem menor, de slots de detector
+    # sombra ocupados (teto SOMBRA_MAX_POOLS), de uma leitura em memoria que so existe no processo ao
+    # vivo e so atualiza a cada heartbeat. Rotulo explicito p/ nunca mais parecer contradizer FILA.
     ativos_raw = storage.get_meta("pr_sombra_ativos")
     if ativos_raw:
         ativos = json.loads(ativos_raw)
-        out.append(f"  pools ativos: {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
+        out.append(f"  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  f"ver FILA): {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
     else:
-        out.append("  pools ativos: s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
+        out.append("  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  "ver FILA): s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
     descartados = storage.pr_sombra_descarte_count(now - 86400.0)
     out.append(f"  descartados por teto (SOMBRA_MAX_POOLS, 24h): {descartados}")
     por_motivo: Counter = Counter()
