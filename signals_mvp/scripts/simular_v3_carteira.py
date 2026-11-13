@@ -79,7 +79,18 @@ AVISO_R_MEDIO = ("R medio/mediano/sem-top3/IC90% desta tabela SAO O R-MULTIPLO A
 
 JANELA_VOLUME_MEDIO = 24   # candles 1h anteriores -- "media horaria das 24h antes"
 SLIPPAGE_VARIANTES: dict[str, float] = {"base": 0.0, "+0.1R": 0.1, "+0.3R": 0.3}
+# HANDOFF 2026-11-12/13, item (e): `custo_fixo` e um custo em US$ ADICIONAL ao `CostModel`
+# (`pos_runner/costs.py`) que JA esta embutido em `trade.r_72h` -- pool fee %, terminal 1%,
+# `network_sol`=0.0003 SOL/perna (~US$0.05-0.06 ida+volta ao preco de SOL de 2026-11, JA incluso,
+# JA 2 pernas) e slippage de AMM %. Este `custo_fixo` NUNCA foi documentado na rodada que o
+# introduziu (commit c4763a3) alem do rotulo em US$; a melhor leitura, NAO CONFIRMADA com quem pediu
+# originalmente, e que ele cobre PRIORITY FEE/tip de MEV do Solana (variavel por congestionamento de
+# rede, nunca modelado em `CostModel`) -- nunca taxa de DEX nem slippage de AMM (os dois ja tem seu
+# proprio termo acima). O default abaixo (US$0.05) e o comportamento ja em produção desde c4763a3,
+# preservado como padrao desta flag -- `--custo-fixo` deixa o operador escolher outro cenario
+# (ex.: US$0.30, congestionamento alto) sem editar o script.
 CUSTO_FIXO_VARIANTES: dict[str, float] = {"US$0.05": 0.05, "US$0.15": 0.15, "US$0.30": 0.30}
+CUSTO_FIXO_PADRAO = "US$0.05"
 BANCA_CENARIOS_PADRAO: tuple[float, ...] = (250.0, 500.0, 1000.0)
 VALOR_MINIMO_USD = 10.0
 MAX_POSICOES_PADRAO = 4
@@ -937,11 +948,12 @@ def _formatar_distribuicao_permutacao(trades: list[TradeV3], banca_inicial: floa
 
 
 def _tabela_origem_banca(trades: list[TradeV3], origem_label: str, banca_inicial: float,
-                         max_posicoes: int, max_volume_pct: float) -> tuple[list[str], list[ResultadoCarteira]]:
+                         max_posicoes: int, max_volume_pct: float,
+                         custo_fixo_nome: str = CUSTO_FIXO_PADRAO) -> tuple[list[str], list[ResultadoCarteira]]:
     if not trades:
         return ([f"### {origem_label} -- banca inicial US${banca_inicial:.0f}", "",
                 "(sem trades com desfecho definido ainda -- ver secao de amostra acima)", ""], [])
-    resultados = [simular_carteira(trades, origem_label, regra, "base", "US$0.05", banca_inicial,
+    resultados = [simular_carteira(trades, origem_label, regra, "base", custo_fixo_nome, banca_inicial,
                                    max_posicoes=max_posicoes, max_volume_pct=max_volume_pct, calcular_ruina=True)
                  for regra in REGRAS_TAMANHO]
     # A4: pior cenario de custo (slippage +0,3R, custo fixo US$0,30) -- FULL stats, nunca so o R
@@ -949,7 +961,8 @@ def _tabela_origem_banca(trades: list[TradeV3], origem_label: str, banca_inicial
     resultados_pior = [simular_carteira(trades, origem_label, regra, PIOR_SLIPPAGE, PIOR_CUSTO_FIXO, banca_inicial,
                                         max_posicoes=max_posicoes, max_volume_pct=max_volume_pct, calcular_ruina=True)
                        for regra in REGRAS_TAMANHO]
-    out = [f"### {origem_label} -- banca inicial US${banca_inicial:.0f} (slippage base, custo fixo US$0.05)", ""]
+    out = [f"### {origem_label} -- banca inicial US${banca_inicial:.0f} (slippage base, custo fixo "
+          f"{custo_fixo_nome})", ""]
     out.extend(_formatar_tabela_carteira(resultados))
     out.extend(_formatar_detalhe_pulados(resultados))
     out.extend(_formatar_distribuicao_permutacao(trades, banca_inicial, max_posicoes, max_volume_pct))
@@ -991,10 +1004,21 @@ def _linha_csv(r: ResultadoCarteira, banca_cenario: float) -> dict[str, Any]:
     }
 
 
+CSV_UNIDADES: dict[str, str] = {
+    "banca_cenario": "US$", "banca_final_usd": "US$", "retorno_pct": "%", "max_drawdown_pct": "%",
+    "max_drawdown_usd": "US$", "maior_sequencia_perdas": "contagem de trades", "n_trades": "contagem",
+    "n_tokens": "contagem", "prob_ruina_pct": "%", "ruina_n_trades_medio": "contagem de trades",
+    "ruina_n_bootstrap": "contagem de simulacoes", "r_medio": "R-multiplo (adimensional)",
+    "r_mediano": "R-multiplo (adimensional)", "r_medio_sem_top3": "R-multiplo (adimensional)",
+    "ic90_lo": "R-multiplo (adimensional)", "ic90_hi": "R-multiplo (adimensional)",
+    "ponto_equilibrio_custo_fixo_usd": "US$", "pulados_total": "contagem", "entradas_reduzidas": "contagem",
+}
+
+
 def relatorio(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3], now: float,
              bancas: tuple[float, ...] = BANCA_CENARIOS_PADRAO, max_posicoes: int = MAX_POSICOES_PADRAO,
              max_volume_pct: float = MAX_VOLUME_PCT_PADRAO, csv_path: Optional[Path] = None,
-             progresso: bool = True) -> str:
+             progresso: bool = True, custo_fixo_nome: str = CUSTO_FIXO_PADRAO) -> str:
     import sys as _sys
 
     def status(msg: str) -> None:
@@ -1013,6 +1037,12 @@ def relatorio(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3
               f"max {max_posicoes} posicoes simultaneas (uma por TOKEN por vez) | exposicao total <=100% "
               f"da banca | entrada minima US${VALOR_MINIMO_USD:.0f}")
     out.append(f"NOTA: {AVISO_R_MEDIO}")
+    out.append(f"NOTA (custo_fixo, PEDIDO 2026-11-12/13 item e): US$ ADICIONAL por trade, por cima do "
+              f"que `CostModel` ja embute em r_72h (fee de pool %, terminal 1%, rede 0,0003 SOL/perna, "
+              f"slippage de AMM %). Leitura mais provavel, NAO CONFIRMADA com quem pediu a rodada que "
+              f"introduziu esta variante (commit c4763a3): priority fee/tip de MEV do Solana, nunca "
+              f"fee de DEX nem slippage (os dois ja tem termo proprio acima). Cenario desta tabela "
+              f"principal: {custo_fixo_nome} (--custo-fixo; opcoes: {', '.join(CUSTO_FIXO_VARIANTES)}).")
     out.append("")
     linhas_csv: list[dict[str, Any]] = []
     for banca in bancas:
@@ -1021,19 +1051,23 @@ def relatorio(ao_vivo: list[TradeV3], retro: list[TradeV3], replay: list[TradeV3
         for trades, label in ((ao_vivo, "ao_vivo"), (retro, "retro_lote1 (HIPOTETICO)"),
                               (replay, "replay_v3 (HIPOTETICO)")):
             status(f"banca US${banca:.0f} | {label} ({len(trades)} sinais)...")
-            bloco, resultados = _tabela_origem_banca(trades, label, banca, max_posicoes, max_volume_pct)
+            bloco, resultados = _tabela_origem_banca(trades, label, banca, max_posicoes, max_volume_pct,
+                                                     custo_fixo_nome)
             out.extend(bloco)
             linhas_csv.extend(_linha_csv(r, banca) for r in resultados)
     out.append(f"({AVISO})")
     if csv_path is not None:
         _escrever_csv(csv_path, linhas_csv)
         out.append(f"(tabela principal tambem gravada em {csv_path})")
+        out.append("(unidades das colunas do --csv: " +
+                  "; ".join(f"{col}={unidade}" for col, unidade in CSV_UNIDADES.items()) + ")")
     return "\n".join(out)
 
 
 def executar(db_path: Path, desde: Optional[str] = None, banca: Optional[float] = None,
             max_posicoes: int = MAX_POSICOES_PADRAO, max_volume_pct: float = MAX_VOLUME_PCT_PADRAO,
-            csv_path: Optional[Path] = None, progresso: bool = True) -> str:
+            csv_path: Optional[Path] = None, progresso: bool = True,
+            custo_fixo_nome: str = CUSTO_FIXO_PADRAO) -> str:
     paths = dataclasses.replace(make_paths(), db=db_path, dados=db_path.parent)
     storage = Storage(paths)
     now = time.time()
@@ -1045,7 +1079,8 @@ def executar(db_path: Path, desde: Optional[str] = None, banca: Optional[float] 
     replay = carregar_replay_v3(db_path, now)
     bancas = (banca,) if banca is not None else BANCA_CENARIOS_PADRAO
     return relatorio(ao_vivo, retro, replay, now, bancas=bancas, max_posicoes=max_posicoes,
-                     max_volume_pct=max_volume_pct, csv_path=csv_path, progresso=progresso)
+                     max_volume_pct=max_volume_pct, csv_path=csv_path, progresso=progresso,
+                     custo_fixo_nome=custo_fixo_nome)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -1060,9 +1095,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="teto: posicao nunca > X%% do volume do candle de entrada")
     parser.add_argument("--csv", type=Path, default=None, help="grava a tabela principal (base) tambem em CSV")
     parser.add_argument("--sem-progresso", action="store_true", help="nao imprime progresso em stderr")
+    parser.add_argument("--custo-fixo", default=CUSTO_FIXO_PADRAO, choices=sorted(CUSTO_FIXO_VARIANTES),
+                        help="custo US$ ADICIONAL por trade (fee/tip de prioridade de rede estimado -- "
+                             "NAO fee de DEX/slippage, que ja tem termo proprio) usado na tabela "
+                             f"principal; padrao preserva o comportamento ja em producao ({CUSTO_FIXO_PADRAO})")
     args = parser.parse_args(argv)
     print(executar(args.db, desde=args.desde, banca=args.banca, max_posicoes=args.max_posicoes,
-                  max_volume_pct=args.max_volume_pct, csv_path=args.csv, progresso=not args.sem_progresso))
+                  max_volume_pct=args.max_volume_pct, csv_path=args.csv, progresso=not args.sem_progresso,
+                  custo_fixo_nome=args.custo_fixo))
     return 0
 
 

@@ -609,6 +609,66 @@ class A6CsvTests(unittest.TestCase):
         self.assertIn("regra", linhas[0])
         self.assertIn(str(csv_path), texto)
 
+    def test_legenda_de_unidades_do_csv_aparece_no_relatorio(self) -> None:
+        """HANDOFF 2026-11-12/13, item (e): colunas do --csv tem que ter a unidade documentada na
+        saida impressa (sem renomear coluna, pra nunca quebrar um script externo que ja le por nome)."""
+        csv_path = self.tmp / "saida.csv"
+        texto = svc.executar(self.storage.paths.db, csv_path=csv_path, progresso=False)
+        self.assertIn("unidades das colunas do --csv", texto)
+        self.assertIn("r_medio=R-multiplo (adimensional)", texto)
+        self.assertIn("banca_final_usd=US$", texto)
+        self.assertIn("prob_ruina_pct=%", texto)
+
+
+class CustoFixoFlagTests(unittest.TestCase):
+    """HANDOFF 2026-11-12/13, item (e): `--custo-fixo` deixa o operador escolher o cenario sem editar
+    o script; o padrao preserva o comportamento ja em producao (US$0.05)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="simular_v3_carteira_custo_fixo_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_e_us_0_05_e_documentado_no_relatorio(self) -> None:
+        texto = svc.executar(self.storage.paths.db, banca=250.0)
+        self.assertIn("Cenario desta tabela principal: US$0.05", texto)
+
+    def test_flag_troca_o_cenario_da_tabela_principal(self) -> None:
+        texto = svc.executar(self.storage.paths.db, banca=250.0, custo_fixo_nome="US$0.30")
+        self.assertIn("Cenario desta tabela principal: US$0.30", texto)
+
+    def test_flag_troca_o_rotulo_do_cabecalho_por_origem_com_trades_reais(self) -> None:
+        signal_id = self.storage.pr3_insert_signal({
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v3": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "aberto", "entry_price": 100.0, "stop": 80.0, "topo": 10_000.0,
+            "s_suporte": 50.0, "r_resistencia": 90.0, "n_pavios": 3,
+        })
+        self.storage.pr_trajetoria_upsert("v3", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=4_600.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        bars = _bars_vol([
+            (100, 101, 99, 100, 10.0), (100, 102, 96, 101, 10.0),
+            (101, 103, 95, 102, 10.0), (102, 104, 95, 103, 10.0),
+        ])
+        self.storage.pr_append_bars("POOL1", "1h", [(b.ts, b.open, b.high, b.low, b.close, b.volume,
+                                                     int(b.filled)) for b in bars])
+        texto_default = svc.executar(self.storage.paths.db, banca=250.0, progresso=False)
+        self.assertIn("slippage base, custo fixo US$0.05", texto_default)
+        texto_alto = svc.executar(self.storage.paths.db, banca=250.0, progresso=False,
+                                  custo_fixo_nome="US$0.30")
+        self.assertIn("slippage base, custo fixo US$0.30", texto_alto)
+
+    def test_cli_aceita_a_flag_e_rejeita_valor_fora_do_grid(self) -> None:
+        rc = svc.main(["--db", str(self.storage.paths.db), "--custo-fixo", "US$0.15", "--sem-progresso"])
+        self.assertEqual(rc, 0)
+        with self.assertRaises(SystemExit):
+            svc.main(["--db", str(self.storage.paths.db), "--custo-fixo", "US$99", "--sem-progresso"])
+
 
 if __name__ == "__main__":
     unittest.main()
