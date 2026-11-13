@@ -5,7 +5,21 @@ from __future__ import annotations
 
 import unittest
 
-from ..pos_runner.solana_rpc import DAILY_LIMIT_CODE, DAILY_LIMIT_PAUSE_S, RpcError, SolanaRpc
+import requests
+
+from ..pos_runner.solana_rpc import (
+    CLASSE_AUTENTICACAO,
+    CLASSE_CONEXAO,
+    CLASSE_GENERICO,
+    CLASSE_MUITAS_CONTAS,
+    CLASSE_RATE_LIMIT,
+    CONEXAO_FALHAS_PARA_MARCAR,
+    DAILY_LIMIT_CODE,
+    DAILY_LIMIT_PAUSE_S,
+    RpcError,
+    SolanaRpc,
+    classificar_erro,
+)
 
 QN = "https://quicknode.example/chave/"
 PUBLIC = "https://api.mainnet-beta.solana.com"
@@ -155,6 +169,85 @@ class CircuitBreakerTests(unittest.TestCase):
         with self.assertLogs("signals_mvp.pos_runner.rpc", level="WARNING") as ctx:
             self.assertEqual(rpc.call("getSlot", []), "ok")
         self.assertTrue(any("lenta" in msg for msg in ctx.output))
+
+
+class ClassificarErroTests(unittest.TestCase):
+    """HANDOFF 2026-11-12/13: classificacao da causa REAL de uma falha de RPC -- nunca mais tudo
+    virando "RateLimited" no log/instrumentacao (achado real na VM: QuickNode morto por TLS ficou
+    2 dias rotulado assim, mascarando a causa real)."""
+
+    def test_connection_error_antes_de_qualquer_resposta_e_classe_conexao(self) -> None:
+        exc = requests.exceptions.SSLError("HTTPSConnectionPool(...): Max retries exceeded")
+        self.assertEqual(classificar_erro(exc), CLASSE_CONEXAO)
+
+    def test_timeout_tambem_e_classe_conexao(self) -> None:
+        self.assertEqual(classificar_erro(requests.exceptions.ConnectTimeout("timeout")), CLASSE_CONEXAO)
+
+    def test_http_401_e_classe_autenticacao(self) -> None:
+        self.assertEqual(classificar_erro(RpcError("transport", "HTTP 401", 401)), CLASSE_AUTENTICACAO)
+
+    def test_http_403_e_classe_autenticacao(self) -> None:
+        self.assertEqual(classificar_erro(RpcError("transport", "HTTP 403", 403)), CLASSE_AUTENTICACAO)
+
+    def test_429_real_e_classe_rate_limit(self) -> None:
+        self.assertEqual(classificar_erro(RpcError("transport", "HTTP 429", 429)), CLASSE_RATE_LIMIT)
+
+    def test_limite_diario_e_classe_rate_limit(self) -> None:
+        self.assertEqual(classificar_erro(RpcError("transport", "limite diario", DAILY_LIMIT_CODE)),
+                         CLASSE_RATE_LIMIT)
+
+    def test_too_many_accounts_e_classe_muitas_contas(self) -> None:
+        exc = RpcError("app", "getTokenLargestAccounts: Too many accounts requested")
+        self.assertEqual(classificar_erro(exc), CLASSE_MUITAS_CONTAS)
+
+    def test_erro_de_app_desconhecido_e_classe_generico(self) -> None:
+        self.assertEqual(classificar_erro(RpcError("app", "algo inesperado")), CLASSE_GENERICO)
+
+
+class FalhaDeConexaoTests(unittest.TestCase):
+    """HANDOFF 2026-11-12/13: falha de CONEXAO (TLS/DNS/timeout) nunca pode virar "RateLimited" no
+    log final, nunca pode gastar `max_attempts` tentativas full no MESMO endpoint morto, e nunca
+    pode deixar a URL/api-key (que vem embutida na str() da excecao real do requests, ex.: "Max
+    retries exceeded with url: /?api-key=SEGREDO123") escapar pro log ou pro RpcError final."""
+
+    SEGREDO = "api-key=SEGREDO123"
+
+    def _post_morto(self, url, payload):
+        raise requests.exceptions.ConnectionError(
+            f"HTTPSConnectionPool(host='rpc.helius.xyz', port=443): Max retries exceeded with "
+            f"url: /?{self.SEGREDO} (Caused by SSLError(...))")
+
+    def test_classe_final_e_conexao_nunca_rate_limit(self) -> None:
+        clock = FakeClock()
+        rpc = SolanaRpc([QN], per_min=600, clock=clock, sleep=clock.advance, post=self._post_morto,
+                        max_attempts=6, max_total_wait_s=30.0)
+        with self.assertRaises(RpcError) as ctx:
+            rpc.call_raw("getTokenLargestAccounts", ["mint"])
+        self.assertEqual(ctx.exception.classe, CLASSE_CONEXAO)
+        self.assertNotEqual(ctx.exception.classe, CLASSE_RATE_LIMIT)
+
+    def test_endpoint_marcado_inalcancavel_apos_poucas_falhas_de_conexao(self) -> None:
+        # 1 endpoint so (caso real do handoff: QuickNode era o UNICO POS_RUNNER_RPC_URLS) -- as
+        # `max_attempts` tentativas repetem o MESMO endpoint morto ate `CONEXAO_FALHAS_PARA_MARCAR`.
+        clock = FakeClock()
+        rpc = SolanaRpc([QN], per_min=600, clock=clock, sleep=clock.advance, post=self._post_morto,
+                        max_attempts=6, max_total_wait_s=30.0)
+        with self.assertRaises(RpcError):
+            rpc.call_raw("getTokenLargestAccounts", ["mint"])
+        self.assertIn(QN, rpc.unreachable, "depois de >=CONEXAO_FALHAS_PARA_MARCAR falhas no MESMO "
+                                           "endpoint, ele tem que sair do rodizio (nunca mais de "
+                                           f"{CONEXAO_FALHAS_PARA_MARCAR} tentativas full nele)")
+
+    def test_segredo_da_url_nunca_aparece_no_log_nem_na_excecao_final(self) -> None:
+        clock = FakeClock()
+        rpc = SolanaRpc([QN], per_min=600, clock=clock, sleep=clock.advance, post=self._post_morto,
+                        max_attempts=4, max_total_wait_s=30.0)
+        with self.assertLogs("signals_mvp.pos_runner.rpc", level="DEBUG") as ctx:
+            with self.assertRaises(RpcError) as exc_ctx:
+                rpc.call_raw("getTokenLargestAccounts", ["mint"])
+        self.assertNotIn(self.SEGREDO, str(exc_ctx.exception))
+        for linha in ctx.output:
+            self.assertNotIn(self.SEGREDO, linha)
 
 
 if __name__ == "__main__":

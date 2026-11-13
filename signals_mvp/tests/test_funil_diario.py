@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Optional
 
 from ..config import make_paths
 from ..scripts import funil_diario as fd
@@ -306,6 +307,69 @@ class FunilDiarioTests(unittest.TestCase):
         self.assertIn("# Funil diario", texto)
         self.assertIn("entradas_atrasadas", texto)
         self.assertIn("ETA at 30 tokens", texto)
+
+
+    def _sinal_v3(self, pool: str, mint: str, closed_ts: Optional[float] = None,
+                 status: str = "fechado", ts_fechamento: float = 1_000.0) -> None:
+        self.storage.pr3_insert_signal({
+            "chain": "solana", "pool": pool, "tf": "1h", "evento": "ENTRADA", "ts_fechamento": ts_fechamento,
+            "mint": mint, "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v3": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": status, "entry_price": 100.0, "stop": 80.0, "topo": 200.0,
+            "s_suporte": 80.0, "r_resistencia": 95.0, "n_pavios": 2, "caixa_candles": 5,
+            "caixa_horas": 5.0, "idade_dias": 3.0, "closed_ts": closed_ts,
+        })
+
+    def test_montar_funil_v3_counts_distinct_pools_per_day_separado_de_v1v2(self) -> None:
+        """RODADA 17 item 3: V3 ganha colunas proprias (`sinal_v3`/`vencido_v3`), NUNCA somadas
+        nas colunas de V1/V2 (hipoteses diferentes)."""
+        base = 1_000.0 * DIA
+        self._sinal_v3("POOLV3_A", "MINTA", closed_ts=base + H, ts_fechamento=base)
+        self._sinal_v3("POOLV3_B", "MINTB", closed_ts=base + H, ts_fechamento=base)
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            funil = fd.montar_funil(con)
+            funil_v3 = fd.montar_funil_v3(con)
+        finally:
+            con.close()
+        dia = fd._dia_utc(base)   # noqa: SLF001
+        self.assertEqual(funil_v3[dia]["sinal_v3"], 2)
+        self.assertEqual(funil_v3[dia]["vencido_v3"], 2)
+        # V1/V2 nunca contam o que e so da V3.
+        self.assertEqual(funil.get(dia, {}).get("sinal", 0), 0)
+
+    def test_eta_dias_alvo_fechados_v3_para_n30_e_n60_independentes(self) -> None:
+        now = time.time()
+        for i in range(10):   # 10 fechados, 1/dia nos ultimos 10 dias -- taxa 1/dia
+            self._sinal_v3(f"POOLV3_{i}", f"MINT{i}", closed_ts=now - (10 - i) * DIA)
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            eta30 = fd.eta_dias_alvo_fechados_v3(con, now, 30)
+            eta60 = fd.eta_dias_alvo_fechados_v3(con, now, 60)
+        finally:
+            con.close()
+        self.assertAlmostEqual(eta30, 20.0, delta=1.0)
+        self.assertAlmostEqual(eta60, 50.0, delta=1.0)
+        self.assertLess(eta30, eta60, "N=60 esta mais longe que N=30, ETA precisa ser maior")
+
+    def test_eta_dias_alvo_fechados_v3_e_none_sem_nenhum_fechamento(self) -> None:
+        con = fd._conectar_ro(self.storage.paths.db)   # noqa: SLF001
+        try:
+            eta = fd.eta_dias_alvo_fechados_v3(con, time.time(), 30)
+        finally:
+            con.close()
+        self.assertIsNone(eta)
+
+    def test_executar_inclui_secao_v3_com_eta_n30_e_n60(self) -> None:
+        now = time.time()
+        for i in range(5):
+            self._sinal_v3(f"POOLV3X_{i}", f"MINTX{i}", closed_ts=now - (5 - i) * DIA)
+        texto = fd.executar(self.storage.paths.db)
+        self.assertIn("V3 (H1) -- tokens distintos fechados: 5", texto)
+        self.assertIn("N=30:", texto)
+        self.assertIn("N=60:", texto)
+        self.assertIn("sinal_v3", texto)
+        self.assertIn("vencido_v3", texto)
 
 
 if __name__ == "__main__":

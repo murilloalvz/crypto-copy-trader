@@ -314,6 +314,12 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     return out
 
 
+# HANDOFF 2026-11-12/13 (achado real na VM, 2 dias sem ningum notar): com o orcamento corrigido pra
+# contar TENTATIVAS (rodada 15 Parte 2), 0 sucesso em muitas tentativas num dia e um sintoma forte
+# de endpoint RPC morto -- sem este alarme em destaque, ficava so mais uma linha discreta no meio
+# do relatorio. Limiar sugerido pelo operador.
+LIMIAR_TENTATIVAS_SEM_SUCESSO = 20
+
 _RE_CICLO_CARTEIRAS = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER-V1: ciclo .*"
     r"carteiras_tentativas=(?P<tent>\d+) carteiras_gravados=(?P<grav>\d+) "
@@ -341,9 +347,19 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
         if now - row["ts"] <= 86400.0:
             por_hora[int(row["ts"] // 3600)] += 1
     total_24h = sum(por_hora.values())
+    # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward da V3 (pr3_carteiras_sinal, sinal
+    # real + K placebo por sinal) -- so contagem/cobertura, anexado na MESMA linha de snapshots pra
+    # nao estourar o orcamento de linhas do relatorio (<=60, ver docstring do modulo).
+    forward = storage.pr3_carteiras_sinal_all()
+    sinais_fwd = [r for r in forward if r["tipo"] == "sinal"]
+    placebo_fwd = [r for r in forward if r["tipo"] == "placebo"]
+    cobertos_sinal = sum(1 for r in sinais_fwd if r["cobertura_valida"])
+    cobertos_placebo = sum(1 for r in placebo_fwd if r["cobertura_valida"])
     out = [f"CARTEIRAS: lista carregada={'sim' if sha else 'NAO'} (sha256={sha[:12] + '...' if sha else 's/d'}) "
           f"| n_carteiras_pro={n_carteiras or 's/d'} n_pessoas_pro={n_pessoas or 's/d'}",
-          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s)"]
+          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s) | "
+          f"forward V3: sinal={len(sinais_fwd)} (cobertura={cobertos_sinal}) placebo={len(placebo_fwd)} "
+          f"(cobertura={cobertos_placebo})"]
     pools_ativos = storage.pr_pools("ativo")
     abertos = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
               {s["pool"] for s in storage.pr2_signals(status="aberto")}
@@ -366,11 +382,31 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     if runtime_raw:
         rt = json.loads(runtime_raw)
         inicio_do_dia = now - (now % 86400.0)
-        usado_hoje = storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria")
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2): orcamento media TENTATIVAS (sucesso+falha), nunca so
+        # sucessos -- ver docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md
+        # (antes disso, 100% de falha deixava o orcamento preso em 0/limite pra sempre).
+        tentativas_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria")
+        sucessos_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria", sucesso=True)
+        rpc_dedicado = rt.get("carteiras_rpc_dedicado")
+        per_min = rt.get("carteiras_rpc_per_min")
+        dedicado_txt = (f"sim ({per_min:.0f}/min)" if rpc_dedicado and per_min is not None
+                       else ("sim" if rpc_dedicado else "NAO (compartilhado com lineage)"))
         out.append(f"  RPC configurado={'sim' if rt['rpc_configurado'] else 'NAO'} | "
+                  f"RPC dedicado (baixa prioridade)={dedicado_txt} | "
                   f"SEM_CARTEIRAS={'sim (desligado)' if rt['sem_carteiras'] else 'nao'} | "
-                  f"orcamento hoje: {usado_hoje}/{rt['carteiras_max_chamadas_dia']} chamada(s) | "
+                  f"orcamento hoje: {tentativas_hoje}/{rt['carteiras_max_chamadas_dia']} tentativa(s) "
+                  f"({sucessos_hoje} sucesso(s)) | "
                   f"(config lida ha {_fmt_h(now - rt['ts'])}, no proprio processo ao vivo)")
+        # HANDOFF 2026-11-12/13: alarme em DESTAQUE -- lido do BANCO (pr_carteiras_tentativa, nunca
+        # so do log, que pode rotacionar/faltar), nunca some no meio do relatorio.
+        if tentativas_hoje >= LIMIAR_TENTATIVAS_SEM_SUCESSO and sucessos_hoje == 0:
+            ultimo_sucesso_ts = storage.pr_carteiras_tentativa_ultimo_sucesso_ts("horaria")
+            ultima_classe = storage.pr_carteiras_tentativa_ultima_classe_erro("horaria")
+            ultimo_sucesso_txt = (f"ha {_fmt_h(now - ultimo_sucesso_ts)}" if ultimo_sucesso_ts is not None
+                                 else "nunca (nesta copia do banco)")
+            out.append(f"  !!! COLETA DE CARTEIRAS SEM SUCESSO: {tentativas_hoje} tentativa(s) hoje, "
+                      f"0 sucesso(s) | ultima classe de erro: {ultima_classe or 's/d'} | "
+                      f"ultimo sucesso: {ultimo_sucesso_txt} !!!")
     else:
         out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
     linhas = _linhas_log(logs_dir, 86400.0, now)
@@ -407,12 +443,18 @@ def _secao_sombra(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     (SOMBRA_MAX_POOLS), sinais por motivo/status (`pr_sombra`) e erros da sombra (log, `_sombra_safe`
     -- ver incidente de producao 2026-10-29, candles sobrepostos)."""
     out = ["SOMBRA:"]
+    # HANDOFF 2026-11-12/13, item (d): isto NUNCA e o total de pools ativos do bot (ver FILA, que le
+    # pr_pools status='ativo' direto do banco) -- e so o subconjunto, bem menor, de slots de detector
+    # sombra ocupados (teto SOMBRA_MAX_POOLS), de uma leitura em memoria que so existe no processo ao
+    # vivo e so atualiza a cada heartbeat. Rotulo explicito p/ nunca mais parecer contradizer FILA.
     ativos_raw = storage.get_meta("pr_sombra_ativos")
     if ativos_raw:
         ativos = json.loads(ativos_raw)
-        out.append(f"  pools ativos: {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
+        out.append(f"  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  f"ver FILA): {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
     else:
-        out.append("  pools ativos: s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
+        out.append("  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  "ver FILA): s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
     descartados = storage.pr_sombra_descarte_count(now - 86400.0)
     out.append(f"  descartados por teto (SOMBRA_MAX_POOLS, 24h): {descartados}")
     por_motivo: Counter = Counter()

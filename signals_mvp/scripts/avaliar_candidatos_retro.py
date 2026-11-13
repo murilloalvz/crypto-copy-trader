@@ -178,7 +178,11 @@ CREATE TABLE IF NOT EXISTS pr_retro_candidatos (
 """
 # PATCH 2026-11-02: supply/side precisam calcular MC (ver docstring do modulo) -- `ALTER TABLE` em
 # bancos que ja rodaram a versao anterior deste script (a lista/hash/congelado_em NUNCA mudam).
-_COLUNAS_NOVAS = {"supply": "REAL", "side": "TEXT"}
+# PEDIDO 2026-11-05 (rodada 9, item 5): `lote` distingue o congelamento original (1, DEFAULT pras
+# linhas ja existentes) do congelamento do "lote 2" (candidatos NOVOS, so a lista -- ver
+# `congelar_candidatos_lote2`); cada lote carrega seu PROPRIO `lista_hash`/`congelado_em`, nunca o
+# global unico de antes desta rodada.
+_COLUNAS_NOVAS = {"supply": "REAL", "side": "TEXT", "lote": "INTEGER NOT NULL DEFAULT 1"}
 
 # PATCH 2026-11-02 (2a rodada): resultado persistido por candidato -- um candidato "ok" nunca e
 # reprocessado (ver docstring do modulo); nenhuma ligacao com `pr1_signals`/`pr2_signals` (sinais
@@ -276,24 +280,52 @@ def _candidatos_nunca_ativos(con: sqlite3.Connection) -> list[sqlite3.Row]:
 def congelar_candidatos(con: sqlite3.Connection, now: float) -> list[sqlite3.Row]:
     """Idempotente: a 1a execucao congela (grava `lista_hash`+`congelado_em`); qualquer execucao
     seguinte LE a lista ja congelada de volta, nunca recalcula (amostra fixa -- ver docstring do
-    modulo)."""
-    frozen = con.execute("SELECT * FROM pr_retro_candidatos ORDER BY pool").fetchall()
+    modulo). SEMPRE `lote=1` (rodada 9, item 5: o "lote 2" vive em `congelar_candidatos_lote2`, NUNCA
+    misturado aqui -- `executar()` so replay/gasta orcamento de rede no lote1)."""
+    frozen = con.execute("SELECT * FROM pr_retro_candidatos WHERE lote=1 ORDER BY pool").fetchall()
     if frozen:
         _backfill_supply_side(con)
-        return con.execute("SELECT * FROM pr_retro_candidatos ORDER BY pool").fetchall()
+        return con.execute("SELECT * FROM pr_retro_candidatos WHERE lote=1 ORDER BY pool").fetchall()
     candidatos = _candidatos_nunca_ativos(con)
     lista_hash = hashlib.sha256("\n".join(sorted(r["pool"] for r in candidatos)).encode("utf-8")).hexdigest()
     for r in candidatos:
         info = _info(r["info"])
         con.execute(
             "INSERT OR IGNORE INTO pr_retro_candidatos "
-            "(pool, mint, symbol, launchpad, l_bc, grad_ts, criado_ts, mc_found, supply, side, lista_hash, congelado_em) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(pool, mint, symbol, launchpad, l_bc, grad_ts, criado_ts, mc_found, supply, side, lista_hash, "
+            "congelado_em, lote) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",
             (r["pool"], r["mint"], r["symbol"], r["launchpad"], r["l_bc"], r["grad_ts"],
              info.get("criado_ts"), r["mc_found"], r["supply"], info.get("side") or "base", lista_hash, now),
         )
     con.commit()
-    return con.execute("SELECT * FROM pr_retro_candidatos ORDER BY pool").fetchall()
+    return con.execute("SELECT * FROM pr_retro_candidatos WHERE lote=1 ORDER BY pool").fetchall()
+
+
+def congelar_candidatos_lote2(con: sqlite3.Connection, now: float) -> list[sqlite3.Row]:
+    """PEDIDO 2026-11-05 (rodada 9, item 5): congela o "lote 2" -- candidatos NUNCA ativos
+    (`_candidatos_nunca_ativos`, MESMA definicao do lote1) que ainda NAO foram congelados em NENHUM
+    lote anterior (pools novos, descobertos depois do congelamento do lote1). SO a lista + hash +
+    timestamp -- ZERO replay, ZERO chamada de rede (nunca `processar_candidato`/`DetectorV1`/
+    `simulate_v1` aqui, "candidatos apenas, sem olhar resultado"). Idempotente: se o lote2 ja existe,
+    devolve a lista congelada de volta, nunca recalcula (MESMA disciplina do lote1 -- amostra fixa).
+    O lote1 ja congelado fica intocado (`congelar_candidatos` continua lendo so `lote=1`)."""
+    frozen = con.execute("SELECT * FROM pr_retro_candidatos WHERE lote=2 ORDER BY pool").fetchall()
+    if frozen:
+        return frozen
+    ja_congelados = {r["pool"] for r in con.execute("SELECT pool FROM pr_retro_candidatos").fetchall()}
+    novos = [r for r in _candidatos_nunca_ativos(con) if r["pool"] not in ja_congelados]
+    lista_hash = hashlib.sha256("\n".join(sorted(r["pool"] for r in novos)).encode("utf-8")).hexdigest()
+    for r in novos:
+        info = _info(r["info"])
+        con.execute(
+            "INSERT OR IGNORE INTO pr_retro_candidatos "
+            "(pool, mint, symbol, launchpad, l_bc, grad_ts, criado_ts, mc_found, supply, side, lista_hash, "
+            "congelado_em, lote) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,2)",
+            (r["pool"], r["mint"], r["symbol"], r["launchpad"], r["l_bc"], r["grad_ts"],
+             info.get("criado_ts"), r["mc_found"], r["supply"], info.get("side") or "base", lista_hash, now),
+        )
+    con.commit()
+    return con.execute("SELECT * FROM pr_retro_candidatos WHERE lote=2 ORDER BY pool").fetchall()
 
 
 # -- orcamento horario proprio desta execucao (nunca compete com o bot ao vivo) --------------------------
@@ -730,6 +762,20 @@ def executar(db_path: Path, cache_dir: Path, max_chamadas_hora: int, reprocessar
         con.close()
 
 
+def formatar_lote2(linhas: list[sqlite3.Row]) -> str:
+    """Relatorio MINIMO do congelamento do lote2 (rodada 9, item 5) -- so a contagem/hash/timestamp,
+    nunca um resultado (nenhum replay rodou)."""
+    if not linhas:
+        return "## avaliar_candidatos_retro -- lote2\n\nlote2: 0 candidatos novos (nada alem do lote1 ja congelado)."
+    return (f"## avaliar_candidatos_retro -- lote2 (SOMENTE congelamento, zero replay/zero rede)\n\n"
+           f"candidatos no lote2: {len(linhas)}\n"
+           f"lista_hash: {linhas[0]['lista_hash']}\n"
+           f"congelado_em: {linhas[0]['congelado_em']}\n\n"
+           "Nenhum candidato do lote2 foi replayado/simulado nesta rodada (candidatos apenas, sem "
+           "olhar resultado) -- consumir o lote2 exige uma decisao de admissao separada, fora do "
+           "escopo desta rodada.")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Coorte retrospectiva dos candidatos sem vaga (PAPER / leitura do detector, so tag retro_sem_vaga).")
     parser.add_argument("--db", required=True, type=Path)
@@ -737,8 +783,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-chamadas-hora", type=int, default=DEFAULT_MAX_CHAMADAS_HORA)
     parser.add_argument("--reprocessar", action="store_true",
                         help="forca reprocessar candidatos JA 'ok' persistidos (por padrao, nunca sao refeitos)")
+    parser.add_argument("--congelar-lote2", action="store_true",
+                        help="SO congela a lista do lote2 (candidatos novos desde o lote1, hash+timestamp "
+                             "proprios) -- zero replay, zero rede; nunca roda a coorte do --db normal")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    if args.congelar_lote2:
+        con = _conectar_rw(args.db)
+        try:
+            print(formatar_lote2(congelar_candidatos_lote2(con, time.time())))
+        finally:
+            con.close()
+        return 0
     cache_dir = args.cache_dir or (args.db.parent / "pos_runner_retro")
     print(executar(args.db, cache_dir, args.max_chamadas_hora, reprocessar=args.reprocessar))
     return 0

@@ -41,6 +41,20 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_secao_sombra_nunca_chama_de_pools_ativos_sem_rotular_de_onde_vem(self) -> None:
+        """HANDOFF 2026-11-12/13, item (d): a contagem da SOMBRA e so os slots do detector sombra
+        (teto SOMBRA_MAX_POOLS), bem menor que o total real de pools ativos em `pr_pools` (ver FILA) --
+        o rotulo tem que deixar isso explicito, nunca mais parecer contradizer FILA."""
+        h = LiveHarness()
+        try:
+            h.storage.set_meta("pr_sombra_ativos", json.dumps({"n_pools": 2, "ts": h.clock()}))
+            linhas = saude._secao_sombra(h.storage, h.clock(), h.storage.paths.db.parent)
+            linha_pools = next(l for l in linhas if "pools sombra ativos" in l)
+            self.assertIn("ver FILA", linha_pools)
+            self.assertNotIn("SOMBRA:   pools ativos:", "\n".join(linhas))
+        finally:
+            h.close()
+
     def test_never_writes_to_the_database(self) -> None:
         h = LiveHarness()
         try:
@@ -195,6 +209,10 @@ class SaudeScriptTests(unittest.TestCase):
             self.assertIn("elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2): 1 pool(s)", texto)
             self.assertIn("RPC configurado=NAO", texto)
             self.assertIn("orcamento hoje: 0/200", texto)
+            # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward da V3 (`pr3_carteiras_
+            # sinal`) tambem aparece aqui -- a V3 ja abriu 1 sinal real na mesma `run_hours(17)` acima,
+            # sem RPC (adapter.rpc=None no harness) -- 0 cobertura valida, nunca um numero fabricado.
+            self.assertIn("forward V3: sinal=1 (cobertura=0) placebo=0 (cobertura=0)", texto)
         finally:
             h.close()
 

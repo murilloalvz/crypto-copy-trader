@@ -65,21 +65,54 @@ class AvaliarV3RetroTests(unittest.TestCase):
         self.assertIn("56762db29cd6", texto)
 
     def test_resumo_por_token_agrega_sinais_r_e_toque_no_topo(self) -> None:
+        # RODADA 17 (achado A2 da auditoria 2026-11-10): agrega por MINT, nunca por symbol -- os 2
+        # primeiros registros sao o MESMO token (mesmo mint, 2 pools -- ex. migracao/relancamento) e
+        # por isso somam; o 3o tem mint PROPRIO, mesmo symbol que os 2 anteriores (clone de ticker),
+        # e por isso NUNCA e somado com eles (ver teste seguinte pro caso-clone isolado).
         linhas = [
-            {"pool": "P1", "symbol": "CAT", "sinais": [
+            {"pool": "P1", "mint": "MINTCAT", "symbol": "CAT", "sinais": [
                 {"status": "fechado", "r_mult": 2.0, "tocou_topo": True},
                 {"status": "fechado", "r_mult": None, "tocou_topo": False},
             ]},
-            {"pool": "P2", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": 1.0, "tocou_topo": True}]},
-            {"pool": "P3", "symbol": "DOG", "sinais": [{"status": "aberto", "r_mult": None, "tocou_topo": False}]},
+            {"pool": "P2", "mint": "MINTCAT", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": 1.0, "tocou_topo": True}]},
+            {"pool": "P3", "mint": "MINTDOG", "symbol": "DOG", "sinais": [{"status": "aberto", "r_mult": None, "tocou_topo": False}]},
         ]
         resumo = v3retro.resumo_por_token(linhas, "A")
-        por_token = {r["token"]: r for r in resumo}
-        self.assertEqual(por_token["CAT"]["n_sinais"], 3)
-        self.assertEqual(por_token["CAT"]["n_tocou_topo"], 2)
-        self.assertAlmostEqual(por_token["CAT"]["r_medio"], 1.5)   # so os 2 com r_mult valido
-        self.assertEqual(por_token["DOG"]["n_sinais"], 1)
-        self.assertEqual(por_token["DOG"]["r_medio"], None)
+        por_mint = {r["mint"]: r for r in resumo}
+        self.assertEqual(por_mint["MINTCAT"]["token"], "CAT")
+        self.assertEqual(por_mint["MINTCAT"]["n_sinais"], 3)
+        self.assertEqual(por_mint["MINTCAT"]["n_tocou_topo"], 2)
+        self.assertAlmostEqual(por_mint["MINTCAT"]["r_medio"], 1.5)   # so os 2 com r_mult valido
+        self.assertEqual(por_mint["MINTDOG"]["n_sinais"], 1)
+        self.assertEqual(por_mint["MINTDOG"]["r_medio"], None)
+
+    def test_resumo_por_token_nunca_funde_clones_de_mesmo_ticker(self) -> None:
+        # Dois tokens DISTINTOS (mints diferentes) com o MESMO ticker "CAT" -- a correcao da Rodada
+        # 17 exige que eles fiquem SEPARADOS (antes da correcao, agrupavam por symbol e se fundiam).
+        linhas = [
+            {"pool": "P1", "mint": "MINT_A", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": 2.0, "tocou_topo": False}]},
+            {"pool": "P2", "mint": "MINT_B", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": -1.0, "tocou_topo": False}]},
+        ]
+        resumo = v3retro.resumo_por_token(linhas, "A")
+        self.assertEqual(len(resumo), 2, "clones de mesmo ticker (mints diferentes) nunca podem virar 1 linha so")
+        por_mint = {r["mint"]: r for r in resumo}
+        self.assertEqual(por_mint["MINT_A"]["n_sinais"], 1)
+        self.assertEqual(por_mint["MINT_B"]["n_sinais"], 1)
+        self.assertEqual(por_mint["MINT_A"]["token"], "CAT")
+        self.assertEqual(por_mint["MINT_B"]["token"], "CAT")
+
+    def test_resumo_por_token_sem_mint_na_fonte_cai_no_pool_nunca_no_symbol(self) -> None:
+        # `parte_b_coorte_lote1` nao tem coluna mint na fonte (ResultadoCandidato) -- `linhas` sem a
+        # chave "mint" precisa cair no `pool` (ainda identidade unica), NUNCA fundir por symbol.
+        linhas = [
+            {"pool": "P1", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": 2.0, "tocou_topo": False}]},
+            {"pool": "P2", "symbol": "CAT", "sinais": [{"status": "fechado", "r_mult": -1.0, "tocou_topo": False}]},
+        ]
+        resumo = v3retro.resumo_por_token(linhas, "B")
+        self.assertEqual(len(resumo), 2)
+        por_mint = {r["mint"]: r for r in resumo}
+        self.assertEqual(por_mint["P1"]["n_sinais"], 1)
+        self.assertEqual(por_mint["P2"]["n_sinais"], 1)
 
     def test_parte_a_com_pool_admitido_real_gera_sinal_com_tocou_topo_e_aparece_por_token(self) -> None:
         # Mesmo fixture que ja comprova >=1 ENTRADA sob ParamsV1 (test_avaliar_candidatos_retro.py) --

@@ -321,6 +321,44 @@ janela de ~25 candles de 1h (~1 por pool a cada ~12,5h de atividade de caixa) �
 muito abaixo do teto de 8/dia mesmo com múltiplos pools simultâneos; número real depende de quantos
 pools estão em fase runner/pullback no banco de produção.
 
+## EMENDA 4 (2026-11-10) — opção A: futilidade antecipada e critério (b) para a H1 da V3 (cauda)
+
+Pré-registrada **antes de qualquer coleta/replay novo contar pra N=30/N=60 da H1 da V3** — nova
+seção, nunca reescreve o texto das seções acima. A data e o novo `sha256` deste arquivo são
+registrados em `meta` via `python -m signals_mvp.analise.condicional --registrar-emenda`
+(histórico append-only em `meta['plano_analise_emendas']`), **antes** da próxima coleta/análise da
+H1 da V3 rodar — `garantir_plano_registrado` recusa com `PlanoAlteradoError` até isso ser feito.
+
+Texto completo, motivação e declaração explícita de "não é a frio" em
+`docs/pos-runner-v1/EMENDA_2026-11-10_FUTILIDADE_CAUDA_OPCAO_A.md`. **Escopo: só a H1 da V3**
+("segunda corrida pós-queda", a estratégia de cauda — `docs/research-hypothesis-registry-v1-2026-10-04.md`,
+cuja robustez já é citada como "mesma robustez da EMENDA 1" deste documento). **V1 e V2 NUNCA são
+afetados** — a futilidade de n=15/−0,5R e o critério (b) da `EMENDA 1` continuam em vigor,
+inalterados, pra essas duas versões.
+
+Resumo normativo (ver o documento linkado pro texto completo):
+
+1. Futilidade antecipada (n=15, −0,5R) fica **SUSPENSA** pra H1 da V3 — nunca substituída por um
+   corte de taxa de acerto fixo.
+2. Pontos de olhada **FIXOS**: N=30 e N=60 tokens distintos (1ª tentativa por token,
+   `token_signal_seq==1`; reentradas só como análise separada, diagnóstica). Nenhuma olhada
+   intermediária decide.
+3. Desfecho primário inalterado (`dif_pareada` média, R@72h marcado a mercado, pendente nunca
+   excluído, IC bootstrap por token, Bonferroni α/2 V1×V3 já pré-registrado).
+4. Secundário diagnóstico: `P(+NR antes de -1R)` por token pra `N ∈ {5,10,15,20}`, vs equilíbrio
+   teórico E vs controles/aleatório — nunca decide por si.
+5. Critério (b) da `EMENDA 1` vira **diagnóstico não-bloqueante** pra H1 da V3 (leave-one-token-out
+   pior caso + concentração por token, reportados, nunca bloqueando `EDGE_PROVISORIO`); (a)/(c)/(d)
+   continuam exatamente como já pré-registrados.
+6. `FUTIL` só em **N=60**: limite SUPERIOR do IC bootstrap por token (nível corrigido por
+   Bonferroni α/2) < 0. Em N=30, `INCONCLUSIVO` é o resultado esperado em muitos cenários — poder já
+   calculado (MDE ≈ 1,21R sem correção / 1,37R com Bonferroni, reusado de
+   `docs/pos-runner-v3/EMENDA_2026-11-05_PODER_ESTATISTICO_N30.md`, nunca recalculado).
+7. Portão de dinheiro real **inalterado** (n>=100 tokens distintos OU p<0,01 no teste de
+   permutação, mais os demais critérios pré-registrados).
+8. Trade-off explícito: o custo de suspender a futilidade antecipada é **tempo** de coleta/paper,
+   nunca dinheiro (zero capital, zero execução real).
+
 ## O que NÃO pode acontecer depois deste documento estar committado
 
 - editar os limiares/grupos acima (nova interpretação = nova seção/versão, nunca reescrever o texto

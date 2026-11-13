@@ -50,13 +50,20 @@ from .costs import CostModel
 from .detector import PHASE_PULLBACK, PHASE_RUNNER, Detector, Event
 from .detector_v1 import DetectorV1, EventV1
 from .dexpaprika_v1 import DexPaprikaProvider
-from .evidencia import N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis, simular_controle, sortear_controles
+from .evidencia import (
+    DROP_MIN_CONTROLE, MC_MIN_CONTROLE, N_CONTROLES_MINIMO, calcular_trajetoria, candidatos_elegiveis,
+    evento_controle, simular_controle, sortear_controles,
+)
 from .enumerate import LAUNCHPADS as MIGRATIONS, resolve_graduation
+from .entrada_suporte import garantir_suporte_forward_registrada, localizar_revisitas_suporte, toque_causal
+from .horizonte_fixo import HORIZONTES_S, calcular_r_horizonte
 from .lineage import creation_time
 from .params import Params, is_preregistered
 from .params_v1 import load_params_v1
 from .params_v2 import load_params_v2
 from .params_v3 import load_params_v3
+from .saida_fiel import calcular_r_saida_fiel, garantir_saida_fiel_registrada
+from .carteiras_forward import garantir_carteiras_forward_registrada
 from .pos_runner_v3 import POSICAO_PCT_SUPPLY_ALERTA, calcular_covariaveis_v3, posicao_pct_supply
 from .parte_a.baseline import K_BASELINE, runner_by_age
 from .parte_a.pipeline import DEX_OF_LAUNCHPAD
@@ -120,6 +127,20 @@ QUEDA_ROTACAO_PCT = 96.0
 # um invariante cientifico (mesma categoria de `rotacao_max_por_hora`).
 JANELA_ESPALHAMENTO_S = 300.0
 MAX_CHAMADAS_POR_MIN_PADRAO = 20
+# PEDIDO 2026-11-05 (item 2, captura/polling -- NUNCA detector/simulate/parametros/criterio de
+# sinal): emenda de amostragem datada. `_heat()` hoje so olha V0/V1 e trata a fase RUNNER como
+# "morno" (heat=1) -- sob o teto suave de ~20/min da 2a passada de `tick()`, isso atrasa o poll de
+# pools em runner/pullback/trajetoria ainda aberta ate 41-58min (medido na VM, p50/p95). Com a
+# promocao LIGADA (padrao): RUNNER conta como quente (heat=0, mesma prioridade ABSOLUTA -- 1a
+# passada de `tick()`, nunca throttled) em V1/V2/V3 (nao so V0/V1 como antes), e trajetoria ainda
+# aberta (`pr_trajetoria_pool_tf_aberta`, fechado=0 -- o sinal pode ja ter saido, mas a janela de
+# medicao de 72h continua rodando) TAMBEM conta como quente. `POS_RUNNER_CADENCIA_QUENTE=0` desliga
+# (volta ao `_heat` de antes: so V0/V1, RUNNER=morno, trajetoria sem peso extra) -- interruptor
+# unico para reverter sem precisar reverter o commit.
+
+
+def _cadencia_quente_ligada() -> bool:
+    return os.environ.get("POS_RUNNER_CADENCIA_QUENTE", "1") != "0"
 LAG_S = 90.0                 # folga depois do fechamento do candle para o GT indexar as ultimas trades
 QUOTE_REFRESH_S = 900.0      # cotacao/USD (1h) renovada no maximo a cada 15 min
 # PEDIDO (PARTE 2A) FASE 4: "mao de US$10" citada no pedido -- modelo PROPRIO/simples de slippage
@@ -590,6 +611,10 @@ class PosRunnerLive:
         rotacao_max_por_hora: int = 2,
         sem_v3: bool = False,
         v3_alertas: bool = False,
+        rpc_carteiras: Any = None,
+        carteiras_rpc_per_min: Optional[float] = None,
+        carteiras_placebo_k: int = 3,
+        sem_suporte_sombra: bool = False,
     ):
         self.settings = settings
         self.params = params
@@ -643,6 +668,20 @@ class PosRunnerLive:
         self.version_v1 = self.params_v1.version
         self.version_v1_start: Optional[float] = None
         self.adapter = SolanaAdapter(self.http, ctx, self.ohlcv, rpc, links, terminal=terminal)
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado): a coleta HORARIA/baixa-prioridade de
+        # carteiras "pro" (`_atualizar_carteiras_horaria`) nunca deve consumir o orcamento do RPC
+        # compartilhado com lineage/graduacao (ver diagnostico, docs/pos-runner-v1/
+        # DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md) -- `rpc_carteiras`, se dado, e um
+        # `SolanaRpc` DEDICADO (endpoints iguais, limitador PROPRIO, ritmo deliberadamente baixo),
+        # usado SO pelo caminho de baixa prioridade. Sem `rpc_carteiras` (default), cai no MESMO
+        # `self.adapter` de sempre -- comportamento antigo preservado, nunca quebra quem nao configurar
+        # o cliente dedicado.
+        self.adapter_carteiras = (SolanaAdapter(self.http, ctx, self.ohlcv, rpc_carteiras, links, terminal=terminal)
+                                  if rpc_carteiras is not None else self.adapter)
+        self.carteiras_rpc_per_min = carteiras_rpc_per_min
+        # PEDIDO 2026-11-10 (rodada 15, Parte 3): K pools de controle/placebo gravados no MESMO ciclo
+        # de cada sinal V3 real (instrumentacao forward -- ver `_capturar_carteiras_sinal_v3`).
+        self.carteiras_placebo_k = carteiras_placebo_k
         self.dets_v1: dict[tuple[str, str], DetectorV1] = {}
         self._v1_invalid: set[tuple[str, str]] = set()      # dado_invalido definitivo (nunca re-tenta)
         self._v1_mc_baixo_logged: set[str] = set()          # filtrado_mc_baixo: loga 1x por pool (nao reabre a cada ciclo)
@@ -689,6 +728,25 @@ class PosRunnerLive:
         self.v3_alertas = v3_alertas
         self.params_v3 = load_params_v3()
         self.version_v3 = self.params_v3.version
+        if not sem_v3:
+            # PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizado): congela/confere o hash do
+            # pre-registro da saida fiel ANTES do 1o ciclo -- fail-closed (`PreregistroAlteradoError`
+            # propaga e impede o bot de subir) se o texto mudou depois do 1o registro, mesma
+            # disciplina de `garantir_emenda_registrada`/`garantir_plano_registrado`. So roda se a V3
+            # estiver ligada (sem_v3=False) -- sem V3 nunca ha sombra pra calcular.
+            garantir_saida_fiel_registrada(storage)
+        # PEDIDO 2026-11-12 (rodada 19, item 2, autorizado): congela/confere o hash do pre-registro da
+        # coleta FORWARD "entrada no suporte" (docs/pos-runner-v3/PREREGISTRO_SUPORTE_FORWARD_
+        # 2026-11-12.md) ANTES de qualquer linha poder ser gravada em pr3_suporte_sombra -- fail-closed
+        # (`PreregistroAlteradoError` propaga e impede o bot de subir), MESMA disciplina de
+        # `garantir_saida_fiel_registrada`/`garantir_carteiras_forward_registrada`. So roda se V3
+        # estiver ligada E a sombra nao estiver desligada (SEM_SUPORTE_SOMBRA=1).
+        self.sem_suporte_sombra = sem_suporte_sombra
+        # zonas (pool,tf) ja gravadas OU ja decididas sem revisita elegivel -- nunca mais reexecuta o
+        # replay de `localizar_revisitas_suporte` pra essas (ver `_sombra_suporte_v3`).
+        self._suporte_sombra_zonas_vistas: dict[tuple[str, str], set[int]] = {}
+        if not sem_v3 and not sem_suporte_sombra:
+            garantir_suporte_forward_registrada(storage)
         self.version_v3_start: Optional[float] = None
         self.dets_v3: dict[tuple[str, str], DetectorV1] = {}
         self._v3_invalid: set[tuple[str, str]] = set()
@@ -718,6 +776,14 @@ class PosRunnerLive:
         self.sem_carteiras = sem_carteiras
         self.carteiras_max_chamadas_dia = carteiras_max_chamadas_dia
         self._mapa_carteiras_pro = carteiras_pro.carregar_mapa_grupos()   # {} se o arquivo nao existir
+        if not sem_v3 and not sem_carteiras:
+            # PEDIDO 2026-11-10 (rodada 15, Parte 4, autorizado): congela/confere o hash do
+            # pre-registro da instrumentacao forward de carteiras pro (docs/pos-runner-v3/
+            # PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md) ANTES de qualquer captura real poder
+            # acontecer -- fail-closed (`PreregistroAlteradoError` propaga e impede o bot de subir)
+            # se o texto mudou depois do 1o registro, mesma disciplina de `garantir_saida_fiel_
+            # registrada`. So roda se V3 E carteiras estiverem ligadas (senao nunca ha captura).
+            garantir_carteiras_forward_registrada(storage)
         self._carteiras_horaria_ultima: dict[str, int] = {}   # pool -> ultimo bucket de hora UTC coletado
         # PEDIDO (PARTE 2A) FASE 3: sombra dos filtros filtrado_mc_baixo e queda_96_mais -- MEDICAO AO
         # LADO (nunca altera deteccao/entrada/saida/banca/CSV oficiais de V1/V2). filtrado_idade nao
@@ -891,6 +957,10 @@ class PosRunnerLive:
         self.storage.set_meta("pr_carteiras_runtime", json.dumps({
             "rpc_configurado": getattr(self.adapter, "rpc", None) is not None,
             "sem_carteiras": self.sem_carteiras, "carteiras_max_chamadas_dia": self.carteiras_max_chamadas_dia,
+            # PEDIDO 2026-11-10 (rodada 15, Parte 2): visibilidade do RPC dedicado de baixa prioridade
+            # -- None = sem cliente dedicado configurado (cai no self.adapter de sempre).
+            "carteiras_rpc_dedicado": self.adapter_carteiras is not self.adapter,
+            "carteiras_rpc_per_min": self.carteiras_rpc_per_min,
             "ts": now,
         }))
 
@@ -1047,6 +1117,7 @@ class PosRunnerLive:
                 self.dets_fecham.pop((pool, tf), None)
                 self.dets_v1.pop((pool, tf), None)
                 self.dets_v2.pop((pool, tf), None)
+                self.dets_v3.pop((pool, tf), None)
                 self.dets_sombra_mc.pop((pool, tf), None)
                 self.dets_sombra_queda96.pop((pool, tf), None)
                 self.dets_sombra_base4.pop((pool, tf), None)
@@ -1161,6 +1232,7 @@ class PosRunnerLive:
                 self.dets_fecham.pop((pool, tf), None)
                 self.dets_v1.pop((pool, tf), None)
                 self.dets_v2.pop((pool, tf), None)
+                self.dets_v3.pop((pool, tf), None)
                 self.dets_sombra_mc.pop((pool, tf), None)
                 self.dets_sombra_queda96.pop((pool, tf), None)
                 self.dets_sombra_base4.pop((pool, tf), None)
@@ -1215,30 +1287,58 @@ class PosRunnerLive:
 
     # -- agenda ------------------------------------------------------------------------------------
     def _heat(self, pool: str, tf: str) -> int:
-        """0 = quente (fase 2 ou trade aberto: atualiza a cada candle), 1 = morno (runner), 2 = frio, -1 = sem carga.
-        Revisao da FASE 1: o calor e o MELHOR entre V0 e V1 -- com `--sem-v0` o `self.dets` do V0 fica sempre
-        vazio, e sem isto todo pool parecia "sem carga" (perdia a prioridade de fase 2/trade aberto da V1)."""
-        v0 = self._heat_v0(pool, tf)
-        v1 = self._heat_v1(pool, tf)
-        if v0 == -1 and v1 == -1:
-            return -1
-        return min(h for h in (v0, v1) if h != -1)
+        """0 = quente (fase 2/pullback, trade aberto, OU -- com `POS_RUNNER_CADENCIA_QUENTE` ligada,
+        item 2 -- RUNNER/trajetoria ainda aberta: atualiza a cada candle), 1 = morno (runner, so
+        quando a promocao esta desligada), 2 = frio, -1 = sem carga. Revisao da FASE 1: o calor e o
+        MELHOR entre V0 e V1 -- com `--sem-v0` o `self.dets` do V0 fica sempre vazio, e sem isto todo
+        pool parecia "sem carga" (perdia a prioridade de fase 2/trade aberto da V1). PEDIDO
+        2026-11-05 (item 2): com a promocao ligada, V2/V3 TAMBEM entram no `min()` -- antes so V0/V1
+        eram olhados, e um pool em runner/pullback/trajetoria aberta SO na V2/V3 nunca pesava na
+        cadencia (gap pre-existente, nunca corrigido antes)."""
+        candidatos = [self._heat_v0(pool, tf), self._heat_v1(pool, tf)]
+        if _cadencia_quente_ligada():
+            candidatos.append(self._heat_v2(pool, tf))
+            candidatos.append(self._heat_v3(pool, tf))
+        validos = [h for h in candidatos if h != -1]
+        return min(validos) if validos else -1
 
     def _heat_v0(self, pool: str, tf: str) -> int:
+        """V0 nunca tem `pr_trajetoria` (so V1/V2/V3) -- sem promocao por trajetoria aqui; RUNNER
+        promovido a quente so quando a emenda do item 2 esta ligada, igual as outras versoes."""
         det = self.dets.get((pool, tf))
         if det is None:
             return -1
         if det.phase == PHASE_PULLBACK or self.storage.pr_signals(status="aberto", pool=pool, tf=tf):
             return 0
+        if det.phase == PHASE_RUNNER:
+            return 0 if _cadencia_quente_ligada() else 1
+        return 2
+
+    def _heat_vN(self, pool: str, tf: str, dets: dict[tuple[str, str], Any],
+                signals_abertos: Any, versao: str) -> int:
+        """PEDIDO 2026-11-05 (item 2): MESMA logica de V0, mais a trajetoria ainda aberta
+        (`pr_trajetoria_pool_tf_aberta`) -- a janela de medicao de 72h pode continuar rodando mesmo
+        depois que a posicao/sinal ja fechou, e so e visivel por versao (v1/v2/v3), nunca por V0."""
+        det = dets.get((pool, tf))
+        if det is None:
+            return -1
+        if det.phase == PHASE_PULLBACK or signals_abertos(status="aberto", pool=pool, tf=tf):
+            return 0
+        if _cadencia_quente_ligada():
+            if det.phase == PHASE_RUNNER:
+                return 0
+            if self.storage.pr_trajetoria_pool_tf_aberta(versao, pool, tf):
+                return 0
         return 1 if det.phase == PHASE_RUNNER else 2
 
     def _heat_v1(self, pool: str, tf: str) -> int:
-        det = self.dets_v1.get((pool, tf))
-        if det is None:
-            return -1
-        if det.phase == PHASE_PULLBACK or self.storage.pr1_signals(status="aberto", pool=pool, tf=tf):
-            return 0
-        return 1 if det.phase == PHASE_RUNNER else 2
+        return self._heat_vN(pool, tf, self.dets_v1, self.storage.pr1_signals, "v1")
+
+    def _heat_v2(self, pool: str, tf: str) -> int:
+        return self._heat_vN(pool, tf, self.dets_v2, self.storage.pr2_signals, "v2")
+
+    def _heat_v3(self, pool: str, tf: str) -> int:
+        return self._heat_vN(pool, tf, self.dets_v3, self.storage.pr3_signals, "v3")
 
     def _interval(self, tf: str, heat: int) -> float:
         step = float(tf_seconds(tf))
@@ -1612,13 +1712,29 @@ class PosRunnerLive:
             return
         self.storage.pr_rss_amostra_insert(now, rss_kb, len(self.storage.pr_pools("ativo")))
 
+    def _carteiras_posicao_aberta(self, pool: str) -> bool:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 2): posicao/sinal aberto em QUALQUER versao (V1/V2/V3)
+        -- prioridade ALTA da coleta de carteiras (ver `_carteiras_prioridade_alta`). V3 nunca
+        gerenciou banca real, mas `pr3_signals(status='aberto')` ainda marca um sinal em
+        acompanhamento, mesmo criterio de "recem-disparado/em aberto" dos outros."""
+        return bool(self.storage.pr1_signals(status="aberto", pool=pool)
+                   or self.storage.pr2_signals(status="aberto", pool=pool)
+                   or self.storage.pr3_signals(status="aberto", pool=pool))
+
     def _carteiras_elegivel(self, pool: str, tf: str) -> bool:
-        """PEDIDO 2026-10-29 (H9): elegibilidade da coleta HORARIA de carteiras "pro" -- posicao
-        aberta (V1 ou V2) OU pool acompanhado nas fases runner/pullback (V1 ou V2; "caixa" nao existe
-        no detector, so sem_fase/runner/pullback)."""
-        if self.storage.pr1_signals(status="aberto", pool=pool) or self.storage.pr2_signals(status="aberto", pool=pool):
+        """PEDIDO 2026-10-29 (H9), estendido 2026-11-10 (rodada 15, Parte 2): elegibilidade da coleta
+        HORARIA de carteiras "pro" -- posicao aberta (V1, V2 OU V3) OU pool acompanhado nas fases
+        runner/pullback (V1 ou V2; "caixa" nao existe no detector, so sem_fase/runner/pullback)."""
+        if self._carteiras_posicao_aberta(pool):
             return True
         return self._fase_label_v1(pool, tf) in ("runner", "pullback") or self._fase_label_v2(pool, tf) in ("runner", "pullback")
+
+    def _carteiras_prioridade_alta(self, pool: str) -> bool:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 2): prioridade ABSOLUTA (RPC compartilhado/rapido,
+        `self.adapter`) pra pools com posicao/sinal aberto (QUALQUER versao); demais pools elegiveis
+        (so fase runner/pullback, sem posicao) ficam no RPC dedicado de baixa taxa
+        (`self.adapter_carteiras`) -- nunca compete pelo orcamento que lineage/graduacao precisam."""
+        return self._carteiras_posicao_aberta(pool)
 
     def _diagnostico_pool_fila(self, row: Any, tf: str, now: float) -> str:
         """PEDIDO 2026-10-28, item 2: token/fase/ultima tentativa/ultimo erro/fonte de 1 (pool,tf)
@@ -1767,6 +1883,7 @@ class PosRunnerLive:
             self._heartbeat_429, fases_v1, len(self._due_list(now)), counts.get("dado_invalido", 0),
             counts.get("l_bc_suspeito", 0), counts.get("filtrado_mc_baixo", 0), counts.get("filtrado_idade", 0),
             self.version_v1, uptime_sessao_h=uptime_sessao_h,
+            alerta_carteiras=self._alerta_carteiras_sem_sucesso(now),
         )
         self._send(text)
         if not self.sem_v2:
@@ -2515,14 +2632,18 @@ class PosRunnerLive:
             return None
         return res.gross_ret - 2.0 * (slip / 100.0)
 
-    def _holders_instrumentado(self, mint: str, excluded: Any, pool: str, now: float) -> Any:
+    def _holders_instrumentado(self, mint: str, excluded: Any, pool: str, now: float,
+                               adapter: Any = None) -> Any:
         """PEDIDO 2026-11-02 (3a rodada, Fix B): `pr_api_uso` so cobria `poll_pool` -- finalidade
         'carteiras' (RPC, `adapter.holders`) faltava. MESMA convencao de `_refresh_core` (so conta
         chamada de rede DE VERDADE, via `SolanaRpc.calls`; chain sem RPC -- Bsc/Robinhood -- nunca
-        grava, `rpc` fica None)."""
-        rpc = getattr(self.adapter, "rpc", None)
+        grava, `rpc` fica None). PEDIDO 2026-11-10 (rodada 15, Parte 2): `adapter` opcional -- default
+        `self.adapter` (ENTRADA, reusa chamada ja feita); a coleta horaria de baixa prioridade passa
+        `self.adapter_carteiras` (RPC dedicado, nunca o compartilhado com lineage)."""
+        adapter = adapter if adapter is not None else self.adapter
+        rpc = getattr(adapter, "rpc", None)
         antes = getattr(rpc, "calls", 0)
-        holders = self.adapter.holders(mint, excluded)
+        holders = adapter.holders(mint, excluded)
         if rpc is not None and getattr(rpc, "calls", 0) > antes:
             self.storage.pr_api_uso_insert(now, "rpc", "carteiras", pool, http_status=200, rate_limited=False)
         return holders
@@ -3021,6 +3142,10 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
+            # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward, SO GRAVACAO -- nunca
+            # pode impedir/atrasar o sinal ja inserido acima, por isso via `_sombra_safe`.
+            self._sombra_safe(self._capturar_carteiras_sinal_v3, row, signal_id, tf, now,
+                              contexto="carteiras_sinal_v3")
             signal = self.storage.pr3_signal(signal_id)
         if not self.v3_alertas or signal is None or signal["tg_message_id"]:
             return
@@ -3040,7 +3165,16 @@ class PosRunnerLive:
         mid = self._send(text, self._keyboard_v3(row))
         if mid is not None:
             agora = self.clock()
-            self.storage.pr3_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora, ts_envio_telegram=agora)
+            # PEDIDO 2026-11-06 (rodada 12, Parte 3): entry_price_alerta passa a ser o fechamento do
+            # ULTIMO candle que `det` ja tem no instante REAL do envio (nunca uma chamada de rede nova
+            # -- reusa o que o ciclo ja buscou), em vez de uma copia do preco modelado na deteccao
+            # (`ev.data["close"]`, ja gravado no INSERT acima como valor provisorio). So difere do
+            # modelado quando o envio acontece depois da deteccao (ex.: alerta atrasado, ou reenviado
+            # num restart que repete candles ja persistidos) -- nos outros casos e honestamente o
+            # MESMO valor, nunca um numero inventado.
+            preco_no_envio = det.bars[-1].close if det.bars else None
+            self.storage.pr3_update_signal(signal["id"], tg_message_id=mid, alert_ts=agora,
+                                           ts_envio_telegram=agora, entry_price_alerta=preco_no_envio)
 
     def _update_paper_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
         """MESMA estrutura de `_update_paper_v1`, sem banca (V3 nunca executa posicao real nesta
@@ -3080,6 +3214,149 @@ class PosRunnerLive:
                 tempo_h=None if res.bars_held is None else res.bars_held * det.step / 3600.0, closed_ts=now,
             )
 
+    def _sombra_saida_fiel_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
+        """PEDIDO 2026-11-06 (rodada 12, Parte 3, autorizado): calcula a "saida fiel" (`pos_runner/
+        saida_fiel.py`, algoritmo EXATO do pre-registro congelado por hash -- `garantir_saida_fiel_
+        registrada`, chamado 1x no startup, ver `__init__`) de forma INCREMENTAL para cada sinal V3
+        REAL (`pr3_signals`) deste (pool,tf), em 72h/7d -- SO escreve em `pr3_saidas_sombra`, NUNCA em
+        `pr3_signals`/alertas/`pr_trajetoria`/H1/criterio de sinal. Chamado so via `_sombra_safe`
+        (nunca derruba o ciclo, mesma disciplina das outras sombras)."""
+        for signal in self.storage.pr3_signals(pool=row["pool"], tf=tf):
+            if signal["evento"] != "ENTRADA":
+                continue
+            if signal["stop"] is None or signal["topo"] is None or signal["entry_price"] is None:
+                continue
+            traj = self.storage.pr_trajetoria_get("v3", signal["id"])
+            if traj is None or traj["t_entrada"] is None:
+                continue
+            ev = event_v1_from_json(signal["event_json"])
+            dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+            for horizonte, horizonte_s in HORIZONTES_S.items():
+                r = calcular_r_saida_fiel(det.bars, ev, self.params_v3, self.costs, dex, row["l_bc"],
+                                          t_entrada=float(traj["t_entrada"]), horizonte_s=horizonte_s,
+                                          now=now, sol_usd_at=self._sol_at())
+                self.storage.pr3_saidas_sombra_upsert(signal["id"], horizonte, now, r.status, r.r_mult,
+                                                      r.tp1_realizado)
+
+    @staticmethod
+    def _suporte_sombra_entrada_hipotetica(bars: list[Bar], j0: int, topo: Optional[float]) -> float:
+        """MESMA correcao de entrada de `scripts.varredura_v3._montar_sinal` (veto AMPLO, padrao desta
+        coleta -- RODADA 19 item 1), nunca duplicada em `scripts/` (live.py nao pode importar de la)."""
+        confiavel = qualidade_candle.candle_confiavel_cb(bars, topo)
+        entry_price = bars[j0].open
+        if confiavel(j0) is not None:
+            for idx in range(j0 - 1, -1, -1):
+                if confiavel(idx) is None:
+                    entry_price = bars[idx].close
+                    break
+        return entry_price
+
+    def _sombra_suporte_v3(self, row: Any, tf: str, det: DetectorV1, now: float) -> None:
+        """RODADA 19 item 1 (autorizado -- pre-registrado em docs/pos-runner-v3/
+        PREREGISTRO_SUPORTE_FORWARD_2026-11-12.md, hash congelado por
+        `garantir_suporte_forward_registrada`, chamado 1x no startup, ver `__init__`). Para TODA zona
+        V3 deste (pool,tf) que ja teve `WATCHLIST` (caixa formada) e AINDA nao tem linha em
+        `pr3_suporte_sombra` -- NUNCA so a zona ATUAL de `det.zone` (ela ja rola pra frente no MESMO
+        `det.update(bar)` que decide o gatilho oficial, achado em teste: se a revisita e o gatilho sao
+        candles vizinhos, `det.zone` ja seria a zona NOVA antes deste metodo rodar) -- procura a 1a
+        revisita causal ao suporte S (reusa `entrada_suporte.localizar_revisitas_suporte`, MESMA
+        definicao do retrospectivo da rodada 18; `gatilho_idx` = o idx do evento ENTRADA/FORA_DA_IDADE
+        dessa zona, se ja decidido, senao `len(det.bars)` -- zona ainda aberta, tenta de novo no
+        proximo ciclo) e grava. `self._suporte_sombra_zonas_vistas` (por pool,tf) marca zonas ja
+        gravadas OU ja decididas sem revisita elegivel (nunca mais vao achar uma -- a janela fechou),
+        pra nao reexecutar o replay de `localizar_revisitas_suporte` pra sempre. TOPO usa `P_peak` do
+        PROPRIO evento WATCHLIST da zona (nunca `det.peak` atual, que pode ja ser de uma onda/zona
+        posterior). SO GRAVACAO -- nunca gera alerta/sinal, nunca altera `pr3_signals`/criterio/H1.
+        Acompanha (72h/7d, MESMA saida A oficial + toque causal +2R/+5R antes de -1R + K=20 controles
+        aleatorios do MESMO pool/fase, `pos_runner/evidencia.py`) TODAS as linhas ja gravadas deste
+        pool/tf, todo ciclo, idempotente (MESMA disciplina de `_sombra_saida_fiel_v3`). Chamado so via
+        `_sombra_safe`."""
+        if self.sem_suporte_sombra:
+            return
+        pool = row["pool"]
+        created_ts = self._created(row)
+        vistas = self._suporte_sombra_zonas_vistas.setdefault((pool, tf), set())
+        topo_por_zona: dict[int, Optional[float]] = {}
+        idx_decisao_por_zona: dict[int, int] = {}
+        for ev_hist in det.events:
+            zona_hist = ev_hist.data.get("zona")
+            if zona_hist is None:
+                continue
+            if ev_hist.kind == "WATCHLIST":
+                topo_por_zona.setdefault(zona_hist, ev_hist.data.get("P_peak"))
+            elif ev_hist.kind in ("ENTRADA", "FORA_DA_IDADE"):
+                idx_decisao_por_zona[zona_hist] = ev_hist.idx
+        for zona in topo_por_zona:
+            if zona in vistas:
+                continue
+            if self.storage.pr3_suporte_sombra_get(pool, tf, zona) is not None:
+                vistas.add(zona)
+                continue
+            gatilho_idx = idx_decisao_por_zona.get(zona, len(det.bars))
+            revisitas = localizar_revisitas_suporte(det.bars, tf, row["l_bc"], created_ts,
+                                                    self.params_v3, zona, gatilho_idx)
+            if not revisitas:
+                if zona in idx_decisao_por_zona:
+                    vistas.add(zona)   # janela fechada (gatilho ja decidido) sem revisita -- nunca mais
+                continue
+            rev = revisitas[0]
+            j0 = rev.idx + 1
+            if j0 >= len(det.bars):
+                continue   # candle de abertura ainda nao chegou -- tenta de novo no proximo ciclo
+            topo = topo_por_zona[zona]
+            entry_price = self._suporte_sombra_entrada_hipotetica(det.bars, j0, topo)
+            if entry_price > rev.stop and (topo is None or entry_price < topo):
+                risco_pct = 100.0 * (entry_price - rev.stop) / entry_price
+                self.storage.pr3_suporte_sombra_insert(
+                    pool=pool, tf=tf, zona=zona, mint=row["mint"], symbol=row["symbol"],
+                    ts_revisita=det.bars[rev.idx].ts, t_entrada=det.bars[j0].ts,
+                    entry_price=entry_price, stop=rev.stop, topo=topo if topo is not None else entry_price,
+                    s_suporte=rev.s_no_momento, risco_pct=risco_pct,
+                    volume_candle=det.bars[rev.idx].volume, idade_dias=det.age_days(rev.idx),
+                    criado_ts=now,
+                )
+            vistas.add(zona)
+        dex = DEX_OF_LAUNCHPAD.get(row["launchpad"], "desconhecido")
+        for suporte in self.storage.pr3_suporte_sombra_all(pool=pool, tf=tf):
+            idx_entrada = next((i for i, b in enumerate(det.bars) if b.ts == suporte["t_entrada"]), None)
+            if idx_entrada is None or idx_entrada == 0:
+                continue
+            idx_revisita = idx_entrada - 1
+            topo_mult = suporte["topo"] / suporte["entry_price"]
+            s_mult = suporte["s_suporte"] / suporte["entry_price"]
+            candidatos = candidatos_elegiveis(det.bars, created_ts, self.params_v3.age_window_days,
+                                              tf_seconds(tf), idx_revisita, DROP_MIN_CONTROLE,
+                                              MC_MIN_CONTROLE)
+            indices_aleatorios: list[int] = []
+            if len(candidatos) >= N_CONTROLES_MINIMO:
+                entry_id = abs(hash((pool, tf, suporte["t_entrada"]))) % (2 ** 31)
+                indices_aleatorios = sortear_controles(candidatos, entry_id, "suporte_sombra_v3:aleatorio", 20)
+            for horizonte, horizonte_s in HORIZONTES_S.items():
+                ev = EventV1(kind="ENTRADA_SUPORTE_SOMBRA", idx=idx_revisita, ts=suporte["ts_revisita"],
+                            decision_ts=suporte["ts_revisita"],
+                            data={"stop": suporte["stop"], "TOPO": suporte["topo"], "S": suporte["s_suporte"]})
+                r = calcular_r_horizonte(det.bars, ev, self.params_v3, self.costs, dex, row["l_bc"],
+                                         t_entrada=suporte["t_entrada"], horizonte_s=horizonte_s, now=now,
+                                         sol_usd_at=self._sol_at(), veto="amplo")
+                toque_2r = toque_causal(det.bars, idx_entrada, suporte["entry_price"], suporte["stop"],
+                                        2.0, peak=suporte["topo"])
+                toque_5r = toque_causal(det.bars, idx_entrada, suporte["entry_price"], suporte["stop"],
+                                        5.0, peak=suporte["topo"])
+                controles_r: list[Optional[float]] = []
+                for idx_c in indices_aleatorios:
+                    ev_c = evento_controle(det.bars, idx_c, 100.0 * (suporte["entry_price"] - suporte["stop"])
+                                          / suporte["entry_price"], topo_mult, s_mult)
+                    if ev_c is None:
+                        continue
+                    r_c = calcular_r_horizonte(det.bars, ev_c, self.params_v3, self.costs, dex, row["l_bc"],
+                                               t_entrada=det.bars[idx_c + 1].ts, horizonte_s=horizonte_s,
+                                               now=now, sol_usd_at=self._sol_at(), veto="amplo")
+                    controles_r.append(r_c.r_mult)
+                self.storage.pr3_suporte_sombra_saida_upsert(
+                    suporte["id"], horizonte, now, r.status, r.r_mult, toque_2r, toque_5r,
+                    json.dumps(controles_r), len(controles_r),
+                )
+
     def _update_evidencia_v3(self, row: Any, tf: str, now: float) -> None:
         for signal in self.storage.pr3_signals(pool=row["pool"], tf=tf):
             if signal["versao_config_v3"] != self.version_v3 or signal["evento"] != "ENTRADA" or signal["status"] == "cancelado":
@@ -3108,18 +3385,97 @@ class PosRunnerLive:
             grupos, versao=versao, entry_id=entry_id,
         )
 
+    # -- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward p/ V3 -----------------
+    def _carteiras_pools_controle(self, pool_gatilho: str, tf: str, k: int) -> list[str]:
+        """K pools de controle/placebo para o PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md -- mesma
+        fase do detector V1 no MESMO tf do pool-gatilho, SEM posicao aberta em nenhuma versao (senao
+        seria o proprio tipo de caso que o sinal representa), nunca o pool-gatilho. Simplificacao
+        documentada no pre-registro: o pedido original ("fase/idade/MC aproximados") fica so FASE --
+        casar idade/MC exigiria recalcular covariaveis de cada candidato, custo que so o placebo nao
+        justifica. Selecao DETERMINISTICA (ordem alfabetica do endereco do pool, sem random/seed) --
+        reproduzivel, nunca um sorteio diferente a cada chamada."""
+        fase_gatilho = self._fase_label_v1(pool_gatilho, tf)
+        candidatos = sorted(
+            pool for (pool, pool_tf) in self.dets_v1
+            if pool_tf == tf and pool != pool_gatilho and self._fase_label_v1(pool, tf) == fase_gatilho
+            and not self._carteiras_posicao_aberta(pool)
+        )
+        return candidatos[:k]
+
+    def _capturar_carteiras_sinal_v3_holders(self, signal_id: int, tipo: str, pool: str, mint: str,
+                                             launchpad: Optional[str], now: float) -> None:
+        excluded = self.adapter.excluded_accounts(pool, mint, launchpad)
+        holders = self._holders_instrumentado(mint, excluded, pool, now)
+        cobertura_valida = holders.tag != "holders_indisponivel"
+        n_carteiras = n_pessoas = pct_supply = None
+        if cobertura_valida:
+            owners_pct = {o: pct for o, pct in holders.top_holders}
+            n_carteiras, n_pessoas, _grupos = carteiras_pro.pessoas_presentes(list(owners_pct), self._mapa_carteiras_pro)
+            pct_supply = sum(pct for o, pct in owners_pct.items() if o in self._mapa_carteiras_pro)
+        self.storage.pr3_carteiras_sinal_insert(signal_id, tipo, pool, mint, now, n_carteiras, n_pessoas,
+                                                pct_supply, cobertura_valida)
+
+    def _capturar_carteiras_sinal_v3(self, row: Any, signal_id: int, tf: str, now: float) -> None:
+        """PEDIDO 2026-11-10 (rodada 15, Parte 3): no MOMENTO de cada sinal V3 real ("sinal"), grava
+        quantas carteiras/pessoas "pro" estao entre os top holders e qual % do supply -- e o MESMO
+        para K pools de controle/placebo escolhidos no MESMO ciclo ("placebo"). Sem lookahead: tudo
+        resolvido AGORA (holders de data posterior nunca entra aqui). Usa o adapter COMPARTILHADO/
+        rapido (`self.adapter`, default de `_holders_instrumentado`) -- evento raro (1 por sinal V3),
+        MESMA prioridade de uma posicao aberta (ver `_carteiras_prioridade_alta`), nunca consome o
+        orcamento `carteiras_max_chamadas_dia`/`pr_carteiras_tentativa` (esse orcamento e so da coleta
+        horaria de baixa prioridade, Parte 2). SEM_CARTEIRAS=1 desliga isto tambem (mesma chave que
+        desliga o resto do cruzamento H8/H9)."""
+        if self.sem_carteiras:
+            return
+        pool, mint, launchpad = row["pool"], row["mint"], row["launchpad"]
+        self._capturar_carteiras_sinal_v3_holders(signal_id, "sinal", pool, mint, launchpad, now)
+        for pool_controle in self._carteiras_pools_controle(pool, tf, self.carteiras_placebo_k):
+            controle_row = self.storage.pr_pool(pool_controle)
+            if controle_row is None or not controle_row["mint"]:
+                continue
+            self._capturar_carteiras_sinal_v3_holders(
+                signal_id, "placebo", pool_controle, controle_row["mint"], controle_row["launchpad"], now)
+
+    def _alerta_carteiras_sem_sucesso(self, now: float) -> Optional[str]:
+        """HANDOFF 2026-11-12/13: MESMO alarme/limiar de `scripts/saude.py` (`LIMIAR_TENTATIVAS_SEM_
+        SUCESSO=20` tentativas em 24h, 0 sucesso) -- aqui tambem, pra nao depender so do operador
+        rodar `saude.py` manualmente (foi exatamente o que deixou 2 dias sem ningum notar o endpoint
+        RPC morto). `None` = sem alarme (caso normal, heartbeat_text fica EXATAMENTE como antes)."""
+        if self.sem_carteiras:
+            return None
+        inicio_do_dia = now - (now % 86400.0)
+        tentativas = self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria")
+        sucessos = self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria", sucesso=True)
+        if tentativas < 20 or sucessos > 0:
+            return None
+        ultima_classe = self.storage.pr_carteiras_tentativa_ultima_classe_erro("horaria")
+        return (f"COLETA DE CARTEIRAS SEM SUCESSO: {tentativas} tentativa(s) hoje, 0 sucesso(s) "
+               f"(classe do ultimo erro: {ultima_classe or 's/d'})")
+
     def _atualizar_carteiras_horaria(self, row: Any, tf: str, now: float) -> None:
         """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
-        2026-10-29: elegivel quando ha posicao ABERTA (V1 ou V2) OU a fase atual (V1 ou V2) e runner/
-        pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra H9 sem
-        nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da snapshot
-        de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22 chamadas RPC
-        sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate 20x
-        `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada em
-        SNAPSHOTS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao 600/dia
-        => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido. Prioridade BAIXA:
-        nunca atrasa o agendamento oficial (roda DEPOIS de `_schedule` acima) e o proprio cliente RPC
-        (`SolanaRpc`) ja pausa/recua em 429 (rate limiter adaptativo por endpoint)."""
+        2026-10-29: elegivel quando ha posicao ABERTA (V1, V2 ou V3) OU a fase atual (V1 ou V2) e
+        runner/pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra
+        H9 sem nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da
+        snapshot de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22
+        chamadas RPC sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate
+        20x `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada
+        em TENTATIVAS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao
+        600/dia => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido.
+
+        PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado -- diagnostico em docs/pos-runner-v1/
+        DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md): 2 correcoes.
+        (1) O orcamento diario agora conta TENTATIVAS (sucesso+falha, `pr_carteiras_tentativa`), nunca
+        so sucessos (`pr_carteiras_snapshot` so grava em sucesso -- antes disso, 100% de falha deixava
+        o orcamento preso em 0 pra sempre, sem o bot NUNCA se autolimitar de verdade).
+        (2) Prioridade: pools com posicao/sinal ABERTO (`_carteiras_prioridade_alta`) usam o MESMO RPC
+        compartilhado de sempre (`self.adapter`, rapido, prioridade absoluta); os demais elegiveis (so
+        fase runner/pullback, sem posicao aberta) usam `self.adapter_carteiras` (RPC DEDICADO, ritmo
+        deliberadamente baixo) -- nunca mais compete pelo orcamento que lineage/graduacao precisam.
+
+        Prioridade BAIXA no CICLO (nunca atrasa o agendamento oficial, roda DEPOIS de `_schedule`
+        acima); o proprio cliente RPC (`SolanaRpc`) ja pausa/recua em 429 (rate limiter adaptativo por
+        endpoint, agora um limitador PROPRIO pros pools de baixa prioridade)."""
         if self.sem_carteiras:
             return
         pool = row["pool"]
@@ -3129,18 +3485,28 @@ class PosRunnerLive:
         if not self._carteiras_elegivel(pool, tf):
             return
         inicio_do_dia = now - (now % 86400.0)
-        if self.storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
+        if self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria") >= self.carteiras_max_chamadas_dia:
             self._carteiras_ciclo["orcamento_esgotado"] += 1
             return
         self._carteiras_horaria_ultima[pool] = bucket
         self._carteiras_ciclo["tentativas"] += 1
         self._carteiras_ultima_tentativa_ts = now
-        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now)
-        if holders.tag == "holders_indisponivel":
+        adapter = self.adapter if self._carteiras_prioridade_alta(pool) else self.adapter_carteiras
+        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
+                                              adapter=adapter)
+        sucesso = holders.tag != "holders_indisponivel"
+        # HANDOFF 2026-11-12/13: `classe` (conexao/autenticacao/rate_limit/muitas_contas/generico --
+        # ver solana_rpc.classificar_erro) vai pra pr_carteiras_tentativa.erro_classe, pra saude.py
+        # distinguir "endpoint morto" (classe=conexao) de rate limit real, em vez de tudo virar o
+        # mesmo "RateLimited" generico no log (achado real na VM, 2 dias sem ningum notar a causa).
+        classe_erro = (holders.detail or {}).get("classe") if not sucesso else None
+        self.storage.pr_carteiras_tentativa_insert(now, pool, "horaria", sucesso, erro_classe=classe_erro)
+        if not sucesso:
             self._carteiras_ciclo["erros"] += 1
             motivo = (holders.detail or {}).get("motivo", "s/d")
             self._carteiras_ultimo_erro = f"{row['symbol'] or pool}: {motivo}"
-            log.warning("POS-RUNNER carteiras: snapshot horario falhou em %s (%s)", row["symbol"] or pool, motivo)
+            log.warning("POS-RUNNER carteiras: snapshot horario falhou em %s [classe=%s] (%s)",
+                       row["symbol"] or pool, classe_erro or "s/d", motivo)
         else:
             self._carteiras_ciclo["gravados"] += 1
         self._registrar_snapshot_carteiras("horaria", pool, row["mint"], holders, now)
@@ -3151,7 +3517,11 @@ class PosRunnerLive:
         (`pr1_dexpaprika_divergencias` -- compartilhada por V1/V2, mesmos candles do mesmo pool) e o
         candle seguinte quando ja existir nesta chamada (simulate_v1 e re-simulado a cada ciclo sobre
         os candles mais recentes -- quem decide 'confirmar pelo candle seguinte' e aqui, nao dentro do
-        simulador, que so recebe a resposta ja resolvida)."""
+        simulador, que so recebe a resposta ja resolvida). RODADA 17 (achado P1 da Parte B da
+        auditoria 2026-11-10): a closure em si foi extraida pra `qualidade_candle.candle_confiavel_cb`
+        (funcao PURA, sem Storage -- reusada pelos motores offline: horizonte_fixo.py/varredura_v3.py/
+        simular_v3_carteira.py/etc., nunca uma 2a implementacao do mesmo veto); aqui so monta
+        `divergencia_max` (que exige o Storage ao vivo) e delega."""
         # PEDIDO 2026-10-29: alem de SE o candle diverge, guarda a MAIOR diferenca % (qualquer campo)
         # ja registrada pra ele -- so pra nomear a severidade (`candle_corrompido_provavel` quando
         # >50%), o veto em si (nenhum gatilho/TP1/saida decide neste candle) e o MESMO nos dois casos.
@@ -3161,14 +3531,7 @@ class PosRunnerLive:
                 continue
             ts = int(r["candle_ts"])
             divergencia_max[ts] = max(divergencia_max.get(ts, 0.0), r["diff_pct"])
-
-        def cb(j: int) -> Optional[str]:
-            bar = bars[j]
-            anterior = bars[j - 1].close if j > 0 else None
-            seguinte = bars[j + 1].open if j + 1 < len(bars) else None
-            return qualidade_candle.motivo_suspeito(bar, anterior, peak, seguinte, bar.ts in divergencia_max,
-                                                    divergencia_max.get(bar.ts))
-        return cb
+        return qualidade_candle.candle_confiavel_cb(bars, peak, divergencia_max)
 
     # -- PEDIDO (PARTE 1 de 2) FASES 1-2: trajetoria pos-entrada + baseline pareada ---------------------------
     # Medicao AO LADO de V1/V2 (ver pos_runner/evidencia.py): roda DEPOIS de `_update_paper_v1/v2`, nunca
@@ -3753,6 +4116,14 @@ class PosRunnerLive:
                     except Exception:  # noqa: BLE001 - ver evidencia v1 acima (mesma auditoria)
                         log.warning("POS-RUNNER evidencia v3: erro inesperado em %s %s, ignorado neste ciclo",
                                    row["symbol"], tf, exc_info=True)
+                # PEDIDO 2026-11-06 (rodada 12, Parte 3): sombra da saida fiel -- MESMO det_v3/bars ja
+                # atualizados acima, zero chamada de rede nova; `_sombra_safe` garante que nenhuma
+                # excecao daqui alcance o resto do ciclo (mesma disciplina das outras sombras).
+                self._sombra_safe(self._sombra_saida_fiel_v3, row, tf, det_v3, now, contexto="saida_fiel_v3")
+                # PEDIDO 2026-11-12 (rodada 19, item 1): sombra FORWARD "entrada no suporte" -- MESMO
+                # det_v3/bars ja atualizados acima, zero chamada de rede nova; `_sombra_safe` garante
+                # que nenhuma excecao daqui alcance o resto do ciclo (mesma disciplina das outras sombras).
+                self._sombra_safe(self._sombra_suporte_v3, row, tf, det_v3, now, contexto="suporte_sombra_v3")
             # PEDIDO 2026-10-29: persiste a fase ATUAL (V1 e V2) em pr_pools -- saude.py le daqui,
             # nunca do ultimo heartbeat em memoria (que fica defasado/ausente logo apos um restart).
             try:

@@ -47,14 +47,52 @@ MAX_BRACKET_EXPANSIONS = 40
 MAX_BINARY_SEARCH_ITERATIONS = 64
 SIGNATURES_PAGE_SIZE = 1000
 
+# HANDOFF 2026-11-12/13 (achado real na VM): um QuickNode morto (handshake TLS falhando) ficou ~2 dias
+# gerando "RateLimited" em todo log/instrumentacao -- a pausa AUTOIMPOSTA do limitador local
+# (`RateLimiter.on_error_pause`) na tentativa SEGUINTE mascarava a causa REAL (falha de conexao na
+# 1a tentativa), porque `RateLimiter.acquire()` levanta `http.RateLimited` quando ve a pausa, e essa
+# excecao (nunca a original) e quem sobrava em `last`/`type(last).__name__` no log final. `classe`
+# NUNCA decide retry/rodizio por si (isso continua em `call_raw`) -- so rotula a causa real pra quem
+# le o log/saude/heartbeat entender o que houve de verdade.
+CLASSE_CONEXAO = "conexao"              # TLS/DNS/timeout de TRANSPORTE -- antes de qualquer resposta do servidor
+CLASSE_AUTENTICACAO = "autenticacao"    # HTTP 401/403 -- chave invalida/revogada/expirada
+CLASSE_RATE_LIMIT = "rate_limit"        # 429 REAL do servidor (ou limite diario do plano) -- NUNCA a
+                                        # pausa autoimposta do limitador local, que nao passa por classificar_erro
+CLASSE_MUITAS_CONTAS = "muitas_contas"  # erro de aplicacao do MINT especifico (ex. getTokenLargestAccounts
+                                        # "too many accounts") -- falha pontual do token, nunca do endpoint
+CLASSE_GENERICO = "generico"
+# falhas de CONEXAO seguidas no MESMO endpoint antes de marca-lo inalcancavel (pausa curta, nunca
+# a pausa longa de limite diario) -- nunca mais de 2 tentativas full gastas num endpoint morto.
+CONEXAO_FALHAS_PARA_MARCAR = 2
+UNREACHABLE_PAUSE_S = 300.0
+
 
 class RpcError(Exception):
-    """Falha de RPC. `kind`: transport | app | exhausted."""
+    """Falha de RPC. `kind`: transport | app | exhausted. `classe`: ver CLASSE_* acima -- so
+    rotulo pra log/instrumentacao, nunca usado por `call_raw` pra decidir retry/rodizio."""
 
-    def __init__(self, kind: str, message: str = "", code: Optional[int] = None):
+    def __init__(self, kind: str, message: str = "", code: Optional[int] = None,
+                classe: Optional[str] = None):
         super().__init__(f"{kind}: {message}" if message else kind)
         self.kind = kind
         self.code = code
+        self.classe = classe or CLASSE_GENERICO
+
+
+def classificar_erro(exc: BaseException) -> str:
+    """Classe da causa REAL de uma falha de RPC -- ver CLASSE_* acima. `isinstance(exc,
+    requests.RequestException)` sem ter passado por `_send`/`RpcError` = falha de TRANSPORTE antes
+    de qualquer resposta do servidor (TLS/DNS/timeout/conexao recusada)."""
+    if isinstance(exc, requests.exceptions.RequestException):
+        return CLASSE_CONEXAO
+    if isinstance(exc, RpcError):
+        if exc.code in (401, 403):
+            return CLASSE_AUTENTICACAO
+        if exc.code in (429, -32429, DAILY_LIMIT_CODE):
+            return CLASSE_RATE_LIMIT
+        if "too many accounts" in str(exc).lower():
+            return CLASSE_MUITAS_CONTAS
+    return CLASSE_GENERICO
 
 
 class SlotTimeUnresolvable(RuntimeError):
@@ -115,6 +153,11 @@ class SolanaRpc:
         self.failures = 0
         self.pruned: set[str] = set()   # endpoints sem o historico pedido (saem do rodizio)
         self.daily_limited: dict[str, float] = {}   # endpoint -> ate quando fica de fora do rodizio
+        # HANDOFF 2026-11-12/13: endpoint com falha de CONEXAO repetida (CLASSE_CONEXAO) -- pausa
+        # CURTA (UNREACHABLE_PAUSE_S), nunca a pausa longa de limite diario -- nunca mais de
+        # CONEXAO_FALHAS_PARA_MARCAR tentativas full gastas repetindo o MESMO endpoint morto.
+        self.unreachable: dict[str, float] = {}
+        self._falhas_conexao: dict[str, int] = {}
 
     def _send(self, url: str, payload: dict) -> Any:
         t0 = self._clock()
@@ -156,13 +199,15 @@ class SolanaRpc:
         nao numa thread separada) bloqueada por minutos. Agora cada tentativa espera no maximo `self.max_wait_s`
         e a chamada INTEIRA desiste depois de `self.max_total_wait_s` de parede, mesmo com tentativas sobrando."""
         last: Optional[Exception] = None
+        primeira_classe: Optional[str] = None
         start = self._clock()
         for attempt in range(self.max_attempts):
             if self._clock() - start > self.max_total_wait_s:
                 raise RpcError("exhausted", f"{method}: {self.max_total_wait_s:.0f}s de parede sem resposta "
-                                            f"({type(last).__name__ if last else '-'})")
+                                            f"({type(last).__name__ if last else '-'})", classe=primeira_classe)
             now = self._clock()
-            live = [u for u in self.endpoints if u not in self.pruned and self.daily_limited.get(u, 0.0) <= now]
+            live = [u for u in self.endpoints if u not in self.pruned and self.daily_limited.get(u, 0.0) <= now
+                   and self.unreachable.get(u, 0.0) <= now]
             if not live:
                 # todos podados ou no limite diario agora: tenta mesmo assim o que nao foi podado (a pausa expira sozinha)
                 live = [u for u in self.endpoints if u not in self.pruned]
@@ -184,14 +229,27 @@ class SolanaRpc:
             except (requests.RequestException, RpcError) as exc:
                 self.failures += 1
                 last = exc
+                classe = classificar_erro(exc)
+                if primeira_classe is None:
+                    primeira_classe = classe
                 code = getattr(exc, "code", None)
                 if code == DAILY_LIMIT_CODE:
                     self._pause_daily_limit(url)
                 elif code == 429:
                     limiter.on_429()
+                elif classe == CLASSE_CONEXAO:
+                    self._falhas_conexao[url] = self._falhas_conexao.get(url, 0) + 1
+                    if self._falhas_conexao[url] >= CONEXAO_FALHAS_PARA_MARCAR:
+                        self.unreachable[url] = self._clock() + UNREACHABLE_PAUSE_S
+                        log.warning("rpc: %s inalcancavel (falha de conexao repetida) -- fora do rodizio "
+                                   "por %.0fmin", host_of(url), UNREACHABLE_PAUSE_S / 60.0)
+                    limiter.on_error_pause(2.0)   # backoff CURTO fixo p/ falha de conexao -- nunca
+                                                  # crescente (um endpoint morto nunca vai responder
+                                                  # mais rapido so por esperar mais)
                 else:
                     limiter.on_error_pause(2.0 * (attempt + 1))
-                log.debug("rpc %s %s falhou em %s: %s", method, params[:1], host_of(url), type(exc).__name__)
+                log.debug("rpc %s %s falhou em %s [classe=%s]: %s", method, params[:1], host_of(url),
+                         classe, type(exc).__name__)
                 continue
             if not isinstance(body, dict):
                 self.failures += 1
@@ -201,23 +259,28 @@ class SolanaRpc:
             if isinstance(error, dict) and error.get("code") == DAILY_LIMIT_CODE:
                 self.failures += 1
                 self._pause_daily_limit(url)
-                last = RpcError("transport", "limite diario do plano", DAILY_LIMIT_CODE)
+                last = RpcError("transport", "limite diario do plano", DAILY_LIMIT_CODE, classe=CLASSE_RATE_LIMIT)
+                primeira_classe = primeira_classe or CLASSE_RATE_LIMIT
                 continue
             if isinstance(error, dict) and error.get("code") in (429, -32429):
                 self.failures += 1
                 limiter.on_429()
-                last = RpcError("transport", "rate limited", 429)
+                last = RpcError("transport", "rate limited", 429, classe=CLASSE_RATE_LIMIT)
+                primeira_classe = primeira_classe or CLASSE_RATE_LIMIT
                 continue
             if isinstance(error, dict) and error.get("code") == PRUNED_CODE and "cleaned up" in str(error.get("message", "")):
                 self.failures += 1
                 self.pruned.add(url)
                 log.warning("rpc: %s nao tem o historico pedido (bloco apagado) — fora do rodizio", host_of(url))
                 last = RpcError("transport", "historico apagado no endpoint", PRUNED_CODE)
+                primeira_classe = primeira_classe or CLASSE_GENERICO
                 continue
+            self._falhas_conexao.pop(url, None)
             limiter.on_success()
             self._next = (self._next + attempt) % len(live)
             return body
-        raise RpcError("exhausted", f"{method}: {self.max_attempts} tentativas sem resposta ({type(last).__name__ if last else '-'})")
+        raise RpcError("exhausted", f"{method}: {self.max_attempts} tentativas sem resposta "
+                                    f"({type(last).__name__ if last else '-'})", classe=primeira_classe)
 
     def call(self, method: str, params: list) -> Any:
         """`result` da chamada; erro de aplicacao levanta RpcError('app', code=...)."""
@@ -226,7 +289,9 @@ class SolanaRpc:
         if error is not None:
             code = error.get("code") if isinstance(error, dict) else None
             message = error.get("message", "") if isinstance(error, dict) else str(error)
-            raise RpcError("app", f"{method}: {message}", code)
+            exc = RpcError("app", f"{method}: {message}", code)
+            exc.classe = classificar_erro(exc)
+            raise exc
         return body.get("result")
 
     # -- atalhos ------------------------------------------------------------
