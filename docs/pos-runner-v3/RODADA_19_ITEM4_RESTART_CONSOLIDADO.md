@@ -71,6 +71,33 @@ operador, nunca automática.
 
 ## Passo a passo do restart seguro
 
+0. **HANDOFF 2026-11-12/13, item (f) — testar o endpoint RPC ANTES do restart (NUNCA depois).**
+   Achado real desta rodada: um endpoint QuickNode morto (handshake TLS falhando,
+   `[SSL: TLSV1_ALERT_INTERNAL_ERROR]`) ficou ~2 dias parado sem nenhum alerta, porque o bot só
+   nota a falha DEPOIS de já estar rodando com `POS_RUNNER_RPC_URLS` morto configurado — a
+   classificação de erro (ver `solana_rpc.classificar_erro`/`CLASSE_CONEXAO`, rodada desta
+   handoff) ajuda a diagnosticar DEPOIS, mas o jeito mais rápido de nunca repetir o incidente é
+   testar o endpoint ANTES de reiniciar o processo com ele. Com o endpoint que vai para
+   `POS_RUNNER_RPC_URLS` (ou o endpoint dedicado de `CARTEIRAS_RPC_URL`, se configurado
+   separadamente), rode uma chamada real `getTokenLargestAccounts` num mint REAL (qualquer token
+   que o bot já tenha rastreado, nunca um mint inventado):
+   ```bash
+   curl -sS -X POST "$SEU_ENDPOINT_RPC" \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"getTokenLargestAccounts","params":["<MINT_REAL_AQUI>"]}'
+   ```
+   Resultado esperado: um JSON com `"result":{"value":[...]}` (lista de holders). Um mint com
+   "milhões de contas" (ex. USDC) pode responder com um erro de aplicação de "too many accounts
+   requested" (`CLASSE_MUITAS_CONTAS` -- esperado, falha do MINT especifico, nunca do endpoint) --
+   teste com um mint pequeno/novo do próprio radar do bot pra confirmar o endpoint em si. Falha de
+   TLS/handshake/timeout/DNS (sem resposta JSON alguma) significa **endpoint morto**: **NUNCA
+   reinicie o bot com um `POS_RUNNER_RPC_URLS` morto configurado** -- `POS_RUNNER_RPC_URLS` morto
+   equivale a **toda a coleta de carteiras parada em silêncio** (0 sucessos, sem nenhum alerta até
+   a rodada desta handoff, que adiciona o alarme em destaque de `saude.py`/heartbeat -- ver item
+   (b) da handoff 2026-11-12/13 -- mas o alarme só dispara depois de 20 tentativas falhas em 24h;
+   testar ANTES evita até essa janela de atraso). Lineage/graduação/candles seguem funcionando
+   normalmente com um RPC de carteiras morto (são tráfegos/endpoints separados) -- só a coleta de
+   carteiras "pro" fica cega, por isso o sintoma passa despercebido com facilidade.
 1. **Backup antes de qualquer coisa** (o backup diário já existe, `BACKUP_RETENCAO_DIAS` — mas
    confirme que correu nas últimas 24h, ou force um manual, antes de reiniciar com schema novo):
    ```bash
