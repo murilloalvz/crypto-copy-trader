@@ -168,6 +168,24 @@ class SolanaAdapterTests(unittest.TestCase):
         adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
         self.assertEqual(adapter.holders("mintA").tag, "holders_indisponivel")
 
+    def test_holders_propagates_a_classe_do_erro_rpc(self) -> None:
+        """HANDOFF 2026-11-12/13: `holders()` repassa `exc.classe` (classificar_erro, ver
+        solana_rpc.py) pro `HolderCheck.detail` -- nunca so `motivo` em texto livre, pra
+        saude/heartbeat poderem distinguir endpoint morto de rate limit real."""
+        from ..pos_runner.solana_rpc import CLASSE_AUTENTICACAO
+
+        class _FakeRpcFalhaAuth:
+            def call(self, method: str, params: list) -> Any:
+                raise RpcError("transport", "HTTP 401", 401, classe=CLASSE_AUTENTICACAO)
+
+            def token_supply(self, mint: str) -> float:
+                return 100.0
+
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), _FakeRpcFalhaAuth(), LINKS)
+        result = adapter.holders("mintA")
+        self.assertEqual(result.tag, "holders_indisponivel")
+        self.assertEqual(result.detail.get("classe"), CLASSE_AUTENTICACAO)
+
     def test_vamp_risk_flags_an_older_bigger_same_ticker(self):
         adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
         search = lambda symbol: [{"symbol": "AAA", "created_ts": 1.0, "mc_usd": 9_000_000.0}]

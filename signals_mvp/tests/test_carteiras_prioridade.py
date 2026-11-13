@@ -143,6 +143,70 @@ class CarteirasTentativaOrcamentoTests(unittest.TestCase):
         self.assertEqual(
             [r for r in self.h.storage.pr_carteiras_snapshot_all() if r["momento"] == "horaria"], [])
 
+    def test_erro_classe_e_gravado_em_pr_carteiras_tentativa(self) -> None:
+        """HANDOFF 2026-11-12/13: `HolderCheck.detail["classe"]` (ver solana_rpc.classificar_erro)
+        tem que ir pra `pr_carteiras_tentativa.erro_classe` -- nunca so "falhou", pra saude/heartbeat
+        distinguirem endpoint morto de rate limit real."""
+        from ..pos_runner.solana_rpc import CLASSE_CONEXAO
+
+        start_tracking(self.h)
+        self.h.live.carteiras_max_chamadas_dia = 3
+
+        def holders_falha(mint: str, excl: Any) -> HolderCheck:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "teste", "classe": CLASSE_CONEXAO})
+
+        self.h.live.adapter.holders = holders_falha
+        self.h.run_hours(1)
+        inicio_do_dia = self.h.clock() - (self.h.clock() % 86400.0)
+        self.assertEqual(self.h.storage.pr_carteiras_tentativa_ultima_classe_erro("horaria"), CLASSE_CONEXAO)
+        self.assertIsNone(self.h.storage.pr_carteiras_tentativa_ultimo_sucesso_ts("horaria"))
+
+
+class AlertaCarteirasSemSucessoTests(unittest.TestCase):
+    """HANDOFF 2026-11-12/13: `_alerta_carteiras_sem_sucesso` (MESMO limiar do alarme em destaque de
+    `scripts/saude.py`) -- nunca mais 2 dias sem ningum notar um endpoint RPC morto."""
+
+    def setUp(self) -> None:
+        self.h = LiveHarness()
+
+    def tearDown(self) -> None:
+        self.h.close()
+
+    def test_sem_tentativas_nunca_alerta(self) -> None:
+        self.assertIsNone(self.h.live._alerta_carteiras_sem_sucesso(self.h.clock()))
+
+    def test_poucas_tentativas_falhas_ainda_nao_alerta(self) -> None:
+        now = self.h.clock()
+        for _ in range(5):
+            self.h.storage.pr_carteiras_tentativa_insert(now, "POOL1", "horaria", False, erro_classe="conexao")
+        self.assertIsNone(self.h.live._alerta_carteiras_sem_sucesso(now))
+
+    def test_muitas_tentativas_sem_nenhum_sucesso_alerta_com_a_classe(self) -> None:
+        now = self.h.clock()
+        for _ in range(20):
+            self.h.storage.pr_carteiras_tentativa_insert(now, "POOL1", "horaria", False, erro_classe="conexao")
+        alerta = self.h.live._alerta_carteiras_sem_sucesso(now)
+        self.assertIsNotNone(alerta)
+        self.assertIn("20", alerta)
+        self.assertIn("conexao", alerta)
+
+    def test_1_sucesso_no_meio_nunca_alerta(self) -> None:
+        now = self.h.clock()
+        for _ in range(19):
+            self.h.storage.pr_carteiras_tentativa_insert(now, "POOL1", "horaria", False, erro_classe="conexao")
+        self.h.storage.pr_carteiras_tentativa_insert(now, "POOL1", "horaria", True)
+        self.assertIsNone(self.h.live._alerta_carteiras_sem_sucesso(now))
+
+    def test_sem_carteiras_nunca_alerta(self) -> None:
+        h2 = LiveHarness(sem_carteiras=True)
+        try:
+            now = h2.clock()
+            for _ in range(20):
+                h2.storage.pr_carteiras_tentativa_insert(now, "POOL1", "horaria", False, erro_classe="conexao")
+            self.assertIsNone(h2.live._alerta_carteiras_sem_sucesso(now))
+        finally:
+            h2.close()
+
 
 if __name__ == "__main__":
     unittest.main()

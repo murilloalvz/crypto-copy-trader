@@ -314,6 +314,12 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     return out
 
 
+# HANDOFF 2026-11-12/13 (achado real na VM, 2 dias sem ningum notar): com o orcamento corrigido pra
+# contar TENTATIVAS (rodada 15 Parte 2), 0 sucesso em muitas tentativas num dia e um sintoma forte
+# de endpoint RPC morto -- sem este alarme em destaque, ficava so mais uma linha discreta no meio
+# do relatorio. Limiar sugerido pelo operador.
+LIMIAR_TENTATIVAS_SEM_SUCESSO = 20
+
 _RE_CICLO_CARTEIRAS = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER-V1: ciclo .*"
     r"carteiras_tentativas=(?P<tent>\d+) carteiras_gravados=(?P<grav>\d+) "
@@ -391,6 +397,16 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
                   f"orcamento hoje: {tentativas_hoje}/{rt['carteiras_max_chamadas_dia']} tentativa(s) "
                   f"({sucessos_hoje} sucesso(s)) | "
                   f"(config lida ha {_fmt_h(now - rt['ts'])}, no proprio processo ao vivo)")
+        # HANDOFF 2026-11-12/13: alarme em DESTAQUE -- lido do BANCO (pr_carteiras_tentativa, nunca
+        # so do log, que pode rotacionar/faltar), nunca some no meio do relatorio.
+        if tentativas_hoje >= LIMIAR_TENTATIVAS_SEM_SUCESSO and sucessos_hoje == 0:
+            ultimo_sucesso_ts = storage.pr_carteiras_tentativa_ultimo_sucesso_ts("horaria")
+            ultima_classe = storage.pr_carteiras_tentativa_ultima_classe_erro("horaria")
+            ultimo_sucesso_txt = (f"ha {_fmt_h(now - ultimo_sucesso_ts)}" if ultimo_sucesso_ts is not None
+                                 else "nunca (nesta copia do banco)")
+            out.append(f"  !!! COLETA DE CARTEIRAS SEM SUCESSO: {tentativas_hoje} tentativa(s) hoje, "
+                      f"0 sucesso(s) | ultima classe de erro: {ultima_classe or 's/d'} | "
+                      f"ultimo sucesso: {ultimo_sucesso_txt} !!!")
     else:
         out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
     linhas = _linhas_log(logs_dir, 86400.0, now)

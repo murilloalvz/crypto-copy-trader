@@ -202,7 +202,12 @@ class SolanaAdapter(ChainAdapter):
             largest = self.rpc.call("getTokenLargestAccounts", [mint]) or {}
             supply = self.rpc.token_supply(mint)
         except RpcError as exc:
-            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}"})
+            # HANDOFF 2026-11-12/13: `classe` (ver solana_rpc.classificar_erro) rotula a causa REAL
+            # (conexao/autenticacao/rate_limit/muitas_contas/generico) -- nunca mais todo erro de RPC
+            # virando "RateLimited" no log/saude/heartbeat (achado real na VM: endpoint morto por TLS
+            # mascarado assim por 2 dias). `str(exc)` nunca inclui a URL/api-key crua (RpcError.message
+            # e sempre construido de componentes controlados -- ver solana_rpc.py).
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
         # exclusoes do item 2.7/INTERPRETACOES.md #5: queima + programas base SEMPRE, mais o que o chamador
         # passou (vaults do pool/bonding curve especificos deste token, via `_excluded_accounts`)
         exclude_accounts = frozenset(exclude_accounts) | BASE_EXCLUDED_PROGRAMS | BURN_ADDRESSES

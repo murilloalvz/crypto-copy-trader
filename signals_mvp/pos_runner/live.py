@@ -1883,6 +1883,7 @@ class PosRunnerLive:
             self._heartbeat_429, fases_v1, len(self._due_list(now)), counts.get("dado_invalido", 0),
             counts.get("l_bc_suspeito", 0), counts.get("filtrado_mc_baixo", 0), counts.get("filtrado_idade", 0),
             self.version_v1, uptime_sessao_h=uptime_sessao_h,
+            alerta_carteiras=self._alerta_carteiras_sem_sucesso(now),
         )
         self._send(text)
         if not self.sem_v2:
@@ -3435,6 +3436,22 @@ class PosRunnerLive:
             self._capturar_carteiras_sinal_v3_holders(
                 signal_id, "placebo", pool_controle, controle_row["mint"], controle_row["launchpad"], now)
 
+    def _alerta_carteiras_sem_sucesso(self, now: float) -> Optional[str]:
+        """HANDOFF 2026-11-12/13: MESMO alarme/limiar de `scripts/saude.py` (`LIMIAR_TENTATIVAS_SEM_
+        SUCESSO=20` tentativas em 24h, 0 sucesso) -- aqui tambem, pra nao depender so do operador
+        rodar `saude.py` manualmente (foi exatamente o que deixou 2 dias sem ningum notar o endpoint
+        RPC morto). `None` = sem alarme (caso normal, heartbeat_text fica EXATAMENTE como antes)."""
+        if self.sem_carteiras:
+            return None
+        inicio_do_dia = now - (now % 86400.0)
+        tentativas = self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria")
+        sucessos = self.storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria", sucesso=True)
+        if tentativas < 20 or sucessos > 0:
+            return None
+        ultima_classe = self.storage.pr_carteiras_tentativa_ultima_classe_erro("horaria")
+        return (f"COLETA DE CARTEIRAS SEM SUCESSO: {tentativas} tentativa(s) hoje, 0 sucesso(s) "
+               f"(classe do ultimo erro: {ultima_classe or 's/d'})")
+
     def _atualizar_carteiras_horaria(self, row: Any, tf: str, now: float) -> None:
         """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
         2026-10-29: elegivel quando ha posicao ABERTA (V1, V2 ou V3) OU a fase atual (V1 ou V2) e
@@ -3478,12 +3495,18 @@ class PosRunnerLive:
         holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
                                               adapter=adapter)
         sucesso = holders.tag != "holders_indisponivel"
-        self.storage.pr_carteiras_tentativa_insert(now, pool, "horaria", sucesso)
+        # HANDOFF 2026-11-12/13: `classe` (conexao/autenticacao/rate_limit/muitas_contas/generico --
+        # ver solana_rpc.classificar_erro) vai pra pr_carteiras_tentativa.erro_classe, pra saude.py
+        # distinguir "endpoint morto" (classe=conexao) de rate limit real, em vez de tudo virar o
+        # mesmo "RateLimited" generico no log (achado real na VM, 2 dias sem ningum notar a causa).
+        classe_erro = (holders.detail or {}).get("classe") if not sucesso else None
+        self.storage.pr_carteiras_tentativa_insert(now, pool, "horaria", sucesso, erro_classe=classe_erro)
         if not sucesso:
             self._carteiras_ciclo["erros"] += 1
             motivo = (holders.detail or {}).get("motivo", "s/d")
             self._carteiras_ultimo_erro = f"{row['symbol'] or pool}: {motivo}"
-            log.warning("POS-RUNNER carteiras: snapshot horario falhou em %s (%s)", row["symbol"] or pool, motivo)
+            log.warning("POS-RUNNER carteiras: snapshot horario falhou em %s [classe=%s] (%s)",
+                       row["symbol"] or pool, classe_erro or "s/d", motivo)
         else:
             self._carteiras_ciclo["gravados"] += 1
         self._registrar_snapshot_carteiras("horaria", pool, row["mint"], holders, now)

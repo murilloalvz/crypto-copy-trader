@@ -282,6 +282,10 @@ CREATE TABLE IF NOT EXISTS pr_carteiras_tentativa (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, pool TEXT NOT NULL, momento TEXT NOT NULL,
   sucesso INTEGER NOT NULL
 );
+-- `erro_classe` (HANDOFF 2026-11-12/13): NULL em sucesso; em falha, a classe real do erro RPC
+-- (conexao/autenticacao/rate_limit/muitas_contas/generico -- ver pos_runner/solana_rpc.
+-- classificar_erro) -- nunca so "falha", pra saude.py poder distinguir endpoint morto de rate
+-- limit real. Coluna adicionada via _ensure_columns (banco do operador ja existe sem ela).
 CREATE INDEX IF NOT EXISTS pr_carteiras_tentativa_ts ON pr_carteiras_tentativa (ts, momento);
 -- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward (SO GRAVACAO) para a
 -- V3 -- no MOMENTO de cada sinal real ("sinal") e dos K pools de controle/placebo escolhidos no
@@ -712,6 +716,10 @@ class Storage:
             # carga) permite quebrar p50/p95/max POR TIER e por pool. NULL em linhas anteriores a esta
             # entrega (nunca inventado retroativamente).
             self._ensure_columns("pr_candle_latencia", {"tier": "INTEGER"})
+            # HANDOFF 2026-11-12/13: classe REAL do erro de RPC (conexao/autenticacao/rate_limit/
+            # muitas_contas/generico) em cada tentativa FALHA de coleta de carteiras -- NULL em
+            # sucesso e em tentativas anteriores a esta entrega (nunca inventado retroativamente).
+            self._ensure_columns("pr_carteiras_tentativa", {"erro_classe": "TEXT"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1847,11 +1855,12 @@ class Storage:
     # TENTATIVAS (sucesso+falha), nunca so sucessos -- `pr_carteiras_snapshot` so grava em sucesso
     # (dado ausente nunca vira linha fabricada), o que deixava o orcamento diario preso em 0 pra
     # sempre quando toda tentativa falhava (RateLimited) e o bot nunca se autolimitava de verdade.
-    def pr_carteiras_tentativa_insert(self, ts: float, pool: str, momento: str, sucesso: bool) -> None:
+    def pr_carteiras_tentativa_insert(self, ts: float, pool: str, momento: str, sucesso: bool,
+                                      erro_classe: Optional[str] = None) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT INTO pr_carteiras_tentativa (ts, pool, momento, sucesso) VALUES (?,?,?,?)",
-                (ts, pool, momento, int(sucesso)))
+                "INSERT INTO pr_carteiras_tentativa (ts, pool, momento, sucesso, erro_classe) VALUES (?,?,?,?,?)",
+                (ts, pool, momento, int(sucesso), None if sucesso else erro_classe))
 
     def pr_carteiras_tentativa_count_since(self, since_ts: float, momento: Optional[str] = None,
                                            sucesso: Optional[bool] = None) -> int:
@@ -1865,6 +1874,29 @@ class Storage:
             args.append(int(sucesso))
         row = self._one(sql, tuple(args))
         return int(row["n"]) if row else 0
+
+    def pr_carteiras_tentativa_ultimo_sucesso_ts(self, momento: Optional[str] = None) -> Optional[float]:
+        """HANDOFF 2026-11-12/13: ts da ULTIMA tentativa bem-sucedida (qualquer data, nunca limitado a
+        24h) -- "s/d"/None se nunca houve sucesso (nunca inventa um horario)."""
+        sql = "SELECT MAX(ts) AS ts FROM pr_carteiras_tentativa WHERE sucesso=1"
+        args: list[Any] = []
+        if momento is not None:
+            sql += " AND momento=?"
+            args.append(momento)
+        row = self._one(sql, tuple(args))
+        return float(row["ts"]) if row and row["ts"] is not None else None
+
+    def pr_carteiras_tentativa_ultima_classe_erro(self, momento: Optional[str] = None) -> Optional[str]:
+        """HANDOFF 2026-11-12/13: `erro_classe` da tentativa FALHA mais recente -- None se nunca
+        houve falha (ou se a falha e anterior a esta entrega, coluna NULL)."""
+        sql = "SELECT erro_classe FROM pr_carteiras_tentativa WHERE sucesso=0"
+        args: list[Any] = []
+        if momento is not None:
+            sql += " AND momento=?"
+            args.append(momento)
+        sql += " ORDER BY ts DESC LIMIT 1"
+        row = self._one(sql, tuple(args))
+        return row["erro_classe"] if row else None
 
     # -- PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward de carteiras "pro" p/ V3 -----
     def pr3_carteiras_sinal_insert(self, signal_id: int, tipo: str, pool: str, mint: Optional[str], ts: float,
