@@ -20,7 +20,8 @@ Secoes:
  (c) placar V1/V2 pela regra pre-registrada (`analise.condicional.rodar_h1`, sem copia);
  (d) [opt-in] transacoes bem-sucedidas por carteira "pro" antes/depois do congelamento da lista,
      SO via getSignaturesForAddress (nunca getTransaction -> conta transacoes, NAO compras);
- (e) MIN/MAX(grad_ts) de pr_pools e tokens ja vistos em qualquer tabela do banco.
+ (e) MIN/MAX(grad_ts) de pr_pools e tokens ja vistos em qualquer tabela do banco;
+ (f) rendimento ao vivo da V3: fracao dos pools runner (sob rastreio) com >=1 ENTRADA.
 
 Uso (na VM, a partir da raiz do repo; leve -- so (d) demora, e so se pedido):
     python -m signals_mvp.scripts.fase_a_vm --db signals_mvp/dados/estado.sqlite
@@ -505,6 +506,28 @@ def secao_e(con, exportar: Optional[Path] = None) -> list[str]:
     return out
 
 
+def secao_f(con) -> list[str]:
+    """Rendimento AO VIVO da V3 (insumo do planejamento do B2, sem desfecho): dos pools que a V3 viu
+    virar runner DURANTE o rastreio (`pr_funil_marcos`, etapa 'runner', so gravado com o pool ja
+    admitido e a versao ja iniciada -- live.py:3092-3095), quantos tiveram >=1 ENTRADA. Multiplicado
+    pela fracao de graduacoes validas que viram runner (piloto_rendimento_b2.py), estima sinais por
+    1.000 graduacoes sem precisar baixar milhares de pools."""
+    from .piloto_rendimento_b2 import clopper_pearson
+    out = ["## (f) Rendimento ao vivo da V3: P(>=1 ENTRADA | pool virou runner sob rastreio)", ""]
+    if "pr_funil_marcos" not in _tabelas(con) or "pr3_signals" not in _tabelas(con):
+        return out + ["tabelas ausentes"]
+    runners = {r[0] for r in con.execute("SELECT DISTINCT pool FROM pr_funil_marcos WHERE versao='v3' AND etapa='runner'")}
+    caixas = {r[0] for r in con.execute("SELECT DISTINCT pool FROM pr_funil_marcos WHERE versao='v3' AND etapa='caixa'")}
+    entradas = {r[0] for r in con.execute("SELECT DISTINCT pool FROM pr3_signals WHERE evento='ENTRADA'")}
+    com = len(runners & entradas)
+    lo, hi = clopper_pearson(com, len(runners))
+    out.append(f"- pools runner V3={len(runners)}; com caixa={len(runners & caixas)}; com >=1 ENTRADA={com} "
+               f"-> {100.0 * com / len(runners) if runners else 0:.1f}% (IC95% {100 * lo:.1f}-{100 * hi:.1f}%)")
+    out.append(f"- pools com ENTRADA V3 sem marco de runner sob rastreio: {len(entradas - runners)} "
+               "(runner antes da admissao -- fora do denominador acima)")
+    return out
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -516,7 +539,8 @@ def executar(db_path: Path, now: Optional[float] = None, simbolos: Optional[set[
         st = _storage_somente_leitura(con)
         out = [f"# Fase A — consultas [VM] (somente leitura) — {_fmt_ts(now)}", f"banco: {db_path}", ""]
         for nome, fn in (("a", lambda: secao_a(st, con)), ("b", lambda: secao_b(st, con, now, simbolos)),
-                         ("c", lambda: secao_c(st)), ("e", lambda: secao_e(con, exportar))):
+                         ("c", lambda: secao_c(st)), ("e", lambda: secao_e(con, exportar)),
+                         ("f", lambda: secao_f(con))):
             try:
                 out += fn()
             except Exception as exc:   # uma secao quebrada nunca esconde as outras

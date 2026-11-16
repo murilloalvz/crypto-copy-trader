@@ -53,6 +53,7 @@ class FaseAVmTests(unittest.TestCase):
                    "('v3', 3, 'solana', 'P2', '1h', 0, 0)")
         db.execute("INSERT INTO pr_horizonte_fixo (versao, origem, entry_key, horizonte, calculado_ts, status, r_mult, "
                    "candle_marca_ts) VALUES ('v3','ao_vivo','3','72h',0,'marcado',-0.4,?)", (T0 + 9 * 3600,))
+        db.execute("INSERT INTO pr_funil_marcos (pool, versao, etapa, ts) VALUES ('P1','v3','runner',0)")
         db.close()
         self.db = paths.db
 
@@ -74,6 +75,7 @@ class FaseAVmTests(unittest.TestCase):
         self.assertIn("AUSENTE do script", texto)              # P2 sem candles -> some da carteira
         self.assertIn("RECUSADO: plano nao registrado", texto)  # nunca registra o plano por conta propria
         self.assertIn("tokens (mint) distintos em QUALQUER tabela com coluna `mint`: 2", texto)
+        self.assertIn("pools runner V3=1; com caixa=0; com >=1 ENTRADA=1 -> 100.0%", texto)
 
     def test_placar_v1_v2_usa_rodar_h1_quando_o_plano_esta_registrado(self) -> None:
         from ..analise import condicional as cond
