@@ -274,6 +274,12 @@ CREATE TABLE IF NOT EXISTS pr_carteiras_snapshot (
   grupos_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pr_carteiras_snapshot_pool ON pr_carteiras_snapshot (pool, momento);
+-- RODADA 21 (2026-11-16, autorizada): `coletor_versao`/`contas_totais`/`contas_excluidas_pool_curva`/
+-- `contas_sem_owner` -- correcao do owner usado pela instrumentacao de carteiras "pro" (RODADA 20,
+-- pergunta 3: `holders()` lia sempre o Program ID do SPL Token Program como "owner", nunca a wallet
+-- real). NULL em linhas anteriores a este deploy (coletadas com o owner sempre vazio -- ver
+-- EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md, fora de qualquer amostra). Colunas adicionadas via
+-- _ensure_columns (banco do operador ja existe sem elas).
 -- PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizada): 1 linha por TENTATIVA (sucesso OU falha) da
 -- coleta de carteiras "pro" -- `pr_carteiras_snapshot` so grava em sucesso, entao o orcamento diario
 -- (`carteiras_max_chamadas_dia`) precisa contar tentativas daqui, nunca so sucessos de la (ver
@@ -302,6 +308,9 @@ CREATE TABLE IF NOT EXISTS pr3_carteiras_sinal (
   UNIQUE (signal_id, tipo, pool)
 );
 CREATE INDEX IF NOT EXISTS pr3_carteiras_sinal_signal ON pr3_carteiras_sinal (signal_id, tipo);
+-- RODADA 21 (2026-11-16, autorizada): MESMA correcao/colunas de `pr_carteiras_snapshot` acima --
+-- `coletor_versao` NULL = linha anterior ao fix (owner sempre vazio, fora de qualquer amostra por
+-- EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md). Colunas adicionadas via _ensure_columns.
 -- PEDIDO CONSOLIDADO FASE 2: POS-RUNNER-V2 (MESMO detector/simulador/banca da V1, so parametros
 -- diferentes -- ver params_v2.py). Tabelas PROPRIAS (nunca pr1_*): a UNIQUE key de pr1_signals e
 -- (chain,pool,tf,evento,ts_fechamento) SEM a versao -- se a V2 escrevesse ali, um ENTRADA da V2 no
@@ -720,6 +729,22 @@ class Storage:
             # muitas_contas/generico) em cada tentativa FALHA de coleta de carteiras -- NULL em
             # sucesso e em tentativas anteriores a esta entrega (nunca inventado retroativamente).
             self._ensure_columns("pr_carteiras_tentativa", {"erro_classe": "TEXT"})
+            # RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de
+            # carteiras "pro" -- `coletor_versao` marca qual logica gerou a linha (NULL = antes da
+            # correcao, chain_adapter.CARTEIRAS_COLETOR_VERSAO = depois; EMENDA_2026-11-16_CORRECAO_
+            # OWNER_CARTEIRAS.md declara linhas com coletor_versao NULL fora de qualquer amostra, zero
+            # estrutural). `contas_totais`/`contas_excluidas_pool_curva`/`contas_sem_owner` medem a
+            # cobertura REAL do top-20 (ver RODADA 20, pergunta 3) -- NULL em linhas anteriores (nunca
+            # inventado retroativamente).
+            colunas_cobertura_owner = {
+                "coletor_versao": "TEXT", "contas_totais": "INTEGER",
+                "contas_excluidas_pool_curva": "INTEGER", "contas_sem_owner": "INTEGER",
+            }
+            self._ensure_columns("pr_carteiras_snapshot", colunas_cobertura_owner)
+            # `pr3_carteiras_sinal` tambem ganha `erro_classe` (so existe na tentativa horaria, ate
+            # aqui) -- item 4 da RODADA 21 pede a classe gravada JUNTO com cobertura_valida=0, nunca
+            # so o booleano (saude.py precisa distinguir owner_nao_resolvido de outras falhas de RPC).
+            self._ensure_columns("pr3_carteiras_sinal", {**colunas_cobertura_owner, "erro_classe": "TEXT"})
             current = self._db.execute("PRAGMA user_version").fetchone()[0]
             if current == 0:
                 self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -1819,15 +1844,22 @@ class Storage:
     def pr_carteiras_snapshot_insert(self, chave: str, ts: float, chain: str, pool: str, mint: str,
                                      momento: str, top_holders: list[tuple[str, float]],
                                      n_carteiras_pro: int, n_pessoas_pro: int, grupos: list[str],
-                                     versao: Optional[str] = None, entry_id: Optional[int] = None) -> bool:
-        """Idempotente por `chave` -- True se inseriu (1a vez), False se ja existia (nunca duplica)."""
+                                     versao: Optional[str] = None, entry_id: Optional[int] = None,
+                                     coletor_versao: Optional[str] = None, contas_totais: Optional[int] = None,
+                                     contas_excluidas_pool_curva: Optional[int] = None,
+                                     contas_sem_owner: Optional[int] = None) -> bool:
+        """Idempotente por `chave` -- True se inseriu (1a vez), False se ja existia (nunca duplica).
+        RODADA 21: `coletor_versao`/`contas_*` ficam NULL quando o chamador nao passa (coleta antiga
+        ou call site ainda nao migrado) -- nunca um 0 fabricado."""
         with self._lock:
             cur = self._db.execute(
                 "INSERT OR IGNORE INTO pr_carteiras_snapshot (chave,ts,chain,pool,mint,momento,versao,"
-                "entry_id,top_holders_json,n_carteiras_pro,n_pessoas_pro,grupos_json) VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "entry_id,top_holders_json,n_carteiras_pro,n_pessoas_pro,grupos_json,coletor_versao,"
+                "contas_totais,contas_excluidas_pool_curva,contas_sem_owner) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (chave, ts, chain, pool, mint, momento, versao, entry_id, json.dumps(top_holders),
-                 n_carteiras_pro, n_pessoas_pro, json.dumps(grupos)),
+                 n_carteiras_pro, n_pessoas_pro, json.dumps(grupos), coletor_versao, contas_totais,
+                 contas_excluidas_pool_curva, contas_sem_owner),
             )
             return bool(cur.rowcount)
 
@@ -1898,16 +1930,38 @@ class Storage:
         row = self._one(sql, tuple(args))
         return row["erro_classe"] if row else None
 
+    def pr_carteiras_tentativa_count_classe_since(self, since_ts: float, classe: str,
+                                                  momento: Optional[str] = None) -> int:
+        """RODADA 21 (2026-11-16): quantas tentativas (desde `since_ts`) falharam com uma `classe`
+        especifica (ex.: `chain_adapter.CLASSE_OWNER_NAO_RESOLVIDO`) -- base do alarme em saude.py."""
+        sql = "SELECT COUNT(*) AS n FROM pr_carteiras_tentativa WHERE ts>=? AND erro_classe=?"
+        args: list[Any] = [since_ts, classe]
+        if momento is not None:
+            sql += " AND momento=?"
+            args.append(momento)
+        row = self._one(sql, tuple(args))
+        return int(row["n"]) if row else 0
+
     # -- PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward de carteiras "pro" p/ V3 -----
     def pr3_carteiras_sinal_insert(self, signal_id: int, tipo: str, pool: str, mint: Optional[str], ts: float,
                                    n_carteiras_pro: Optional[int], n_pessoas_pro: Optional[int],
-                                   pct_supply: Optional[float], cobertura_valida: bool) -> bool:
-        """Idempotente por (signal_id,tipo,pool) -- True se inseriu (1a vez), False se ja existia."""
+                                   pct_supply: Optional[float], cobertura_valida: bool,
+                                   coletor_versao: Optional[str] = None, contas_totais: Optional[int] = None,
+                                   contas_excluidas_pool_curva: Optional[int] = None,
+                                   contas_sem_owner: Optional[int] = None,
+                                   erro_classe: Optional[str] = None) -> bool:
+        """Idempotente por (signal_id,tipo,pool) -- True se inseriu (1a vez), False se ja existia.
+        RODADA 21: `coletor_versao`/`contas_*` ficam NULL quando o chamador nao passa (nunca um 0
+        fabricado); `erro_classe` so grava quando `cobertura_valida=False` (MESMA convencao de
+        `pr_carteiras_tentativa_insert`)."""
         with self._lock:
             cur = self._db.execute(
                 "INSERT OR IGNORE INTO pr3_carteiras_sinal (signal_id,tipo,pool,mint,ts,n_carteiras_pro,"
-                "n_pessoas_pro,pct_supply,cobertura_valida) VALUES (?,?,?,?,?,?,?,?,?)",
-                (signal_id, tipo, pool, mint, ts, n_carteiras_pro, n_pessoas_pro, pct_supply, int(cobertura_valida)),
+                "n_pessoas_pro,pct_supply,cobertura_valida,coletor_versao,contas_totais,"
+                "contas_excluidas_pool_curva,contas_sem_owner,erro_classe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (signal_id, tipo, pool, mint, ts, n_carteiras_pro, n_pessoas_pro, pct_supply,
+                 int(cobertura_valida), coletor_versao, contas_totais, contas_excluidas_pool_curva,
+                 contas_sem_owner, None if cobertura_valida else erro_classe),
             )
             return bool(cur.rowcount)
 
@@ -1916,6 +1970,13 @@ class Storage:
 
     def pr3_carteiras_sinal_all(self) -> list[sqlite3.Row]:
         return self._all("SELECT * FROM pr3_carteiras_sinal ORDER BY ts, id")
+
+    def pr3_carteiras_sinal_count_erro_classe(self, classe: str) -> int:
+        """RODADA 21 (2026-11-16): quantas linhas sinal/placebo falharam com uma `classe` especifica
+        -- base do alarme em saude.py (MESMO papel de `pr_carteiras_tentativa_count_classe_since`,
+        mas pr3_carteiras_sinal nao tem janela de tentativas, so linhas por sinal)."""
+        row = self._one("SELECT COUNT(*) AS n FROM pr3_carteiras_sinal WHERE erro_classe=?", (classe,))
+        return int(row["n"]) if row else 0
 
     # -- gestao de banca da V1 (item 2.10) --------------------------------------------------------
     def pr1_bankroll_load(self, tf: str, versao_config_v1: str) -> Optional[str]:

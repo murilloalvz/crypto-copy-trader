@@ -23,7 +23,7 @@ from ..geckoterminal import parse_pools_response
 from ..http import ApiError, RateLimited
 from ..models import ChainCtx, PoolSnap
 from .candles import Bar, OhlcvStore
-from .enumerate import LAUNCHPADS
+from .enumerate import GET_MULTIPLE_ACCOUNTS_BATCH, LAUNCHPADS
 from .solana_rpc import RpcError, SolanaRpc
 
 # `GRAD_DEX`/`LAUNCHPAD_NAME`/`SOURCES` vivem em `live.py` (o V0 ja os usa); importados aqui dentro dos
@@ -41,6 +41,16 @@ BASE_EXCLUDED_PROGRAMS = frozenset({
     "11111111111111111111111111111111111111111",         # System Program
 })
 HOLDER_CONCENTRADO_PCT = 1.5
+
+# RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de carteiras "pro"
+# -- ver `SolanaAdapter.holders_com_owner` abaixo. `classe` propria (nunca confundida com as de
+# `solana_rpc.classificar_erro`, que sao so de falha de TRANSPORTE): aqui a chamada RPC teve sucesso,
+# o dado em si e que nao permite nenhuma leitura valida de owner.
+CLASSE_OWNER_NAO_RESOLVIDO = "owner_nao_resolvido"
+# versao do coletor gravada em CADA linha nova de `pr_carteiras_snapshot`/`pr3_carteiras_sinal` (coluna
+# `coletor_versao`, NULL em linhas anteriores a este deploy) -- marca explicita de qual logica gerou a
+# linha, pra EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md declarar o corte de amostra sem ambiguidade.
+CARTEIRAS_COLETOR_VERSAO = "owner_fix_v1_2026-11-16"
 
 
 @dataclass
@@ -240,6 +250,107 @@ class SolanaAdapter(ChainAdapter):
         if top_pct >= HOLDER_CONCENTRADO_PCT:
             return HolderCheck(tag="HOLDER_CONCENTRADO", top_holder_pct=top_pct, top_holders=owners)
         return HolderCheck(top_holder_pct=top_pct, top_holders=owners)
+
+    # -- RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de ------------
+    # carteiras "pro" (pr_carteiras_snapshot/pr3_carteiras_sinal) -----------------------------------------
+    def holders_com_owner(self, mint: str, exclude_accounts: frozenset[str] = frozenset()) -> HolderCheck:
+        """RODADA 20, pergunta 3 (achado): `holders()` acima le `value.owner` de `getAccountInfo`, que
+        para QUALQUER token account e sempre o Program ID do SPL Token Program (`TokenkegQfe...`,
+        JA esta em `BASE_EXCLUDED_PROGRAMS`) -- nunca a wallet que de fato detem os tokens (essa fica
+        em `value.data.parsed.info.owner`; confirmado ao vivo contra api.mainnet-beta.solana.com e
+        pelo metodo vizinho `authorities()`, que JA faz esse unwrap certo 20 linhas abaixo). Resultado:
+        em produção, `owners`/`top_holders` de `holders()` SEMPRE vem vazio e `top_pct` SEMPRE 0.0.
+
+        RODADA 21, item 1 (blast radius): `holders()` alimenta `tags`/`holders_tag`/`holder_top1_pct`
+        (HOLDER_CONCENTRADO, `live.py: _entry_v1`/`_entry_v2`) e `carteiras_pro_presentes`/
+        `n_pessoas_pro` em `pr1_signals`/`pr2_signals` (hipotese pre-registrada H8,
+        `docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md`) -- `holders()` fica BYTE A BYTE IGUAL
+        (ver `test_holders_nunca_foi_alterado_por_holders_com_owner`); H8 continua recebendo o MESMO
+        dado de sempre (sempre 0, bug conhecido mas FORA desta rodada -- precisa de emenda propria ao
+        pre-registro H8, nunca decidida aqui). Esta funcao e usada SO pela instrumentacao
+        "carteiras forward" (`pr_carteiras_snapshot`/`pr3_carteiras_sinal`), nunca por sinal/filtro.
+
+        Item 2: `getMultipleAccounts` (jsonParsed) em LOTES de `GET_MULTIPLE_ACCOUNTS_BATCH`=5
+        contas (EMENDA 2026-10-16/17, `enumerate._verify_pools_exist_on_chain`: QuickNode no plano
+        "discover" free recusa mais de 5 chaves por chamada, HTTP 413 -- ja medido em producao; o
+        pedido original queria 1 chamada so, mas reintroduzir esse 413 conhecido custaria mais que
+        economizar 3 chamadas), nunca 1 `getAccountInfo` por conta (orcamento/ritmo do RPC dedicado
+        de carteiras conta CHAMADAS de verdade via `SolanaRpc.calls` -- isto reduz de ate 21 pra ate
+        6 chamadas por snapshot, nunca aumenta).
+
+        Item 3: `detail` sempre traz `contas_totais` (<=20, quantas `getTokenLargestAccounts`
+        devolveu), `contas_excluidas_pool_curva` (owner bateu no programa do launchpad/AMM destino/
+        Token Program/queima) e `contas_sem_owner` (a conta nao existe mais ou `getMultipleAccounts`
+        nao devolveu parsed.info.owner) -- cobertura real = 1 - (excluidas+sem_owner)/totais.
+
+        Item 4: invariante de sanidade -- sucesso aparente (RPC respondeu, supply existe) mas NENHUM
+        owner valido sobrou (todas excluidas/sem_owner) OU a soma de pct do top-20 resolvido e 0 nunca
+        fica `cobertura_valida=1` por omissao: volta `tag='holders_indisponivel'` com
+        `classe=CLASSE_OWNER_NAO_RESOLVIDO`, MESMA chave que os chamadores (`_atualizar_carteiras_horaria`/
+        `_capturar_carteiras_sinal_v3_holders`) ja usam para decidir `cobertura_valida`/`erro_classe`."""
+        if self.rpc is None:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "sem RPC configurado"})
+        try:
+            largest = self.rpc.call("getTokenLargestAccounts", [mint]) or {}
+            supply = self.rpc.token_supply(mint)
+        except RpcError as exc:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
+        exclude_accounts = frozenset(exclude_accounts) | BASE_EXCLUDED_PROGRAMS | BURN_ADDRESSES
+        accounts = (largest.get("value") or [])
+        if not supply:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "supply indisponivel"})
+        enderecos = [row.get("address") for row in accounts if row.get("address") is not None]
+        contas_totais = len(enderecos)
+        if contas_totais == 0:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "getTokenLargestAccounts sem contas"})
+        # EMENDA 2026-10-16/17 (ja medida em producao, `enumerate._verify_pools_exist_on_chain`):
+        # QuickNode no plano "discover" (free) recusa `getMultipleAccounts` com mais de
+        # GET_MULTIPLE_ACCOUNTS_BATCH=5 chaves (HTTP 413, codigo -32615). O pedido desta rodada
+        # queria 1 chamada so p/ as ate 20 contas; em lotes de 5 fica ate 4 chamadas -- ainda MUITO
+        # menor que as ate 20 `getAccountInfo` de antes, e nunca reintroduz um 413 ja conhecido.
+        infos: list[Any] = []
+        try:
+            for i in range(0, len(enderecos), GET_MULTIPLE_ACCOUNTS_BATCH):
+                lote = enderecos[i:i + GET_MULTIPLE_ACCOUNTS_BATCH]
+                multi = self.rpc.call("getMultipleAccounts", [lote, {"encoding": "jsonParsed"}]) or {}
+                infos.extend(multi.get("value") or [None] * len(lote))
+        except RpcError as exc:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
+        owner_por_endereco: dict[str, Optional[str]] = {}
+        for endereco, info in zip(enderecos, infos):
+            parsed = (((info or {}).get("data") or {}).get("parsed") or {})
+            fields = parsed.get("info") or {}
+            # `type` != "account" (ex.: a propria mint, ou formato inesperado) nunca fabrica um owner.
+            owner_por_endereco[endereco] = fields.get("owner") if parsed.get("type") == "account" else None
+        excluidas_pool_curva = 0
+        sem_owner = 0
+        owners: list[tuple[str, float]] = []
+        for row in accounts:
+            address = row.get("address")
+            amount = row.get("uiAmount") or row.get("uiAmountString")
+            if address is None or amount is None or address in exclude_accounts:
+                continue
+            owner = owner_por_endereco.get(address)
+            if owner is None:
+                sem_owner += 1
+                continue
+            if owner in exclude_accounts:
+                excluidas_pool_curva += 1
+                continue
+            pct = 100.0 * float(amount) / float(supply)
+            owners.append((owner, pct))
+        detail: dict[str, Any] = {
+            "contas_totais": contas_totais, "contas_excluidas_pool_curva": excluidas_pool_curva,
+            "contas_sem_owner": sem_owner, "coletor_versao": CARTEIRAS_COLETOR_VERSAO,
+        }
+        soma_pct = sum(pct for _owner, pct in owners)
+        if not owners or soma_pct <= 0.0:
+            return HolderCheck(tag="holders_indisponivel", detail={
+                **detail, "classe": CLASSE_OWNER_NAO_RESOLVIDO,
+                "motivo": "nenhum owner valido resolvido (todas excluidas/sem_owner ou soma de pct = 0)",
+            })
+        owners.sort(key=lambda t: t[1], reverse=True)
+        return HolderCheck(top_holder_pct=owners[0][1], top_holders=owners, detail=detail)
 
     # -- mint/freeze authority (item 2 da FASE 2 de medicao/UX) ---------------------------------------
     def authorities(self, mint: str) -> AuthorityCheck:

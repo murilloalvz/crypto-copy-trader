@@ -215,8 +215,12 @@ class EntradaTests(unittest.TestCase):
         # PEDIDO 2026-10-27 (H9, item 2): a snapshot da ENTRADA reusa a MESMA chamada de
         # adapter.holders() (nunca uma chamada RPC extra) e cruza contra o mapa de carteiras pro.
         from ..pos_runner.chain_adapter import HolderCheck
-        self.h.live.adapter.holders = lambda mint, excl: HolderCheck(
-            top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        # RODADA 21 (2026-11-16): o snapshot de carteiras da ENTRADA usa `holders_com_owner()`
+        # (chamada RPC propria, owner real) -- `holders()` fica intocado e so alimenta
+        # carteiras_pro_presentes/tags acima (hash/H8, nunca tocado nesta rodada).
+        fake = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        self.h.live.adapter.holders = fake
+        self.h.live.adapter.holders_com_owner = fake
         self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
         self._run_to_entrada()
         sinal = self.h.storage.pr1_signals()[0]
@@ -239,7 +243,9 @@ class EntradaTests(unittest.TestCase):
         from ..pos_runner.chain_adapter import HolderCheck
         h = LiveHarness(sem_carteiras=True)
         try:
-            h.live.adapter.holders = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0)])
+            fake = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0)])
+            h.live.adapter.holders = fake
+            h.live.adapter.holders_com_owner = fake
             h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
             start_tracking(h)
             h.run_hours(17)
@@ -267,6 +273,7 @@ class EntradaTests(unittest.TestCase):
         h = LiveHarness(start=GRAD + 11 * H + 120)
         try:
             h.live.adapter.holders = holders_fn
+            h.live.adapter.holders_com_owner = holders_fn
             h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
             h.live.carteiras_max_chamadas_dia = 1
             start_tracking(h)
@@ -301,7 +308,9 @@ class EntradaTests(unittest.TestCase):
             vistos["next_na_hora_da_chamada"] = self.h.live.sched.get((pool, "1h"), {}).get("next")
             return HolderCheck(top_holders=[])
 
+        # RODADA 21 (2026-11-16): coleta horaria usa `holders_com_owner()`, nunca `holders()`.
         self.h.live.adapter.holders = holders_fn
+        self.h.live.adapter.holders_com_owner = holders_fn
         # PEDIDO 2026-11-10 (rodada 15, Parte 2): o orcamento agora conta TENTATIVAS (sucesso+falha,
         # nunca so sucesso -- ver DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md); _run_to_entrada
         # (17h) ja acumula varias tentativas falhas (adapter.rpc=None no harness) antes deste ponto --

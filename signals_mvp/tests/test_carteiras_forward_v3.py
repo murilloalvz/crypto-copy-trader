@@ -22,8 +22,11 @@ class CapturaSinalRealTests(unittest.TestCase):
         self.h.close()
 
     def test_sinal_real_grava_cobertura_valida_e_cruza_lista_pro(self) -> None:
-        self.h.live.adapter.holders = lambda mint, excl: HolderCheck(
-            top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        # RODADA 21 (2026-11-16): a captura de sinal/placebo V3 usa `holders_com_owner()` (owner
+        # real), nunca `holders()` -- fake precisa cobrir os 2 nomes (so `holders()` segue intocado).
+        fake = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        self.h.live.adapter.holders = fake
+        self.h.live.adapter.holders_com_owner = fake
         self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
         start_tracking(self.h)
         self.h.run_hours(17)
@@ -138,7 +141,9 @@ class CapturaPlaceboTests(unittest.TestCase):
                 return HolderCheck(top_holders=[("ProWalletA", 3.0)])
             return HolderCheck(top_holders=[])
 
+        # RODADA 21 (2026-11-16): ver nota em CapturaSinalRealTests acima.
         self.h.live.adapter.holders = holders_fn
+        self.h.live.adapter.holders_com_owner = holders_fn
         self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
         start_tracking(self.h)
         self.h.run_hours(17)

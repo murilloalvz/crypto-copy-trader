@@ -73,8 +73,12 @@ class CarteirasRpcDedicadoTests(unittest.TestCase):
                 chamadas["dedicado"] += 1
                 return HolderCheck(top_holders=[])
 
+            # RODADA 21 (2026-11-16): a instrumentacao de carteiras (entrada/horaria) usa
+            # `holders_com_owner()`, nunca `holders()` (que fica intocado, so tags/HOLDER_CONCENTRADO).
             h.live.adapter.holders = holders_compartilhado
+            h.live.adapter.holders_com_owner = holders_compartilhado
             h.live.adapter_carteiras.holders = holders_dedicado
+            h.live.adapter_carteiras.holders_com_owner = holders_dedicado
             h.live.carteiras_max_chamadas_dia = 1000
 
             start_tracking(h)
@@ -155,7 +159,9 @@ class CarteirasTentativaOrcamentoTests(unittest.TestCase):
         def holders_falha(mint: str, excl: Any) -> HolderCheck:
             return HolderCheck(tag="holders_indisponivel", detail={"motivo": "teste", "classe": CLASSE_CONEXAO})
 
+        # RODADA 21 (2026-11-16): a coleta horaria usa `holders_com_owner()`, nunca `holders()`.
         self.h.live.adapter.holders = holders_falha
+        self.h.live.adapter.holders_com_owner = holders_falha
         self.h.run_hours(1)
         inicio_do_dia = self.h.clock() - (self.h.clock() % 86400.0)
         self.assertEqual(self.h.storage.pr_carteiras_tentativa_ultima_classe_erro("horaria"), CLASSE_CONEXAO)

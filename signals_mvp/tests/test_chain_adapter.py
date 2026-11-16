@@ -11,7 +11,8 @@ from ..http import ApiError
 from ..models import ChainCtx
 from ..pos_runner.candles import Bar
 from ..pos_runner.chain_adapter import (
-    AuthorityCheck, BscAdapter, HOLDER_CONCENTRADO_PCT, RobinhoodAdapter, SolanaAdapter, VampCheck, detect_capability,
+    AuthorityCheck, BscAdapter, CLASSE_OWNER_NAO_RESOLVIDO, HOLDER_CONCENTRADO_PCT, RobinhoodAdapter,
+    SolanaAdapter, VampCheck, detect_capability,
 )
 from ..pos_runner.solana_rpc import RpcError
 
@@ -186,6 +187,20 @@ class SolanaAdapterTests(unittest.TestCase):
         self.assertEqual(result.tag, "holders_indisponivel")
         self.assertEqual(result.detail.get("classe"), CLASSE_AUTENTICACAO)
 
+    def test_holders_nunca_foi_alterado_por_holders_com_owner(self) -> None:
+        """RODADA 21 (2026-11-16), item 1: `holders()` alimenta tags/holders_tag/holder_top1_pct
+        (HOLDER_CONCENTRADO) e carteiras_pro_presentes/n_pessoas_pro em pr1_signals/pr2_signals
+        (hipotese pre-registrada H8, `docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md`) -- fica
+        BYTE A BYTE IGUAL. Hash do source travado AGORA (antes da rodada 21 tocar em qualquer coisa
+        neste arquivo) -- se este teste falhar, `holders()` mudou e precisa de autorizacao/emenda
+        propria ao H8, nunca um ajuste silencioso."""
+        import hashlib
+        import inspect
+
+        src = inspect.getsource(SolanaAdapter.holders)
+        self.assertEqual(hashlib.sha256(src.encode()).hexdigest()[:16], "1a8afc13aa675b92",
+                         "holders() mudou -- isso afeta tags/HOLDER_CONCENTRADO/H8, nunca so carteiras")
+
     def test_vamp_risk_flags_an_older_bigger_same_ticker(self):
         adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
         search = lambda symbol: [{"symbol": "AAA", "created_ts": 1.0, "mc_usd": 9_000_000.0}]
@@ -205,6 +220,176 @@ class SolanaAdapterTests(unittest.TestCase):
 
         result = adapter.vamp_risk("AAA", mc_usd=500_000.0, search=broken)
         self.assertIsNone(result.tag)
+
+
+# RODADA 21 (2026-11-16): TOKEN_PROGRAM_ID aqui so pra deixar explicito, no proprio payload do fake,
+# que o `owner` de NIVEL DE CIMA (qualquer conta gerenciada pelo SPL Token Program -- toda token
+# account real) e DIFERENTE do owner REAL (`data.parsed.info.owner`) -- exatamente o que
+# `holders_com_owner` tem que ler. Confirmado ao vivo contra api.mainnet-beta.solana.com
+# (getAccountInfo/getMultipleAccounts, encoding jsonParsed) na sessao que encontrou o bug.
+_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+class _FakeRpcMultiAccounts:
+    """RODADA 21 (2026-11-16): formato REAL de `getMultipleAccounts`/jsonParsed -- `value` e uma
+    LISTA alinhada por indice aos enderecos pedidos (`None` = conta inexistente); cada item presente
+    tem a MESMA forma de `getAccountInfo` -- `owner` de nivel de cima e SEMPRE o Program ID da conta
+    (pra token account, SEMPRE o SPL Token Program), a wallet REAL fica em
+    `data.parsed.info.owner`. NUNCA o formato simplificado `{"value": {"owner": X}}` do `_FakeRpc`
+    acima (que so serve pra `holders()`, intocado por esta rodada)."""
+
+    def __init__(self, largest: dict, supply: float, contas: dict[str, Optional[dict]],
+                 lote_max: Optional[int] = None):
+        self.largest = largest
+        self.supply = supply
+        self.contas = contas   # endereco -> {"owner_real": str, "tipo": "account"} ou None (conta nao existe)
+        self.lote_max = lote_max
+        self.chamadas_multi: list[list[str]] = []
+
+    def call(self, method: str, params: list) -> Any:
+        if method == "getTokenLargestAccounts":
+            return self.largest
+        if method == "getMultipleAccounts":
+            enderecos, _opts = params
+            if self.lote_max is not None and len(enderecos) > self.lote_max:
+                raise RpcError("transport", "HTTP 413", 413)
+            self.chamadas_multi.append(list(enderecos))
+            value = []
+            for endereco in enderecos:
+                conta = self.contas.get(endereco)
+                if conta is None:
+                    value.append(None)
+                    continue
+                value.append({
+                    "data": {"parsed": {"type": conta.get("tipo", "account"), "info": {
+                        "owner": conta["owner_real"], "mint": "MINTX", "state": "initialized",
+                        "tokenAmount": {"amount": "0", "decimals": 0, "uiAmount": 0.0, "uiAmountString": "0"},
+                    }}, "program": "spl-token"},
+                    "executable": False, "lamports": 2039280,
+                    "owner": _TOKEN_PROGRAM_ID,   # SEMPRE o Token Program -- NUNCA a wallet real
+                    "rentEpoch": 0, "space": 165,
+                })
+            return {"value": value}
+        raise AssertionError(f"metodo inesperado: {method}")
+
+    def token_supply(self, mint: str) -> float:
+        return self.supply
+
+
+class HoldersComOwnerTests(unittest.TestCase):
+    """RODADA 21 (2026-11-16, autorizada): `holders_com_owner()` -- correcao do owner usado pela
+    instrumentacao de carteiras "pro" (RODADA 20, pergunta 3). `holders()` em si fica intocado (ver
+    `test_holders_nunca_foi_alterado_por_holders_com_owner` acima)."""
+
+    def test_le_o_owner_real_do_jsonparsed_nunca_o_token_program_da_conta(self) -> None:
+        largest = {"value": [{"address": "contaA", "uiAmount": 5.0}, {"address": "contaB", "uiAmount": 3.0}]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={
+            "contaA": {"owner_real": "WalletHumanaA"}, "contaB": {"owner_real": "WalletHumanaB"},
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.holders_com_owner("mintA")
+        owners = {o for o, _pct in result.top_holders}
+        self.assertEqual(owners, {"WalletHumanaA", "WalletHumanaB"})
+        self.assertNotIn(_TOKEN_PROGRAM_ID, owners,
+                         "nunca pode devolver o Program ID da conta como se fosse a wallet real")
+        self.assertAlmostEqual(result.top_holder_pct, 5.0)
+        self.assertEqual(result.detail["contas_totais"], 2)
+        self.assertEqual(result.detail["contas_excluidas_pool_curva"], 0)
+        self.assertEqual(result.detail["contas_sem_owner"], 0)
+
+    def test_exclui_pool_curva_pelo_owner_real_resolvido(self) -> None:
+        # "contaPool" tem um owner_real que e um PROGRAMA conhecido (launchpad/AMM) -- tem que ser
+        # excluido pelo OWNER, nunca pelo endereco da conta em si (que e so uma ATA qualquer).
+        largest = {"value": [
+            {"address": "contaHumana", "uiAmount": 2.0},
+            {"address": "contaPool", "uiAmount": 90.0},
+        ]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={
+            "contaHumana": {"owner_real": "WalletHumana"},
+            "contaPool": {"owner_real": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"},   # programa pumpfun
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        excluded = adapter.excluded_accounts("poolA", "mintA", "pumpfun")
+        result = adapter.holders_com_owner("mintA", excluded)
+        owners = {o for o, _pct in result.top_holders}
+        self.assertEqual(owners, {"WalletHumana"})
+        self.assertEqual(result.detail["contas_excluidas_pool_curva"], 1)
+
+    def test_conta_sem_owner_e_contada_e_nunca_quebra(self) -> None:
+        largest = {"value": [
+            {"address": "contaViva", "uiAmount": 2.0},
+            {"address": "contaFechada", "uiAmount": 1.0},   # getMultipleAccounts devolve None p/ ela
+        ]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={
+            "contaViva": {"owner_real": "WalletHumana"}, "contaFechada": None,
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.holders_com_owner("mintA")
+        self.assertEqual({o for o, _pct in result.top_holders}, {"WalletHumana"})
+        self.assertEqual(result.detail["contas_sem_owner"], 1)
+
+    def test_invariante_de_sanidade_sem_nenhum_owner_valido_nunca_fica_cobertura_valida(self) -> None:
+        # item 4 da RODADA 21: RPC respondeu (sem excecao), supply existe, mas NENHUM owner valido
+        # sobra (tudo excluido/sem_owner) -- nunca pode parecer sucesso (cobertura_valida=1 por
+        # omissao); tem que virar holders_indisponivel com a classe PROPRIA (nunca confundida com
+        # falha de transporte).
+        largest = {"value": [
+            {"address": "contaPool", "uiAmount": 90.0},
+            {"address": "contaFechada", "uiAmount": 1.0},
+        ]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={
+            "contaPool": {"owner_real": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"},
+            "contaFechada": None,
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        excluded = adapter.excluded_accounts("poolA", "mintA", "pumpfun")
+        result = adapter.holders_com_owner("mintA", excluded)
+        self.assertEqual(result.tag, "holders_indisponivel")
+        self.assertEqual(result.detail.get("classe"), CLASSE_OWNER_NAO_RESOLVIDO)
+        self.assertEqual(result.top_holders, [])
+
+    def test_faz_lotes_de_ate_5_contas_nunca_1_chamada_so_com_mais_de_5(self) -> None:
+        # EMENDA 2026-10-16/17 (enumerate.GET_MULTIPLE_ACCOUNTS_BATCH): QuickNode no plano "discover"
+        # free recusa getMultipleAccounts com mais de 5 chaves (HTTP 413) -- nunca reintroduzir isso.
+        enderecos = [f"conta{i}" for i in range(12)]
+        largest = {"value": [{"address": e, "uiAmount": 1.0} for e in enderecos]}
+        contas = {e: {"owner_real": f"Wallet{i}"} for i, e in enumerate(enderecos)}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas=contas, lote_max=5)
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.holders_com_owner("mintA")
+        self.assertEqual(len(result.top_holders), 12)
+        self.assertEqual([len(lote) for lote in rpc.chamadas_multi], [5, 5, 2])
+
+    def test_coletor_versao_vai_no_detail(self) -> None:
+        from ..pos_runner.chain_adapter import CARTEIRAS_COLETOR_VERSAO
+        largest = {"value": [{"address": "contaA", "uiAmount": 5.0}]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={"contaA": {"owner_real": "WalletA"}})
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        result = adapter.holders_com_owner("mintA")
+        self.assertEqual(result.detail["coletor_versao"], CARTEIRAS_COLETOR_VERSAO)
+
+    def test_sem_rpc_e_indisponivel(self) -> None:
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        self.assertEqual(adapter.holders_com_owner("mintA").tag, "holders_indisponivel")
+
+    def test_propaga_a_classe_do_erro_rpc_na_falha_de_getmultipleaccounts(self) -> None:
+        from ..pos_runner.solana_rpc import CLASSE_CONEXAO
+
+        class _FakeRpcFalhaNoMulti:
+            def call(self, method: str, params: list) -> Any:
+                if method == "getTokenLargestAccounts":
+                    return {"value": [{"address": "contaA", "uiAmount": 5.0}]}
+                if method == "getMultipleAccounts":
+                    raise RpcError("transport", "timeout", classe=CLASSE_CONEXAO)
+                raise AssertionError(f"metodo inesperado: {method}")
+
+            def token_supply(self, mint: str) -> float:
+                return 100.0
+
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), _FakeRpcFalhaNoMulti(), LINKS)
+        result = adapter.holders_com_owner("mintA")
+        self.assertEqual(result.tag, "holders_indisponivel")
+        self.assertEqual(result.detail.get("classe"), CLASSE_CONEXAO)
 
 
 class _FakeMintRpc:

@@ -2648,6 +2648,23 @@ class PosRunnerLive:
             self.storage.pr_api_uso_insert(now, "rpc", "carteiras", pool, http_status=200, rate_limited=False)
         return holders
 
+    def _holders_com_owner_instrumentado(self, mint: str, excluded: Any, pool: str, now: float,
+                                         adapter: Any = None) -> Any:
+        """RODADA 21 (2026-11-16, autorizada): MESMA contabilidade de `_holders_instrumentado` acima
+        (pr_api_uso, finalidade 'carteiras'), so que chama `adapter.holders_com_owner()` (owner REAL,
+        1 chamada getMultipleAccounts -- ver chain_adapter.py) em vez de `adapter.holders()`. Usado
+        SO pela instrumentacao de carteiras forward (`pr_carteiras_snapshot`/`pr3_carteiras_sinal`) --
+        NUNCA por tags/holders_tag/holder_top1_pct/HOLDER_CONCENTRADO nem por
+        carteiras_pro_presentes/n_pessoas_pro em pr1_signals/pr2_signals (essas continuam lendo
+        `_holders_instrumentado`/`adapter.holders()`, intocados -- ver RODADA 21 item 1)."""
+        adapter = adapter if adapter is not None else self.adapter
+        rpc = getattr(adapter, "rpc", None)
+        antes = getattr(rpc, "calls", 0)
+        holders = adapter.holders_com_owner(mint, excluded)
+        if rpc is not None and getattr(rpc, "calls", 0) > antes:
+            self.storage.pr_api_uso_insert(now, "rpc", "carteiras", pool, http_status=200, rate_limited=False)
+        return holders
+
     def _entry_v1(self, row: Any, tf: str, det: DetectorV1, ev: EventV1, now: float) -> None:
         pool, mint, symbol = row["pool"], row["mint"], row["symbol"]
         ts_fechamento = int(ev.decision_ts)
@@ -2727,7 +2744,13 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
-            self._registrar_snapshot_carteiras("entrada", pool, mint, holders, now, versao="v1", entry_id=signal_id)
+            # RODADA 21 (2026-11-16): snapshot de carteiras na ENTRADA usa `holders_com_owner()`
+            # (owner real) -- chamada RPC PROPRIA, nunca reusa `holders` acima (que fica intocado,
+            # alimenta tags/holders_tag/carteiras_pro_presentes/H8). Guard de `sem_carteiras` aqui:
+            # a chamada so acontece quando a instrumentacao esta LIGADA.
+            if not self.sem_carteiras:
+                holders_cp = self._holders_com_owner_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
+                self._registrar_snapshot_carteiras("entrada", pool, mint, holders_cp, now, versao="v1", entry_id=signal_id)
             signal = self.storage.pr1_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
             return
@@ -2950,7 +2973,10 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
-            self._registrar_snapshot_carteiras("entrada", pool, mint, holders, now, versao="v2", entry_id=signal_id)
+            # RODADA 21 (2026-11-16): MESMA logica do V1 -- ver comentario la.
+            if not self.sem_carteiras:
+                holders_cp = self._holders_com_owner_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
+                self._registrar_snapshot_carteiras("entrada", pool, mint, holders_cp, now, versao="v2", entry_id=signal_id)
             signal = self.storage.pr2_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
             return
@@ -3371,7 +3397,10 @@ class PosRunnerLive:
         (`holders.top_holders`, ja excluindo queima/programas base/vaults -- MESMA lista usada para
         `top_holder_pct`) contra a lista de carteiras "pro". Nunca grava quando os holders estao
         indisponiveis (RPC falhou/sem RPC) -- dado ausente nunca vira um `n_carteiras_pro=0` fabricado.
-        Idempotente por `chave` (`pr_carteiras_snapshot_insert` usa INSERT OR IGNORE)."""
+        Idempotente por `chave` (`pr_carteiras_snapshot_insert` usa INSERT OR IGNORE). RODADA 21
+        (2026-11-16): `holders` aqui SEMPRE vem de `adapter.holders_com_owner()` (owner real) -- quem
+        chama este metodo passa `coletor_versao`/`contas_*` de `holders.detail` (NULL se o chamador
+        ainda nao migrou, nunca inventado)."""
         if self.sem_carteiras or holders.tag == "holders_indisponivel":
             return
         owners = [o for o, _pct in holders.top_holders]
@@ -3380,9 +3409,13 @@ class PosRunnerLive:
             chave = f"entrada:{versao}:{entry_id}"
         else:
             chave = f"horaria:{pool}:{int(now // 3600)}"
+        detail = holders.detail or {}
         self.storage.pr_carteiras_snapshot_insert(
             chave, now, "solana", pool, mint, momento, holders.top_holders, n_carteiras, n_pessoas,
-            grupos, versao=versao, entry_id=entry_id,
+            grupos, versao=versao, entry_id=entry_id, coletor_versao=detail.get("coletor_versao"),
+            contas_totais=detail.get("contas_totais"),
+            contas_excluidas_pool_curva=detail.get("contas_excluidas_pool_curva"),
+            contas_sem_owner=detail.get("contas_sem_owner"),
         )
 
     # -- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward p/ V3 -----------------
@@ -3404,16 +3437,24 @@ class PosRunnerLive:
 
     def _capturar_carteiras_sinal_v3_holders(self, signal_id: int, tipo: str, pool: str, mint: str,
                                              launchpad: Optional[str], now: float) -> None:
+        """RODADA 21 (2026-11-16): usa `holders_com_owner()` (owner real, 1 chamada
+        getMultipleAccounts) -- NUNCA `holders()`/`_holders_instrumentado`, que alimenta
+        tags/holders_tag/carteiras_pro_presentes em pr1_signals/pr2_signals (H8) e fica intocado."""
         excluded = self.adapter.excluded_accounts(pool, mint, launchpad)
-        holders = self._holders_instrumentado(mint, excluded, pool, now)
+        holders = self._holders_com_owner_instrumentado(mint, excluded, pool, now)
         cobertura_valida = holders.tag != "holders_indisponivel"
         n_carteiras = n_pessoas = pct_supply = None
+        detail = holders.detail or {}
         if cobertura_valida:
             owners_pct = {o: pct for o, pct in holders.top_holders}
             n_carteiras, n_pessoas, _grupos = carteiras_pro.pessoas_presentes(list(owners_pct), self._mapa_carteiras_pro)
             pct_supply = sum(pct for o, pct in owners_pct.items() if o in self._mapa_carteiras_pro)
-        self.storage.pr3_carteiras_sinal_insert(signal_id, tipo, pool, mint, now, n_carteiras, n_pessoas,
-                                                pct_supply, cobertura_valida)
+        self.storage.pr3_carteiras_sinal_insert(
+            signal_id, tipo, pool, mint, now, n_carteiras, n_pessoas, pct_supply, cobertura_valida,
+            coletor_versao=detail.get("coletor_versao"), contas_totais=detail.get("contas_totais"),
+            contas_excluidas_pool_curva=detail.get("contas_excluidas_pool_curva"),
+            contas_sem_owner=detail.get("contas_sem_owner"), erro_classe=detail.get("classe"),
+        )
 
     def _capturar_carteiras_sinal_v3(self, row: Any, signal_id: int, tf: str, now: float) -> None:
         """PEDIDO 2026-11-10 (rodada 15, Parte 3): no MOMENTO de cada sinal V3 real ("sinal"), grava
@@ -3456,12 +3497,14 @@ class PosRunnerLive:
         """1x por pool por hora UTC (bucket `int(now//3600)`, nunca reabre a mesma hora) -- PEDIDO
         2026-10-29: elegivel quando ha posicao ABERTA (V1, V2 ou V3) OU a fase atual (V1 ou V2) e
         runner/pullback (`_carteiras_elegivel`; antes so cobria posicao aberta, deixando a coleta pra
-        H9 sem nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot (ao contrario da
-        snapshot de ENTRADA, que reusa `adapter.holders` ja chamado por outro motivo) -- ate ~22
-        chamadas RPC sequenciais por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate
-        20x `getAccountInfo`, 1 por maior holder -- ver `chain_adapter.SolanaAdapter.holders`), orcada
-        em TENTATIVAS/dia por `carteiras_max_chamadas_dia` (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao
-        600/dia => ate ~13.200 chamadas RPC/dia no pior caso), contada por dia UTC corrido.
+        H9 sem nenhum pool elegivel na pratica). Chamada NOVA de RPC por snapshot -- ate ~6 chamadas
+        RPC por snapshot (1x `getTokenLargestAccounts` + 1x `token_supply` + ate 4x
+        `getMultipleAccounts` em lotes de 5 contas, `GET_MULTIPLE_ACCOUNTS_BATCH` -- ver
+        `chain_adapter.SolanaAdapter.holders_com_owner`, RODADA 21 2026-11-16: antes eram ate ~22, 1
+        `getAccountInfo` POR holder, alem de ler o owner ERRADO -- ver detail em
+        `holders_com_owner`), orcada em TENTATIVAS/dia por `carteiras_max_chamadas_dia`
+        (`CARTEIRAS_MAX_CHAMADAS_DIA`, padrao 600/dia => ate ~3.600 chamadas RPC/dia no pior caso),
+        contada por dia UTC corrido.
 
         PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado -- diagnostico em docs/pos-runner-v1/
         DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md): 2 correcoes.
@@ -3492,8 +3535,10 @@ class PosRunnerLive:
         self._carteiras_ciclo["tentativas"] += 1
         self._carteiras_ultima_tentativa_ts = now
         adapter = self.adapter if self._carteiras_prioridade_alta(pool) else self.adapter_carteiras
-        holders = self._holders_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
-                                              adapter=adapter)
+        # RODADA 21 (2026-11-16): `holders_com_owner()` (owner real), NUNCA `holders()` -- esta coleta
+        # so alimenta pr_carteiras_tentativa/pr_carteiras_snapshot, nunca sinal/tags/H8.
+        holders = self._holders_com_owner_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
+                                                        adapter=adapter)
         sucesso = holders.tag != "holders_indisponivel"
         # HANDOFF 2026-11-12/13: `classe` (conexao/autenticacao/rate_limit/muitas_contas/generico --
         # ver solana_rpc.classificar_erro) vai pra pr_carteiras_tentativa.erro_classe, pra saude.py

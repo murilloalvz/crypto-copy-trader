@@ -320,6 +320,13 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
 # do relatorio. Limiar sugerido pelo operador.
 LIMIAR_TENTATIVAS_SEM_SUCESSO = 20
 
+# RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de carteiras "pro"
+# (ver chain_adapter.SolanaAdapter.holders_com_owner) -- limiar MENOR que o de cima de proposito: ali
+# o sinal e "endpoint morto" (tudo falha); aqui e "o RPC respondeu mas nenhum owner valido saiu do
+# top-20" -- mesmo um numero baixo (poucas tentativas) ja indica algo estrutural (lista de exclusao
+# de pool/curva desatualizada, formato de resposta mudou, etc.), nunca so rate limit/flutuacao normal.
+LIMIAR_OWNER_NAO_RESOLVIDO = 5
+
 _RE_CICLO_CARTEIRAS = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER-V1: ciclo .*"
     r"carteiras_tentativas=(?P<tent>\d+) carteiras_gravados=(?P<grav>\d+) "
@@ -360,6 +367,18 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
           f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s) | "
           f"forward V3: sinal={len(sinais_fwd)} (cobertura={cobertos_sinal}) placebo={len(placebo_fwd)} "
           f"(cobertura={cobertos_placebo})"]
+    # RODADA 21 (2026-11-16), item 4: invariante de sanidade do owner -- `holders_com_owner()` ja
+    # nunca deixa uma linha "valida" sem nenhum owner resolvido (ela volta erro_classe=
+    # owner_nao_resolvido em vez disso), mas o alarme aqui e um BACKSTOP independente, lido direto do
+    # banco (nunca confia so na logica de quem gravou) -- cobre sinal/placebo da V3 (sem janela de
+    # tempo, pr3_carteiras_sinal nao tem tabela de tentativas).
+    from ..pos_runner.chain_adapter import CLASSE_OWNER_NAO_RESOLVIDO
+    owner_nao_resolvido_v3 = storage.pr3_carteiras_sinal_count_erro_classe(CLASSE_OWNER_NAO_RESOLVIDO)
+    if owner_nao_resolvido_v3 >= LIMIAR_OWNER_NAO_RESOLVIDO:
+        out.append(f"  !!! OWNER NAO RESOLVIDO (forward V3): {owner_nao_resolvido_v3} linha(s) sinal/"
+                  f"placebo com RPC OK mas nenhum owner valido no top-20 -- ver "
+                  f"chain_adapter.holders_com_owner, possivel lista de exclusao de pool/curva "
+                  f"desatualizada ou formato de resposta mudou !!!")
     pools_ativos = storage.pr_pools("ativo")
     abertos = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
               {s["pool"] for s in storage.pr2_signals(status="aberto")}
@@ -407,6 +426,13 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
             out.append(f"  !!! COLETA DE CARTEIRAS SEM SUCESSO: {tentativas_hoje} tentativa(s) hoje, "
                       f"0 sucesso(s) | ultima classe de erro: {ultima_classe or 's/d'} | "
                       f"ultimo sucesso: {ultimo_sucesso_txt} !!!")
+        # RODADA 21 (2026-11-16), item 4: MESMO backstop do bloco "forward V3" acima, aqui pra coleta
+        # horaria (que TEM janela de tentativas, pr_carteiras_tentativa).
+        owner_nao_resolvido_horaria = storage.pr_carteiras_tentativa_count_classe_since(
+            inicio_do_dia, CLASSE_OWNER_NAO_RESOLVIDO, "horaria")
+        if owner_nao_resolvido_horaria >= LIMIAR_OWNER_NAO_RESOLVIDO:
+            out.append(f"  !!! OWNER NAO RESOLVIDO (coleta horaria): {owner_nao_resolvido_horaria} "
+                      f"tentativa(s) hoje com RPC OK mas nenhum owner valido no top-20 !!!")
     else:
         out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
     linhas = _linhas_log(logs_dir, 86400.0, now)
