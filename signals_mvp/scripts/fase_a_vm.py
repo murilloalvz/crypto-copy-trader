@@ -509,7 +509,7 @@ def secao_e(con, exportar: Optional[Path] = None) -> list[str]:
 def secao_f(con) -> list[str]:
     """Rendimento AO VIVO da V3 (insumo do planejamento do B2, sem desfecho): dos pools que a V3 viu
     virar runner DURANTE o rastreio (`pr_funil_marcos`, etapa 'runner', so gravado com o pool ja
-    admitido e a versao ja iniciada -- live.py:3092-3095), quantos tiveram >=1 ENTRADA. Multiplicado
+    admitido e a versao ja iniciada -- live.py:3109-3117), quantos tiveram >=1 ENTRADA. Multiplicado
     pela fracao de graduacoes validas que viram runner (piloto_rendimento_b2.py), estima sinais por
     1.000 graduacoes sem precisar baixar milhares de pools."""
     from .piloto_rendimento_b2 import clopper_pearson

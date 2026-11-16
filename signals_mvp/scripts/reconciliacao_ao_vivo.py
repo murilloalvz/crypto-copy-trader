@@ -470,7 +470,7 @@ def funil_descoberta(con: Any) -> list[str]:
     st = {r[0]: r[1] for r in con.execute("SELECT status, COUNT(*) FROM pr_pools GROUP BY status")}
     fila = st.get("pendente", 0) + st.get("verificado", 0)
     out.append(f"- agora: fila pendente+verificado={fila}/{QUEUE_MAX} (cheia => offer() para de aceitar candidatos, "
-               f"live.py:995) | ativo={st.get('ativo', 0)} | status={st}")
+               f"live.py:1009) | ativo={st.get('ativo', 0)} | status={st}")
     motivos = con.execute("SELECT motivo, COUNT(*) n FROM pr_pools WHERE motivo IS NOT NULL GROUP BY motivo "
                           "ORDER BY n DESC LIMIT 8").fetchall()
     out.append("- motivos de saida (top 8): " + "; ".join(f"{r['motivo'][:50]}={r['n']}" for r in motivos))

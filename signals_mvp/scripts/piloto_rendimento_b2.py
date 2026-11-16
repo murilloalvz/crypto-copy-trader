@@ -21,7 +21,7 @@ SIMPLIFICACOES DECLARADAS:
   para a EMISSAO de ENTRADA so porque a janela de idade da V3 e [0, 36500] dias -- qualquer criacao
   <= graduacao cai dentro dela. Nao vale para V1 (2-7 d). Covariavel `idade_dias` fica errada (nao
   usada aqui).
-- o filtro ao vivo `mc_atual < min_mc_usd` na construcao do detector (`live.py:2162`) depende do
+- o filtro ao vivo `mc_atual < min_mc_usd` na construcao do detector (`live.py:2163`) depende do
   instante em que o bot pegou o pool -- nao se aplica a um universo enumerado; fica de fora.
 - conta ENTRADA (decisao) -- nao confere se o candle seguinte abriria dentro do plano (isso exige
   `simulate_v1`, fora do escopo "sem desfecho").

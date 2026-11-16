@@ -58,20 +58,20 @@ python -m signals_mvp.scripts.reconciliacao_ao_vivo --db signals_mvp/dados/estad
 | `outro` | ver valores lado a lado no relatório/CSV | manual |
 
 **Por que H1 legado ≠ horizonte fixo (F, mecanismo):**
-1. O legado só tem `dif_pareada` para `status=='fechado'` (`live.py:3684`). Logo `aberto`,
+1. O legado só tem `dif_pareada` para `status=='fechado'` (`live.py:3752`). Logo `aberto`,
    `perdido_offline` e `descontinuado` ficam fora.
 2. O legado usa a **saída pela regra sem limite de tempo**: `simulate_v1` só sai por stop, EXIT FULL
    ou TP1 (`simulate_v1.py:141-186`). O horizonte fixo marca a mercado no corte.
-3. O custo do legado usa a cotação SOL/USD cacheada (`live.py:4370`); o recalculado usa o teto
+3. O custo do legado usa a cotação SOL/USD cacheada (`live.py:4438`); o recalculado usa o teto
    offline. A coluna "R regra offline" mostra quanto dessa diferença é custo e veto.
 4. O veto ao vivo cruza com o DexPaprika; o offline não.
 
 **Os 13 `perdido_offline` por idade máxima (PEAK, MOGZ, WASTED, McRib, Kimchi…).**
 - **Mecanismo (F):**
-  - `_retire` (`live.py:1082-1091`) aposenta todo pool `ativo` com mais de 14 d desde a graduação e
+  - `_retire` (`live.py:1096-1105`) aposenta todo pool `ativo` com mais de 14 d desde a graduação e
     só poupa sinais **V0** abertos (`pr_signals`). V1, V2 e V3 abertos não são protegidos.
   - O detector é descartado; o sinal fica `aberto` congelado até o próximo restart, que o marca como
-    `perdido_offline` (`live.py:899-947`).
+    `perdido_offline` (`live.py:880-957`, gravação em `:914`, `:926`, `:957`).
   - Ele estava aberto aos 14 d porque a regra **nunca tocou o stop nem fechou abaixo de S** nesse
     tempo; a regra não tem prazo.
 - **H:** são trades que sobreviveram dias sem stop. Excluí-los do H1 legado tende a deixar a amostra
@@ -119,13 +119,13 @@ convenção oficial preenche no stop sempre que o candle abre acima dele.
   - top por volume 24h de `raydium`.
 - **Só a página 1**, que tem **20 pools** (medido agora). Isso dá 480 leituras/dia: cada lista é lida
   a cada 12 min e mostra sempre os mesmos líderes de volume.
-- **Filtro do candidato** (`offer`, `live.py:978-1011`): DEX de graduação, **MC ≥ US$300k** (o piso de
+- **Filtro do candidato** (`offer`, `live.py:992-1025`): DEX de graduação, **MC ≥ US$300k** (o piso de
   runner), MC ≤ US$50M, idade ≤ 14 d, ainda não visto.
   - Na leitura de agora: 6/20 no *trending* e 6/20 no top-volume da PumpSwap.
 - **Fila:** `offer()` **para de aceitar candidatos** quando pendente+verificado ≥ `QUEUE_MAX = 60`
-  (`live.py:153`, `995`).
+  (`live.py:153`, `1009`).
 - **Vaga:** a promoção a `ativo` depende de vaga (`max_pools`, 45 na VM) e vai do **maior MC
-  primeiro** (`_prioridade_espera`, `live.py:1095-1100`).
+  primeiro** (`_prioridade_espera`, `live.py:1060`).
 - **Saída da fila:** quem fica mais de 14 d na fila sai como `encerrado` ("passou da idade máxima na
   fila").
 
