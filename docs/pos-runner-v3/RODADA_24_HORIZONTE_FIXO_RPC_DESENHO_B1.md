@@ -67,6 +67,8 @@ sqlite3 -readonly signals_mvp/dados/estado.sqlite "SELECT SUM(checked_ts >= strf
 
 ## 3) Desenho do backtest B1 (copy-wallet) — proposta, não implementada
 
+> **Atualizado em `RODADA_25_B1_AJUSTES.md`:** saída (§3.1), custo (§3.2) e critério de parada substituídos. A leitura "1,2–1,95× = multiplicador de custo" desta seção estava **errada**.
+
 **Pergunta (H):** copiar as compras da lista "pro" congelada, com atraso realista e custo pessimista,
 rende mais que copiar carteiras comuns pareadas por atividade nas mesmas condições?
 
