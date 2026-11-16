@@ -10,6 +10,7 @@ from unittest import mock
 from ..http import ApiError
 from ..models import ChainCtx
 from ..pos_runner.candles import Bar
+from ..pos_runner.carteiras_pro import base58_decode
 from ..pos_runner.chain_adapter import (
     AuthorityCheck, BscAdapter, CLASSE_OWNER_NAO_RESOLVIDO, HOLDER_CONCENTRADO_PCT, RobinhoodAdapter,
     SolanaAdapter, VampCheck, detect_capability,
@@ -390,6 +391,79 @@ class HoldersComOwnerTests(unittest.TestCase):
         result = adapter.holders_com_owner("mintA")
         self.assertEqual(result.tag, "holders_indisponivel")
         self.assertEqual(result.detail.get("classe"), CLASSE_CONEXAO)
+
+
+class ExcludedAccountsCarteirasForwardTests(unittest.TestCase):
+    """RODADA 22 (2026-11-17, autorizada), item 1: nos 19 snapshots novos da Rodada 21,
+    contas_excluidas_pool_curva=0 em todos e em 12/19 o 1o holder era o proprio pool --
+    `excluded_accounts()` so excluia o PROGRAMA do launchpad/AMM, nunca a conta especifica deste
+    pool nem a bonding-curve do mint. `excluded_accounts_carteiras_forward` corrige isso -- usada SO
+    pelos call sites de `holders_com_owner()`, nunca por `holders()` (ver `excluded_accounts`
+    continua igual, testada em `SolanaAdapterTests`)."""
+
+    def test_exclui_o_proprio_pool(self) -> None:
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        excluded = adapter.excluded_accounts_carteiras_forward("POOL_ENDERECO_X", "mintA", None)
+        self.assertIn("POOL_ENDERECO_X", excluded)
+
+    def test_inclui_tudo_que_excluded_accounts_ja_incluia(self) -> None:
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        base = adapter.excluded_accounts("POOL_ENDERECO_X", "mintA", "pumpfun")
+        novo = adapter.excluded_accounts_carteiras_forward("POOL_ENDERECO_X", "mintA", "pumpfun")
+        self.assertTrue(base.issubset(novo))
+
+    def test_exclui_a_bonding_curve_do_pumpfun(self) -> None:
+        from ..pos_runner.solana_pda import find_program_address
+
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        curva = find_program_address([b"bonding-curve", base58_decode("JA1SyycEdeuVxNfJyXnhP63E37MFbmUTBd2uDgavZE9L")],
+                                     "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+        excluded = adapter.excluded_accounts_carteiras_forward(
+            "POOL_X", "JA1SyycEdeuVxNfJyXnhP63E37MFbmUTBd2uDgavZE9L", "pumpfun")
+        self.assertIn(curva, excluded)
+
+    def test_launchpad_diferente_de_pumpfun_nunca_adiciona_curva(self) -> None:
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        excluded_raydium = adapter.excluded_accounts_carteiras_forward(
+            "POOL_X", "JA1SyycEdeuVxNfJyXnhP63E37MFbmUTBd2uDgavZE9L", "raydium_launchlab")
+        from ..pos_runner.solana_pda import find_program_address
+        curva_pumpfun = find_program_address(
+            [b"bonding-curve", base58_decode("JA1SyycEdeuVxNfJyXnhP63E37MFbmUTBd2uDgavZE9L")],
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+        self.assertNotIn(curva_pumpfun, excluded_raydium)
+
+    def test_mint_malformado_nunca_quebra_a_captura(self) -> None:
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), None, LINKS)
+        # "0" nao e um caractere do alfabeto base58 -- base58_decode levantaria ValueError.
+        excluded = adapter.excluded_accounts_carteiras_forward("POOL_X", "mint-invalido-0-O-I-l", "pumpfun")
+        self.assertIn("POOL_X", excluded)   # a exclusao do pool em si nunca depende do mint ser valido
+
+    def test_holders_com_owner_end_to_end_exclui_pool_e_curva(self) -> None:
+        """Ponta a ponta: um top holder cujo owner e o PROPRIO POOL e outro cujo owner e a
+        bonding-curve do mint -- os 2 tem que ficar fora de `top_holders`, contados em
+        `contas_excluidas_pool_curva`, nunca em `contas_sem_owner` (o owner RESOLVEU, so que e
+        excluido)."""
+        from ..pos_runner.solana_pda import find_program_address
+
+        mint = "JA1SyycEdeuVxNfJyXnhP63E37MFbmUTBd2uDgavZE9L"
+        curva = find_program_address([b"bonding-curve", base58_decode(mint)],
+                                     "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+        largest = {"value": [
+            {"address": "contaDoPool", "uiAmount": 60.0},
+            {"address": "contaDaCurva", "uiAmount": 30.0},
+            {"address": "contaHumana", "uiAmount": 2.0},
+        ]}
+        rpc = _FakeRpcMultiAccounts(largest, supply=100.0, contas={
+            "contaDoPool": {"owner_real": "POOL_X"},
+            "contaDaCurva": {"owner_real": curva},
+            "contaHumana": {"owner_real": "WalletHumana"},
+        })
+        adapter = SolanaAdapter(_FakeHttp({}), CTX, _FakeOhlcv([]), rpc, LINKS)
+        excluded = adapter.excluded_accounts_carteiras_forward("POOL_X", mint, "pumpfun")
+        result = adapter.holders_com_owner(mint, excluded)
+        self.assertEqual({o for o, _pct in result.top_holders}, {"WalletHumana"})
+        self.assertEqual(result.detail["contas_excluidas_pool_curva"], 2)
+        self.assertEqual(result.detail["contas_sem_owner"], 0)
 
 
 class _FakeMintRpc:

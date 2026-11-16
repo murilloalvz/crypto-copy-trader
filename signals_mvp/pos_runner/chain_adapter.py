@@ -23,7 +23,9 @@ from ..geckoterminal import parse_pools_response
 from ..http import ApiError, RateLimited
 from ..models import ChainCtx, PoolSnap
 from .candles import Bar, OhlcvStore
+from .carteiras_pro import base58_decode
 from .enumerate import GET_MULTIPLE_ACCOUNTS_BATCH, LAUNCHPADS
+from .solana_pda import PdaNaoEncontradoError, find_program_address
 from .solana_rpc import RpcError, SolanaRpc
 
 # `GRAD_DEX`/`LAUNCHPAD_NAME`/`SOURCES` vivem em `live.py` (o V0 ja os usa); importados aqui dentro dos
@@ -50,7 +52,10 @@ CLASSE_OWNER_NAO_RESOLVIDO = "owner_nao_resolvido"
 # versao do coletor gravada em CADA linha nova de `pr_carteiras_snapshot`/`pr3_carteiras_sinal` (coluna
 # `coletor_versao`, NULL em linhas anteriores a este deploy) -- marca explicita de qual logica gerou a
 # linha, pra EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md declarar o corte de amostra sem ambiguidade.
-CARTEIRAS_COLETOR_VERSAO = "owner_fix_v1_2026-11-16"
+# RODADA 22 (2026-11-17, autorizada): subida p/ v2 ANTES de qualquer sinal V3 real sob a v1 (item 1 --
+# exclusao do proprio pool + PDA da bonding curve). Linhas v1 ficam como DIAGNOSTICO (nunca apagadas/
+# editadas), fora de qualquer contagem de N -- ver emenda, secao da RODADA 22.
+CARTEIRAS_COLETOR_VERSAO = "owner_fix_v2_2026-11-17"
 
 
 @dataclass
@@ -203,6 +208,43 @@ class SolanaAdapter(ChainAdapter):
             excluded.add(spec.program)
             if spec.pool_after_program:
                 excluded.add(spec.pool_after_program)
+        return frozenset(excluded)
+
+    def excluded_accounts_carteiras_forward(self, pool: str, mint: str,
+                                            launchpad: Optional[str]) -> frozenset[str]:
+        """RODADA 22 (2026-11-17, autorizada), item 1: achado na Rodada 21 -- nos 19 snapshots
+        novos (ja com owner correto), `contas_excluidas_pool_curva=0` em todos e em 12/19 o 1o
+        holder resolvido era o PROPRIO endereco do pool (`pool`, o parametro ja existia aqui mas
+        nunca era usado). `excluded_accounts()` acima so exclui o PROGRAMA do launchpad/AMM destino
+        (compartilhado por TODOS os pools daquele launchpad) -- nunca a conta ESPECIFICA deste pool,
+        que e quem de fato custodia o supply enquanto ele e o maior "holder". Correcao: reusa
+        `excluded_accounts()` (nunca duplica a logica) + adiciona o `pool` em si + (quando
+        launchpad=='pumpfun') o PDA da bonding-curve do mint (seeds=['bonding-curve', mint],
+        programa pump.fun -- `solana_pda.find_program_address`).
+
+        RODADA 22, condicao 1 do operador (confirmado nesta sessao, nunca so por SDK de terceiros):
+        o seed `['bonding-curve', mint]` foi testado contra 4 pares (mint, bonding-curve) REAIS,
+        observados ao vivo via `getTransaction`/jsonParsed contra api.mainnet-beta.solana.com (conta
+        referenciada na mesma instrucao/CPI do programa pump.fun) -- os 4 bateram exatamente,
+        incluindo 1 par Token-2022 (`create_v2`), o que descarta a hipotese de uma variante
+        'bonding-curve-v2' para esse caso tambem (testado e NAO bate -- ver
+        `test_solana_pda.BondingCurveSeedFixtureTests`). raydium_launchlab/meteora_dbc NAO tem PDA de
+        curva implementado aqui (so pump.fun foi pesquisado/confirmado) -- `pool_after_program` (ja
+        coberto por `excluded_accounts()`) e tudo que cobre os outros launchpads hoje.
+
+        Usada SO pelos call sites que alimentam `holders_com_owner()` (pr_carteiras_snapshot/
+        pr3_carteiras_sinal) -- NUNCA pelos que alimentam `holders()` (tags/holders_tag/
+        HOLDER_CONCENTRADO/H8, que ficam com `excluded_accounts()` de sempre, intocado)."""
+        excluded = set(self.excluded_accounts(pool, mint, launchpad))
+        excluded.add(pool)
+        if launchpad == "pumpfun":
+            spec = LAUNCHPADS.get("pumpfun")
+            if spec is not None:
+                try:
+                    curva = find_program_address([b"bonding-curve", base58_decode(mint)], spec.program)
+                    excluded.add(curva)
+                except (ValueError, PdaNaoEncontradoError):
+                    pass   # mint malformado/PDA nao encontrado: nunca derruba a captura por isto
         return frozenset(excluded)
 
     def holders(self, mint: str, exclude_accounts: frozenset[str] = frozenset()) -> HolderCheck:

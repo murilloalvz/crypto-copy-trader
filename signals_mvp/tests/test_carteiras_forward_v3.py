@@ -108,20 +108,65 @@ class PoolsControleTests(unittest.TestCase):
             "hora_brt": "09:00", "status": "aberto", "entry_price": 1.0, "stop": 0.8, "topo": 2.0,
             "s_suporte": 0.0,
         })   # POOLC tem posicao aberta -- nunca entra no placebo
-        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, self.h.clock())
         self.assertEqual(candidatos, ["POOLA", "POOLB"])
 
     def test_k_limita_a_quantidade(self) -> None:
         self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
         for nome in ("POOLA", "POOLB", "POOLC"):
             self.h.live.dets_v1[(nome, "1h")] = self._fake_det(PHASE_RUNNER)
-        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 1)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 1, self.h.clock())
         self.assertEqual(candidatos, ["POOLA"])
 
     def test_tf_diferente_nunca_entra(self) -> None:
         self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
         self.h.live.dets_v1[("POOLA", "4h")] = self._fake_det(PHASE_RUNNER)   # outro tf -- fora
-        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, self.h.clock())
+        self.assertEqual(candidatos, [])
+
+    def test_gatilho_sem_covariavel_conhecida_nunca_filtra_por_idade_porte(self) -> None:
+        """RODADA 22 (2026-11-17), item 2b: "POOLX" aqui nunca tem linha real em `pr_pools` (so
+        fase/tf importam pro teste) -- a ausencia de `grad_ts`/`info` do PROPRIO gatilho tem que
+        DESLIGAR o filtro de idade/porte, nunca rejeitar tudo por falta de dado do gatilho."""
+        now = self.h.clock()
+        self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLA", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.storage.pr_upsert_pool("POOLA", status="ativo", grad_ts=now - 999_999.0,
+                                      info='{"vol_h24_usd": 999999.0}')
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, now)
+        self.assertEqual(candidatos, ["POOLA"])
+
+    def test_candidato_fora_da_faixa_de_idade_e_excluido(self) -> None:
+        now = self.h.clock()
+        self.h.storage.pr_upsert_pool("POOLX", status="ativo", grad_ts=now - 3600.0)
+        self.h.storage.pr_upsert_pool("POOLA", status="ativo", grad_ts=now - 3600.0)            # mesma idade
+        self.h.storage.pr_upsert_pool("POOLB", status="ativo", grad_ts=now - 100_000.0)          # muito mais velho
+        self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLA", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLB", "1h")] = self._fake_det(PHASE_RUNNER)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, now)
+        self.assertEqual(candidatos, ["POOLA"])
+
+    def test_candidato_fora_da_faixa_de_volume_e_excluido(self) -> None:
+        now = self.h.clock()
+        self.h.storage.pr_upsert_pool("POOLX", status="ativo", grad_ts=now - 3600.0, info='{"vol_h24_usd": 10000.0}')
+        self.h.storage.pr_upsert_pool("POOLA", status="ativo", grad_ts=now - 3600.0, info='{"vol_h24_usd": 15000.0}')
+        self.h.storage.pr_upsert_pool("POOLB", status="ativo", grad_ts=now - 3600.0, info='{"vol_h24_usd": 5.0}')
+        self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLA", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLB", "1h")] = self._fake_det(PHASE_RUNNER)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, now)
+        self.assertEqual(candidatos, ["POOLA"])
+
+    def test_candidato_sem_covariavel_e_excluido_quando_gatilho_tem(self) -> None:
+        """Fail-closed: gatilho TEM idade conhecida, candidato NAO -- nunca promove ausencia a
+        'dentro da faixa'."""
+        now = self.h.clock()
+        self.h.storage.pr_upsert_pool("POOLX", status="ativo", grad_ts=now - 3600.0)
+        self.h.storage.pr_upsert_pool("POOLA", status="ativo")   # sem grad_ts
+        self.h.live.dets_v1[("POOLX", "1h")] = self._fake_det(PHASE_RUNNER)
+        self.h.live.dets_v1[("POOLA", "1h")] = self._fake_det(PHASE_RUNNER)
+        candidatos = self.h.live._carteiras_pools_controle("POOLX", "1h", 5, now)
         self.assertEqual(candidatos, [])
 
 
@@ -154,9 +199,12 @@ class CapturaPlaceboTests(unittest.TestCase):
         fase_no_sinal = self.h.live._fase_label_v1(pool, tf)
         self.h.live.dets_v1[("POOLCONTROLE", tf)] = types.SimpleNamespace(phase=self.h.live.dets_v1[(pool, tf)].phase)
         self.assertEqual(self.h.live._fase_label_v1("POOLCONTROLE", tf), fase_no_sinal)
-        self.h.storage.pr_upsert_pool("POOLCONTROLE", status="ativo", mint="MINTCONTROLE", launchpad="pumpfun")
-
         row = self.h.storage.pr_pool(pool)
+        # RODADA 22 (2026-11-17), item 2b: pareamento tambem por idade/porte -- POOLCONTROLE precisa
+        # da MESMA idade (grad_ts) e volume (info.vol_h24_usd) do gatilho pra entrar na faixa.
+        self.h.storage.pr_upsert_pool("POOLCONTROLE", status="ativo", mint="MINTCONTROLE", launchpad="pumpfun",
+                                      grad_ts=row["grad_ts"], info=row["info"])
+
         chamadas_antes = dict(chamadas)
         self.h.live._capturar_carteiras_sinal_v3(row, sinal["id"], tf, self.h.clock())
 

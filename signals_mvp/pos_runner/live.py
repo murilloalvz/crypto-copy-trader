@@ -151,6 +151,16 @@ LINEAGE_MARGIN_S = 600       # janela da linhagem: +-10 min em volta da criacao 
 VERIFY_MAX_ATTEMPTS = 8      # falha de RPC repetida (espera 4, 8, 16, 30 min...): o pool sai (nunca entra sem linhagem)
 CREATION_MAX_PAGES = 100     # data de criacao: ate 100 mil assinaturas do mint antes da migracao (o SOLCAT teve ~10 mil)
 QUEUE_MAX = 60               # pools pendentes/verificados esperando vaga
+# RODADA 22 (2026-11-17, autorizada), item 2b: faixas do pareamento de placebo por idade/porte
+# (`PosRunnerLive._carteiras_pools_controle`), SO PARA DADOS FUTUROS (nunca re-pareia linhas ja
+# gravadas) -- ver EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md. Escolhas documentadas, nunca
+# otimizadas: idade dentro de +-50% da idade do gatilho (tokens novos envelhecem rapido em termos
+# RELATIVOS -- 1h vs 3h de idade sao "portes" bem diferentes; uma janela absoluta so faria sentido
+# se a idade tipica fosse grande/estavel, o que nao e o caso aqui); volume_h24 dentro de 0,1x-10x
+# (1 ordem de grandeza pra cada lado -- volume de token novo varia MUITO candle a candle; uma faixa
+# mais estreita deixaria quase nenhum candidato).
+PLACEBO_FAIXA_IDADE_FRAC = 0.5
+PLACEBO_FAIXA_VOLUME_MULT = 10.0
 # listas do GeckoTerminal usadas na descoberta ("novos e top pools Solana" do handoff)
 SOURCES: dict[str, tuple[str, dict[str, Any]]] = {
     "trending": ("networks/solana/trending_pools", {"page": 1, "include": INCLUDE}),
@@ -961,6 +971,10 @@ class PosRunnerLive:
             # -- None = sem cliente dedicado configurado (cai no self.adapter de sempre).
             "carteiras_rpc_dedicado": self.adapter_carteiras is not self.adapter,
             "carteiras_rpc_per_min": self.carteiras_rpc_per_min,
+            # RODADA 22 (2026-11-17, autorizada), item 2a: saude.py precisa de K pra calcular a
+            # cobertura REAL do placebo (coletados/(K x sinais)) -- antes so dividia pelas linhas
+            # que ja existiam, nunca pelo esperado (ver EMENDA, secao RODADA 22).
+            "carteiras_placebo_k": self.carteiras_placebo_k,
             "ts": now,
         }))
 
@@ -2481,6 +2495,13 @@ class PosRunnerLive:
     def _excluded_accounts_v1(self, row: Any) -> frozenset[str]:
         return self.adapter.excluded_accounts(row["pool"], row["mint"], row["launchpad"])
 
+    def _excluded_accounts_carteiras_forward(self, row: Any) -> frozenset[str]:
+        """RODADA 22 (2026-11-17): MESMA ideia de `_excluded_accounts_v1`, so que pelo metodo NOVO
+        (`excluded_accounts_carteiras_forward` -- exclui tambem o proprio pool e a bonding-curve do
+        pump.fun) -- usado SO pelos call sites que alimentam `holders_com_owner()` (carteiras
+        forward). `_excluded_accounts_v1`/`excluded_accounts()` ficam intocados (tags/H8)."""
+        return self.adapter.excluded_accounts_carteiras_forward(row["pool"], row["mint"], row["launchpad"])
+
     def _vamp_search(self, symbol: str) -> list[dict]:
         """GT `/search/pools?query=<ticker>` (item 2.7 + INTERPRETACOES.md #4): melhor esforco, nunca inventa
         dado (qualquer falha/forma inesperada devolve lista vazia, nunca levanta)."""
@@ -2749,7 +2770,8 @@ class PosRunnerLive:
             # alimenta tags/holders_tag/carteiras_pro_presentes/H8). Guard de `sem_carteiras` aqui:
             # a chamada so acontece quando a instrumentacao esta LIGADA.
             if not self.sem_carteiras:
-                holders_cp = self._holders_com_owner_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
+                holders_cp = self._holders_com_owner_instrumentado(
+                    mint, self._excluded_accounts_carteiras_forward(row), pool, now)
                 self._registrar_snapshot_carteiras("entrada", pool, mint, holders_cp, now, versao="v1", entry_id=signal_id)
             signal = self.storage.pr1_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
@@ -2973,9 +2995,10 @@ class PosRunnerLive:
                 if signal is None:
                     return
                 signal_id = signal["id"]
-            # RODADA 21 (2026-11-16): MESMA logica do V1 -- ver comentario la.
+            # RODADA 21/22: MESMA logica do V1 -- ver comentario la.
             if not self.sem_carteiras:
-                holders_cp = self._holders_com_owner_instrumentado(mint, self._excluded_accounts_v1(row), pool, now)
+                holders_cp = self._holders_com_owner_instrumentado(
+                    mint, self._excluded_accounts_carteiras_forward(row), pool, now)
                 self._registrar_snapshot_carteiras("entrada", pool, mint, holders_cp, now, versao="v2", entry_id=signal_id)
             signal = self.storage.pr2_signal(signal_id)
         if signal is None or signal["tg_message_id"]:
@@ -3419,28 +3442,73 @@ class PosRunnerLive:
         )
 
     # -- PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): instrumentacao forward p/ V3 -----------------
-    def _carteiras_pools_controle(self, pool_gatilho: str, tf: str, k: int) -> list[str]:
+    def _carteiras_vol_h24(self, row: Any) -> Optional[float]:
+        """`info.vol_h24_usd` do pool -- MESMO campo que `_contexto_execucao` ja le, zero chamada de
+        rede nova (ja cacheado em `pr_pools.info` na descoberta/atualizacao do pool)."""
+        try:
+            info = json.loads(row["info"] or "{}")
+        except (TypeError, ValueError):
+            return None
+        vol = info.get("vol_h24_usd")
+        return float(vol) if isinstance(vol, (int, float)) else None
+
+    def _carteiras_pools_controle(self, pool_gatilho: str, tf: str, k: int, now: float) -> list[str]:
         """K pools de controle/placebo para o PREREGISTRO_CARTEIRAS_FORWARD_2026-11-10.md -- mesma
         fase do detector V1 no MESMO tf do pool-gatilho, SEM posicao aberta em nenhuma versao (senao
-        seria o proprio tipo de caso que o sinal representa), nunca o pool-gatilho. Simplificacao
-        documentada no pre-registro: o pedido original ("fase/idade/MC aproximados") fica so FASE --
-        casar idade/MC exigiria recalcular covariaveis de cada candidato, custo que so o placebo nao
-        justifica. Selecao DETERMINISTICA (ordem alfabetica do endereco do pool, sem random/seed) --
-        reproduzivel, nunca um sorteio diferente a cada chamada."""
+        seria o proprio tipo de caso que o sinal representa), nunca o pool-gatilho. Selecao
+        DETERMINISTICA (ordem alfabetica do endereco do pool, sem random/seed) -- reproduzivel,
+        nunca um sorteio diferente a cada chamada.
+
+        RODADA 22 (2026-11-17): pareamento TAMBEM por idade do pool (`grad_ts`) e porte
+        (`info.vol_h24_usd`), alem de fase/tf -- o pre-registro original simplificou pra so FASE
+        ("casar idade/MC exigiria recalcular covariaveis de cada candidato, custo que so o placebo
+        nao justifica"); como idade/volume ja estao CACHEADOS em `pr_pools` (zero chamada de rede
+        nova), este round reverte a simplificacao. Se a covariavel do PROPRIO gatilho for
+        desconhecida (pool sem `grad_ts`/`info` ainda), aquela dimensao e IGNORADA (nunca um filtro
+        que rejeita tudo so por falta de dado do gatilho); se e CONHECIDA do gatilho mas
+        desconhecida do candidato, o candidato e EXCLUIDO (fail-closed -- nunca promove ausencia a
+        'dentro da faixa')."""
         fase_gatilho = self._fase_label_v1(pool_gatilho, tf)
-        candidatos = sorted(
-            pool for (pool, pool_tf) in self.dets_v1
-            if pool_tf == tf and pool != pool_gatilho and self._fase_label_v1(pool, tf) == fase_gatilho
-            and not self._carteiras_posicao_aberta(pool)
-        )
-        return candidatos[:k]
+        row_gatilho = self.storage.pr_pool(pool_gatilho)
+        idade_gatilho = (now - row_gatilho["grad_ts"]) if row_gatilho and row_gatilho["grad_ts"] else None
+        vol_gatilho = self._carteiras_vol_h24(row_gatilho) if row_gatilho is not None else None
+        candidatos = []
+        for pool, pool_tf in self.dets_v1:
+            if pool_tf != tf or pool == pool_gatilho:
+                continue
+            if self._fase_label_v1(pool, tf) != fase_gatilho:
+                continue
+            if self._carteiras_posicao_aberta(pool):
+                continue
+            if idade_gatilho is not None or vol_gatilho is not None:
+                row_c = self.storage.pr_pool(pool)
+                if row_c is None:
+                    continue
+                if idade_gatilho is not None:
+                    if not row_c["grad_ts"]:
+                        continue
+                    idade_c = now - row_c["grad_ts"]
+                    if not (idade_gatilho * (1.0 - PLACEBO_FAIXA_IDADE_FRAC)
+                            <= idade_c <= idade_gatilho * (1.0 + PLACEBO_FAIXA_IDADE_FRAC)):
+                        continue
+                if vol_gatilho is not None:
+                    vol_c = self._carteiras_vol_h24(row_c)
+                    if vol_c is None:
+                        continue
+                    if not (vol_gatilho / PLACEBO_FAIXA_VOLUME_MULT
+                            <= vol_c <= vol_gatilho * PLACEBO_FAIXA_VOLUME_MULT):
+                        continue
+            candidatos.append(pool)
+        return sorted(candidatos)[:k]
 
     def _capturar_carteiras_sinal_v3_holders(self, signal_id: int, tipo: str, pool: str, mint: str,
                                              launchpad: Optional[str], now: float) -> None:
         """RODADA 21 (2026-11-16): usa `holders_com_owner()` (owner real, 1 chamada
         getMultipleAccounts) -- NUNCA `holders()`/`_holders_instrumentado`, que alimenta
-        tags/holders_tag/carteiras_pro_presentes em pr1_signals/pr2_signals (H8) e fica intocado."""
-        excluded = self.adapter.excluded_accounts(pool, mint, launchpad)
+        tags/holders_tag/carteiras_pro_presentes em pr1_signals/pr2_signals (H8) e fica intocado.
+        RODADA 22 (2026-11-17): exclusao agora via `excluded_accounts_carteiras_forward` (tambem
+        exclui o proprio pool + bonding-curve do pump.fun -- ver item 1 da rodada)."""
+        excluded = self.adapter.excluded_accounts_carteiras_forward(pool, mint, launchpad)
         holders = self._holders_com_owner_instrumentado(mint, excluded, pool, now)
         cobertura_valida = holders.tag != "holders_indisponivel"
         n_carteiras = n_pessoas = pct_supply = None
@@ -3470,7 +3538,7 @@ class PosRunnerLive:
             return
         pool, mint, launchpad = row["pool"], row["mint"], row["launchpad"]
         self._capturar_carteiras_sinal_v3_holders(signal_id, "sinal", pool, mint, launchpad, now)
-        for pool_controle in self._carteiras_pools_controle(pool, tf, self.carteiras_placebo_k):
+        for pool_controle in self._carteiras_pools_controle(pool, tf, self.carteiras_placebo_k, now):
             controle_row = self.storage.pr_pool(pool_controle)
             if controle_row is None or not controle_row["mint"]:
                 continue
@@ -3535,9 +3603,9 @@ class PosRunnerLive:
         self._carteiras_ciclo["tentativas"] += 1
         self._carteiras_ultima_tentativa_ts = now
         adapter = self.adapter if self._carteiras_prioridade_alta(pool) else self.adapter_carteiras
-        # RODADA 21 (2026-11-16): `holders_com_owner()` (owner real), NUNCA `holders()` -- esta coleta
+        # RODADA 21/22: `holders_com_owner()` (owner real), NUNCA `holders()` -- esta coleta
         # so alimenta pr_carteiras_tentativa/pr_carteiras_snapshot, nunca sinal/tags/H8.
-        holders = self._holders_com_owner_instrumentado(row["mint"], self._excluded_accounts_v1(row), pool, now,
+        holders = self._holders_com_owner_instrumentado(row["mint"], self._excluded_accounts_carteiras_forward(row), pool, now,
                                                         adapter=adapter)
         sucesso = holders.tag != "holders_indisponivel"
         # HANDOFF 2026-11-12/13: `classe` (conexao/autenticacao/rate_limit/muitas_contas/generico --
