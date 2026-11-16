@@ -489,6 +489,14 @@ def secao_e(con, exportar: Optional[Path] = None) -> list[str]:
                          (json.dumps(sorted(vistos)),)).fetchone()[0]
         out.append(f"- graduacao mais antiga entre os vistos com linha em pr_pools: {_fmt_ts(lo)} "
                    "(janela limpa candidata termina ANTES disto)")
+    if "pr3_filtrados" in tabelas and "pr_pools" in tabelas:
+        # rendimento do B2 depende disto: o portao de qualidade do 1o candle (live.py:2151) barra o pool
+        # inteiro na V3; o piloto (piloto_rendimento_b2.py) viu isso em ~80% das graduacoes.
+        n_pools = con.execute("SELECT COUNT(*) FROM pr_pools WHERE added_ts IS NOT NULL").fetchone()[0]
+        motivos = con.execute("SELECT motivo, COUNT(DISTINCT pool) n FROM pr3_filtrados GROUP BY motivo "
+                              "ORDER BY n DESC").fetchall()
+        out.append(f"- V3 pr3_filtrados (pools distintos por motivo; pools ja admitidos={n_pools}): "
+                   + (", ".join(f"{r['motivo']}={r['n']}" for r in motivos) or "nenhum"))
     out.append("- fora do banco: os ~30 tokens QUEIMADOS de replay/retro estao dentro destas tabelas; "
                "a lista selada do V0 (docs/pos-runner-v0/holdout_selado.json) NAO esta no banco.")
     if exportar is not None:
