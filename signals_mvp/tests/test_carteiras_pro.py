@@ -70,6 +70,7 @@ class GrupoDeTests(unittest.TestCase):
         self.assertTrue(cp.grupo_de("123"))
 
 
+@unittest.skipUnless(cp.LISTA_PATH.exists(), "lista real de carteiras (dado pessoal, gitignored) so existe na VM do operador")
 class ListaRealTests(unittest.TestCase):
     """Guarda-de-regressao sobre o arquivo REAL ja salvo em signals_mvp/dados/ -- qualquer edicao
     futura do arquivo precisa justificar uma mudanca nestes numeros (lista_versao nova)."""
@@ -144,6 +145,7 @@ class ValidarListaSinteticaTests(unittest.TestCase):
 class MapaGruposEPessoasPresentesTests(unittest.TestCase):
     """PEDIDO 2026-10-27 (H9, snapshot de carteiras): carregar_mapa_grupos/pessoas_presentes."""
 
+    @unittest.skipUnless(cp.LISTA_PATH.exists(), "lista real de carteiras (dado pessoal, gitignored) so existe na VM do operador")
     def test_the_real_file_maps_every_unique_address_to_its_group(self) -> None:
         mapa = cp.carregar_mapa_grupos()
         self.assertEqual(len(mapa), 121)

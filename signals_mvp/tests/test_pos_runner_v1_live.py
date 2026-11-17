@@ -10,9 +10,11 @@ import json
 import re
 import unittest
 from typing import Any
+from unittest import mock
 
 from ..http import CallBudget
 from ..pos_runner.candles import Bar
+from ..pos_runner.detector_v1 import PHASE_NONE, PHASE_RUNNER
 from ..pos_runner.live import LineageVerifier, PosRunnerLive
 from ..pos_runner.quotes import REFERENCE_POOLS, SOL_MINT
 from .test_pos_runner import CREATED, GRAD, H, textbook
@@ -213,8 +215,12 @@ class EntradaTests(unittest.TestCase):
         # PEDIDO 2026-10-27 (H9, item 2): a snapshot da ENTRADA reusa a MESMA chamada de
         # adapter.holders() (nunca uma chamada RPC extra) e cruza contra o mapa de carteiras pro.
         from ..pos_runner.chain_adapter import HolderCheck
-        self.h.live.adapter.holders = lambda mint, excl: HolderCheck(
-            top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        # RODADA 21 (2026-11-16): o snapshot de carteiras da ENTRADA usa `holders_com_owner()`
+        # (chamada RPC propria, owner real) -- `holders()` fica intocado e so alimenta
+        # carteiras_pro_presentes/tags acima (hash/H8, nunca tocado nesta rodada).
+        fake = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0), ("Estranho", 1.0)])
+        self.h.live.adapter.holders = fake
+        self.h.live.adapter.holders_com_owner = fake
         self.h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
         self._run_to_entrada()
         sinal = self.h.storage.pr1_signals()[0]
@@ -237,7 +243,9 @@ class EntradaTests(unittest.TestCase):
         from ..pos_runner.chain_adapter import HolderCheck
         h = LiveHarness(sem_carteiras=True)
         try:
-            h.live.adapter.holders = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0)])
+            fake = lambda mint, excl: HolderCheck(top_holders=[("ProWalletA", 5.0)])
+            h.live.adapter.holders = fake
+            h.live.adapter.holders_com_owner = fake
             h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
             start_tracking(h)
             h.run_hours(17)
@@ -265,6 +273,7 @@ class EntradaTests(unittest.TestCase):
         h = LiveHarness(start=GRAD + 11 * H + 120)
         try:
             h.live.adapter.holders = holders_fn
+            h.live.adapter.holders_com_owner = holders_fn
             h.live._mapa_carteiras_pro = {"ProWalletA": "dani"}
             h.live.carteiras_max_chamadas_dia = 1
             start_tracking(h)
@@ -299,8 +308,14 @@ class EntradaTests(unittest.TestCase):
             vistos["next_na_hora_da_chamada"] = self.h.live.sched.get((pool, "1h"), {}).get("next")
             return HolderCheck(top_holders=[])
 
+        # RODADA 21 (2026-11-16): coleta horaria usa `holders_com_owner()`, nunca `holders()`.
         self.h.live.adapter.holders = holders_fn
-        self.h.live.carteiras_max_chamadas_dia = 10
+        self.h.live.adapter.holders_com_owner = holders_fn
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2): o orcamento agora conta TENTATIVAS (sucesso+falha,
+        # nunca so sucesso -- ver DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md); _run_to_entrada
+        # (17h) ja acumula varias tentativas falhas (adapter.rpc=None no harness) antes deste ponto --
+        # o teto precisa sobrar margem, nunca testar o orcamento em si (isso e o teste dedicado acima).
+        self.h.live.carteiras_max_chamadas_dia = 1000
         self.h.clock.advance(H)
         self.h.tick()
         self.assertIn("next_na_hora_da_chamada", vistos, "a coleta horaria precisa ter rodado neste teste")
@@ -746,6 +761,62 @@ class RelatorioSemanalTests(unittest.TestCase):
         self.h.storage.pr1_feedback_upsert(self.signal_id, "nota", "555", self.h.clock(), texto="x")
         text = self.h.live.relatorio_semanal_v1()
         self.assertIn("de 0 sinais com feedback", text)   # nenhum VOTO ainda, so entrei/nota
+
+
+class CadenciaQuenteTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (item 2): promocao de cadencia (RUNNER/trajetoria aberta = quente, heat=0)
+    atras de `POS_RUNNER_CADENCIA_QUENTE` -- so infraestrutura de polling, nunca detector/simulate/
+    parametro/criterio de sinal (nenhum destes e tocado nestes testes)."""
+
+    def test_runner_e_promovido_a_quente_por_padrao_e_desligavel_pela_env(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.clock.advance(H)
+            self.assertEqual(h.live.dets[("POOL1", "1h")].phase, PHASE_RUNNER)
+            self.assertEqual(h.live.dets_v1[("POOL1", "1h")].phase, PHASE_RUNNER)
+            # padrao (sem a env setada): promocao LIGADA -- RUNNER conta como quente.
+            self.assertEqual(h.live._heat_v0("POOL1", "1h"), 0)   # noqa: SLF001
+            self.assertEqual(h.live._heat_v1("POOL1", "1h"), 0)   # noqa: SLF001
+            self.assertEqual(h.live._heat("POOL1", "1h"), 0)   # noqa: SLF001
+            with mock.patch.dict("os.environ", {"POS_RUNNER_CADENCIA_QUENTE": "0"}):
+                self.assertEqual(h.live._heat_v0("POOL1", "1h"), 1, "desligada, RUNNER volta a morno")   # noqa: SLF001
+                self.assertEqual(h.live._heat_v1("POOL1", "1h"), 1)   # noqa: SLF001
+                self.assertEqual(h.live._heat("POOL1", "1h"), 1)   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_trajetoria_ainda_aberta_promove_a_quente_mesmo_sem_runner_pullback_ou_posicao(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.clock.advance(H)
+            # fecha a fase (pool generico, nunca pullback/runner/posicao) -- so insere uma
+            # pr_trajetoria ABERTA (fechado=0) direto, sem precisar reproduzir o sinal real inteiro.
+            h.storage.pr_trajetoria_upsert(
+                "v1", 999, h.clock(), chain="solana", pool="POOL1", tf="1h", mint="MINTX", symbol="CAT",
+                t_entrada=h.clock(), preco_entrada=100.0, risco_pct=20.0, r_unidade=20.0, fonte_candle="gt",
+                fechado=0,
+            )
+            det = h.live.dets_v1[("POOL1", "1h")]
+            det.phase = PHASE_NONE   # nunca pullback/runner -- so a trajetoria aberta deveria promover
+            self.assertEqual(h.live._heat_v1("POOL1", "1h"), 0)   # noqa: SLF001
+            with mock.patch.dict("os.environ", {"POS_RUNNER_CADENCIA_QUENTE": "0"}):
+                self.assertEqual(h.live._heat_v1("POOL1", "1h"), 2, "desligada, sem peso extra da trajetoria")   # noqa: SLF001
+        finally:
+            h.close()
+
+    def test_heat_so_olha_v2_v3_quando_a_promocao_esta_ligada(self) -> None:
+        h = LiveHarness()
+        try:
+            start_tracking(h)
+            h.clock.advance(H)
+            # nunca existiu detector V2/V3 para este pool -- com a promocao DESLIGADA, `_heat()`
+            # precisa continuar exatamente como antes (so V0/V1), nunca tentar ler self.dets_v2/v3.
+            with mock.patch.dict("os.environ", {"POS_RUNNER_CADENCIA_QUENTE": "0"}):
+                self.assertEqual(h.live._heat("POOL1", "1h"), h.live._heat_v0("POOL1", "1h"))   # noqa: SLF001
+        finally:
+            h.close()
 
 
 if __name__ == "__main__":

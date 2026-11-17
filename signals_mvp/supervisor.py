@@ -138,6 +138,9 @@ class Supervisor:
         env = dict(os.environ)
         env["SIGNALS_MVP_HOME"] = str(self.paths.base)
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        # RODADA 17 item 5: avisa o worker filho que o lock do banco JA esta travado aqui (este
+        # processo) -- o worker nunca tenta travar de novo (travaria contra o proprio pai).
+        env["SIGNALS_MVP_SUPERVISED"] = "1"
         return subprocess.Popen(self.worker_cmd, cwd=str(PACKAGE_DIR.parent), env=env)
 
     def _stop_worker(self, proc: subprocess.Popen) -> None:

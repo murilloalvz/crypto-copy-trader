@@ -5,7 +5,12 @@ from __future__ import annotations
 import unittest
 
 from ..pos_runner.candles import Bar
-from ..pos_runner.qualidade_candle import LimiaresQualidadeCandle, motivo_suspeito, ohlc_coerente
+from ..pos_runner.qualidade_candle import (
+    LimiaresQualidadeCandle,
+    candle_confiavel_cb,
+    motivo_suspeito,
+    ohlc_coerente,
+)
 
 
 def _bar(o: float, h: float, l: float, c: float) -> Bar:
@@ -99,6 +104,51 @@ class MotivoSuspeitoTests(unittest.TestCase):
         self.assertIsNone(motivo_suspeito(bar, 30.0, 200.0, limiares=LimiaresQualidadeCandle()))
         self.assertEqual(motivo_suspeito(bar, 30.0, 200.0, vizinho_seguinte_open=30.0, limiares=limiares),
                          "candle_isolado_vs_vizinhos")
+
+
+class CandleConfiavelCbTests(unittest.TestCase):
+    """RODADA 17 (achado P1 da Parte B da auditoria 2026-11-10): `candle_confiavel_cb` e a mesma
+    closure que o caminho ao vivo ja usa (`PosRunnerLive._candle_confiavel_cb`), extraida como
+    funcao pura -- sem Storage/DexPaprika -- pra ser reusada pelos motores offline."""
+
+    def _serie_com_spike_isolado(self) -> list[Bar]:
+        return [
+            Bar(1_000, 100.0, 101.0, 99.0, 100.0, 10.0),
+            Bar(4_600, 100.0, 102.0, 96.0, 101.0, 10.0),
+            Bar(8_200, 101.0, 5_000.0, 70.0, 90.0, 10.0),   # spike isolado
+            Bar(11_800, 103.0, 104.0, 102.0, 103.0, 10.0),   # nao confirma o spike
+        ]
+
+    def test_candle_limpo_devolve_none_vizinhos_consistentes(self) -> None:
+        bars = self._serie_com_spike_isolado()
+        cb = candle_confiavel_cb(bars, peak=10_000.0)
+        self.assertIsNone(cb(0))
+        self.assertIsNone(cb(1))
+
+    def test_spike_isolado_nunca_confirmado_e_vetado(self) -> None:
+        bars = self._serie_com_spike_isolado()
+        cb = candle_confiavel_cb(bars, peak=10_000.0)
+        self.assertEqual(cb(2), "candle_isolado_vs_vizinhos")
+
+    def test_candle_apos_o_spike_sem_relacao_com_ele_fica_confiavel(self) -> None:
+        bars = self._serie_com_spike_isolado()
+        cb = candle_confiavel_cb(bars, peak=10_000.0)
+        self.assertIsNone(cb(3))
+
+    def test_sem_divergencias_equivale_a_dex_divergente_false_pra_todo_candle(self) -> None:
+        bars = self._serie_com_spike_isolado()
+        cb_sem_divergencias = candle_confiavel_cb(bars, peak=10_000.0)
+        cb_divergencias_vazias = candle_confiavel_cb(bars, peak=10_000.0, divergencias={})
+        for j in range(len(bars)):
+            self.assertEqual(cb_sem_divergencias(j), cb_divergencias_vazias(j))
+
+    def test_divergencia_dexpaprika_registrada_decide_mesmo_sem_spike(self) -> None:
+        # candle limpo (sem spike), mas com divergencia DexPaprika >50% registrada pro MESMO ts --
+        # o cruzamento (so existe no caminho ao vivo) decide, ignorando o veto por vizinho/pico.
+        bars = self._serie_com_spike_isolado()
+        cb = candle_confiavel_cb(bars, peak=10_000.0, divergencias={bars[0].ts: 60.0})
+        self.assertEqual(cb(0), "candle_corrompido_provavel")
+        self.assertIsNone(cb(1))   # ts diferente -- sem divergencia registrada, fica confiavel
 
 
 if __name__ == "__main__":

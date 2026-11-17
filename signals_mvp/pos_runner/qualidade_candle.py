@@ -19,7 +19,7 @@ fora do escopo pedido (gatilho/entrada/TP1/saida); documentado como limitacao co
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .candles import Bar
 
@@ -92,3 +92,31 @@ def motivo_suspeito(
     if vizinho_seguinte_open > 0 and _razao(pico_candle, vizinho_seguinte_open) <= limiares.razao_vizinho_max:
         return None   # o nivel persistiu no candle seguinte -- nao foi um glitch isolado
     return "candle_isolado_vs_vizinhos"
+
+
+def candle_confiavel_cb(bars: list[Bar], peak: Optional[float],
+                        divergencias: Optional[dict[int, float]] = None) -> Callable[[int], Optional[str]]:
+    """RODADA 17 (achado P1 da Parte B da auditoria 2026-11-10): o MESMO veto de candle corrompido
+    que o caminho ao vivo ja aplica em `simulate_v1(candle_confiavel=...)` (`PosRunnerLive.
+    _candle_confiavel_cb`), extraido aqui como funcao PURA (sem `self`/Storage) pra ser reusada por
+    qualquer motor OFFLINE (`horizonte_fixo.py`, `varredura_v3.py`, `simular_v3_carteira.py`,
+    `auditoria_fidelidade_v3.py`, `retrospectivo_saida_fiel.py`) -- nunca uma 2a implementacao do
+    mesmo veto que poderia divergir com o tempo. `bars` e a serie JA RESOLVIDA (historica, nunca
+    streaming ao vivo) -- por isso `vizinho_seguinte_open` e sempre passado quando `j+1 < len(bars)`
+    (causalmente seguro aqui: a serie inteira ja e fato passado no momento do calculo, ao contrario
+    do caminho ao vivo que so conhece o candle seguinte quando ele de fato ja chegou).
+
+    `divergencias` (opcional): {ts_do_candle: maior_diff_pct_dexpaprika} -- so existe no caminho ao
+    vivo (cruza contra `pr1_dexpaprika_divergencias`, que so e populado pelo bot rodando de verdade);
+    motores offline sem esse cruzamento passam `None`/omitem (equivalente a `dex_divergente=False`
+    pra todo candle -- o veto por OHLC/pico/vizinho continua identico, so falta a confirmacao extra
+    por DexPaprika que so o bot ao vivo tem)."""
+    divergencias = divergencias or {}
+
+    def cb(j: int) -> Optional[str]:
+        bar = bars[j]
+        anterior = bars[j - 1].close if j > 0 else None
+        seguinte = bars[j + 1].open if j + 1 < len(bars) else None
+        dex_divergente = bar.ts in divergencias
+        return motivo_suspeito(bar, anterior, peak, seguinte, dex_divergente, divergencias.get(bar.ts))
+    return cb

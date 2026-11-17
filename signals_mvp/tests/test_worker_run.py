@@ -16,6 +16,7 @@ from unittest import mock
 import yaml
 
 from ..config import PACKAGE_DIR, make_paths
+from ..instance_lock import acquire_instance_lock
 from ..pos_runner.live import LiveSettings
 from ..worker import Worker, resolve_chamadas_por_ciclo
 from .fakes import FakeClock, FakeGoPlus, FakeGt, FakeTelegram
@@ -93,6 +94,51 @@ class WorkerLifecycleTest(unittest.TestCase):
         self.assertTrue((self.paths.logs / "signals_mvp.log").exists())
         # o token do Telegram nunca aparece no log
         self.assertNotIn("AAH-fake", (self.paths.logs / "signals_mvp.log").read_text(encoding="utf-8"))
+
+    def test_standalone_worker_refuses_to_start_with_another_instance_already_locked(self) -> None:
+        """RODADA 17 item 5: `python -m signals_mvp worker` chamado direto (sem supervisor, sem
+        SIGNALS_MVP_SUPERVISED) precisa travar o MESMO lock de arquivo que o supervisor usa -- 2
+        processos escrevendo no mesmo banco e exatamente o que o invariante #9 do CLAUDE.md proibe."""
+        lock = acquire_instance_lock(self.paths.db)
+        self.assertIsNotNone(lock)
+        try:
+            with mock.patch("signals_mvp.worker.TelegramClient", FakeTgClient):
+                self.assertEqual(Worker(self.paths).run(), 1)
+        finally:
+            lock.release()
+
+    def test_supervised_worker_never_tries_to_lock_itself_against_its_own_parent(self) -> None:
+        """Com SIGNALS_MVP_SUPERVISED=1 (setado pelo supervisor ao spawnar o filho), o worker confia
+        que o lock JA esta travado la fora -- NUNCA tenta travar de novo (travaria contra o proprio
+        supervisor pai e nunca subiria)."""
+        lock = acquire_instance_lock(self.paths.db)   # simula o supervisor pai, que ja detem o lock
+        self.assertIsNotNone(lock)
+        try:
+            gt = FakeGt(FakeClock(time.time()))
+            fake_tg: list[FakeTgClient] = []
+            with mock.patch("signals_mvp.worker.make_gt", lambda cfg: gt), \
+                 mock.patch("signals_mvp.worker.make_goplus", lambda cfg: FakeGoPlus()), \
+                 mock.patch("signals_mvp.worker.TelegramClient", lambda t, c: fake_tg.append(FakeTgClient(t, c)) or fake_tg[-1]), \
+                 mock.patch.dict("os.environ", {"SIGNALS_MVP_SUPERVISED": "1"}):
+                worker = Worker(self.paths)
+                result: list[int] = []
+                thread = threading.Thread(target=lambda: result.append(worker.run()), daemon=True)
+                thread.start()
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    try:
+                        beat = json.loads(self.paths.heartbeat.read_text())
+                        if beat.get("ciclo", 0) >= 1 and beat.get("estado") == "dormindo":
+                            break
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(0.1)
+                self.paths.stop_flag.write_text("parar")
+                thread.join(timeout=30)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result, [0], "worker filho roda normalmente, mesmo com o pai detendo o lock")
+        finally:
+            lock.release()
 
     def test_invalid_config_exits_with_code_2(self) -> None:
         (self.tmp / "config.yaml").write_text("modo: paper\n", encoding="utf-8")

@@ -18,6 +18,7 @@ from .geckoterminal import GtClient
 from . import backup, healthchecks
 from .goplus import GoPlusClient
 from .http import ApiError, HttpClient, RateLimiter
+from .instance_lock import acquire_instance_lock
 from .logging_setup import setup_logging
 from .narrative import MetaSet, load_meta
 from .storage import Storage
@@ -195,6 +196,17 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
     sem_evidencia = bool(os.environ.get("SEM_EVIDENCIA"))   # PEDIDO (PARTE 1 de 2): desliga trajetoria+baseline
     sem_carteiras = bool(os.environ.get("SEM_CARTEIRAS"))   # PEDIDO 2026-10-27 (H9): desliga o snapshot de carteiras pro
     carteiras_max_chamadas_dia = int(os.environ.get("CARTEIRAS_MAX_CHAMADAS_DIA", "600"))
+    # PEDIDO 2026-11-10 (rodada 15, Parte 2, autorizado): ritmo do RPC DEDICADO da coleta de
+    # carteiras de baixa prioridade (so fase runner/pullback, sem posicao aberta) -- deliberadamente
+    # baixo e configuravel, NUNCA o mesmo limitador que lineage/graduacao usam (ver diagnostico,
+    # docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md).
+    carteiras_rpc_per_min = float(os.environ.get("CARTEIRAS_RPC_PER_MIN", "10"))
+    # PEDIDO 2026-11-10 (rodada 15, Parte 3, autorizado): K pools de controle/placebo gravados em
+    # `pr3_carteiras_sinal` no MESMO ciclo de cada sinal V3 real -- ver `_capturar_carteiras_sinal_v3`.
+    carteiras_placebo_k = int(os.environ.get("CARTEIRAS_PLACEBO_K", "3"))
+    # PEDIDO 2026-11-12 (rodada 19, item 1, autorizado): desliga a sombra FORWARD "entrada no
+    # suporte" (pr3_suporte_sombra) -- SEM_SUPORTE_SOMBRA=1, MESMO padrao de SEM_SOMBRA/SEM_CARTEIRAS.
+    sem_suporte_sombra = bool(os.environ.get("SEM_SUPORTE_SOMBRA"))
     sem_sombra = bool(os.environ.get("SEM_SOMBRA"))   # PEDIDO (PARTE 2A) FASE 3: desliga a sombra dos filtros
     sombra_max_pools = int(os.environ.get("SOMBRA_MAX_POOLS", "10"))
     sem_radar = bool(os.environ.get("SEM_RADAR"))   # PEDIDO 2026-10-29 (item 4): desliga o Radar "caixa em formacao"
@@ -218,6 +230,10 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
         return None
     chain = cfg.raw["chains"]["solana"]
     rpc = SolanaRpc(endpoints_from_env(), per_min=40, timeout_s=20, max_attempts=6)
+    # PEDIDO 2026-11-10 (rodada 15, Parte 2): cliente RPC SEPARADO (mesmos endpoints, limitador
+    # PROPRIO -- nunca o mesmo objeto/estado AIMD de `rpc` acima) pra coleta de carteiras de baixa
+    # prioridade -- uma degradacao (429) aqui nunca contamina o limitador que lineage/graduacao usam.
+    rpc_carteiras = SolanaRpc(endpoints_from_env(), per_min=carteiras_rpc_per_min, timeout_s=20, max_attempts=6)
     dexpaprika = make_dexpaprika_provider()
     live = PosRunnerLive(settings, params, storage, http, ctx, telegram, cfg.raw["links"], chain["dexscreener_slug"],
                          paths.dados / "pos_runner", rpc=rpc, sem_v0=sem_v0, terminal=chain["terminal"],
@@ -225,7 +241,9 @@ def make_pos_runner(cfg: Config, paths: Paths, storage: Storage, engine: Engine,
                          sem_carteiras=sem_carteiras, carteiras_max_chamadas_dia=carteiras_max_chamadas_dia,
                          sem_sombra=sem_sombra, sombra_max_pools=sombra_max_pools,
                          sem_radar=sem_radar, radar_max_dia=radar_max_dia, sem_rotacao=sem_rotacao,
-                         sem_v3=sem_v3, v3_alertas=v3_alertas)
+                         sem_v3=sem_v3, v3_alertas=v3_alertas, rpc_carteiras=rpc_carteiras,
+                         carteiras_rpc_per_min=carteiras_rpc_per_min, carteiras_placebo_k=carteiras_placebo_k,
+                         sem_suporte_sombra=sem_suporte_sombra)
     live.alerts_on = cfg.raw["alertas"]["ligado"]
     live.chain_capabilities = _check_fase2_capabilities(http, telegram, paths)   # FASE 6, item 3: texto de startup real
     verifier = LineageVerifier(storage, rpc)
@@ -405,6 +423,20 @@ class Worker:
             return EXIT_CONFIG_ERROR
         self._install_signals()
 
+        # RODADA 17 item 5: 'worker' tambem pode ser chamado direto (`python -m signals_mvp worker`,
+        # fora do supervisor) -- trava o MESMO lock de arquivo que `supervisor.py` ja usa
+        # (`instance_lock.py`), nunca 2 escritores fisicos no mesmo banco (invariante #9 do
+        # CLAUDE.md). Quando o supervisor spawna o worker como filho (`Supervisor._spawn`),
+        # `SIGNALS_MVP_SUPERVISED=1` avisa que o lock ja esta travado la fora -- o worker filho
+        # NUNCA tenta travar de novo (travaria contra o proprio supervisor pai e nunca subiria).
+        lock = None
+        if not os.environ.get("SIGNALS_MVP_SUPERVISED"):
+            lock = acquire_instance_lock(self.paths.db)
+            if lock is None:
+                console.error("O bot ja esta rodando (outra instancia tem o lock de %s.lock). Pare-a "
+                              "antes de iniciar outra.", self.paths.db.name)
+                return 1
+
         storage = Storage(self.paths)
         heartbeat = Heartbeat(self.paths.heartbeat)
         heartbeat.beat(force=True)
@@ -526,6 +558,8 @@ class Worker:
             storage.close()
         heartbeat.state = "parado"
         heartbeat.beat(force=True)
+        if lock is not None:
+            lock.release()
         return 0
 
     @staticmethod

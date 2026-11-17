@@ -41,6 +41,20 @@ class SaudeScriptTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_secao_sombra_nunca_chama_de_pools_ativos_sem_rotular_de_onde_vem(self) -> None:
+        """HANDOFF 2026-11-12/13, item (d): a contagem da SOMBRA e so os slots do detector sombra
+        (teto SOMBRA_MAX_POOLS), bem menor que o total real de pools ativos em `pr_pools` (ver FILA) --
+        o rotulo tem que deixar isso explicito, nunca mais parecer contradizer FILA."""
+        h = LiveHarness()
+        try:
+            h.storage.set_meta("pr_sombra_ativos", json.dumps({"n_pools": 2, "ts": h.clock()}))
+            linhas = saude._secao_sombra(h.storage, h.clock(), h.storage.paths.db.parent)
+            linha_pools = next(l for l in linhas if "pools sombra ativos" in l)
+            self.assertIn("ver FILA", linha_pools)
+            self.assertNotIn("SOMBRA:   pools ativos:", "\n".join(linhas))
+        finally:
+            h.close()
+
     def test_never_writes_to_the_database(self) -> None:
         h = LiveHarness()
         try:
@@ -189,12 +203,83 @@ class SaudeScriptTests(unittest.TestCase):
             h.run_hours(17)   # abre 1 posicao V1 e 1 V2, no MESMO pool (POOL1)
             h.storage.set_meta("pr_carteiras_runtime", json.dumps({
                 "rpc_configurado": False, "sem_carteiras": False, "carteiras_max_chamadas_dia": 200,
-                "ts": h.clock(),
+                "carteiras_placebo_k": 3, "ts": h.clock(),
             }))
             texto = saude.executar(h.storage.paths.db, None, 48.0)
             self.assertIn("elegiveis AGORA (posicao aberta OU fase runner/pullback, V1 ou V2): 1 pool(s)", texto)
             self.assertIn("RPC configurado=NAO", texto)
             self.assertIn("orcamento hoje: 0/200", texto)
+            # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward da V3 (`pr3_carteiras_
+            # sinal`) tambem aparece aqui -- a V3 ja abriu 1 sinal real na mesma `run_hours(17)` acima,
+            # sem RPC (adapter.rpc=None no harness) -- 0 cobertura valida, nunca um numero fabricado.
+            # RODADA 22 (2026-11-17), item 2a: cobertura do placebo agora e coletados/(K x sinais),
+            # nunca so das linhas que ja existem (0 placebo / (3 x 1 sinal) = 0%).
+            self.assertIn("forward V3: sinal=1 (cobertura=0) placebo=0 "
+                         "(cobertura_valida=0, cobertura_deficit=0% de 3x1 esperado)", texto)
+        finally:
+            h.close()
+
+    def test_cobertura_de_placebo_mostra_o_deficit_mesmo_quando_as_linhas_existentes_sao_100_validas(self) -> None:
+        """RODADA 22 (2026-11-17), item 2a -- RODADA 20, pergunta 2 (achado): com K=3 e 2 sinais,
+        o esperado e 6 placebo; so 3 foram coletados (deficit real de candidatos/mint, nunca
+        registrado antes) -- mesmo as 3 que existem sendo TODAS cobertura_valida=1, a cobertura
+        de verdade e 3/6=50%, nunca "100%" (que e o que a formula antiga mostraria, cobertos/
+        len(existentes))."""
+        h = LiveHarness()
+        try:
+            h.storage.set_meta("pr_carteiras_runtime", json.dumps({
+                "rpc_configurado": True, "sem_carteiras": False, "carteiras_max_chamadas_dia": 200,
+                "carteiras_placebo_k": 3, "ts": h.clock(),
+            }))
+            for i in range(2):
+                h.storage.pr3_carteiras_sinal_insert(i, "sinal", f"POOL{i}", f"MINT{i}", h.clock(),
+                                                     1, 1, 5.0, True)
+            for i in range(3):
+                h.storage.pr3_carteiras_sinal_insert(0, "placebo", f"CTRL{i}", f"MINTC{i}", h.clock(),
+                                                     0, 0, 0.0, True)
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("placebo=3 (cobertura_valida=3, cobertura_deficit=50% de 3x2 esperado)", texto)
+        finally:
+            h.close()
+
+    def test_alarme_quando_exclusao_de_pool_curva_nunca_exclui_nada(self) -> None:
+        """RODADA 22 (2026-11-17), condicao 1 do operador: backstop -- N snapshots recentes do
+        coletor v2+ com contas_excluidas_pool_curva=0 em TODOS tem que alarmar (seed da
+        bonding-curve pode ter mudado de novo, ou um launchpad novo sem cobertura)."""
+        from ..pos_runner.chain_adapter import CARTEIRAS_COLETOR_VERSAO
+
+        import time as _time
+
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            for i in range(5):
+                h.storage.pr_carteiras_snapshot_insert(
+                    f"horaria:POOL{i}:1", now, "solana", f"POOL{i}", f"MINT{i}", "horaria",
+                    [("Wallet", 1.0)], 0, 0, [], coletor_versao=CARTEIRAS_COLETOR_VERSAO,
+                    contas_totais=20, contas_excluidas_pool_curva=0, contas_sem_owner=0,
+                )
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertIn("EXCLUSAO DE POOL/CURVA NUNCA EXCLUIU NADA: 5 snapshot(s)", texto)
+        finally:
+            h.close()
+
+    def test_sem_alarme_quando_pelo_menos_1_snapshot_exclui_alguma_coisa(self) -> None:
+        import time as _time
+
+        from ..pos_runner.chain_adapter import CARTEIRAS_COLETOR_VERSAO
+
+        h = LiveHarness()
+        try:
+            now = _time.time()
+            for i in range(5):
+                h.storage.pr_carteiras_snapshot_insert(
+                    f"horaria:POOL{i}:1", now, "solana", f"POOL{i}", f"MINT{i}", "horaria",
+                    [("Wallet", 1.0)], 0, 0, [], coletor_versao=CARTEIRAS_COLETOR_VERSAO,
+                    contas_totais=20, contas_excluidas_pool_curva=(1 if i == 0 else 0), contas_sem_owner=0,
+                )
+            texto = saude.executar(h.storage.paths.db, None, 48.0)
+            self.assertNotIn("EXCLUSAO DE POOL/CURVA NUNCA EXCLUIU NADA", texto)
         finally:
             h.close()
 

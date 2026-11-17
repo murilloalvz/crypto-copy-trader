@@ -13,6 +13,7 @@ from ..pos_runner import carteiras_pro as cp
 from ..scripts.carregar_carteiras_pro import executar
 
 
+@unittest.skipUnless(cp.LISTA_PATH.exists(), "lista real de carteiras (dado pessoal, gitignored) so existe na VM do operador")
 class CarregarCarteirasProScriptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="carteiras_script_"))

@@ -125,8 +125,10 @@ class PendenciaFallbackTests(unittest.TestCase):
             h.run_hours(5)
             # PEDIDO 2026-11-02 (FASE 1f): limiar de pendencia agora e MENOR (5min) pra pool quente/
             # morno -- este teste cobre o limiar PADRAO (20min, pool fria/sem detector), nunca o
-            # reduzido (ja coberto em `RetentativaCurtaTests`); forca heat=-1 (sem carga).
-            for dets in (h.live.dets, h.live.dets_v1, h.live.dets_v2):
+            # reduzido (ja coberto em `RetentativaCurtaTests`); forca heat=-1 (sem carga). PEDIDO
+            # 2026-11-05 (item 2): `_heat()` agora tambem olha V3 (antes so V0/V1) -- precisa limpar
+            # `dets_v3` tambem, senao o pool fica heat>=0 (quente/morno) por causa so da V3.
+            for dets in (h.live.dets, h.live.dets_v1, h.live.dets_v2, h.live.dets_v3):
                 dets.pop(("POOL1", "1h"), None)
             stub = _StubDexPaprikaProvider(fallback_bars=[])
             h.live.dexpaprika = stub

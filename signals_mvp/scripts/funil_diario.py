@@ -31,6 +31,14 @@ FECHAMENTO do candle de 1h e o processamento pelo detector (`pr_candle_latencia`
 quantas ENTRADAS teriam ficado perto (>=80%) do limiar de `_late()` (1h, `max(900s, step)`) -- se o
 p95 estiver perto do limiar, isto fica destacado.
 
+PEDIDO 2026-11-10 (RODADA 17, item 3): o ETA/funil so contava V1/V2 -- a V3 (H1, a hipotese de
+cauda, prioridade atual do projeto, `EMENDA_2026-11-10_FUTILIDADE_CAUDA_OPCAO_A.md`) nunca aparecia
+aqui, dando falsa sensacao de progresso/atraso em relacao a hipotese que importa agora (achado P1 da
+Rodada 16, `docs/revisao-2026-11-10/PARTE_A_VERIFICACAO_NUMEROS.md`). Colunas `sinal_v3`/`vencido_v3`
+(MESMO padrao pool-distinto/dia das colunas V1/V2 -- `pr3_signals.ts_fechamento`/`closed_ts`,
+`status='fechado'`) + ETA SEPARADO em N=30 e N=60 tokens distintos fechados (os 2 pontos de olhada
+fixos da V3, `PREREGISTRO_V3_2026-11-02.md`) -- V1/V2 e V3 NUNCA somados (sao hipoteses diferentes).
+
 PEDIDO 2026-11-02 (FASE 1d, consolidado aqui pelo mesmo motivo): secao "Capacidade (RSS)" -- RSS
 atual do processo (`/proc/self/status`) / pools ativos NAQUELE instante, media e pior caso das
 amostras das ultimas 24h (`pr_rss_amostra`, a cada 15min no bot ao vivo), e quantos pools A MAIS
@@ -54,6 +62,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 ALVO_TOKENS_FECHADOS = 30
+ALVOS_TOKENS_FECHADOS_V3: tuple[int, ...] = (30, 60)   # pedido explicito -- N=30 e N=60 (H1 da V3)
 LATE_LIMIAR_S = 3600.0   # mesmo limiar de `_late()` p/ ENTRADA 1h (`max(900.0, float(det.step))`)
 LATE_PROXIMO_FRACAO = 0.8   # "perto do limiar" = >= 80% dele
 
@@ -106,6 +115,35 @@ def montar_funil(con: sqlite3.Connection) -> dict[str, dict[str, int]]:
             "aposentados": len(aposentados.get(dia, ())), "readmitidos": len(readmitidos.get(dia, ())),
         }
     return out
+
+
+def montar_funil_v3(con: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """RODADA 17 item 3: MESMO padrao pool-distinto/dia de `montar_funil`, mas SEPARADO (V3 e uma
+    hipotese diferente de V1/V2 -- nunca somadas na mesma coluna)."""
+    sinal = _dias_distintos_por_pool(con, "SELECT ts_fechamento, pool FROM pr3_signals WHERE evento='ENTRADA'")
+    vencido = _dias_distintos_por_pool(con, "SELECT closed_ts, pool FROM pr3_signals WHERE status='fechado'")
+    dias = sorted(set(sinal) | set(vencido))
+    return {dia: {"sinal_v3": len(sinal.get(dia, ())), "vencido_v3": len(vencido.get(dia, ()))} for dia in dias}
+
+
+def eta_dias_alvo_fechados_v3(con: sqlite3.Connection, now: float, alvo: int) -> Optional[float]:
+    """RODADA 17 item 3: MESMA formula de `eta_dias_30_fechados` (projecao linear, taxa media desde
+    o 1o fechamento), so sobre `pr3_signals` e com `alvo` explicito -- pedido pede N=30 E N=60 pra V3,
+    nunca so o N=30 fixo que V1/V2 usam."""
+    rows = con.execute(
+        "SELECT closed_ts, pool FROM pr3_signals WHERE status='fechado' AND closed_ts IS NOT NULL").fetchall()
+    if not rows:
+        return None
+    pools_fechados = {r["pool"] for r in rows}
+    ja_fechados = len(pools_fechados)
+    if ja_fechados >= alvo:
+        return 0.0
+    primeiro_ts = min(r["closed_ts"] for r in rows)
+    dias_passados = max((now - primeiro_ts) / 86_400.0, 1e-9)
+    taxa_por_dia = ja_fechados / dias_passados
+    if taxa_por_dia <= 0:
+        return None
+    return (alvo - ja_fechados) / taxa_por_dia
 
 
 def pct_runner_7d(con: sqlite3.Connection, now: float) -> Optional[float]:
@@ -275,7 +313,9 @@ def contagem_ativos_admitidos(con: sqlite3.Connection) -> dict[str, int]:
 def formatar(funil: dict[str, dict[str, int]], fase1_atrasadas: dict[str, int], fase1_pre_admissao: dict[str, int],
             ja_fechados: int, eta: Optional[float], pct_runner: Optional[float], uso_api: dict[str, Any],
             latencia: dict[str, Any], capacidade: dict[str, Any], eta_3d: Optional[float] = None,
-            contagem: Optional[dict[str, int]] = None, pre_admissao_7d: Optional[dict[str, Any]] = None) -> str:
+            contagem: Optional[dict[str, int]] = None, pre_admissao_7d: Optional[dict[str, Any]] = None,
+            funil_v3: Optional[dict[str, dict[str, int]]] = None, ja_fechados_v3: Optional[int] = None,
+            etas_v3: Optional[dict[int, Optional[float]]] = None) -> str:
     out = ["# Funil diario -- POS-RUNNER (descoberta -> admissao -> runner -> caixa -> sinal -> fechado)", ""]
     if contagem is not None:
         out.append(f"pools ativos agora: {contagem['ativos']} | admitidos (total, qualquer status): "
@@ -289,15 +329,28 @@ def formatar(funil: dict[str, dict[str, int]], fase1_atrasadas: dict[str, int], 
           ("s/d (sem fechamento nos ultimos 3d)" if eta_3d is None
            else f"{eta_3d:.1f} dia(s)"),
           f"% runner (admitidos nos ultimos 7d): " + ("s/d (nenhum admitido na janela)" if pct_runner is None
-                                                       else f"{pct_runner:.1f}%"), "",
-          "| dia (UTC) | descobertos | admitidos | runner | caixa | sinal | fechado | aposentados | "
-          "readmitidos | entradas_atrasadas | eventos_pre_admissao |",
-          "|---|---|---|---|---|---|---|---|---|---|---|"]
-    for dia, c in funil.items():
+                                                       else f"{pct_runner:.1f}%"), ""]
+    if ja_fechados_v3 is not None:
+        etas_v3 = etas_v3 or {}
+        etas_txt = ", ".join(
+            f"N={alvo}: " + ("s/d" if etas_v3.get(alvo) is None else f"{etas_v3[alvo]:.1f} dia(s)")
+            for alvo in ALVOS_TOKENS_FECHADOS_V3)
+        out += [f"V3 (H1) -- tokens distintos fechados: {ja_fechados_v3} | ETA: {etas_txt}", ""]
+    out += [
+          "| dia (UTC) | descobertos | admitidos | runner | caixa | sinal | fechado | sinal_v3 | "
+          "vencido_v3 | aposentados | readmitidos | entradas_atrasadas | eventos_pre_admissao |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    funil_v3 = funil_v3 or {}
+    dias_todos = sorted(set(funil) | set(funil_v3))
+    for dia in dias_todos:
+        c = funil.get(dia, {"descobertos": 0, "admitidos": 0, "runner": 0, "caixa": 0, "sinal": 0,
+                            "fechado": 0, "aposentados": 0, "readmitidos": 0})
+        c3 = funil_v3.get(dia, {"sinal_v3": 0, "vencido_v3": 0})
         out.append(f"| {dia} | {c['descobertos']} | {c['admitidos']} | {c['runner']} | {c['caixa']} | "
-                  f"{c['sinal']} | {c['fechado']} | {c['aposentados']} | {c['readmitidos']} | "
-                  f"{fase1_atrasadas.get(dia, 0)} | {fase1_pre_admissao.get(dia, 0)} |")
-    if not funil:
+                  f"{c['sinal']} | {c['fechado']} | {c3['sinal_v3']} | {c3['vencido_v3']} | "
+                  f"{c['aposentados']} | {c['readmitidos']} | {fase1_atrasadas.get(dia, 0)} | "
+                  f"{fase1_pre_admissao.get(dia, 0)} |")
+    if not dias_todos:
         out.append("(sem dados ainda)")
     out += ["", "## Uso de API (24h)", "",
           "chamadas/h por finalidade: " +
@@ -366,8 +419,13 @@ def executar(db_path: Path) -> str:
         latencia = latencia_candle_24h(con, now)
         capacidade = capacidade_rss_24h(con, now)
         pre_admissao_7d = eventos_pre_admissao_7d(con, now)
+        funil_v3 = montar_funil_v3(con)
+        rows_v3 = con.execute("SELECT pool FROM pr3_signals WHERE status='fechado'").fetchall()
+        ja_fechados_v3 = len({r["pool"] for r in rows_v3})
+        etas_v3 = {alvo: eta_dias_alvo_fechados_v3(con, now, alvo) for alvo in ALVOS_TOKENS_FECHADOS_V3}
         return formatar(funil, atrasadas, pre_admissao, ja_fechados, eta, pct_runner, uso_api, latencia, capacidade,
-                        eta_3d=eta_3d, contagem=contagem, pre_admissao_7d=pre_admissao_7d)
+                        eta_3d=eta_3d, contagem=contagem, pre_admissao_7d=pre_admissao_7d, funil_v3=funil_v3,
+                        ja_fechados_v3=ja_fechados_v3, etas_v3=etas_v3)
     finally:
         con.close()
 

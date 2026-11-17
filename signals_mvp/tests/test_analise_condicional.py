@@ -751,6 +751,71 @@ class ResumoRRealizadoTests(unittest.TestCase):
         self.assertIsNone(r.taxa_acerto_pct)
 
 
+class HorizonteFixoFlagTests(unittest.TestCase):
+    """PEDIDO 2026-11-05 (emenda horizonte fixo, autorizada): `horizonte=None` (padrao) fica BYTE A
+    BYTE igual ao legado (nunca olha `pr_horizonte_fixo`); `horizonte="72h"`/`"7d"` troca a FONTE de
+    `dif_pareada` para `pr_horizonte_fixo` (origem='ao_vivo'), MESMAS exclusoes de qualidade."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="condicional_horizonte_"))
+        self.storage = Storage(make_paths(self.tmp))
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _sinal_e_trajetoria(self, **kwargs) -> int:
+        base = {
+            "chain": "solana", "pool": "POOL1", "tf": "1h", "evento": "ENTRADA", "ts_fechamento": 1_000,
+            "mint": "MINT1", "symbol": "CAT", "launchpad": "pumpfun", "dex": "pumpswap",
+            "versao_config_v1": "abc123", "gatilho": "[]", "tags": "[]", "janela_ouro": "janela_ouro",
+            "hora_brt": "09:00", "status": "aberto", "entry_price": 100.0, "stop": 80.0,
+        }
+        base.update(kwargs)
+        signal_id = self.storage.pr1_insert_signal(base)
+        self.storage.pr_trajetoria_upsert("v1", signal_id, 0.0, chain="solana", pool="POOL1", tf="1h",
+                                          mint="MINT1", symbol="CAT", t_entrada=5_000.0, preco_entrada=100.0,
+                                          risco_pct=20.0, r_unidade=20.0, fonte_candle="gt")
+        return signal_id
+
+    def test_default_horizonte_none_never_looks_at_pr_horizonte_fixo(self) -> None:
+        signal_id = self._sinal_e_trajetoria()
+        self.storage.pr_horizonte_fixo_upsert("v1", "ao_vivo", str(signal_id), "72h", 1.0, "marcado",
+                                              dif_pareada=5.0)
+        # sem pr_baseline resolvido -- legado continua vazio, mesmo com uma linha de horizonte pronta.
+        self.assertEqual(cond.carregar_sinais_resolvidos(self.storage, "v1"), [])
+
+    def test_horizonte_72h_loads_dif_pareada_from_pr_horizonte_fixo(self) -> None:
+        signal_id = self._sinal_e_trajetoria()
+        self.storage.pr_horizonte_fixo_upsert("v1", "ao_vivo", str(signal_id), "72h", 1.0, "marcado",
+                                              dif_pareada=1.3)
+        sinais = cond.carregar_sinais_resolvidos(self.storage, "v1", horizonte="72h")
+        self.assertEqual(len(sinais), 1)
+        self.assertAlmostEqual(sinais[0].dif_pareada, 1.3)
+        self.assertEqual(sinais[0].mint, "MINT1")
+
+    def test_pendente_rows_without_dif_pareada_never_enter_the_horizonte_view(self) -> None:
+        signal_id = self._sinal_e_trajetoria()
+        self.storage.pr_horizonte_fixo_upsert("v1", "ao_vivo", str(signal_id), "72h", 1.0, "pendente")
+        self.assertEqual(cond.carregar_sinais_resolvidos(self.storage, "v1", horizonte="72h"), [])
+
+    def test_quality_exclusions_still_apply_under_the_horizonte_flag(self) -> None:
+        signal_id = self._sinal_e_trajetoria(entry_price=100.5, entry_price_alerta=100.0)  # dentro da tolerancia
+        signal_id_divergente = self._sinal_e_trajetoria(entry_price=440_000.0, stop=440_000.0,
+                                                         entry_price_alerta=44_100_000.0, pool="POOL2",
+                                                         mint="MINT2", symbol="DOG")
+        self.storage.pr_horizonte_fixo_upsert("v1", "ao_vivo", str(signal_id), "72h", 1.0, "marcado",
+                                              dif_pareada=0.5)
+        self.storage.pr_horizonte_fixo_upsert("v1", "ao_vivo", str(signal_id_divergente), "72h", 1.0,
+                                              "marcado", dif_pareada=9.0)
+        sinais, excluidos = cond.carregar_sinais_e_excluidos(self.storage, "v1", horizonte="72h")
+        self.assertEqual(len(sinais), 1)
+        self.assertEqual(sinais[0].mint, "MINT1")
+        self.assertEqual(len(excluidos), 1)
+        self.assertEqual(excluidos[0].motivo, "preco_entrada_divergente")
+        self.assertEqual(excluidos[0].mint, "MINT2")
+
+
 class CarregarSinaisV3Tests(unittest.TestCase):
     """PEDIDO 2026-11-02: `carregar_sinais_e_excluidos(storage, "v3")` -- MESMO pipeline generico de
     V1/V2 (pr3_signals tem as mesmas colunas "sempre NULL" que o pipeline le incondicionalmente,

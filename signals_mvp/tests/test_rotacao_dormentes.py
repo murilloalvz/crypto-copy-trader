@@ -55,6 +55,9 @@ class RotacaoVagasTests(unittest.TestCase):
             now = GRAD + 100 * H
             _seed_ativo_incapaz(h, "POOL1", now, sem_fase_desde=now - (POS_RUNNER_ROTACAO_HORAS + 1) * H)
             _seed_verificado(h, "CANDIDATO", mc_found=500_000.0)   # candidato esperando vaga
+            # RODADA 17 item 4: `dets_v3` tambem precisa ser limpo na rotacao (MESMO padrao dos
+            # outros 8 dicts -- achado da auditoria 2026-11-10, faltava so este).
+            h.live.dets_v3[("POOL1", "1h")] = object()
             h.live._rotacionar_vagas(now)   # noqa: SLF001
             row = h.storage.pr_pool("POOL1")
             self.assertEqual(row["status"], "dormente")
@@ -62,6 +65,7 @@ class RotacaoVagasTests(unittest.TestCase):
             self.assertEqual(len(dormentes), 1)
             self.assertEqual(dormentes[0]["pool"], "POOL1")
             self.assertIsNotNone(h.storage.pr_rotacao_ativacao_ts_get())
+            self.assertNotIn(("POOL1", "1h"), h.live.dets_v3)
         finally:
             h.close()
 

@@ -23,7 +23,9 @@ from ..geckoterminal import parse_pools_response
 from ..http import ApiError, RateLimited
 from ..models import ChainCtx, PoolSnap
 from .candles import Bar, OhlcvStore
-from .enumerate import LAUNCHPADS
+from .carteiras_pro import base58_decode
+from .enumerate import GET_MULTIPLE_ACCOUNTS_BATCH, LAUNCHPADS
+from .solana_pda import PdaNaoEncontradoError, find_program_address
 from .solana_rpc import RpcError, SolanaRpc
 
 # `GRAD_DEX`/`LAUNCHPAD_NAME`/`SOURCES` vivem em `live.py` (o V0 ja os usa); importados aqui dentro dos
@@ -41,6 +43,19 @@ BASE_EXCLUDED_PROGRAMS = frozenset({
     "11111111111111111111111111111111111111111",         # System Program
 })
 HOLDER_CONCENTRADO_PCT = 1.5
+
+# RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de carteiras "pro"
+# -- ver `SolanaAdapter.holders_com_owner` abaixo. `classe` propria (nunca confundida com as de
+# `solana_rpc.classificar_erro`, que sao so de falha de TRANSPORTE): aqui a chamada RPC teve sucesso,
+# o dado em si e que nao permite nenhuma leitura valida de owner.
+CLASSE_OWNER_NAO_RESOLVIDO = "owner_nao_resolvido"
+# versao do coletor gravada em CADA linha nova de `pr_carteiras_snapshot`/`pr3_carteiras_sinal` (coluna
+# `coletor_versao`, NULL em linhas anteriores a este deploy) -- marca explicita de qual logica gerou a
+# linha, pra EMENDA_2026-11-16_CORRECAO_OWNER_CARTEIRAS.md declarar o corte de amostra sem ambiguidade.
+# RODADA 22 (2026-11-17, autorizada): subida p/ v2 ANTES de qualquer sinal V3 real sob a v1 (item 1 --
+# exclusao do proprio pool + PDA da bonding curve). Linhas v1 ficam como DIAGNOSTICO (nunca apagadas/
+# editadas), fora de qualquer contagem de N -- ver emenda, secao da RODADA 22.
+CARTEIRAS_COLETOR_VERSAO = "owner_fix_v2_2026-11-17"
 
 
 @dataclass
@@ -195,6 +210,43 @@ class SolanaAdapter(ChainAdapter):
                 excluded.add(spec.pool_after_program)
         return frozenset(excluded)
 
+    def excluded_accounts_carteiras_forward(self, pool: str, mint: str,
+                                            launchpad: Optional[str]) -> frozenset[str]:
+        """RODADA 22 (2026-11-17, autorizada), item 1: achado na Rodada 21 -- nos 19 snapshots
+        novos (ja com owner correto), `contas_excluidas_pool_curva=0` em todos e em 12/19 o 1o
+        holder resolvido era o PROPRIO endereco do pool (`pool`, o parametro ja existia aqui mas
+        nunca era usado). `excluded_accounts()` acima so exclui o PROGRAMA do launchpad/AMM destino
+        (compartilhado por TODOS os pools daquele launchpad) -- nunca a conta ESPECIFICA deste pool,
+        que e quem de fato custodia o supply enquanto ele e o maior "holder". Correcao: reusa
+        `excluded_accounts()` (nunca duplica a logica) + adiciona o `pool` em si + (quando
+        launchpad=='pumpfun') o PDA da bonding-curve do mint (seeds=['bonding-curve', mint],
+        programa pump.fun -- `solana_pda.find_program_address`).
+
+        RODADA 22, condicao 1 do operador (confirmado nesta sessao, nunca so por SDK de terceiros):
+        o seed `['bonding-curve', mint]` foi testado contra 4 pares (mint, bonding-curve) REAIS,
+        observados ao vivo via `getTransaction`/jsonParsed contra api.mainnet-beta.solana.com (conta
+        referenciada na mesma instrucao/CPI do programa pump.fun) -- os 4 bateram exatamente,
+        incluindo 1 par Token-2022 (`create_v2`), o que descarta a hipotese de uma variante
+        'bonding-curve-v2' para esse caso tambem (testado e NAO bate -- ver
+        `test_solana_pda.BondingCurveSeedFixtureTests`). raydium_launchlab/meteora_dbc NAO tem PDA de
+        curva implementado aqui (so pump.fun foi pesquisado/confirmado) -- `pool_after_program` (ja
+        coberto por `excluded_accounts()`) e tudo que cobre os outros launchpads hoje.
+
+        Usada SO pelos call sites que alimentam `holders_com_owner()` (pr_carteiras_snapshot/
+        pr3_carteiras_sinal) -- NUNCA pelos que alimentam `holders()` (tags/holders_tag/
+        HOLDER_CONCENTRADO/H8, que ficam com `excluded_accounts()` de sempre, intocado)."""
+        excluded = set(self.excluded_accounts(pool, mint, launchpad))
+        excluded.add(pool)
+        if launchpad == "pumpfun":
+            spec = LAUNCHPADS.get("pumpfun")
+            if spec is not None:
+                try:
+                    curva = find_program_address([b"bonding-curve", base58_decode(mint)], spec.program)
+                    excluded.add(curva)
+                except (ValueError, PdaNaoEncontradoError):
+                    pass   # mint malformado/PDA nao encontrado: nunca derruba a captura por isto
+        return frozenset(excluded)
+
     def holders(self, mint: str, exclude_accounts: frozenset[str] = frozenset()) -> HolderCheck:
         if self.rpc is None:
             return HolderCheck(tag="holders_indisponivel", detail={"motivo": "sem RPC configurado"})
@@ -202,7 +254,12 @@ class SolanaAdapter(ChainAdapter):
             largest = self.rpc.call("getTokenLargestAccounts", [mint]) or {}
             supply = self.rpc.token_supply(mint)
         except RpcError as exc:
-            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}"})
+            # HANDOFF 2026-11-12/13: `classe` (ver solana_rpc.classificar_erro) rotula a causa REAL
+            # (conexao/autenticacao/rate_limit/muitas_contas/generico) -- nunca mais todo erro de RPC
+            # virando "RateLimited" no log/saude/heartbeat (achado real na VM: endpoint morto por TLS
+            # mascarado assim por 2 dias). `str(exc)` nunca inclui a URL/api-key crua (RpcError.message
+            # e sempre construido de componentes controlados -- ver solana_rpc.py).
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
         # exclusoes do item 2.7/INTERPRETACOES.md #5: queima + programas base SEMPRE, mais o que o chamador
         # passou (vaults do pool/bonding curve especificos deste token, via `_excluded_accounts`)
         exclude_accounts = frozenset(exclude_accounts) | BASE_EXCLUDED_PROGRAMS | BURN_ADDRESSES
@@ -235,6 +292,107 @@ class SolanaAdapter(ChainAdapter):
         if top_pct >= HOLDER_CONCENTRADO_PCT:
             return HolderCheck(tag="HOLDER_CONCENTRADO", top_holder_pct=top_pct, top_holders=owners)
         return HolderCheck(top_holder_pct=top_pct, top_holders=owners)
+
+    # -- RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de ------------
+    # carteiras "pro" (pr_carteiras_snapshot/pr3_carteiras_sinal) -----------------------------------------
+    def holders_com_owner(self, mint: str, exclude_accounts: frozenset[str] = frozenset()) -> HolderCheck:
+        """RODADA 20, pergunta 3 (achado): `holders()` acima le `value.owner` de `getAccountInfo`, que
+        para QUALQUER token account e sempre o Program ID do SPL Token Program (`TokenkegQfe...`,
+        JA esta em `BASE_EXCLUDED_PROGRAMS`) -- nunca a wallet que de fato detem os tokens (essa fica
+        em `value.data.parsed.info.owner`; confirmado ao vivo contra api.mainnet-beta.solana.com e
+        pelo metodo vizinho `authorities()`, que JA faz esse unwrap certo 20 linhas abaixo). Resultado:
+        em produção, `owners`/`top_holders` de `holders()` SEMPRE vem vazio e `top_pct` SEMPRE 0.0.
+
+        RODADA 21, item 1 (blast radius): `holders()` alimenta `tags`/`holders_tag`/`holder_top1_pct`
+        (HOLDER_CONCENTRADO, `live.py: _entry_v1`/`_entry_v2`) e `carteiras_pro_presentes`/
+        `n_pessoas_pro` em `pr1_signals`/`pr2_signals` (hipotese pre-registrada H8,
+        `docs/pos-runner-v1/PLANO_ANALISE_PREREGISTRADO.md`) -- `holders()` fica BYTE A BYTE IGUAL
+        (ver `test_holders_nunca_foi_alterado_por_holders_com_owner`); H8 continua recebendo o MESMO
+        dado de sempre (sempre 0, bug conhecido mas FORA desta rodada -- precisa de emenda propria ao
+        pre-registro H8, nunca decidida aqui). Esta funcao e usada SO pela instrumentacao
+        "carteiras forward" (`pr_carteiras_snapshot`/`pr3_carteiras_sinal`), nunca por sinal/filtro.
+
+        Item 2: `getMultipleAccounts` (jsonParsed) em LOTES de `GET_MULTIPLE_ACCOUNTS_BATCH`=5
+        contas (EMENDA 2026-10-16/17, `enumerate._verify_pools_exist_on_chain`: QuickNode no plano
+        "discover" free recusa mais de 5 chaves por chamada, HTTP 413 -- ja medido em producao; o
+        pedido original queria 1 chamada so, mas reintroduzir esse 413 conhecido custaria mais que
+        economizar 3 chamadas), nunca 1 `getAccountInfo` por conta (orcamento/ritmo do RPC dedicado
+        de carteiras conta CHAMADAS de verdade via `SolanaRpc.calls` -- isto reduz de ate 21 pra ate
+        6 chamadas por snapshot, nunca aumenta).
+
+        Item 3: `detail` sempre traz `contas_totais` (<=20, quantas `getTokenLargestAccounts`
+        devolveu), `contas_excluidas_pool_curva` (owner bateu no programa do launchpad/AMM destino/
+        Token Program/queima) e `contas_sem_owner` (a conta nao existe mais ou `getMultipleAccounts`
+        nao devolveu parsed.info.owner) -- cobertura real = 1 - (excluidas+sem_owner)/totais.
+
+        Item 4: invariante de sanidade -- sucesso aparente (RPC respondeu, supply existe) mas NENHUM
+        owner valido sobrou (todas excluidas/sem_owner) OU a soma de pct do top-20 resolvido e 0 nunca
+        fica `cobertura_valida=1` por omissao: volta `tag='holders_indisponivel'` com
+        `classe=CLASSE_OWNER_NAO_RESOLVIDO`, MESMA chave que os chamadores (`_atualizar_carteiras_horaria`/
+        `_capturar_carteiras_sinal_v3_holders`) ja usam para decidir `cobertura_valida`/`erro_classe`."""
+        if self.rpc is None:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "sem RPC configurado"})
+        try:
+            largest = self.rpc.call("getTokenLargestAccounts", [mint]) or {}
+            supply = self.rpc.token_supply(mint)
+        except RpcError as exc:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
+        exclude_accounts = frozenset(exclude_accounts) | BASE_EXCLUDED_PROGRAMS | BURN_ADDRESSES
+        accounts = (largest.get("value") or [])
+        if not supply:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "supply indisponivel"})
+        enderecos = [row.get("address") for row in accounts if row.get("address") is not None]
+        contas_totais = len(enderecos)
+        if contas_totais == 0:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": "getTokenLargestAccounts sem contas"})
+        # EMENDA 2026-10-16/17 (ja medida em producao, `enumerate._verify_pools_exist_on_chain`):
+        # QuickNode no plano "discover" (free) recusa `getMultipleAccounts` com mais de
+        # GET_MULTIPLE_ACCOUNTS_BATCH=5 chaves (HTTP 413, codigo -32615). O pedido desta rodada
+        # queria 1 chamada so p/ as ate 20 contas; em lotes de 5 fica ate 4 chamadas -- ainda MUITO
+        # menor que as ate 20 `getAccountInfo` de antes, e nunca reintroduz um 413 ja conhecido.
+        infos: list[Any] = []
+        try:
+            for i in range(0, len(enderecos), GET_MULTIPLE_ACCOUNTS_BATCH):
+                lote = enderecos[i:i + GET_MULTIPLE_ACCOUNTS_BATCH]
+                multi = self.rpc.call("getMultipleAccounts", [lote, {"encoding": "jsonParsed"}]) or {}
+                infos.extend(multi.get("value") or [None] * len(lote))
+        except RpcError as exc:
+            return HolderCheck(tag="holders_indisponivel", detail={"motivo": f"RPC: {exc}", "classe": exc.classe})
+        owner_por_endereco: dict[str, Optional[str]] = {}
+        for endereco, info in zip(enderecos, infos):
+            parsed = (((info or {}).get("data") or {}).get("parsed") or {})
+            fields = parsed.get("info") or {}
+            # `type` != "account" (ex.: a propria mint, ou formato inesperado) nunca fabrica um owner.
+            owner_por_endereco[endereco] = fields.get("owner") if parsed.get("type") == "account" else None
+        excluidas_pool_curva = 0
+        sem_owner = 0
+        owners: list[tuple[str, float]] = []
+        for row in accounts:
+            address = row.get("address")
+            amount = row.get("uiAmount") or row.get("uiAmountString")
+            if address is None or amount is None or address in exclude_accounts:
+                continue
+            owner = owner_por_endereco.get(address)
+            if owner is None:
+                sem_owner += 1
+                continue
+            if owner in exclude_accounts:
+                excluidas_pool_curva += 1
+                continue
+            pct = 100.0 * float(amount) / float(supply)
+            owners.append((owner, pct))
+        detail: dict[str, Any] = {
+            "contas_totais": contas_totais, "contas_excluidas_pool_curva": excluidas_pool_curva,
+            "contas_sem_owner": sem_owner, "coletor_versao": CARTEIRAS_COLETOR_VERSAO,
+        }
+        soma_pct = sum(pct for _owner, pct in owners)
+        if not owners or soma_pct <= 0.0:
+            return HolderCheck(tag="holders_indisponivel", detail={
+                **detail, "classe": CLASSE_OWNER_NAO_RESOLVIDO,
+                "motivo": "nenhum owner valido resolvido (todas excluidas/sem_owner ou soma de pct = 0)",
+            })
+        owners.sort(key=lambda t: t[1], reverse=True)
+        return HolderCheck(top_holder_pct=owners[0][1], top_holders=owners, detail=detail)
 
     # -- mint/freeze authority (item 2 da FASE 2 de medicao/UX) ---------------------------------------
     def authorities(self, mint: str) -> AuthorityCheck:

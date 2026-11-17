@@ -73,3 +73,13 @@ class CostModel:
         network_pct = 100.0 * self.network_sol / self.position_sol
         base = self.pool_fee_pct(dex, mc_usd, sol_usd, pool_fee_pct) + self.terminal_pct + network_pct + self.slippage_pct(mc_usd, l_bc, sol_usd)
         return base * self.multiplier
+
+    def custo_ida_e_volta_em_r(self, dex: str, mc_usd: float, l_bc: Optional[float], sol_usd: Optional[float],
+                              risco_frac: float, pool_fee_pct: Optional[float] = None) -> float:
+        """RODADA 19 item 3: fracao de R (a UNIDADE de risco do trade, nunca um valor absoluto) que o
+        custo IDA+VOLTA (2 pernas, `leg_pct` x2) representa -- usado pra decompor quanto de uma perda
+        MAIOR que -1R (ex.: stop com distancia curta, onde o custo pesa relativamente mais) e
+        explicado por custo (fee+rede+slippage MODELADOS), nunca pelo gap/execucao real do candle
+        (esse exige dado real -- ver `scripts/modelo_custo_stop_curto.py`). `risco_frac` precisa ser
+        > 0 (mesma convencao de `horizonte_fixo.RISCO_IRREALISTA_MIN_PCT` -- quem chama ja filtrou)."""
+        return (2.0 * self.leg_pct(dex, mc_usd, l_bc, sol_usd, pool_fee_pct)) / 100.0 / risco_frac

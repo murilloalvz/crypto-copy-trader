@@ -314,6 +314,25 @@ def _secao_fila(storage: Storage, now: float) -> list[str]:
     return out
 
 
+# HANDOFF 2026-11-12/13 (achado real na VM, 2 dias sem ningum notar): com o orcamento corrigido pra
+# contar TENTATIVAS (rodada 15 Parte 2), 0 sucesso em muitas tentativas num dia e um sintoma forte
+# de endpoint RPC morto -- sem este alarme em destaque, ficava so mais uma linha discreta no meio
+# do relatorio. Limiar sugerido pelo operador.
+LIMIAR_TENTATIVAS_SEM_SUCESSO = 20
+
+# RODADA 21 (2026-11-16, autorizada): correcao do owner usado pela instrumentacao de carteiras "pro"
+# (ver chain_adapter.SolanaAdapter.holders_com_owner) -- limiar MENOR que o de cima de proposito: ali
+# o sinal e "endpoint morto" (tudo falha); aqui e "o RPC respondeu mas nenhum owner valido saiu do
+# top-20" -- mesmo um numero baixo (poucas tentativas) ja indica algo estrutural (lista de exclusao
+# de pool/curva desatualizada, formato de resposta mudou, etc.), nunca so rate limit/flutuacao normal.
+LIMIAR_OWNER_NAO_RESOLVIDO = 5
+
+# RODADA 22 (2026-11-17), condicao 1 do operador: backstop -- se a exclusao de pool/curva nunca
+# excluir NADA em pelo menos este numero de snapshots recentes (coletor v2+), algo esta errado
+# (seed da bonding-curve mudou nao-oficialmente, launchpad sem cobertura, etc.). Minimo de amostra
+# pra nunca alarmar so por sorte/poucos snapshots ainda coletados.
+MINIMO_SNAPSHOTS_PARA_ALARME_POOL_CURVA = 5
+
 _RE_CICLO_CARTEIRAS = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z .*POS-RUNNER-V1: ciclo .*"
     r"carteiras_tentativas=(?P<tent>\d+) carteiras_gravados=(?P<grav>\d+) "
@@ -337,13 +356,66 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     n_carteiras = storage.get_meta(cp.META_KEY_N_CARTEIRAS)
     n_pessoas = storage.get_meta(cp.META_KEY_N_PESSOAS)
     por_hora = Counter()
+    # RODADA 22 (2026-11-17), condicao 1 do operador: alarme se a exclusao de pool/curva
+    # (`excluded_accounts_carteiras_forward`) nunca excluir NADA nos snapshots recentes -- backstop
+    # independente (lido do banco, nunca confia so no codigo que gravou) pro caso do seed da
+    # bonding-curve mudar de novo no futuro (ja confirmado contra dado real nesta rodada, ver
+    # chain_adapter.excluded_accounts_carteiras_forward) ou algum launchpad novo nunca ganhar
+    # cobertura. So linhas `coletor_versao` conhecido (owner_fix_v2+) contam -- linhas antigas nunca
+    # tiveram essa coluna preenchida, nao e o mesmo caso.
+    excluidas_pool_curva_recentes: list[int] = []
     for row in storage.pr_carteiras_snapshot_all():
         if now - row["ts"] <= 86400.0:
             por_hora[int(row["ts"] // 3600)] += 1
+        if now - row["ts"] <= 86400.0 and row["coletor_versao"] and row["contas_excluidas_pool_curva"] is not None:
+            excluidas_pool_curva_recentes.append(row["contas_excluidas_pool_curva"])
     total_24h = sum(por_hora.values())
+    # RODADA 22 (2026-11-17), item 2a: lido aqui (ANTES do bloco de orcamento abaixo, que tambem usa
+    # `rt`) so pra ter `carteiras_placebo_k` disponivel pra cobertura do placebo, logo abaixo.
+    runtime_raw = storage.get_meta("pr_carteiras_runtime")
+    rt = json.loads(runtime_raw) if runtime_raw else None
+    # PEDIDO 2026-11-10 (rodada 15, Parte 3): instrumentacao forward da V3 (pr3_carteiras_sinal, sinal
+    # real + K placebo por sinal) -- so contagem/cobertura, anexado na MESMA linha de snapshots pra
+    # nao estourar o orcamento de linhas do relatorio (<=60, ver docstring do modulo).
+    forward = storage.pr3_carteiras_sinal_all()
+    sinais_fwd = [r for r in forward if r["tipo"] == "sinal"]
+    placebo_fwd = [r for r in forward if r["tipo"] == "placebo"]
+    cobertos_sinal = sum(1 for r in sinais_fwd if r["cobertura_valida"])
+    cobertos_placebo = sum(1 for r in placebo_fwd if r["cobertura_valida"])
+    # RODADA 22 (2026-11-17), item 2a (RODADA 20, pergunta 2, achado): a "cobertura" do placebo
+    # ERA cobertos/len(placebo_fwd) -- fracao das linhas que JA EXISTEM, nunca das esperadas
+    # (K x sinais). Um deficit de placebo (candidatos insuficientes, ou pool-controle sem mint --
+    # ver EMENDA) nunca aparecia aqui porque a linha nem chega a ser gravada. Agora:
+    # coletados/(K x sinais), "s/d" se K nao for conhecido (runtime nunca rodou nesta copia do banco).
+    placebo_k = rt.get("carteiras_placebo_k") if rt else None
+    if placebo_k and sinais_fwd:
+        cobertura_placebo_pct = f"{100.0 * len(placebo_fwd) / (placebo_k * len(sinais_fwd)):.0f}%"
+    else:
+        cobertura_placebo_pct = "s/d"
     out = [f"CARTEIRAS: lista carregada={'sim' if sha else 'NAO'} (sha256={sha[:12] + '...' if sha else 's/d'}) "
           f"| n_carteiras_pro={n_carteiras or 's/d'} n_pessoas_pro={n_pessoas or 's/d'}",
-          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s)"]
+          f"  snapshots nas ultimas 24h: {total_24h} horaria(s) em {len(por_hora)} hora(s) distinta(s) | "
+          f"forward V3: sinal={len(sinais_fwd)} (cobertura={cobertos_sinal}) placebo={len(placebo_fwd)} "
+          f"(cobertura_valida={cobertos_placebo}, cobertura_deficit={cobertura_placebo_pct} de "
+          f"{placebo_k if placebo_k else 's/d'}x{len(sinais_fwd)} esperado)"]
+    # RODADA 21 (2026-11-16), item 4: invariante de sanidade do owner -- `holders_com_owner()` ja
+    # nunca deixa uma linha "valida" sem nenhum owner resolvido (ela volta erro_classe=
+    # owner_nao_resolvido em vez disso), mas o alarme aqui e um BACKSTOP independente, lido direto do
+    # banco (nunca confia so na logica de quem gravou) -- cobre sinal/placebo da V3 (sem janela de
+    # tempo, pr3_carteiras_sinal nao tem tabela de tentativas).
+    from ..pos_runner.chain_adapter import CLASSE_OWNER_NAO_RESOLVIDO
+    owner_nao_resolvido_v3 = storage.pr3_carteiras_sinal_count_erro_classe(CLASSE_OWNER_NAO_RESOLVIDO)
+    if owner_nao_resolvido_v3 >= LIMIAR_OWNER_NAO_RESOLVIDO:
+        out.append(f"  !!! OWNER NAO RESOLVIDO (forward V3): {owner_nao_resolvido_v3} linha(s) sinal/"
+                  f"placebo com RPC OK mas nenhum owner valido no top-20 -- ver "
+                  f"chain_adapter.holders_com_owner, possivel lista de exclusao de pool/curva "
+                  f"desatualizada ou formato de resposta mudou !!!")
+    if (len(excluidas_pool_curva_recentes) >= MINIMO_SNAPSHOTS_PARA_ALARME_POOL_CURVA
+            and all(n == 0 for n in excluidas_pool_curva_recentes)):
+        out.append(f"  !!! EXCLUSAO DE POOL/CURVA NUNCA EXCLUIU NADA: {len(excluidas_pool_curva_recentes)} "
+                  f"snapshot(s) recente(s) (coletor v2+) com contas_excluidas_pool_curva=0 em TODOS -- "
+                  f"possivel seed da bonding-curve mudado de novo (ver chain_adapter."
+                  f"excluded_accounts_carteiras_forward) ou launchpad novo sem cobertura !!!")
     pools_ativos = storage.pr_pools("ativo")
     abertos = {s["pool"] for s in storage.pr1_signals(status="aberto")} | \
               {s["pool"] for s in storage.pr2_signals(status="aberto")}
@@ -362,15 +434,40 @@ def _secao_carteiras(storage: Storage, now: float, logs_dir: Path) -> list[str]:
         out.append(f"  fases {versao} AGORA ({len(pools_ativos)} pool(s) ativo(s), de pr_pools -- nao e "
                   "'caixa', so sem_fase/runner/pullback existem no detector): " +
                   " ".join(f"{k}={fases.get(k, 0)}" for k in ("sem_fase", "runner", "pullback")))
-    runtime_raw = storage.get_meta("pr_carteiras_runtime")
-    if runtime_raw:
-        rt = json.loads(runtime_raw)
+    if rt:
         inicio_do_dia = now - (now % 86400.0)
-        usado_hoje = storage.pr_carteiras_snapshot_count_since(inicio_do_dia, "horaria")
+        # PEDIDO 2026-11-10 (rodada 15, Parte 2): orcamento media TENTATIVAS (sucesso+falha), nunca so
+        # sucessos -- ver docs/pos-runner-v1/DIAGNOSTICO_2026-11-10_CARTEIRAS_PRO_RATELIMITED.md
+        # (antes disso, 100% de falha deixava o orcamento preso em 0/limite pra sempre).
+        tentativas_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria")
+        sucessos_hoje = storage.pr_carteiras_tentativa_count_since(inicio_do_dia, "horaria", sucesso=True)
+        rpc_dedicado = rt.get("carteiras_rpc_dedicado")
+        per_min = rt.get("carteiras_rpc_per_min")
+        dedicado_txt = (f"sim ({per_min:.0f}/min)" if rpc_dedicado and per_min is not None
+                       else ("sim" if rpc_dedicado else "NAO (compartilhado com lineage)"))
         out.append(f"  RPC configurado={'sim' if rt['rpc_configurado'] else 'NAO'} | "
+                  f"RPC dedicado (baixa prioridade)={dedicado_txt} | "
                   f"SEM_CARTEIRAS={'sim (desligado)' if rt['sem_carteiras'] else 'nao'} | "
-                  f"orcamento hoje: {usado_hoje}/{rt['carteiras_max_chamadas_dia']} chamada(s) | "
+                  f"orcamento hoje: {tentativas_hoje}/{rt['carteiras_max_chamadas_dia']} tentativa(s) "
+                  f"({sucessos_hoje} sucesso(s)) | "
                   f"(config lida ha {_fmt_h(now - rt['ts'])}, no proprio processo ao vivo)")
+        # HANDOFF 2026-11-12/13: alarme em DESTAQUE -- lido do BANCO (pr_carteiras_tentativa, nunca
+        # so do log, que pode rotacionar/faltar), nunca some no meio do relatorio.
+        if tentativas_hoje >= LIMIAR_TENTATIVAS_SEM_SUCESSO and sucessos_hoje == 0:
+            ultimo_sucesso_ts = storage.pr_carteiras_tentativa_ultimo_sucesso_ts("horaria")
+            ultima_classe = storage.pr_carteiras_tentativa_ultima_classe_erro("horaria")
+            ultimo_sucesso_txt = (f"ha {_fmt_h(now - ultimo_sucesso_ts)}" if ultimo_sucesso_ts is not None
+                                 else "nunca (nesta copia do banco)")
+            out.append(f"  !!! COLETA DE CARTEIRAS SEM SUCESSO: {tentativas_hoje} tentativa(s) hoje, "
+                      f"0 sucesso(s) | ultima classe de erro: {ultima_classe or 's/d'} | "
+                      f"ultimo sucesso: {ultimo_sucesso_txt} !!!")
+        # RODADA 21 (2026-11-16), item 4: MESMO backstop do bloco "forward V3" acima, aqui pra coleta
+        # horaria (que TEM janela de tentativas, pr_carteiras_tentativa).
+        owner_nao_resolvido_horaria = storage.pr_carteiras_tentativa_count_classe_since(
+            inicio_do_dia, CLASSE_OWNER_NAO_RESOLVIDO, "horaria")
+        if owner_nao_resolvido_horaria >= LIMIAR_OWNER_NAO_RESOLVIDO:
+            out.append(f"  !!! OWNER NAO RESOLVIDO (coleta horaria): {owner_nao_resolvido_horaria} "
+                      f"tentativa(s) hoje com RPC OK mas nenhum owner valido no top-20 !!!")
     else:
         out.append("  RPC configurado/orcamento: s/d (nenhum _startup rodou ainda nesta copia do banco)")
     linhas = _linhas_log(logs_dir, 86400.0, now)
@@ -407,12 +504,18 @@ def _secao_sombra(storage: Storage, now: float, logs_dir: Path) -> list[str]:
     (SOMBRA_MAX_POOLS), sinais por motivo/status (`pr_sombra`) e erros da sombra (log, `_sombra_safe`
     -- ver incidente de producao 2026-10-29, candles sobrepostos)."""
     out = ["SOMBRA:"]
+    # HANDOFF 2026-11-12/13, item (d): isto NUNCA e o total de pools ativos do bot (ver FILA, que le
+    # pr_pools status='ativo' direto do banco) -- e so o subconjunto, bem menor, de slots de detector
+    # sombra ocupados (teto SOMBRA_MAX_POOLS), de uma leitura em memoria que so existe no processo ao
+    # vivo e so atualiza a cada heartbeat. Rotulo explicito p/ nunca mais parecer contradizer FILA.
     ativos_raw = storage.get_meta("pr_sombra_ativos")
     if ativos_raw:
         ativos = json.loads(ativos_raw)
-        out.append(f"  pools ativos: {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
+        out.append(f"  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  f"ver FILA): {ativos['n_pools']} (ha {_fmt_h(now - ativos['ts'])}, no ultimo heartbeat)")
     else:
-        out.append("  pools ativos: s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
+        out.append("  pools sombra ativos (slots do detector sombra, nao e o total de pools do bot -- "
+                  "ver FILA): s/d (so existe na memoria do processo ao vivo -- aparece apos o 1o heartbeat)")
     descartados = storage.pr_sombra_descarte_count(now - 86400.0)
     out.append(f"  descartados por teto (SOMBRA_MAX_POOLS, 24h): {descartados}")
     por_motivo: Counter = Counter()

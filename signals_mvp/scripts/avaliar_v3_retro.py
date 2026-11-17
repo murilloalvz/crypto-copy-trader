@@ -56,15 +56,21 @@ def _conectar_ro(db_path: Path) -> sqlite3.Connection:
 
 def parte_a_pools_admitidos(con: sqlite3.Connection, params_v3: Any) -> list[dict[str, Any]]:
     rows = con.execute(
-        "SELECT pool, symbol, l_bc, grad_ts, launchpad, info FROM pr_pools WHERE status IN ('ativo', 'dormente', 'encerrado')"
+        "SELECT pool, mint, symbol, l_bc, grad_ts, launchpad, info FROM pr_pools WHERE status IN ('ativo', 'dormente', 'encerrado')"
     ).fetchall()
     costs = CostModel()
     tf = params_v3.timeframes[0]
     linhas: list[dict[str, Any]] = []
     for row in rows:
+        # RODADA 17 (autorizada, achado A2/Parte A da auditoria 2026-11-10): `mint` agora e carregado
+        # de verdade de `pr_pools.mint` -- antes este SELECT nem buscava a coluna, e os chamadores
+        # (varredura_v3.py/simular_v3_carteira.py) caiam no fallback "symbol" como identidade de
+        # token, vulneravel a colisao de ticker (clones). Nunca string vazia -- cai no `pool` como
+        # ultimo recurso (identidade sempre unica, nunca ambigua como o symbol).
+        mint = row["mint"] or row["pool"]
         bars = _bars_do_pool(con, row["pool"], tf)
         if not bars:
-            linhas.append({"pool": row["pool"], "symbol": row["symbol"] or row["pool"],
+            linhas.append({"pool": row["pool"], "mint": mint, "symbol": row["symbol"] or row["pool"],
                           "categoria": "sem_historico", "chegou_runner": False, "sinais": [], "eventos_raw": []})
             continue
         created_ts = _created_ts(row["info"])
@@ -83,7 +89,7 @@ def parte_a_pools_admitidos(con: sqlite3.Connection, params_v3: Any) -> list[dic
                 elif ev.kind == "ENTRADA":
                     sinais.append(_simular_entrada(bars, ev, params_v3, costs, dex, row["l_bc"]))
                     eventos_raw.append((bars, ev, dex, row["l_bc"]))
-        linhas.append({"pool": row["pool"], "symbol": row["symbol"] or row["pool"], "categoria": "ok",
+        linhas.append({"pool": row["pool"], "mint": mint, "symbol": row["symbol"] or row["pool"], "categoria": "ok",
                       "chegou_runner": chegou_runner, "sinais": sinais, "eventos_raw": eventos_raw})
     return linhas
 
@@ -109,18 +115,26 @@ def parte_b_coorte_lote1(con: sqlite3.Connection, params_v3: Any, now: float) ->
 
 
 def resumo_por_token(linhas: list[dict[str, Any]], origem: str) -> list[dict[str, Any]]:
-    """PEDIDO 2026-11-03 (continuacao -- pendente 3): agrega por token (symbol) -- quantos sinais,
+    """PEDIDO 2026-11-03 (continuacao -- pendente 3): agrega por token -- quantos sinais,
     quantos fechados, R medio/mediano (so validos, mesma exclusao risco<3%) e quantos tocaram o topo
-    anterior (`tocou_topo`, campo aditivo de `_simular_entrada`)."""
+    anterior (`tocou_topo`, campo aditivo de `_simular_entrada`). RODADA 17 (achado A2/Parte A da
+    auditoria 2026-11-10): agrupa por `mint` (ou `pool`, nunca `symbol`) -- `linhas` de
+    `parte_a_pools_admitidos` ja carrega `mint` real; `linhas` de `parte_b_coorte_lote1` (sem coluna
+    mint na fonte) cai no fallback `pool`, ainda assim identidade unica, nunca symbol ambiguo
+    (clones/tickers repetidos). `symbol` fica so pra exibicao (`token` no resultado)."""
     por_token: dict[str, list[dict[str, Any]]] = {}
+    simbolo_de: dict[str, str] = {}
     for l in linhas:
+        chave_token = l.get("mint") or l["pool"]
+        simbolo_de.setdefault(chave_token, l.get("symbol") or l["pool"])
         for s in l["sinais"]:
-            por_token.setdefault(l["symbol"] or l["pool"], []).append(s)
+            por_token.setdefault(chave_token, []).append(s)
     out: list[dict[str, Any]] = []
-    for token, sinais in sorted(por_token.items()):
+    for chave_token, sinais in sorted(por_token.items()):
         com_r = [s["r_mult"] for s in sinais if s.get("r_mult") is not None]
         out.append({
-            "token": token, "origem": origem, "n_sinais": len(sinais),
+            "token": simbolo_de.get(chave_token, chave_token), "mint": chave_token, "origem": origem,
+            "n_sinais": len(sinais),
             "n_fechados": sum(1 for s in sinais if s["status"] == "fechado"),
             "r_medio": statistics.fmean(com_r) if com_r else None,
             "r_mediano": statistics.median(com_r) if com_r else None,

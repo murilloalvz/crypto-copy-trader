@@ -207,42 +207,58 @@ def _contaminado_candle(sinal: Any) -> bool:
     return "contaminado_candle" in json.loads(sinal["tags"] or "[]")
 
 
-def carregar_sinais_e_excluidos(storage: Any, versao: str,
-                                excluir_entrada_atrasada: bool = True) -> tuple[list[SinalResolvido], list[Excluido]]:
+def carregar_sinais_e_excluidos(
+    storage: Any, versao: str, excluir_entrada_atrasada: bool = True, horizonte: Optional[str] = None,
+) -> tuple[list[SinalResolvido], list[Excluido]]:
     """So sinais com `dif_pareada` JA calculada (controles e sinal real resolvidos -- ver
     `pr_baseline_resolvidas_com_dif`); junta com `pr_trajetoria` (mesmo entry_id/versao) so para o
     `t_entrada` (pr_baseline nao guarda isso) e com pr1_signals/pr2_signals para os campos de grupo.
     Aplica a regra de exclusao pre-declarada (candle/preco absurdo confirmado) ANTES de devolver a
-    lista usavel -- os excluidos saem numa lista separada, com motivo, nunca silenciosamente."""
+    lista usavel -- os excluidos saem numa lista separada, com motivo, nunca silenciosamente.
+
+    PEDIDO 2026-11-05 (emenda horizonte fixo, autorizada -- ver docs/pos-runner-v1/
+    EMENDA_2026-11-05_HORIZONTE_FIXO_PROPOSTA.md e pos_runner/horizonte_fixo.py): `horizonte=None`
+    (padrao) e BYTE A BYTE o comportamento legado (dif_pareada da REGRA, via
+    `pr_baseline_resolvidas_com_dif`). `horizonte="72h"`/`"7d"` troca a FONTE de `dif_pareada` para
+    `pr_horizonte_fixo` (origem='ao_vivo', ja calculada por `scripts/horizonte_fixo.py`) -- MESMAS
+    exclusoes de qualidade aplicadas em qualquer modo, nunca uma regra de exclusao nova."""
     out: list[SinalResolvido] = []
     excluidos: list[Excluido] = []
     # PEDIDO 2026-11-02 (POS-RUNNER-V3, Passo 1 continuacao): 3-way -- V3 reusa `pr_trajetoria`/
     # `pr_baseline` (genericas por `versao`, ZERO schema novo) exatamente como V1/V2, so troca a
     # tabela de origem do sinal (`pr3_signals`).
     sinal_lookup = {"v1": storage.pr1_signal, "v2": storage.pr2_signal, "v3": storage.pr3_signal}[versao]
-    for b in storage.pr_baseline_resolvidas_com_dif(versao):
-        traj = storage.pr_trajetoria_get(versao, b["entry_id"])
-        sinal = sinal_lookup(b["entry_id"])
+    if horizonte is None:
+        fonte = [(b["entry_id"], b["dif_pareada"]) for b in storage.pr_baseline_resolvidas_com_dif(versao)]
+    else:
+        fonte = [
+            (int(row["entry_key"]), row["dif_pareada"])
+            for row in storage.pr_horizonte_fixo_all(versao=versao, origem="ao_vivo", horizonte=horizonte)
+            if row["dif_pareada"] is not None   # 'pendente'/'sem_dado'/sem controle resolvido -- nunca entra
+        ]
+    for entry_id, dif_pareada in fonte:
+        traj = storage.pr_trajetoria_get(versao, entry_id)
+        sinal = sinal_lookup(entry_id)
         if traj is None or sinal is None or traj["t_entrada"] is None or not sinal["mint"]:
             continue
         if _preco_entrada_divergente(sinal):
-            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+            excluidos.append(Excluido(entry_id, sinal["mint"], sinal["symbol"] or "",
                                        "preco_entrada_divergente"))
             continue
         if _candle_divergente_confirmado(storage, versao, sinal):
-            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+            excluidos.append(Excluido(entry_id, sinal["mint"], sinal["symbol"] or "",
                                        "candle_divergente"))
             continue
         if _risco_irrealista(sinal):
-            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+            excluidos.append(Excluido(entry_id, sinal["mint"], sinal["symbol"] or "",
                                        "risco_irrealista"))
             continue
         if _contaminado_candle(sinal):
-            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+            excluidos.append(Excluido(entry_id, sinal["mint"], sinal["symbol"] or "",
                                        "contaminado_candle"))
             continue
         if excluir_entrada_atrasada and _entrada_atrasada(sinal):
-            excluidos.append(Excluido(b["entry_id"], sinal["mint"], sinal["symbol"] or "",
+            excluidos.append(Excluido(entry_id, sinal["mint"], sinal["symbol"] or "",
                                        "entrada_atrasada"))
             continue
         entry_price, stop = sinal["entry_price"], sinal["stop"]
@@ -260,8 +276,8 @@ def carregar_sinais_e_excluidos(storage: Any, versao: str,
                 gatilho_v3=gatilho_tag_v3(json.loads(sinal["gatilho"] or "[]")),
             )
         out.append(SinalResolvido(
-            entry_id=b["entry_id"], mint=sinal["mint"], symbol=sinal["symbol"] or "",
-            t_entrada=traj["t_entrada"], dif_pareada=b["dif_pareada"],
+            entry_id=entry_id, mint=sinal["mint"], symbol=sinal["symbol"] or "",
+            t_entrada=traj["t_entrada"], dif_pareada=dif_pareada,
             gatilho=tuple(json.loads(sinal["gatilho"] or "[]")), risco_pct=risco_pct,
             liquidez_usd=sinal["liquidez_usd"], holders_tag=sinal["holders_tag"],
             tags=tuple(json.loads(sinal["tags"] or "[]")), janela_ouro=sinal["janela_ouro"],
@@ -289,10 +305,10 @@ def _tempo_pico_caixa_s(sinal: Any) -> Optional[float]:
     return float(box_start_ts) - float(peak_ts)
 
 
-def carregar_sinais_resolvidos(storage: Any, versao: str) -> list[SinalResolvido]:
+def carregar_sinais_resolvidos(storage: Any, versao: str, horizonte: Optional[str] = None) -> list[SinalResolvido]:
     """Compat: so a lista ja filtrada pela regra de exclusao -- ver `carregar_sinais_e_excluidos` para
-    a lista de excluidos com motivo."""
-    sinais, _ = carregar_sinais_e_excluidos(storage, versao)
+    a lista de excluidos com motivo. `horizonte=None` (padrao) = legado inalterado."""
+    sinais, _ = carregar_sinais_e_excluidos(storage, versao, horizonte=horizonte)
     return sinais
 
 

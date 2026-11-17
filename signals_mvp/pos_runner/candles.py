@@ -290,3 +290,21 @@ def missing_windows(fine: list[Bar], fine_tf: str, coarse: list[Bar], coarse_tf:
             merged.append((lo, hi))
     _ = fstep
     return merged
+
+
+def candle_corrompido_provavel(bars: list[Bar], idx: int) -> bool:
+    """PEDIDO 2026-11-05 (correcao FRENTE A, reusado por `scripts/exit_lab.py` e `scripts/
+    auditar_mfe.py` -- aqui pra evitar import circular entre os dois): candle sem NENHUMA negociacao
+    real (volume=0 -- inclui as lacunas que `fill_gaps` preenche pro detector contar duracao, nunca
+    negociacao de verdade) OU `high` > 10x o `high` de AMBOS os vizinhos (pico isolado, provavel erro
+    de dado) e tratado como nao confiavel por quem chama esta funcao (MFE/MAE, marcacao a mercado).
+    So os DOIS vizinhos existindo decide o 2o criterio (nunca marca na borda da serie, onde so ha 1
+    vizinho pra comparar). Puramente retrospectivo/exploratorio -- NUNCA o mesmo veto causal de
+    `qualidade_candle.motivo_suspeito` (que decide ENTRADA/TP1/saida ao vivo em V1/V2/V3, intocado)."""
+    bar = bars[idx]
+    if bar.volume == 0.0:
+        return True
+    if idx - 1 < 0 or idx + 1 >= len(bars):
+        return False
+    anterior, seguinte = bars[idx - 1], bars[idx + 1]
+    return bar.high > 10.0 * anterior.high and bar.high > 10.0 * seguinte.high
