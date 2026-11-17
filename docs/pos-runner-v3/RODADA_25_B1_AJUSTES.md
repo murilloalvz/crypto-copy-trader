@@ -167,3 +167,85 @@ Nenhum preço ou retorno é lido nessa decisão: só contagens.
 **O que não muda:** detector, parâmetros, H1, hashes. É só operação de admissão (amostragem). Exige
 restart e um teste: RpcError repetido 20× → pool continua na fila como `adiado`; erro de dado → continua
 `rejeitado`.
+
+---
+
+## Adendo — decisões do operador e ajustes (antes de qualquer preço)
+
+**Decisão:** secundário por evento com **s = 25%, k = 2** (tocar +50% antes de −25%; acaso p0 = 33,3%).
+
+### A1) Preenchimento do stop no cenário pessimista = meio entre stop e low
+
+- **Dado de origem:** a reconciliação ao vivo (VM, 16/11, informada pelo operador) mediu a venda no meio
+  stop–low **0,10–0,25R pior** que no stop.
+- **Como entra:** no cenário pessimista, a perda de quem bate o stop passa a ser s + δ, com δ = ΔR · s
+  em % do preço. O ganho continua k·s.
+- **Equilíbrio:** **p\* = (s + δ + RT) / ((k+1)·s + δ)**; fator exigido = p\* / p0.
+
+Para s = 25%, k = 2:
+
+| cenário de custo | stop no nível (δ=0) | meio, ΔR=0,10 (δ=2,5%) | meio, ΔR=0,25 (δ=6,25%) |
+|---|---|---|---|
+| offline (RT 6,9%) | p\*=42,5% · **1,28×** | 44,4% · 1,33× (custo efetivo no stop 9,4%) | 47,0% · 1,41× (13,2%) |
+| pessimista US$25 (11,1%) | 48,1% · **1,44×** | 49,8% · **1,49×** (13,6%) | 52,1% · **1,56×** (17,4%) |
+| pessimista US$10 (14,4%) | 52,5% · 1,58× | 54,1% · 1,62× (16,9%) | 56,2% · 1,69× (20,7%) |
+
+"Custo efetivo no stop" = RT + δ: o que um trade perdedor paga além dos −25%.
+
+- **Pré-registro:** usar o **pessimista US$25 com ΔR = 0,25**, ou seja exigir razão de acerto ≥ **1,56×**
+  o acaso. O offline sem δ (1,28×) fica como referência.
+
+### A2) Ambiguidade dentro do candle (declarado antes de olhar preço)
+
+- Se um mesmo candle de 1 min tem `low ≤ entrada·(1−s)` **e** `high ≥ entrada·(1+k·s)`, conta-se o
+  **stop primeiro** (perda). É a mesma convenção conservadora de `simulate_v1.py:147-165`.
+- O candle de entrada (o do `open` usado como preço) já conta. Nenhum candle anterior à entrada conta.
+
+### A3) Limiar de fração vendida que dispara a saída espelho
+
+- **Regra:** a 1ª venda dispara a saída total só se vender **≥ 50%** do saldo do token que **aquela
+  carteira** tinha imediatamente antes da venda: `(pre − post) / pre`, lido nos `pre/postTokenBalances`
+  do próprio tx de venda.
+- **Vendas abaixo de 50%:** não disparam; ficam registradas.
+- **Vendas acumuladas da mesma carteira:** somam até cruzar 50% do maior saldo observado desde a
+  compra; o instante do cruzamento é o gatilho.
+- **Por que 50%, sem olhar preço:** é o menor corte com significado estrutural — a carteira passa a
+  ter **menos da metade** da exposição, ou seja a maior parte da posição saiu. Abaixo disso a venda pode
+  ser realização parcial, ajuste de tamanho, taxa ou "pó", que não indicam saída.
+- **Sensibilidade (diagnóstico, nunca decide):** 25% e 75%.
+- O piloto mede **só a distribuição da fração vendida** (sem preço) para mostrar quanto cada corte
+  muda a contagem de saídas.
+
+### A4) Créditos Helius por método (documentação lida em 2026-11-16)
+
+- **Fontes:** `https://www.helius.dev/docs/billing/credits` e `/docs/billing/rate-limits`.
+
+| método | créditos | uso |
+|---|---|---|
+| `getSignaturesForAddress` | **1** | **usado** (piloto e backfill) |
+| `getTransaction` | **1** | **usado** (piloto e backfill) |
+| demais RPC padrão (ex. `getTokenAccountsByOwner`) | 1 (linha "Standard RPC Calls") | não usado |
+| `getTransactionsForAddress` | 10 por 100 tx completas (mínimo 10) | não usado |
+| Enhanced Transactions (parse) | **100** | **não usado** |
+| Parsed Events | 10 por requisição | não usado |
+
+- **Plano Free:** 1M créditos/mês; RPC 10 req/s; APIs enriquecidas 2 req/s.
+- **Decisão:** só RPC padrão. O parse é feito localmente, com o mesmo `jsonParsed` já usado pelo projeto.
+- **Medição:** o piloto conta chamadas por método × tabela acima e imprime o total. Conferir contra o
+  delta do painel da Helius antes e depois do piloto.
+- **Chaves e consumo do bot:**
+  - Pela taxa informada de ~10 chamadas/min, o bot gasta ≈ 14,4 mil créditos/dia ≈ **432 mil/mês**:
+    ~43% do plano, antes do B1.
+  - **Piloto (~320 créditos):** pode usar a chave do bot.
+  - **Backfill:** **chave própria**, diferente da do bot.
+
+### A5) D = 180 dias é conservador se o B1 salvar candles na coleta
+
+- O limite de ~180 dias do OHLCV gratuito vale para dado **baixado depois**. Se o B1 salvar os candles
+  de 1 min de cada token **à medida que coleta** (forward, logo após cada compra mais 72 h), nenhum
+  candle envelhece fora do alcance. O horizonte deixa de ser 25/04/2027 e passa a ser a data de corte
+  que o operador escolher.
+- **Consequência:** a projeção N_proj = λ_ef × 180 é **conservadora** nesse modo; com coleta forward
+  contínua, N cresce com o tempo de coleta.
+- **A regra do B4 continua:** decide com D = 180. Um D maior só vale se for declarado antes, junto com o
+  compromisso de coleta forward.
